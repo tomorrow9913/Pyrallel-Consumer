@@ -1,0 +1,89 @@
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+
+# --- Completion ---
+class CompletionStatus(Enum):
+    """_summary
+    완료 상태를 나타내는 열거형입니다.
+
+    Attributes:
+        SUCCESS (str): 성공 상태
+        FAILURE (str): 실패 상태
+    """
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+@dataclass(frozen=True)
+class TopicPartition:
+    """
+    토픽 파티션에 대한 정보입니다
+
+    Attributes:
+        topic (str): 토픽 이름
+        partition (int): 파티션 번호
+    """
+
+    topic: str
+    partition: int
+
+
+@dataclass(frozen=True)
+class CompletionEvent:
+    """
+    완료 이벤트에 대한 정보입니다
+
+    Attributes:
+        tp (TopicPartition): 토픽 파티션 정보
+        offset (int): 완료된 오프셋
+        epoch (int): 처리 에포크
+        status (CompletionStatus): 완료 상태
+        error (Optional[str]): 오류 메시지 (실패 시)
+    """
+
+    tp: TopicPartition
+    offset: int
+    epoch: int
+    status: CompletionStatus
+    error: Optional[str]
+
+
+# --- Process Execution ---
+@dataclass(frozen=True)
+class ProcessTask:
+    """
+    프로세스 작업에 대한 정보입니다
+
+    Attributes:
+        topic (str): 토픽 이름
+        partition (int): 파티션 번호
+        offsets (list[int]): 마이크로 배치 오프셋들
+        payload (bytes): orjson.dumps(batch)
+        epoch (int): 처리 에포크
+        context (dict[str, str]): tracing / logging
+    """
+
+    topic: str
+    partition: int
+    offsets: list[int]  # micro-batch offsets
+    payload: bytes  # orjson.dumps(batch)
+    epoch: int
+    context: dict[str, str]  # tracing / logging
+
+
+# --- Offset/Metadata Management ---
+@dataclass(frozen=True)
+class OffsetRange:
+    """
+    오프셋 범위에 대한 정보입니다
+
+    Attributes:
+        start (int): 시작 오프셋
+        end (int): 종료 오프셋
+    """
+
+    start: int
+    end: int

@@ -1,6 +1,8 @@
-from sortedcontainers import SortedSet
-from collections import defaultdict
 import asyncio
+from collections import defaultdict
+
+from sortedcontainers import SortedSet
+
 
 class OffsetTracker:
     def __init__(self):
@@ -27,3 +29,8 @@ class OffsetTracker:
                 if safe_ptr >= 0:
                     parts_to_commit.append((p_id, safe_ptr + 1))
         return parts_to_commit
+
+    async def get_total_in_flight_count(self) -> int:
+        """현재 처리 중인 (in-flight) 메시지의 총 개수를 반환합니다."""
+        async with self._lock:
+            return sum(len(offsets) for offsets in self._in_flight.values())
