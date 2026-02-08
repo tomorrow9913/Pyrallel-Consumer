@@ -116,11 +116,12 @@ class CompletionEvent:
 
 @dataclass(frozen=True)
 class ProcessTask:
-    payload: Any
     topic: str
     partition: int
-    offset: int
+    offsets: list[int]          # micro-batch offsets
+    payload: bytes              # orjson.dumps(batch)
     epoch: int
+    context: dict[str, str]     # tracing / logging
 
 @dataclass(frozen=True)
 class OffsetRange:
@@ -194,6 +195,31 @@ def on_completion(event):
 - **목적**: 파티션 소유권을 잃기 직전(`on_partitions_revoked`), "내가 여기까지는 확실히 처리했다"는 상태를 다음 소유자에게 최대한 정확하게 전달하는 것입니다.
 - **절차**: `WorkManager`를 정지시키고, `OffsetTracker`의 현재 상태를 스냅샷하여 `Metadata Encoder`를 통해 압축한 후, 동기 방식(`commit_sync`)으로 커밋합니다.
 
+#### 4.2.5. Rebalancing 시 Final Graceful Commit 타임아웃: Correctness < Liveness
+
+**문제 진단: Rebalance 시 `Final Graceful Commit`의 현실적 제약**
+
+Kafka의 `on_partitions_revoked` 콜백은 짧은 시간 내에 종료해야 합니다. 만약 이 콜백 내에서 지연이 발생하면 컨슈머 그룹 전체가 Rebalance에 실패하고 `consumer group eject`로 이어질 수 있습니다. 이는 "이론적으로는 완벽한 커밋을 시도하지만, 실전에서는 그룹 생존에 실패하는" 상황을 초래합니다.
+
+**설계 원칙: Correctness < Liveness (정확성보다 생존성)**
+
+Rebalance가 발생하는 동안에는 **"완벽한 커밋"보다는 "컨슈머 그룹의 정상적인 작동(Liveness)"이 우선**되어야 합니다. 즉, 약간의 데이터 중복 처리 가능성을 감수하더라도 컨슈머 그룹이 Kafka에 계속 참여하여 메시지 처리를 이어가는 것이 중요합니다.
+
+**구체 설계안**
+
+1.  **Rebalance Deadline 개념 도입**:
+    `rebalance_deadline = now() + max_revoke_grace_ms`와 같이, `on_partitions_revoked` 콜백이 완료되어야 하는 최대 시간(`max_revoke_grace_ms`)을 정의합니다. 기본값은 300ms ~ 1000ms 사이로 설정 가능하게 합니다.
+
+2.  **`WorkManager` 방어 로직**:
+    `on_partitions_revoked` 진입 시 `WorkManager`는 새로운 Task 제출을 중단하고, `rebalance_deadline`까지 `in-flight` Task들이 완료되기를 기다립니다.
+    -   `rebalance_deadline`을 초과하는 경우:
+        -   남아있는 `in-flight` Task는 취소하거나 무시합니다.
+        -   `OffsetTracker`를 통해 **현재까지 확정된 HWM(Highest Water Mark)만 커밋**합니다. Gap Metadata는 기한 초과 시 포기될 수 있습니다.
+        -   경고 로그를 남기고 즉시 반환하여 콜백을 종료합니다.
+
+3.  **`OffsetTracker` 연계 정책**:
+    `Final Graceful Commit` 시 커밋 대상은 **연속된 HWM(contiguous HWM)만을 우선**합니다. Deadline 초과 시 Gap Metadata는 커밋하지 않고 포기할 수 있으며, 이로 인해 재시작 시 **일부 메시지의 중복 처리가 허용(documented behavior)**될 수 있음을 명시합니다.
+
 ### 4.3. `WorkManager`: 병목 해소 스케줄러
 
 #### 4.3.1. 역할 재정의
@@ -227,12 +253,102 @@ Backpressure는 "처리 속도 조절"이 아니라, 시스템이 처리 능력�
 - **Resume 조건**: `Load <= max_in_flight * 0.7`
 - `Pause`와 `Resume` 임계값을 다르게 두어, 시스템 부하가 임계값 근처에서 흔들릴 때 `pause`와 `resume`이 짧은 주기로 반복(Chattering)되는 현상을 방지합니다.
 
-## 5. 관측성 (Observability) 설계: "진짜" Lag 측정하기
+## 5. 설정 스키마 (Configuration Schema)
 
-### 5.1. 관측 철학
+`pydantic-settings`를 통해 관리될 최종 설정 스키마입니다.
+
+```yaml
+parallel_consumer:
+  execution:
+    mode: "process"  # "async" | "process"
+    max_in_flight: 1000
+    max_revoke_grace_ms: 500 # Rebalance graceful shutdown deadline (Default: 500ms)
+
+    async:
+      task_timeout_ms: 30000
+
+    process:
+      process_count: 8 # os.cpu_count() 또는 유사한 기본값
+      queue_size: 2048
+      require_picklable_worker: true
+      batch_size: 64 # Micro-batching: 메시지 개수
+      batch_bytes: 256KB # Micro-batching: 배치 바이트 크기
+      max_batch_wait_ms: 5 # Micro-batching: 최대 대기 시간
+
+  commit:
+    strategy: "on_complete" # "on_complete" | "periodic"
+```
+
+## 6. 관측성 (Observability) 설계: "진짜" Lag 측정하기
+
+### 6.1. 관측 철학
 병렬 처리 환경에서 Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)은 실제 지연 상태를 제대로 반영하지 못합니다. 우리가 진짜로 알아야 하는 것은 **"왜 커밋이 진행되지 않는가?"**와 **"어디가 병목인가?"** 입니다.
 
-### 5.2. 핵심 관측 지표
+### 6.2. 핵심 관측 지표
 - **`True Lag`**: `Log End Offset - Highest Contiguous Completed Offset (HWM)`. 실제로 아직 처리가 끝나지 않은 작업의 총량입니다. 이 지표가 증가하면 성능 저하, 정체되면 병목 발생을 의미합니다.
 - **`Gap`**: `Completed Offsets - Committable Offsets`. 처리는 완료되었지만 앞선 작업이 끝나지 않아 커밋되지 못하고 대기 중인 작업의 양입니다. `Gap`의 증가는 특정 키/파티션에서 병목이 발생하고 있음을 시사합니다.
 - **`Blocking Offset` & `Blocking Duration`**: HWM의 전진을 가로막고 있는 가장 낮은 오프셋과 그 지속 시간. 시스템 장애의 직접적인 원인을 가리킵니다.
+
+## 7. 테스트 전략 (TDD)
+
+### 7.1. 테스트 피라미드
+```mermaid
+graph TD
+    A["Unit Tests"] --> B["Contract Tests"]
+    B --> C["Integration Tests"]
+```
+
+### 7.2. 반드시 테스트해야 하는 항목 (레이어별)
+- **Control Plane Tests (최우선)**: TDD 1순위. Rebalance 중 In-Flight Offset 보호, Completion 순서와 Offset Commit 정합성, Epoch Mismatch 시 Completion 무시, Pause/Resume 트리거 조건 등을 `ExecutionEngine` Mock을 사용하여 테스트합니다.
+- **`ExecutionEngine` Contract Tests (공통)**: `AsyncExecutionEngine`과 `ProcessExecutionEngine` 모두 동일 테스트를 통과해야 합니다. Submit → Completion 도달, 실패 시 FAILURE 이벤트 발생, `in_flight` 정확성, Shutdown 후 Submit 불가 등을 검증합니다.
+
+### 7.3. TDD 실행 전략 (실제 순서)
+1.  **Phase 1 – Control Plane First (Mock Engine)**: `OffsetTracker`, `WorkManager`, Rebalance 로직 등 Control Plane 핵심 요소를 `Async`/`Process` 고려 없이 먼저 구현 및 테스트합니다.
+2.  **Phase 2 – Contract Test 정의**: `ExecutionEngine`에 대한 공통 Test Suite를 작성하여, 두 엔진이 동일한 계약을 준수하는지 확인하는 안전장치를 마련합니다.
+3.  **Phase 3 – `AsyncExecutionEngine` 구현**: Contract Test와 Async-specific 테스트(task cancellation, timeout, task leak)를 통과하도록 구현합니다.
+4.  **Phase 4 – `ProcessExecutionEngine` 구현**: 동일한 Contract Test와 Process-specific 테스트(worker crash, SIGTERM, pickle 불가 worker, 프로세스 누수)를 통과하도록 구현합니다.
+
+## 8. 작업 지시서 및 실행 계획
+
+### 8.1. 단계별 작업 (`Task Breakdown`)
+- **Phase 1 – Control Plane (난이도: ★★★)**: Kafka Consumer Wrapper, Offset Tracker 구현. (병렬 개발 불가: 단일 논리 흐름)
+- **Phase 2 – Execution Abstraction (난이도: ★★★★)**: `ExecutionEngine` 인터페이스 및 DTO 정의, 설정 기반 엔진 Factory 구현. (병렬 개발 가능: Async/Process 분리 가능)
+- **Phase 3 – `AsyncExecutionEngine` (난이도: ★★★)**: Task Pool, Completion Queue 구현. (병렬 개발 가능)
+- **Phase 4 – `ProcessExecutionEngine` (난이도: ★★★★★)**: Worker Wrapper, IPC Channel, Crash Handling 구현. (병렬 개발 시 IPC + Control 동시 수정 필요)
+
+### 8.2. 실행 계획 (`Execution Plan`)
+```mermaid
+gantt
+    title Parallel Consumer Execution Plan
+    dateFormat  YYYY-MM-DD
+
+    section Control Plane
+    Consumer Loop        :a1, 2026-02-01, 7d
+    Offset Tracker       :a2, after a1, 5d
+
+    section Execution Abstraction
+    Interface + DTO      :b1, after a1, 3d
+    Factory              :b2, after b1, 2d
+
+    section Async Engine
+    Task Pool            :c1, after b1, 4d
+    Completion Handling  :c2, after c1, 3d
+
+    section Process Engine
+    IPC Setup            :d1, after b1, 5d
+    Crash Handling       :d2, after d1, 4d
+```
+
+## 9. 릴리즈 체크리스트 및 최종 선언
+
+### 9.1. 릴리즈 체크리스트 (공존 기준)
+- **기능**: Async/Process 엔진 런타임 선택 가능, Control Plane에 조건 분기 없음, CompletionEvent 단일 계약 유지.
+- **안정성**: Rebalance 중 In-Flight 보호, Process Worker Crash 시 Consumer 중단 없음, Async Task 누수 없음.
+- **문서 / UX**: Worker 제약 명시, 설정 Validation 에러 메시지 명확, Example 제공 (Async/Process 각각).
+
+### 9.2. 최종 릴리즈 기준 (통합)
+- **공존 조건**: Async/Process 엔진이 동일 릴리즈에 포함되고, `ExecutionEngine` Contract Test 100% 통과, Control Plane 코드에 `mode` 분기가 없어야 합니다.
+- **안정성**: Worker Crash가 Consumer Crash로 이어지지 않으며, Rebalance 중 Offset 손실이 없어야 합니다.
+
+### 9.3. 최종 설계 선언 (Architectural Statement)
+> This system intentionally ships multiple execution models within the same release. Execution engines are runtime-selectable, but the control plane remains invariant. This design acknowledges Python’s execution constraints and provides explicit, safe boundaries instead of leaky abstractions.

@@ -108,10 +108,12 @@ class CompletionEvent:
 # --- Process Execution ---
 @dataclass(frozen=True)
 class ProcessTask:
-    payload: Any
-    tp: TopicPartition
-    offset: int
+    topic: str
+    partition: int
+    offsets: list[int]          # micro-batch offsets
+    payload: bytes              # orjson.dumps(batch)
     epoch: int
+    context: dict[str, str]     # tracing / logging
 
 # --- Offset/Metadata Management ---
 @dataclass(frozen=True)
@@ -157,6 +159,8 @@ class ExecutionEngine(ABC):
 - **실행 방식**: `multiprocessing.Process`를 사용하여 별도의 프로세스에서 워커를 실행합니다.
 - **IPC**: `multiprocessing.Queue` 두 개(task용, completion용)를 사용하여 Control Plane과 통신합니다.
 - **Worker 타입**: Pickle 가능한 `callable`이어야 하며, 전역 상태나 Kafka API에 의존해서는 안 됩니다.
+- **Micro-batching**: Pickle 비용 및 IPC 오버헤드를 줄이기 위해, Control Plane에서 Kafka 메시지를 마이크로 배치로 묶어 직렬화 후 워커 프로세스에 전달합니다. `ProcessExecutionEngine`은 CPU-bound 작업을 격리하는 데 중점을 둡니다.
+- **`contextvars` 전파**: `multiprocessing` 환경에서는 `contextvars`가 자연스럽게 전파되지 않습니다. `ProcessTask` DTO에 로깅이나 추적에 필요한 컨텍스트 정보를 명시적으로 포함하고, 워커 프로세스에서 이를 다시 `contextvars`로 복원하여 일관된 로깅/추적 경험을 제공합니다.
 - **에러 처리**: 워커 내부의 모든 예외는 `try/except`로 잡아 `CompletionStatus.FAILURE` 이벤트로 변환하여 전달합니다. 워커 프로세스의 비정상 종료(crash) 또한 감지하여 실패 이벤트로 처리합니다.
 - **워커 래퍼 (`worker_loop`)**: 프로세스 내에서 실행되며, task 큐를 감시하다 작업을 받아 사용자 워커를 실행하고, 그 결과를 completion 큐에 넣는 역할을 합니다.
 - **Shutdown**: `task_queue`에 Sentinel(`None`)을 넣어 워커 프로세스들의 정상 종료를 유도하고, `process.join()`으로 모든 자식 프로세스가 끝날 때까지 대기합니다.
@@ -194,14 +198,14 @@ class ExecutionEngine(ABC):
     - **방어 로직**: 작업 완료(`on_completion`) 시, 돌아온 이벤트의 `epoch`과 현재 파티션의 `epoch`을 비교합니다. 일치하지 않으면, 그 작업은 이전 세대의 "좀비" 작업으로 간주하고 결과를 즉시 폐기합니다.
 - **리밸런스 콜백**:
     - `on_partitions_assigned`: 파티션에 대한 새 `epoch`을 생성하고, 이전 세션에서 남긴 Metadata를 읽어 `OffsetTracker` 상태를 복원(Hydration)한 후 처리를 시작합니다.
-    - `on_partitions_revoked`: 진행 중인 작업 제출을 멈추고, 현재까지 완료된 작업에 대해 마지막으로 동기 커밋(Final Graceful Commit)을 시도하여 상태를 최대한 보존합니다.
+    - `on_partitions_revoked`: 진행 중인 작업 제출을 멈추고, 현재까지 완료된 작업에 대해 마지막으로 동기 커밋(Final Graceful Commit)을 시도하여 상태를 최대한 보존합니다. 이때, Kafka의 리밸런스 타임아웃 제약으로 인해 "정확성(Correctness)보다 생존성(Liveness)"을 우선하여, 설정된 시간(`max_revoke_grace_ms`) 내에 커밋이 완료되지 않으면 일부 미완료 오프셋에 대한 커밋을 포기할 수 있습니다.
 
 #### 3.3.5. Backpressure (Pause/Resume)
 - **책임**: 시스템이 처리 능력을 초과하는 메시지를 받아들여 붕괴하는 것을 막는 안정성 장치입니다.
 - **제어 로직 (Hysteresis 적용)**:
     - **부하 지표 (`Load`)**: `in_flight_tasks + queued_tasks`
     - **Pause 조건**: `Load >= max_in_flight * 1.0` 일 때, `consumer.pause()`를 호출하여 더 이상 메시지를 가져오지 않습니다.
-    - **Resume 조건**: `Load <= max_in_flight * 0.7` 일 때, `consumer.resume()`을 호출하여 다시 메시지를 가져옵니다.
+    - **Resume 조건**: `Load <= Resume_Threshold * 0.7` 일 때, `consumer.resume()`을 호출하여 다시 메시지를 가져옵니다.
     - 임계값을 두 개로 나누어, Pause와 Resume이 짧은 주기로 반복(chattering)되는 것을 방지합니다.
 
 ## 4. 설정 (Configuration)
@@ -213,6 +217,7 @@ parallel_consumer:
   execution:
     mode: "process"  # "async" | "process"
     max_in_flight: 1000
+    max_revoke_grace_ms: 500 # Rebalance graceful shutdown deadline
 
     async:
       task_timeout_ms: 30000
@@ -221,6 +226,9 @@ parallel_consumer:
       process_count: 8 # os.cpu_count() or similar default
       queue_size: 2048
       require_picklable_worker: true
+      batch_size: 64 # Micro-batching: 메시지 개수
+      batch_bytes: 256KB # Micro-batching: 배치 바이트 크기
+      max_batch_wait_ms: 5 # Micro-batching: 최대 대기 시간
 
   commit:
     strategy: "on_complete" # "on_complete" | "periodic"
@@ -294,3 +302,17 @@ graph TD
     IPC Setup            :d1, after b1, 5d
     Crash Handling       :d2, after d1, 4d
 ```
+
+## 8. 릴리즈 체크리스트 및 최종 선언
+
+### 8.1. 릴리즈 체크리스트 (공존 기준)
+- **기능**: Async/Process 엔진 런타임 선택 가능, Control Plane에 조건 분기 없음, CompletionEvent 단일 계약 유지.
+- **안정성**: Rebalance 중 In-Flight 보호, Process Worker Crash 시 Consumer 중단 없음, Async Task 누수 없음.
+- **문서 / UX**: Worker 제약 명시, 설정 Validation 에러 메시지 명확, Example 제공 (Async/Process 각각).
+
+### 8.2. 최종 릴리즈 기준 (통합)
+- **공존 조건**: Async/Process 엔진이 동일 릴리즈에 포함되고, `ExecutionEngine` Contract Test 100% 통과, Control Plane 코드에 `mode` 분기가 없어야 합니다.
+- **안정성**: Worker Crash가 Consumer Crash로 이어지지 않으며, Rebalance 중 Offset 손실이 없어야 합니다.
+
+### 8.3. 최종 설계 선언 (Architectural Statement)
+> This system intentionally ships multiple execution models within the same release. Execution engines are runtime-selectable, but the control plane remains invariant. This design acknowledges Python’s execution constraints and provides explicit, safe boundaries instead of leaky abstractions.
