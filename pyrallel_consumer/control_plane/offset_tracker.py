@@ -15,6 +15,7 @@ class OffsetTracker:
         completed_offsets (SortedSet[int]): 완료된 오프셋들의 정렬된 집합
         in_flight_offsets (Set[int]): 현재 처리 중인 오프셋들의 집합
         last_fetched_offset (int): 마지막으로 가져온 오프셋
+        epoch (int): 현재 파티션 소유권의 세대 번호
     """
 
     def __init__(
@@ -38,6 +39,19 @@ class OffsetTracker:
         self.last_fetched_offset = starting_offset - 1
         self.max_revoke_grace_ms = max_revoke_grace_ms
         self.epoch = 0  # Initial epoch
+
+    def increment_epoch(self) -> None:
+        """현재 epoch을 1 증가시킵니다."""
+        self.epoch += 1
+
+    def get_current_epoch(self) -> int:
+        """현재 epoch을 반환합니다."""
+        return self.epoch
+
+    @property
+    def in_flight_count(self) -> int:
+        """현재 처리 중인 메시지 수를 반환합니다."""
+        return len(self.in_flight_offsets)
 
     def mark_complete(self, offset: int):
         """
