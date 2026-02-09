@@ -58,6 +58,14 @@ class CompletionEvent:
 class WorkItem:
     """
     WorkManager에서 관리하는 단일 작업 항목입니다.
+
+    Attributes:
+        id (str): 작업 항목의 고유 ID
+        tp (TopicPartition): 토픽 파티션 정보
+        offset (int): 작업 항목의 오프셋
+        epoch (int): 처리 에포크(작업 항목이 속한 시점의 파티션 소유권 세대 번호)
+        key (Any): 가상 파티셔닝을 위한 메시지 키
+        payload (Any): 실제 메시지 페이로드
     """
 
     id: str
@@ -104,3 +112,16 @@ class OffsetRange:
 
     start: int
     end: int
+
+
+@dataclass(frozen=True)
+class EngineMetrics:
+    """
+    ExecutionEngine에서 노출하는 메트릭에 대한 정보입니다.
+
+    Attributes:
+        in_flight_count (int): 현재 처리 중인 메시지 수
+    """
+
+    in_flight_count: int
+    # Potentially other metrics like queue_sizes, error_rates, etc.
