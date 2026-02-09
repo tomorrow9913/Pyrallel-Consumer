@@ -1,5 +1,5 @@
 import socket
-from typing import Any, List, Literal  # Import Any
+from typing import Any, List, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -65,3 +65,33 @@ class KafkaConfig(BaseSettings):
             for k, v in self.model_extra.items():
                 conf[k.replace("_", ".").lower()] = v
         return conf
+
+
+class AsyncConfig(BaseSettings):
+    task_timeout_ms: int = 30000
+
+
+class ProcessConfig(BaseSettings):
+    process_count: int = 8
+    queue_size: int = 2048
+    require_picklable_worker: bool = True
+    batch_size: int = 64
+    batch_bytes: str = "256KB"
+    max_batch_wait_ms: int = 5
+
+
+class ExecutionConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="EXECUTION_",  # Prefix for environment variables
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+    mode: Literal["async", "process"] = "process"
+    max_in_flight: int = 1000
+    max_revoke_grace_ms: int = 500
+
+    # Nested configurations
+    async_config: AsyncConfig = AsyncConfig()
+    process_config: ProcessConfig = ProcessConfig()
