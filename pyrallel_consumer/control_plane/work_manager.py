@@ -60,7 +60,7 @@ class WorkManager:
         실제 ExecutionEngine으로의 제출은 _try_submit_to_execution_engine에서 담당합니다.
         """
         if tp not in self._virtual_partition_queues:
-            raise ValueError(f"TopicPartition {tp} is not assigned to WorkManager.")
+            raise ValueError("TopicPartition %s is not assigned to WorkManager." % tp)
 
         # Get or create the virtual partition queue for this key
         if key not in self._virtual_partition_queues[tp]:
@@ -77,33 +77,93 @@ class WorkManager:
         self._in_flight_work_items[work_item_id] = work_item  # Track all work items
 
         # Attempt to submit to the execution engine
-        await self._try_submit_to_execution_engine()
+        # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
 
     async def _try_submit_to_execution_engine(self):
         """
         현재 대기 중인 WorkItem을 ExecutionEngine으로 제출할 수 있는지 확인하고 제출합니다.
-        가장 먼저 들어온 메시지부터 처리하는 간단한 스케줄링 정책을 사용합니다.
-        나중에 Blocking Offset을 고려한 스케줄링 로직이 추가될 예정입니다.
+        "Lowest blocking offset 우선" 스케줄링 정책을 사용합니다.
         """
         if self._current_in_flight_count >= self._max_in_flight_messages:
             return
 
+        blocking_offsets = self.get_blocking_offsets()
+
+        # Variables to store the *best* candidate found after scanning all queues
+        best_candidate_item: Optional[WorkItem] = None
+        best_candidate_queue: Optional[asyncio.Queue[WorkItem]] = None
+
+        current_lowest_blocking_offset: Optional[int] = (
+            None  # Tracks the offset of the best blocking candidate found so far
+        )
+
+        # In a single pass, find the lowest blocking item OR the first non-blocking item if no blocking items are found
+        first_non_blocking_item_seen: Optional[WorkItem] = None
+        first_non_blocking_queue_seen: Optional[asyncio.Queue[WorkItem]] = None
+
         for tp, virtual_partition_queues in self._virtual_partition_queues.items():
             for key, queue in virtual_partition_queues.items():
-                if not queue.empty():
-                    work_item = await queue.get()
-                    try:
-                        await self._execution_engine.submit(work_item)
-                        self._current_in_flight_count += 1
-                        # Since we submitted one, we should try to submit more if capacity allows
-                        await self._try_submit_to_execution_engine()
-                        return
-                    except Exception as e:
-                        # Log error and potentially re-queue or handle the work_item
-                        print(f"Error submitting work item {work_item.id}: {e}")
-                        # For now, put it back to the queue.
-                        await queue.put(work_item)
-                        return
+                if queue.empty():
+                    continue
+
+                # Simulate peek: get and put back immediately
+                try:
+                    peek_item = await queue.get()
+                    await queue.put(peek_item)
+
+                # Should not happen given the queue.empty() check, but for robustness
+                except asyncio.QueueEmpty:
+                    continue
+
+                is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
+                is_target_blocking_offset = (
+                    is_blocking_for_this_tp
+                    and peek_item.offset == blocking_offsets[tp].start
+                )
+
+                if is_target_blocking_offset:
+                    if (
+                        current_lowest_blocking_offset is None
+                        or peek_item.offset < current_lowest_blocking_offset
+                    ):
+                        best_candidate_item = peek_item
+                        best_candidate_queue = queue
+                        current_lowest_blocking_offset = peek_item.offset
+                # Only capture the first non-blocking item seen IF we haven't found any blocking candidates YET.
+                # This ensures that if a blocking item is later found, it takes precedence.
+                elif (
+                    best_candidate_item is None and first_non_blocking_item_seen is None
+                ):
+                    first_non_blocking_item_seen = peek_item
+                    first_non_blocking_queue_seen = queue
+
+        # Now, actually dequeue and submit the selected item
+        item_to_submit: Optional[WorkItem] = None
+        queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
+
+        if (
+            best_candidate_item and best_candidate_queue
+        ):  # A blocking item was found and selected
+            item_to_submit = await best_candidate_queue.get()
+            queue_to_dequeue_from = best_candidate_queue
+        elif (
+            first_non_blocking_item_seen and first_non_blocking_queue_seen
+        ):  # No blocking item, fall back to first non-blocking
+            item_to_submit = await first_non_blocking_queue_seen.get()
+            queue_to_dequeue_from = first_non_blocking_queue_seen
+
+        if item_to_submit:
+            try:
+                await self._execution_engine.submit(item_to_submit)
+                self._current_in_flight_count += 1
+                await self._try_submit_to_execution_engine()  # Try to submit more
+            except Exception as e:
+                print("Error submitting work item %s: %s" % (item_to_submit.id, e))
+                if queue_to_dequeue_from:
+                    await queue_to_dequeue_from.put(
+                        item_to_submit
+                    )  # Re-queue on failure
+        # Else: No item to submit, do nothing.
 
     async def poll_completed_events(self) -> List[CompletionEvent]:
         """
@@ -136,7 +196,8 @@ class WorkManager:
                 # Log a warning if the topic-partition is not managed
                 # This could happen if a revoke happened between submission and completion
                 print(
-                    f"Warning: Completion event for unmanaged TopicPartition {event.tp}"
+                    "Warning: Completion event for unmanaged TopicPartition %s"
+                    % event.tp
                 )
         return completed_events
 
