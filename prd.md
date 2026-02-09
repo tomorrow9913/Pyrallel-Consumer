@@ -129,6 +129,32 @@ class OffsetRange:
     end: int
 ```
 
+## 4. Control Plane과 Execution Plane의 계약: 핵심 원칙
+
+`Control Plane`과 `Execution Plane` 사이의 상호작용은 시스템의 안정성과 예측 가능성에 매우 중요합니다. 이 둘의 계약을 명확히 하고, 잠재적인 위험을 회피하기 위해 다음과 같은 핵심 원칙을 반드시 준수해야 합니다.
+
+### 4.1. `ExecutionEngine.submit()`의 Blocking 특성
+- **원칙**: `ExecutionEngine.submit()`은 내부적으로 용량 제한(Semaphore 등)에 도달할 경우 호출자를 블록(block)시킬 수 있습니다.
+- **이유**: `ExecutionEngine`은 자체적인 용량 한계를 가지고 있으며, 이를 초과하는 작업 요청이 들어올 경우 시스템을 보호하기 위해 Backpressure를 적용해야 합니다. `submit()`을 즉시 반환시키지 않고 `await` 가능하게 함으로써, 엔진이 내부적으로 준비될 때까지 호출자를 안전하게 대기시키는 것입니다.
+- **위험 시나리오**: 만약 이 메서드가 `WorkManager`와 같은 상위 레이어의 용량 확인(capacity checks) 없이 **제어 루프(control-loop critical path)에서 직접 호출되면**, `submit()`이 블록될 때 전체 제어 로직(리밸런싱, 오프셋 커밋 등)이 멈출 수 있습니다. 이는 시스템 전체의 반응성을 심각하게 저해하는 설계 결함으로 이어집니다.
+- **설계 문서화**: `ExecutionEngine.submit()` may block and must never be called from a control-loop critical path without prior capacity checks by WorkManager.
+
+### 4.2. `max_in_flight` 설정의 이중적 의미
+- **원칙**: 시스템 전체의 동시 처리량을 제어하는 `max_in_flight_messages`(Control Plane)와 각 `ExecutionEngine`의 내부 용량을 제한하는 `max_concurrent_tasks`(Engine)는 명확히 분리되어야 합니다.
+- **이유**: Control Plane은 전체 시스템의 부하를 관리하고 Kafka Consumer의 `pause/resume`을 결정하는 역할을 합니다. 반면, 각 `ExecutionEngine`은 자체적으로 감당할 수 있는 동시 작업의 한계(예: CPU 코어 수, 메모리 등)가 있습니다. 이 두 제한은 서로 다른 목적을 가집니다.
+- **설계 문서화**: 설정 스키마에서 이 둘을 명확히 구분하여, 사용자가 두 계층의 용량 제한을 독립적으로 튜닝할 수 있도록 해야 합니다.
+  ```yaml
+  execution:
+    max_in_flight_messages: 10000   # Control Plane 기준 전체 동시 처리량
+    async:
+      max_concurrent_tasks: 500     # AsyncEngine 내부의 동시 태스크 수 제한
+  ```
+
+### 4.3. `get_in_flight_count()`의 올바른 사용법
+- **원칙**: `ExecutionEngine`의 `get_in_flight_count()` 메서드는 엔진의 내부 상태를 모니터링하기 위한 **참고용(metrics/debug)** 카운터이며, Control Plane의 의사결정에 사용되어서는 안 됩니다.
+- **이유**: Control Plane이 `ExecutionEngine`의 내부 카운터에 직접 의존하면 두 레이어 간의 결합도가 높아져(tightly coupled) 유지보수성이 저하됩니다. 또한, `get_in_flight_count()`가 반환하는 값은 호출 시점의 스냅샷일 뿐이며, Control Plane이 이 값을 기반으로 스케줄링을 결정하는 사이 `ExecutionEngine`의 상태는 이미 변경될 수 있어 Race Condition을 유발할 수 있습니다.
+- **설계 문서화**: `Contract Test`에 "Control Plane must not rely on engine internal counters for its scheduling decisions."와 같은 원칙을 명시하고, 이를 강제하는 테스트 케이스를 추가하는 것이 바람직합니다.
+
 ## 4. Control Plane 상세 설계
 
 ### 4.1. `OffsetTracker`: 오프셋 관리 상태 머신

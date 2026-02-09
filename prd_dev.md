@@ -127,6 +127,8 @@ class OffsetRange:
 #### 3.2.1. `ExecutionEngine` 인터페이스
 모든 실행 엔진이 따라야 하는 계약입니다.
 
+> **[⚠️ 경고]** `ExecutionEngine.submit()`은 내부 용량에 따라 블록될 수 있으므로, 제어 루프의 critical path에서 직접 호출해서는 안 됩니다. `WorkManager`가 용량 확인 후 호출해야 합니다.
+
 ```python
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
@@ -142,6 +144,7 @@ class ExecutionEngine(ABC):
 
     @abstractmethod
     def in_flight(self) -> int:
+        # 참고용(metrics/debug) 카운터로만 사용해야 하며, Control Plane의 의사결정에 사용 금지
         ...
 
     @abstractmethod
@@ -216,14 +219,15 @@ class ExecutionEngine(ABC):
 parallel_consumer:
   execution:
     mode: "process"  # "async" | "process"
-    max_in_flight: 1000
+    max_in_flight_messages: 10000   # Control Plane 기준 전체 동시 처리량
     max_revoke_grace_ms: 500 # Rebalance graceful shutdown deadline
 
     async:
+      max_concurrent_tasks: 500     # Engine 내부 안전장치 (Semaphore)
       task_timeout_ms: 30000
 
     process:
-      process_count: 8 # os.cpu_count() or similar default
+      process_count: 8 # os.cpu_count() 또는 유사한 기본값
       queue_size: 2048
       require_picklable_worker: true
       batch_size: 64 # Micro-batching: 메시지 개수
@@ -234,6 +238,7 @@ parallel_consumer:
     strategy: "on_complete" # "on_complete" | "periodic"
 ```
 - `execution.mode`가 `"process"`일 때 워커가 코루틴이면 설정 오류를 발생시켜야 합니다.
+- `max_in_flight_messages`는 `WorkManager`가 제어하는 시스템 전체의 동시성 한도이며, `async.max_concurrent_tasks`는 `AsyncExecutionEngine`의 내부 동시성 제한입니다.
 
 ## 5. 관측성 (Observability)
 
@@ -262,7 +267,7 @@ graph TD
 ### 6.2. 핵심 테스트 항목
 
 - **Control Plane (Mock Engine 사용)**: TDD 최우선 순위. 리밸런싱 중 오프셋 보존, Epoch 불일치 시 완료 이벤트 무시, Pause/Resume 조건 등을 테스트합니다.
-- **ExecutionEngine Contract Tests**: `AsyncExecutionEngine`과 `ProcessExecutionEngine`이 모두 통과해야 하는 공통 테스트 스위트. `submit` -> `completion` 보장, 실패 이벤트 생성, `in_flight` 카운트 정확성 등을 검증하여 두 엔진의 교체 가능성을 보장합니다.
+- **ExecutionEngine Contract Tests**: `AsyncExecutionEngine`과 `ProcessExecutionEngine`이 모두 통과해야 하는 공통 테스트 스위트. `submit` -> `completion` 보장, 실패 이벤트 생성, `in_flight` 카운트 정확성 등을 검증하여 두 엔진의 교체 가능성을 보장합니다. **Control Plane이 `in_flight` 카운터에 의존하지 않고 독립적으로 동작하는지도 검증해야 합니다.**
 - **Async/Process Engine-Specific Tests**:
     - **Async**: Task 취소, 타임아웃, 태스크 누수 없음.
     - **Process**: 워커 프로세스 Crash, SIGKILL 시그널, Pickle 불가 워커 전달 시 즉각 에러, 프로세스 누수 없음.
