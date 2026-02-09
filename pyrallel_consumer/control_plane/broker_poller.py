@@ -8,12 +8,18 @@ from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
+
 # Local imports aligned with project structure and prod.md's intent
 from ..config import KafkaConfig  # Adjusted import
-from ..dto import TopicPartition as DtoTopicPartition
+from ..dto import CompletionStatus
+from ..dto import (
+    TopicPartition as DtoTopicPartition,  # Added CompletionEvent, CompletionStatus
+)
 from ..logger import LogManager  # Adjusted import
-from ..worker import batch_deserialize  # Adjusted import
+from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker  # Adjusted import
+from .work_manager import WorkManager
 
 logger = LogManager.get_logger(__name__)
 
@@ -46,6 +52,7 @@ class BrokerPoller:  # Renamed class
         consume_topic: str,
         kafka_config: KafkaConfig,
         message_processor: MessageProcessor,
+        execution_engine: BaseExecutionEngine,  # Added parameter
     ) -> None:
         # 해당 변수들은 동작 확인 이후 configurations로 이동 필요.
         self.TIME_OUT_SEC = 1
@@ -57,6 +64,7 @@ class BrokerPoller:  # Renamed class
 
         self._kafka_config = kafka_config
         self._message_processor = message_processor
+        self._execution_engine = execution_engine  # Stored in instance variable
 
         self.producer: Producer | None = None
         self.consumer: Consumer | None = None
@@ -70,6 +78,10 @@ class BrokerPoller:  # Renamed class
 
         # OffsetTracker instances per TopicPartition
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
+        self._metadata_encoder = MetadataEncoder()
+        self._work_manager = WorkManager(
+            execution_engine=self._execution_engine
+        )  # Pass execution_engine
 
         # 역직렬화 및 워커 풀
         self._deserialization_thread_pool = ThreadPoolExecutor(
@@ -117,8 +129,8 @@ class BrokerPoller:  # Renamed class
         ), "Consumer must be initialized for backpressure checks."
 
         # Need to sum in-flight messages from all offset trackers
-        total_in_flight = sum(
-            ot.in_flight_count for ot in self._offset_trackers.values()
+        total_in_flight = (
+            self._work_manager.get_total_in_flight_count()
         )  # Assuming OffsetTracker has in_flight_count property
         total_queued = await self._get_total_queued_messages()
         current_load = total_in_flight + total_queued
@@ -172,14 +184,12 @@ class BrokerPoller:  # Renamed class
                 if not messages:
                     continue
 
-                active_tps: Dict[DtoTopicPartition, int] = {}
-                # 1. 오프셋 추적 시작 및 배치 분배 준비
+                # 1. 메시지 소비 및 WorkManager에 제출
                 for msg in messages:
                     if msg.error():
                         logger.warning(f"Consumed message with error: {msg.error()}")
                         continue
 
-                    # Store results of method calls in variables and assert on them
                     tp = DtoTopicPartition(msg.topic(), msg.partition())
                     offset_val = msg.offset()
 
@@ -193,140 +203,82 @@ class BrokerPoller:  # Renamed class
                         )
                         continue
 
-                    # Pass epoch along with the offset tracking
+                    # Submit message to WorkManager
                     offset_tracker = self._offset_trackers[tp]
+                    await self._work_manager.submit_message(
+                        tp=tp,
+                        offset=offset_val,
+                        epoch=offset_tracker.get_current_epoch(),
+                        key=msg.key(),
+                        payload=msg.value(),
+                    )
                     offset_tracker.in_flight_offsets.add(offset_val)  # Track in-flight
                     offset_tracker.update_last_fetched_offset(offset_val)
 
-                    active_tps[tp] = max(active_tps.get(tp, -1), offset_val)
-
-                # 2. 가상 파티션으로 배치 분배
-                virtual_partitions: list[list[Message]] = [
-                    [] for _ in range(self.WORKER_POOL_SIZE)
-                ]
-                for msg in messages:
-                    if msg.error():
-                        continue
-                    # Partition ID is guaranteed to be int here by previous asserts
-                    p_idx = self._get_partition_index(msg)
-                    virtual_partitions[p_idx].append(msg)
-
-                # 3. 배치 병렬 처리 (need to pass epoch here)
-                tasks = []
-                for p_msgs in virtual_partitions:
-                    if p_msgs:
-                        # Assuming all messages in p_msgs belong to the same topic-partition and thus same epoch
-                        # This assumption needs to be carefully managed if key hashing distributes messages across TPs
-                        # For now, let's just get the TP from the first message
-                        first_msg = p_msgs[0]
-                        tp = DtoTopicPartition(first_msg.topic(), first_msg.partition())
-                        if tp in self._offset_trackers:
-                            # epoch = self._offset_trackers[tp].epoch # Will add epoch to OffsetTracker
-                            # tasks.append(asyncio.create_task(
-                            #     self._process_virtual_partition_batch(
-                            #         self._consume_topic, p_msgs, epoch # Pass epoch
-                            #     )
-                            # ))
-                            tasks.append(
-                                asyncio.create_task(
-                                    self._process_virtual_partition_batch(
-                                        self._consume_topic, p_msgs
+                # 2. WorkManager로부터 완료 이벤트 폴링 및 OffsetTracker 업데이트
+                completed_events = await self._work_manager.poll_completed_events()
+                if completed_events:
+                    for event in completed_events:
+                        if event.tp in self._offset_trackers:
+                            offset_tracker = self._offset_trackers[event.tp]
+                            if (
+                                event.epoch == offset_tracker.get_current_epoch()
+                            ):  # Epoch Fencing
+                                offset_tracker.mark_complete(event.offset)
+                                if event.status == CompletionStatus.FAILURE:  # Fixed
+                                    logger.error(
+                                        f"Message processing failed for {event.tp}@{event.offset}: {event.error}"
                                     )
+                                # Remove from in-flight only if it was successfully marked complete
+                                if event.offset in offset_tracker.in_flight_offsets:
+                                    offset_tracker.in_flight_offsets.remove(
+                                        event.offset
+                                    )
+                            else:
+                                logger.warning(
+                                    f"Discarding zombie completion event for {event.tp}@{event.offset} (Epoch mismatch: {event.epoch} vs {offset_tracker.get_current_epoch()})"
                                 )
+                        else:
+                            logger.warning(
+                                f"Received completion event for untracked partition {event.tp}. Skipping."
                             )
 
-                if tasks:
-                    await asyncio.gather(*tasks)
+                # 3. 안전한 오프셋 계산 및 커밋
+                # This logic is mostly the same as before, but now driven by completed events from WorkManager
+                # and needs to iterate over all active offset trackers.
+                tps_to_commit = {}
+                for tp, offset_tracker in self._offset_trackers.items():
+                    offset_tracker.advance_high_water_mark()
+                    safe_offset_to_commit = offset_tracker.last_committed_offset
+                    if safe_offset_to_commit >= 0:
+                        tps_to_commit[tp] = safe_offset_to_commit
 
-                # 4. 안전한 오프셋 계산 및 커밋
-                if active_tps:
-                    for tp, last_offset in active_tps.items():
-                        offset_tracker = self._offset_trackers[tp]
-                        offset_tracker.advance_high_water_mark()  # Advance HWM after processing
-
-                        safe_offset_to_commit = offset_tracker.last_committed_offset
-
-                        if safe_offset_to_commit >= 0:  # Only commit if valid offset
-                            # TODO: Get metadata from MetadataEncoder
-                            # commit_metadata = self._metadata_encoder.encode_metadata(offset_tracker.completed_offsets, safe_offset_to_commit)
-
-                            logger.info(
-                                f"Committing offset for {tp.topic}-{tp.partition}@{safe_offset_to_commit}"
-                            )
-                            # For now, without metadata, just commit the offset
-                            await asyncio.to_thread(
-                                self.consumer.commit,
-                                offsets=[
-                                    KafkaTopicPartition(
-                                        tp.topic,
-                                        tp.partition,
-                                        safe_offset_to_commit + 1,
-                                    )
-                                ],  # Kafka commits next expected offset
-                                asynchronous=False,
-                            )
+                if tps_to_commit:
+                    for tp, safe_offset in tps_to_commit.items():
+                        # TODO: Get metadata from MetadataEncoder - currently in _on_revoke
+                        # commit_metadata = self._metadata_encoder.encode_metadata(self._offset_trackers[tp].completed_offsets, safe_offset)
+                        commit_metadata = ""  # Placeholder for now
+                        logger.info(
+                            f"Committing offset for {tp.topic}-{tp.partition}@{safe_offset} with metadata: {commit_metadata}"
+                        )
+                        await asyncio.to_thread(
+                            self.consumer.commit,
+                            offsets=[
+                                KafkaTopicPartition(
+                                    tp.topic,
+                                    tp.partition,
+                                    safe_offset + 1,
+                                )
+                            ],  # Kafka commits next expected offset
+                            asynchronous=False,
+                            metadata=commit_metadata,
+                        )
 
         except Exception as e:
             logger.error(f"Consumer loop error: {e}", exc_info=True)
         finally:
             await self._cleanup()
             self._shutdown_event.set()
-
-    async def _process_virtual_partition_batch(
-        self,
-        topic: str,
-        messages: list[Message],  # , epoch: int # Will add epoch here
-    ) -> None:
-        """
-        가상 파티션의 메시지 배치를 처리합니다.
-
-        Args:
-            topic (str): 메시지가 속한 토픽 이름
-            messages (list[Message]): 처리할 메시지 배치
-            epoch (int): 현재 파티션 소유권의 세대 번호
-        Returns:
-            None
-        Raises:
-            Exception: 배치 처리 중 발생하는 모든 예외
-        """
-        try:
-            loop = asyncio.get_event_loop()
-            success_batch, failed_batch = await loop.run_in_executor(
-                self._deserialization_thread_pool, batch_deserialize, messages
-            )
-
-            if failed_batch:
-                for raw_msg, error in failed_batch:
-                    logger.error(f"Deserialization failed. Error: {error}")
-
-            if success_batch:
-                await self._message_processor(topic, success_batch)
-
-        except Exception as e:
-            logger.error(
-                f"Batch processing failed for topic {topic}: {e}", exc_info=True
-            )
-        finally:
-            # 성공/실패 여부와 관계없이 작업이 끝난 메시지의 오프셋을 트래커에서 제거
-            for msg in messages:
-                # Assert partition and offset are not None as this is for messages that were processed
-                tp = DtoTopicPartition(msg.topic(), msg.partition())
-                offset_val = msg.offset()
-                assert (
-                    offset_val is not None
-                ), "Message offset cannot be None for a processed message."
-
-                if tp in self._offset_trackers:
-                    offset_tracker = self._offset_trackers[tp]
-                    # if epoch == offset_tracker.epoch: # Epoch Fencing check
-                    offset_tracker.mark_complete(
-                        offset_val
-                    )  # Mark complete for specific offset
-                    offset_tracker.in_flight_offsets.remove(
-                        offset_val
-                    )  # Remove from in-flight
-                    # else:
-                    # logger.warning(f"Discarding zombie message for {tp}@{offset_val} (Epoch mismatch: {epoch} vs {offset_tracker.epoch})")
 
     def _delivery_report(self, err: KafkaException | None, msg: Message) -> None:
         """
@@ -391,7 +343,7 @@ class BrokerPoller:  # Renamed class
 
         Args:
             consumer (Consumer): Kafka 컨슈머 인스턴스
-            partitions (list[TopicPartition]): 리보크된 파티션 목록
+            partitions (list[KafkaTopicPartition]): 리보크된 파티션 목록
         Returns:
             None
         Raises:
@@ -412,13 +364,27 @@ class BrokerPoller:  # Renamed class
                 safe_offset_to_commit = offset_tracker.last_committed_offset
 
                 if safe_offset_to_commit >= 0:
+                    commit_metadata = self._metadata_encoder.encode_metadata(
+                        offset_tracker.completed_offsets, safe_offset_to_commit
+                    )
                     logger.info(
-                        f"Final graceful commit for revoked {tp_dto.topic}-{tp_dto.partition}@{safe_offset_to_commit}"
+                        f"Final graceful commit for revoked {tp_dto.topic}-{tp_dto.partition}@{safe_offset_to_commit} with metadata: {commit_metadata}"
                     )
                     # In a real scenario, this would be a synchronous commit to ensure it goes through
                     # For now, we're just logging and removing the tracker
                     # TODO: Implement actual graceful commit with timeout
-                    # self.consumer.commit(offsets=[KafkaTopicPartition(tp.topic, tp.partition, safe_offset_to_commit + 1)], asynchronous=False)
+                    if self.consumer:  # Ensure consumer is not None before committing
+                        self.consumer.commit(
+                            offsets=[
+                                KafkaTopicPartition(
+                                    tp_dto.topic,
+                                    tp_dto.partition,
+                                    safe_offset_to_commit + 1,
+                                )
+                            ],
+                            asynchronous=False,
+                            metadata=commit_metadata,
+                        )
 
                 # Invalidate the epoch for this partition (or simply remove the tracker)
                 del self._offset_trackers[tp_dto]

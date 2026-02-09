@@ -9,6 +9,7 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller, MessageProcessor
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
 
 
 @pytest.fixture
@@ -23,6 +24,11 @@ def mock_kafka_config():
 @pytest.fixture
 def mock_message_processor():
     return AsyncMock(spec=MessageProcessor)
+
+
+@pytest.fixture
+def mock_execution_engine():  # Added fixture
+    return AsyncMock(spec=BaseExecutionEngine)
 
 
 @pytest.fixture
@@ -62,11 +68,14 @@ def mock_offset_tracker_factory():
 
 
 @pytest.fixture
-def broker_poller(mock_kafka_config, mock_message_processor):
+def broker_poller(
+    mock_kafka_config, mock_message_processor, mock_execution_engine
+):  # Modified fixture
     poller = BrokerPoller(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         message_processor=mock_message_processor,
+        execution_engine=mock_execution_engine,  # Passed to BrokerPoller
     )
     # Patch Kafka client objects
     poller.producer = AsyncMock()  # producer should also be async mock for flush
@@ -109,6 +118,7 @@ async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
         )
         tracker.last_committed_offset = 50  # Simulate some progress
         tracker.in_flight_count = 5  # Simulate in-flight messages
+        tracker.completed_offsets = {51, 52}  # Simulate some completed offsets
         tracker.advance_high_water_mark.return_value = None  # Mock this method
         broker_poller._offset_trackers[tp] = tracker
 

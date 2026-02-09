@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 # --- Completion ---
@@ -37,6 +37,7 @@ class CompletionEvent:
     완료 이벤트에 대한 정보입니다
 
     Attributes:
+        id (str): 완료된 작업 항목의 고유 ID
         tp (TopicPartition): 토픽 파티션 정보
         offset (int): 완료된 오프셋
         epoch (int): 처리 에포크
@@ -44,11 +45,27 @@ class CompletionEvent:
         error (Optional[str]): 오류 메시지 (실패 시)
     """
 
+    id: str
+
     tp: TopicPartition
     offset: int
     epoch: int
     status: CompletionStatus
     error: Optional[str]
+
+
+@dataclass(frozen=True)
+class WorkItem:
+    """
+    WorkManager에서 관리하는 단일 작업 항목입니다.
+    """
+
+    id: str
+    tp: TopicPartition
+    offset: int
+    epoch: int
+    key: Any  # Message key for virtual partitioning
+    payload: Any  # The actual message payload
 
 
 # --- Process Execution ---
