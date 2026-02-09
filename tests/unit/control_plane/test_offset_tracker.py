@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
@@ -148,3 +150,51 @@ def test_get_gaps_complex_scenario_with_trailing_gap(offset_tracker):
     assert gaps[2] == OffsetRange(
         start=5, end=10
     )  # Trailing gap after 4 to last fetched
+
+
+def test_get_blocking_offset_durations(offset_tracker):
+    with patch("time.time") as mock_time:
+        # Initial state: no gaps
+        mock_time.return_value = 1000.0
+        offset_tracker.update_last_fetched_offset(5)
+        offset_tracker.mark_complete(0)
+        offset_tracker.mark_complete(2)
+        offset_tracker.advance_high_water_mark()  # last committed is 0
+
+        # First call to get_gaps, offsets 1, 3, 4, 5 become blocking
+        offset_tracker.get_gaps()
+        assert 1 in offset_tracker._blocking_offset_timestamps
+        assert 3 in offset_tracker._blocking_offset_timestamps
+        assert offset_tracker._blocking_offset_timestamps[1] == 1000.0
+        assert offset_tracker._blocking_offset_timestamps[3] == 1000.0
+
+        # Advance time by 10 seconds
+        mock_time.return_value = 1010.0
+
+        # Get durations
+        durations = offset_tracker.get_blocking_offset_durations()
+        assert 1 in durations
+        assert 3 in durations
+        assert pytest.approx(durations[1]) == 10.0
+        assert pytest.approx(durations[3]) == 10.0
+        assert pytest.approx(durations[4]) == 10.0
+        assert pytest.approx(durations[5]) == 10.0
+
+        # Now, complete one of the blocking offsets
+        offset_tracker.mark_complete(1)
+        offset_tracker.advance_high_water_mark()  # last committed is now 2
+
+        # Advance time again by 5 seconds
+        mock_time.return_value = 1015.0
+
+        # Calling get_gaps again will update the blocking timestamps
+        offset_tracker.get_gaps()
+        assert 1 not in offset_tracker._blocking_offset_timestamps
+
+        # Get durations again
+        durations = offset_tracker.get_blocking_offset_durations()
+        assert 1 not in durations
+        assert 3 in durations
+        assert (
+            pytest.approx(durations[3]) == 15.0
+        )  # Total duration since it became blocking

@@ -1,4 +1,5 @@
-from typing import Set
+import time
+from typing import Dict, Set
 
 from sortedcontainers import SortedSet
 
@@ -39,6 +40,8 @@ class OffsetTracker:
         self.last_fetched_offset = starting_offset - 1
         self.max_revoke_grace_ms = max_revoke_grace_ms
         self.epoch = 0  # Initial epoch
+        # To track when an offset first became blocking
+        self._blocking_offset_timestamps: Dict[int, float] = {}
 
     def increment_epoch(self) -> None:
         """현재 epoch을 1 증가시킵니다."""
@@ -103,6 +106,8 @@ class OffsetTracker:
 
         # If there are no offsets to check (e.g., last_committed_offset is already last_fetched_offset)
         if start_check_offset > end_check_offset:
+            # Clear any stale blocking offset timestamps
+            self._blocking_offset_timestamps.clear()
             return []
 
         # Collect all uncompleted offsets within the range [start_check_offset, end_check_offset]
@@ -114,6 +119,8 @@ class OffsetTracker:
                 uncompleted_offsets.add(offset)
 
         if not uncompleted_offsets:
+            # Clear any stale blocking offset timestamps
+            self._blocking_offset_timestamps.clear()
             return []
 
         # Form contiguous OffsetRange objects from uncompleted_offsets
@@ -130,6 +137,26 @@ class OffsetTracker:
 
         gaps.append(OffsetRange(start=current_gap_start, end=current_gap_end))
 
+        # Update blocking offset timestamps
+        current_blocking_offsets_set = set()
+        for gap in gaps:
+            for offset in range(gap.start, gap.end + 1):
+                current_blocking_offsets_set.add(offset)
+
+        # Add new blocking offsets
+        for offset in current_blocking_offsets_set:
+            if offset not in self._blocking_offset_timestamps:
+                self._blocking_offset_timestamps[offset] = time.time()
+
+        # Remove no longer blocking offsets
+        offsets_to_remove = [
+            offset
+            for offset in self._blocking_offset_timestamps
+            if offset not in current_blocking_offsets_set
+        ]
+        for offset in offsets_to_remove:
+            del self._blocking_offset_timestamps[offset]
+
         return gaps
 
     def update_last_fetched_offset(self, offset: int):
@@ -140,3 +167,13 @@ class OffsetTracker:
         """
         if offset > self.last_fetched_offset:
             self.last_fetched_offset = offset
+
+    def get_blocking_offset_durations(self) -> Dict[int, float]:
+        """
+        Returns the duration (in seconds) that each blocking offset has been blocking.
+        """
+        durations: Dict[int, float] = {}
+        current_time = time.time()
+        for offset, start_time in self._blocking_offset_timestamps.items():
+            durations[offset] = current_time - start_time
+        return durations
