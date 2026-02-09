@@ -469,3 +469,94 @@ async def test_no_submission_during_rebalance(
         await work_manager._try_submit_to_execution_engine()
         mock_execution_engine.submit.assert_awaited_once()  # Now it should be submitted
         assert work_manager._current_in_flight_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_gaps(work_manager, mock_dto_topic_partition):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        expected_gaps = [OffsetRange(1, 3), OffsetRange(5, 5)]
+        mock_tracker_instance.get_gaps.return_value = expected_gaps
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        gaps = work_manager.get_gaps()
+
+        assert gaps == {mock_dto_topic_partition: expected_gaps}
+        mock_tracker_instance.get_gaps.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_true_lag(work_manager, mock_dto_topic_partition):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        mock_tracker_instance.last_fetched_offset = 100
+        mock_tracker_instance.last_committed_offset = 50
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        true_lag = work_manager.get_true_lag()
+
+        assert true_lag == {mock_dto_topic_partition: 50}
+
+
+@pytest.mark.asyncio
+async def test_get_virtual_queue_sizes(work_manager, mock_dto_topic_partition):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        # Submit messages with different keys
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 1, 1, b"key1", b"payload1"
+        )
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 2, 1, b"key1", b"payload2"
+        )
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 3, 1, b"key2", b"payload3"
+        )
+
+        queue_sizes = work_manager.get_virtual_queue_sizes()
+
+        expected_sizes = {
+            mock_dto_topic_partition: {
+                b"key1": 2,
+                b"key2": 1,
+            }
+        }
+
+        assert queue_sizes == expected_sizes

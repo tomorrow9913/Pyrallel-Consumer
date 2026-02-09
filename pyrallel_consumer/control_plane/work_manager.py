@@ -229,3 +229,33 @@ class WorkManager:
         현재 WorkManager가 관리하는 모든 파티션의 인플라이트 메시지 총 수를 반환합니다.
         """
         return self._current_in_flight_count  # Updated to use WorkManager's count
+
+    def get_gaps(self) -> Dict[DtoTopicPartition, List[OffsetRange]]:
+        """
+        Returns the uncompleted offset ranges for each topic-partition.
+        """
+        gaps: Dict[DtoTopicPartition, List[OffsetRange]] = {}
+        for tp, tracker in self._offset_trackers.items():
+            gaps[tp] = tracker.get_gaps()
+        return gaps
+
+    def get_true_lag(self) -> Dict[DtoTopicPartition, int]:
+        """
+        Returns the true lag for each topic-partition.
+        True lag is the difference between the last fetched offset and the last committed offset.
+        """
+        true_lag: Dict[DtoTopicPartition, int] = {}
+        for tp, tracker in self._offset_trackers.items():
+            true_lag[tp] = tracker.last_fetched_offset - tracker.last_committed_offset
+        return true_lag
+
+    def get_virtual_queue_sizes(self) -> Dict[DtoTopicPartition, Dict[Any, int]]:
+        """
+        Returns the current size of each virtual partition queue.
+        """
+        queue_sizes: Dict[DtoTopicPartition, Dict[Any, int]] = {}
+        for tp, virtual_partition_queues in self._virtual_partition_queues.items():
+            queue_sizes[tp] = {}
+            for key, queue in virtual_partition_queues.items():
+                queue_sizes[tp][key] = queue.qsize()
+        return queue_sizes
