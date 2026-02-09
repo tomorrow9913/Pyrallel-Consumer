@@ -53,24 +53,38 @@ class OffsetTracker:
 
     @property
     def in_flight_count(self) -> int:
-        """현재 처리 중인 메시지 수를 반환합니다."""
+        """
+        Returns the number of messages currently in flight.
+        현재 처리 중인 메시지 수를 반환합니다.
+
+        Returns:
+            int: 현재 처리 중인 메시지 수
+        """
         return len(self.in_flight_offsets)
 
-    def mark_complete(self, offset: int):
+    def mark_complete(self, offset: int) -> None:
         """
+        marks the given offset as complete.
         오프셋을 완료로 표시합니다.
 
         Args:
             offset (int): 완료로 표시할 오프셋
+
+        Returns:
+            None
         """
         if offset > self.last_committed_offset:
             self.completed_offsets.add(offset)
         if offset in self.in_flight_offsets:
             self.in_flight_offsets.remove(offset)
 
-    def advance_high_water_mark(self):
+    def advance_high_water_mark(self) -> None:
         """
+        Advances the last committed offset based on completed offsets.
         완료된 오프셋을 기준으로 마지막 커밋된 오프셋을 갱신합니다.
+
+        Returns:
+            None
         """
         new_hwm = self.last_committed_offset
         # SortedSet allows efficient iteration in sorted order
@@ -159,11 +173,15 @@ class OffsetTracker:
 
         return gaps
 
-    def update_last_fetched_offset(self, offset: int):
-        """마지막으로 가져온 오프셋을 갱신합니다.
+    def update_last_fetched_offset(self, offset: int) -> None:
+        """
+        Updates the last fetched offset.
+        마지막으로 가져온 오프셋을 갱신합니다.
 
         Args:
             offset (int): 갱신할 오프셋
+        Returns:
+            None
         """
         if offset > self.last_fetched_offset:
             self.last_fetched_offset = offset
@@ -171,6 +189,10 @@ class OffsetTracker:
     def get_blocking_offset_durations(self) -> Dict[int, float]:
         """
         Returns the duration (in seconds) that each blocking offset has been blocking.
+        각 블로킹 오프셋이 블로킹된 시간을 초 단위로 반환합니다.
+
+        Returns:
+            Dict[int, float]: 오프셋과 해당 블로킹 시간(초) 딕셔너리
         """
         durations: Dict[int, float] = {}
         current_time = time.time()
