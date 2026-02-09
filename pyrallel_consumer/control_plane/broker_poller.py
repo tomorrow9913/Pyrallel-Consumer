@@ -12,14 +12,13 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added 
 
 # Local imports aligned with project structure and prod.md's intent
 from ..config import KafkaConfig  # Adjusted import
+from ..dto import PartitionMetrics  # Added PartitionMetrics
+from ..dto import SystemMetrics  # Added SystemMetrics
 from ..dto import CompletionStatus
 from ..dto import (
-    PartitionMetrics,  # Added PartitionMetrics
-    SystemMetrics,  # Added SystemMetrics
     TopicPartition as DtoTopicPartition,  # Added CompletionEvent, CompletionStatus
 )
 from ..logger import LogManager  # Adjusted import
-
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker  # Adjusted import
 from .work_manager import WorkManager

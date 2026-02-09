@@ -1,10 +1,13 @@
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
-from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
-from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition, OffsetRange
+
 from pyrallel_consumer.config import KafkaConfig
-from pyrallel_consumer.control_plane.work_manager import WorkManager
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.control_plane.work_manager import WorkManager
+from pyrallel_consumer.dto import OffsetRange
+from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 @pytest.fixture

@@ -1,11 +1,13 @@
 import asyncio
-import time
 import logging
 import math
+import os
+import time
+
 from pyrallel_consumer.config import (
+    ExecutionConfig,
     KafkaConfig,
     ParallelConsumerConfig,
-    ExecutionConfig,
     ProcessConfig,
 )
 from pyrallel_consumer.consumer import PyrallelConsumer
@@ -28,11 +30,9 @@ def cpu_heavy_worker(item: WorkItem) -> None:
     # Simulate heavy calculation: Verify large prime number
     # This blocks the CPU core
     number = 1000003
-    is_prime = True
     if number > 1:
         for i in range(2, int(math.sqrt(number)) + 1):
             if (number % i) == 0:
-                is_prime = False
                 break
 
     # Simulate some busy wait to make it noticeable
@@ -44,9 +44,6 @@ def cpu_heavy_worker(item: WorkItem) -> None:
     print(
         f"[Process {os.getpid()}] Processed offset {item.offset} in {end - start:.4f}s"
     )
-
-
-import os  # Need import inside if used, but top level is better. Imported above.
 
 
 # 2. Configuration

@@ -1,12 +1,12 @@
 import asyncio
-import os
-import random
 import logging
+import random
+
 from pyrallel_consumer.config import (
+    AsyncConfig,
+    ExecutionConfig,
     KafkaConfig,
     ParallelConsumerConfig,
-    ExecutionConfig,
-    AsyncConfig,
 )
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import WorkItem
