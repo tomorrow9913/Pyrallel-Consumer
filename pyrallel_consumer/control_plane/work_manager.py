@@ -30,6 +30,7 @@ class WorkManager:
 
         self._max_in_flight_messages = max_in_flight_messages
         self._current_in_flight_count = 0
+        self._rebalancing = False  # New flag to indicate rebalancing state
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]):
         """
@@ -42,6 +43,7 @@ class WorkManager:
                 topic_partition=tp, starting_offset=0, max_revoke_grace_ms=500
             )
             self._virtual_partition_queues[tp] = {}
+        self._rebalancing = False  # Rebalancing ends when partitions are assigned
 
     def on_revoke(self, revoked_tps: List[DtoTopicPartition]):
         """
@@ -51,6 +53,7 @@ class WorkManager:
         for tp in revoked_tps:
             self._offset_trackers.pop(tp, None)
             self._virtual_partition_queues.pop(tp, None)
+        self._rebalancing = True  # Rebalancing starts when partitions are revoked
 
     async def submit_message(
         self, tp: DtoTopicPartition, offset: int, epoch: int, key: Any, payload: Any
@@ -86,6 +89,8 @@ class WorkManager:
         """
         if self._current_in_flight_count >= self._max_in_flight_messages:
             return
+        if self._rebalancing:
+            return  # Do not submit messages during rebalancing
 
         blocking_offsets = self.get_blocking_offsets()
 

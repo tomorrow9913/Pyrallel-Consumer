@@ -420,3 +420,52 @@ async def test_prioritize_blocking_offset(
             sorted(actual_submitted, key=lambda x: (x[0].topic, x[0].partition, x[1]))
             == expected_remaining
         )
+
+
+@pytest.mark.asyncio
+async def test_no_submission_during_rebalance(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+        # Ensure no blocking offsets by default
+        mock_tracker_instance.get_gaps.return_value = []
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        # Submit a message - it should be queued internally
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 10, 1, b"key", b"payload"
+        )
+        assert (
+            work_manager._virtual_partition_queues[mock_dto_topic_partition][
+                b"key"
+            ].qsize()
+            == 1
+        )
+        mock_execution_engine.submit.assert_not_awaited()  # Should not be submitted yet
+
+        # Simulate rebalancing
+        work_manager._rebalancing = True
+
+        # Try to submit - it should be blocked
+        await work_manager._try_submit_to_execution_engine()
+        mock_execution_engine.submit.assert_not_awaited()  # Still should not be submitted
+
+        # Simulate rebalancing ends
+        work_manager._rebalancing = False
+
+        # Try to submit again - it should now go through
+        await work_manager._try_submit_to_execution_engine()
+        mock_execution_engine.submit.assert_awaited_once()  # Now it should be submitted
+        assert work_manager._current_in_flight_count == 1
