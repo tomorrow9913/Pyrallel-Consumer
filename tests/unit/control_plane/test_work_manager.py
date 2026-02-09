@@ -160,7 +160,7 @@ async def test_submit_message(
         assert queued_work_item.epoch == epoch
         assert queued_work_item.key == key
         assert queued_work_item.payload == payload
-        # Put it back for _try_submit_to_execution_engine to pick up
+        # Put it back for schedule to pick up
         await virtual_queue.put(queued_work_item)
 
         assert len(work_manager._in_flight_work_items) == 1
@@ -173,7 +173,7 @@ async def test_submit_message(
         )  # No messages are in-flight yet
 
         # Now, explicitly trigger the submission process
-        await work_manager._try_submit_to_execution_engine()
+        await work_manager.schedule()
 
         # Verify that the item was now submitted to the execution engine
         mock_execution_engine.submit.assert_awaited_once()
@@ -386,7 +386,7 @@ async def test_prioritize_blocking_offset(
 
         # Manually trigger the submission process if not all messages were submitted by submit_message calls
         # (they should be, due to recursive nature, but good to be explicit for testing).
-        await work_manager._try_submit_to_execution_engine()
+        await work_manager.schedule()
 
         # Verify calls to submit
         assert mock_execution_engine.submit.call_count == 3
@@ -459,14 +459,14 @@ async def test_no_submission_during_rebalance(
         work_manager._rebalancing = True
 
         # Try to submit - it should be blocked
-        await work_manager._try_submit_to_execution_engine()
+        await work_manager.schedule()
         mock_execution_engine.submit.assert_not_awaited()  # Still should not be submitted
 
         # Simulate rebalancing ends
         work_manager._rebalancing = False
 
         # Try to submit again - it should now go through
-        await work_manager._try_submit_to_execution_engine()
+        await work_manager.schedule()
         mock_execution_engine.submit.assert_awaited_once()  # Now it should be submitted
         assert work_manager._current_in_flight_count == 1
 

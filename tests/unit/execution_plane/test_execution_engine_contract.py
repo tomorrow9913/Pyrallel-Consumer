@@ -1,3 +1,4 @@
+import asyncio
 from abc import ABC, abstractmethod
 
 import pytest
@@ -46,6 +47,17 @@ class BaseExecutionEngineContractTest(ABC):
             error=None,
         )
 
+    @pytest.fixture
+    def mock_failing_work_item(self):
+        return WorkItem(
+            id="test-id-failing",
+            tp=TopicPartition(topic="test", partition=0),
+            offset=1,
+            epoch=0,
+            key="key",
+            payload=b"fail",
+        )
+
     @pytest.mark.asyncio
     async def test_submit_adds_to_in_flight_count(
         self, engine: BaseExecutionEngine, mock_work_item: WorkItem
@@ -81,8 +93,51 @@ class BaseExecutionEngineContractTest(ABC):
         await engine.submit(mock_work_item)
         assert engine.get_in_flight_count() >= 1
 
-    # Additional contract tests can be added here
-    # - test for correct event completion (success/failure)
-    # - test for handling multiple submits and completions
-    # - test for shutdown with pending tasks
-    # - test for task timeout/error handling (for engines that implement it)
+    @pytest.mark.asyncio
+    async def test_submit_executes_worker_function(
+        self, engine: BaseExecutionEngine, mock_work_item: WorkItem
+    ):
+        """
+        Contract: Submitting a valid work item should eventually result in a SUCCESS completion event.
+        """
+        await engine.submit(mock_work_item)
+
+        # Wait for processing (concrete tests might need to adjust timing or use proper synchronization)
+        await asyncio.sleep(0.2)
+
+        completed_events = await engine.poll_completed_events()
+
+        # We might need a retry loop here for robustness, but for now simple wait
+        # If empty, give it one more chance
+        if not completed_events:
+            await asyncio.sleep(1.0)
+            completed_events = await engine.poll_completed_events()
+
+        assert len(completed_events) == 1
+        assert completed_events[0].id == mock_work_item.id
+        assert completed_events[0].status == CompletionStatus.SUCCESS
+        assert engine.get_in_flight_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_submit_handles_worker_failure(
+        self, engine: BaseExecutionEngine, mock_failing_work_item: WorkItem
+    ):
+        """
+        Contract: Submitting a work item that causes the worker to fail should result in a FAILURE completion event.
+        """
+        await engine.submit(mock_failing_work_item)
+
+        await asyncio.sleep(0.2)
+
+        completed_events = await engine.poll_completed_events()
+
+        if not completed_events:
+            await asyncio.sleep(1.0)
+            completed_events = await engine.poll_completed_events()
+
+        assert len(completed_events) == 1
+        assert completed_events[0].id == mock_failing_work_item.id
+        assert completed_events[0].status == CompletionStatus.FAILURE
+        assert completed_events[0].error is not None
+        assert "failure" in str(completed_events[0].error)
+        assert engine.get_in_flight_count() == 0

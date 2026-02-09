@@ -3,7 +3,7 @@ from typing import Set
 
 class MetadataEncoder:
     """
-    MetadataEncoder는 오프셋 집합을 효율적으로 인코딩하는 기능을 제공합니다.
+    MetadataEncoder는 오프셋 집합을 효율적으로 인코딩하고 디코딩하는 기능을 제공합니다.
 
     Attributes:
         max_metadata_size (int): 인코딩된 메타데이터의 최대 크기 (바이트 단위)
@@ -82,26 +82,9 @@ class MetadataEncoder:
 
         max_relative_offset = relative_offsets[-1]
 
-        # Determine a reasonable maximum length for the bitset to avoid excessively long strings
-        # A common practice is to limit the range, e.g., 256 or 512 bits.
-        # For simplicity, let's keep it somewhat arbitrary for now, focusing on correctness.
-        # Max relative offset should ideally not be too large for bitset to be efficient.
-        # If max_relative_offset is too big, bitset might be longer than RLE.
-        # Max 4KB size limit means bitset itself should not exceed 4KB.
-        # A bitset representation like "B_offset:bits" where bits are '0' or '1'
-        # will have length approximately (len(str(base_offset)) + 1 + max_relative_offset + 1)
-        # We need to ensure that max_relative_offset doesn't make this too long.
-
-        # Simple heuristic: If max_relative_offset is very large, bitset is likely inefficient.
-        # We could add a threshold here, e.g., if max_relative_offset > 500, consider it too big.
-
         bit_string_length = max_relative_offset + 1
-        if (
-            bit_string_length > self.max_metadata_size * 8
-        ):  # Rough estimate, as it includes base_offset string
-            # If the bitset would be extremely long, it's not efficient.
-            # This is a simplification; a real implementation would truncate intelligently.
-            return f"{base_offset}:"  # Return empty bitset if too large to be practical
+        if bit_string_length > self.max_metadata_size * 8:  # Rough estimate
+            return f"{base_offset}:"
 
         bit_array = ["0"] * (max_relative_offset + 1)
         for rel_offset in relative_offsets:
@@ -123,28 +106,72 @@ class MetadataEncoder:
         rle_encoded = self._rle_encode_offsets(offsets)
         bitset_encoded = self._bitset_encode_offsets(offsets, base_offset)
 
-        # Prepend 'R' or 'B' for type identification
         rle_payload = f"R{rle_encoded}"
         bitset_payload = f"B{bitset_encoded}"
-
-        # Truncation Logic (simplified for now - will be refined)
-        # This part ensures that the output doesn't exceed max_metadata_size.
-        # For now, it's a simple check and might not be fully compliant with
-        # removing oldest offsets first.
 
         if (
             len(rle_payload) > self.max_metadata_size
             and len(bitset_payload) > self.max_metadata_size
         ):
-            # Both are too large, return empty or raise error depending on policy
-            return ""  # Or handle error
+            return ""
         elif len(rle_payload) > self.max_metadata_size:
-            return bitset_payload  # RLE too large, use bitset
+            return bitset_payload
         elif len(bitset_payload) > self.max_metadata_size:
-            return rle_payload  # Bitset too large, use RLE
+            return rle_payload
 
-        # Return the shorter of the two
         if len(rle_payload) <= len(bitset_payload):
             return rle_payload
         else:
             return bitset_payload
+
+    def _rle_decode_offsets(self, encoded_str: str) -> Set[int]:
+        """
+        Run-length encoded 문자열을 오프셋 집합으로 디코딩합니다.
+        ex) "1-3,5-6,8" -> {1,2,3,5,6,8}
+        """
+        offsets: Set[int] = set()
+        if not encoded_str:
+            return offsets
+
+        parts = encoded_str.split(",")
+        for part in parts:
+            if "-" in part:
+                start, end = map(int, part.split("-"))
+                offsets.update(range(start, end + 1))
+            else:
+                offsets.add(int(part))
+        return offsets
+
+    def _bitset_decode_offsets(self, encoded_str: str) -> Set[int]:
+        """
+        Bitset으로 인코딩된 문자열을 오프셋 집합으로 디코딩합니다.
+        ex) "1:11101" -> {1,2,3,5}
+        """
+        offsets: Set[int] = set()
+        if ":" not in encoded_str:
+            return offsets
+
+        base_offset_str, bit_string = encoded_str.split(":", 1)
+        base_offset = int(base_offset_str)
+
+        for i, bit in enumerate(bit_string):
+            if bit == "1":
+                offsets.add(base_offset + i)
+        return offsets
+
+    def decode_metadata(self, metadata: str) -> Set[int]:
+        """
+        인코딩된 메타데이터 문자열을 오프셋 집합으로 디코딩합니다.
+        """
+        if not metadata:
+            return set()
+
+        encoding_type = metadata[0]
+        encoded_payload = metadata[1:]
+
+        if encoding_type == "R":
+            return self._rle_decode_offsets(encoded_payload)
+        elif encoding_type == "B":
+            return self._bitset_decode_offsets(encoded_payload)
+
+        return set()

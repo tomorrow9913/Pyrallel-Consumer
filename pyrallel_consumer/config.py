@@ -78,6 +78,7 @@ class ProcessConfig(BaseSettings):
     batch_size: int = 64
     batch_bytes: str = "256KB"
     max_batch_wait_ms: int = 5
+    worker_join_timeout_ms: int = 30000
 
 
 class ExecutionConfig(BaseSettings):

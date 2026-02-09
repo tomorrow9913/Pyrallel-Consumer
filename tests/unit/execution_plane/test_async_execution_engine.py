@@ -46,17 +46,6 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
         )
 
     @pytest.fixture
-    def mock_failing_work_item(self):
-        return WorkItem(
-            id="test-id-failing",
-            tp=TopicPartition(topic="test", partition=0),
-            offset=1,
-            epoch=0,
-            key="key",
-            payload=b"fail",
-        )
-
-    @pytest.fixture
     def mock_timeout_work_item(self):
         return WorkItem(
             id="test-id-timeout",
@@ -66,32 +55,6 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
             key="key",
             payload=b"timeout",
         )
-
-    @pytest.mark.asyncio
-    async def test_submit_executes_worker_function(
-        self, engine: AsyncExecutionEngine, mock_work_item: WorkItem
-    ):
-        await engine.submit(mock_work_item)
-        await asyncio.sleep(0.05)  # Give some time for the task to complete
-        completed_events = await engine.poll_completed_events()
-        assert len(completed_events) == 1
-        assert completed_events[0].id == mock_work_item.id
-        assert completed_events[0].status == CompletionStatus.SUCCESS
-        assert engine.get_in_flight_count() == 0  # Should be 0 after completion
-
-    @pytest.mark.asyncio
-    async def test_submit_handles_worker_failure(
-        self, engine: AsyncExecutionEngine, mock_failing_work_item: WorkItem
-    ):
-        await engine.submit(mock_failing_work_item)
-        await asyncio.sleep(0.05)  # Give some time for the task to complete
-        completed_events = await engine.poll_completed_events()
-        assert len(completed_events) == 1
-        assert completed_events[0].id == mock_failing_work_item.id
-        assert completed_events[0].status == CompletionStatus.FAILURE
-        assert completed_events[0].error is not None
-        assert "Simulated worker failure" in completed_events[0].error
-        assert engine.get_in_flight_count() == 0
 
     @pytest.mark.asyncio
     async def test_submit_handles_worker_timeout(

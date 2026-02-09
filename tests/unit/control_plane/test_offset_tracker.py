@@ -60,8 +60,10 @@ def test_mark_complete_offset_already_committed(offset_tracker):
 
 
 def test_mark_complete_in_flight_offset(offset_tracker):
-    # Simulate an offset being in flight, then completed
-    offset_tracker.in_flight_offsets.add(5)
+    # Simulate offset 5 being in-flight by fetching up to offset 5
+    offset_tracker.update_last_fetched_offset(5)
+    # Offset 5 is now in-flight (in range but not completed)
+    assert 5 in offset_tracker.in_flight_offsets
     offset_tracker.mark_complete(offset=5)
     assert 5 not in offset_tracker.in_flight_offsets
     assert 5 in offset_tracker.completed_offsets

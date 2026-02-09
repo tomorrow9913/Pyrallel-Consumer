@@ -1,5 +1,5 @@
 import time
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 from sortedcontainers import SortedSet
 
@@ -24,6 +24,7 @@ class OffsetTracker:
         topic_partition: TopicPartition,
         starting_offset: int,
         max_revoke_grace_ms: int,
+        initial_completed_offsets: Optional[Set[int]] = None,
     ):
         """
         초기화 메서드입니다.
@@ -32,16 +33,32 @@ class OffsetTracker:
             topic_partition (TopicPartition): 토픽 파티션 정보
             starting_offset (int): 시작 오프셋
             max_revoke_grace_ms (int): 최대 리보크 유예 시간 (밀리초)
+            initial_completed_offsets (Set[int], optional): 초기 완료된 오프셋 집합. Defaults to None.
         """
         self.topic_partition = topic_partition
         self.last_committed_offset = starting_offset - 1
-        self.completed_offsets: SortedSet[int] = SortedSet()
-        self.in_flight_offsets: Set[int] = set()
+        self.completed_offsets: SortedSet[int] = SortedSet(
+            initial_completed_offsets
+            if initial_completed_offsets is not None
+            else set()
+        )
         self.last_fetched_offset = starting_offset - 1
         self.max_revoke_grace_ms = max_revoke_grace_ms
         self.epoch = 0  # Initial epoch
         # To track when an offset first became blocking
         self._blocking_offset_timestamps: Dict[int, float] = {}
+
+    @property
+    def in_flight_offsets(self) -> Set[int]:
+        """
+
+        현재 처리 중인 오프셋들의 집합을 반환합니다.
+        Returns:
+            Set[int]: 현재 처리 중인 오프셋들의 집합
+        """
+        return self.completed_offsets.symmetric_difference(
+            set(range(self.last_committed_offset + 1, self.last_fetched_offset + 1))
+        )
 
     def increment_epoch(self) -> None:
         """현재 epoch을 1 증가시킵니다."""
@@ -50,17 +67,6 @@ class OffsetTracker:
     def get_current_epoch(self) -> int:
         """현재 epoch을 반환합니다."""
         return self.epoch
-
-    @property
-    def in_flight_count(self) -> int:
-        """
-        Returns the number of messages currently in flight.
-        현재 처리 중인 메시지 수를 반환합니다.
-
-        Returns:
-            int: 현재 처리 중인 메시지 수
-        """
-        return len(self.in_flight_offsets)
 
     def mark_complete(self, offset: int) -> None:
         """
@@ -75,8 +81,6 @@ class OffsetTracker:
         """
         if offset > self.last_committed_offset:
             self.completed_offsets.add(offset)
-        if offset in self.in_flight_offsets:
-            self.in_flight_offsets.remove(offset)
 
     def advance_high_water_mark(self) -> None:
         """

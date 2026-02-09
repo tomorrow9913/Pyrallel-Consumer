@@ -104,7 +104,7 @@ class WorkManager:
         # Attempt to submit to the execution engine
         # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
 
-    async def _try_submit_to_execution_engine(self) -> None:
+    async def schedule(self) -> None:
         """
         Submits WorkItems to the ExecutionEngine based on current in-flight count and blocking offsets.
         Using "Lowest blocking offset first" scheduling policy to determine which WorkItem to submit next.
@@ -114,90 +114,76 @@ class WorkManager:
         Returns:
             None
         """
-        if self._current_in_flight_count >= self._max_in_flight_messages:
-            return
-        if self._rebalancing:
-            return  # Do not submit messages during rebalancing
+        while True:
+            if self._current_in_flight_count >= self._max_in_flight_messages:
+                return
+            if self._rebalancing:
+                return
 
-        blocking_offsets = self.get_blocking_offsets()
+            blocking_offsets = self.get_blocking_offsets()
 
-        # Variables to store the *best* candidate found after scanning all queues
-        best_candidate_item: Optional[WorkItem] = None
-        best_candidate_queue: Optional[asyncio.Queue[WorkItem]] = None
+            best_candidate_item: Optional[WorkItem] = None
+            best_candidate_queue: Optional[asyncio.Queue[WorkItem]] = None
+            current_lowest_blocking_offset: Optional[int] = None
 
-        current_lowest_blocking_offset: Optional[int] = (
-            None  # Tracks the offset of the best blocking candidate found so far
-        )
+            first_non_blocking_item_seen: Optional[WorkItem] = None
+            first_non_blocking_queue_seen: Optional[asyncio.Queue[WorkItem]] = None
 
-        # In a single pass, find the lowest blocking item OR the first non-blocking item if no blocking items are found
-        first_non_blocking_item_seen: Optional[WorkItem] = None
-        first_non_blocking_queue_seen: Optional[asyncio.Queue[WorkItem]] = None
+            for tp, virtual_partition_queues in self._virtual_partition_queues.items():
+                for key, queue in virtual_partition_queues.items():
+                    if queue.empty():
+                        continue
 
-        for tp, virtual_partition_queues in self._virtual_partition_queues.items():
-            for key, queue in virtual_partition_queues.items():
-                if queue.empty():
-                    continue
+                    try:
+                        peek_item = await queue.get()
+                        await queue.put(peek_item)
+                    except asyncio.QueueEmpty:
+                        continue
 
-                # Simulate peek: get and put back immediately
-                try:
-                    peek_item = await queue.get()
-                    await queue.put(peek_item)
+                    is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
 
-                # Should not happen given the queue.empty() check, but for robustness
-                except asyncio.QueueEmpty:
-                    continue
+                    is_target_blocking_offset = (
+                        is_blocking_for_this_tp
+                        and blocking_offsets[tp] is not None
+                        and peek_item.offset == blocking_offsets[tp].start  # type: ignore
+                    )
 
-                is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
-
-                is_target_blocking_offset = (
-                    is_blocking_for_this_tp
-                    and blocking_offsets[tp] is not None
-                    and peek_item.offset == blocking_offsets[tp].start  # type: ignore
-                )
-
-                if is_target_blocking_offset:
-                    if (
-                        current_lowest_blocking_offset is None
-                        or peek_item.offset < current_lowest_blocking_offset
+                    if is_target_blocking_offset:
+                        if (
+                            current_lowest_blocking_offset is None
+                            or peek_item.offset < current_lowest_blocking_offset
+                        ):
+                            best_candidate_item = peek_item
+                            best_candidate_queue = queue
+                            current_lowest_blocking_offset = peek_item.offset
+                    elif (
+                        best_candidate_item is None
+                        and first_non_blocking_item_seen is None
                     ):
-                        best_candidate_item = peek_item
-                        best_candidate_queue = queue
-                        current_lowest_blocking_offset = peek_item.offset
-                # Only capture the first non-blocking item seen IF we haven't found any blocking candidates YET.
-                # This ensures that if a blocking item is later found, it takes precedence.
-                elif (
-                    best_candidate_item is None and first_non_blocking_item_seen is None
-                ):
-                    first_non_blocking_item_seen = peek_item
-                    first_non_blocking_queue_seen = queue
+                        first_non_blocking_item_seen = peek_item
+                        first_non_blocking_queue_seen = queue
 
-        # Now, actually dequeue and submit the selected item
-        item_to_submit: Optional[WorkItem] = None
-        queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
+            item_to_submit: Optional[WorkItem] = None
+            queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
 
-        if (
-            best_candidate_item and best_candidate_queue
-        ):  # A blocking item was found and selected
-            item_to_submit = await best_candidate_queue.get()
-            queue_to_dequeue_from = best_candidate_queue
-        elif (
-            first_non_blocking_item_seen and first_non_blocking_queue_seen
-        ):  # No blocking item, fall back to first non-blocking
-            item_to_submit = await first_non_blocking_queue_seen.get()
-            queue_to_dequeue_from = first_non_blocking_queue_seen
+            if best_candidate_item and best_candidate_queue:
+                item_to_submit = await best_candidate_queue.get()
+                queue_to_dequeue_from = best_candidate_queue
+            elif first_non_blocking_item_seen and first_non_blocking_queue_seen:
+                item_to_submit = await first_non_blocking_queue_seen.get()
+                queue_to_dequeue_from = first_non_blocking_queue_seen
 
-        if item_to_submit:
-            try:
-                await self._execution_engine.submit(item_to_submit)
-                self._current_in_flight_count += 1
-                await self._try_submit_to_execution_engine()  # Try to submit more
-            except Exception as e:
-                print("Error submitting work item %s: %s" % (item_to_submit.id, e))
-                if queue_to_dequeue_from:
-                    await queue_to_dequeue_from.put(
-                        item_to_submit
-                    )  # Re-queue on failure
-        # Else: No item to submit, do nothing.
+            if item_to_submit:
+                try:
+                    await self._execution_engine.submit(item_to_submit)
+                    self._current_in_flight_count += 1
+                except Exception as e:
+                    print("Error submitting work item %s: %s" % (item_to_submit.id, e))
+                    if queue_to_dequeue_from:
+                        await queue_to_dequeue_from.put(item_to_submit)
+                    return
+            else:
+                return
 
     async def poll_completed_events(self) -> List[CompletionEvent]:
         """
@@ -229,7 +215,7 @@ class WorkManager:
                     del self._in_flight_work_items[event.id]
                     self._current_in_flight_count -= 1
                     # After processing a completion, try to submit more tasks
-                    await self._try_submit_to_execution_engine()
+                    await self.schedule()
             else:
                 # Log a warning if the topic-partition is not managed
                 # This could happen if a revoke happened between submission and completion
