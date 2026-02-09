@@ -14,9 +14,12 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added 
 from ..config import KafkaConfig  # Adjusted import
 from ..dto import CompletionStatus
 from ..dto import (
+    PartitionMetrics,  # Added PartitionMetrics
+    SystemMetrics,  # Added SystemMetrics
     TopicPartition as DtoTopicPartition,  # Added CompletionEvent, CompletionStatus
 )
 from ..logger import LogManager  # Adjusted import
+
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker  # Adjusted import
 from .work_manager import WorkManager
@@ -206,7 +209,14 @@ class BrokerPoller:  # Renamed class
                             )
                             continue
 
-                        tp = DtoTopicPartition(msg.topic(), msg.partition())
+                        if msg.topic() is None or msg.partition() is None:
+                            logger.warning(
+                                "Received message with None topic or partition. Skipping."
+                            )
+                            continue
+
+                        tp = DtoTopicPartition(msg.topic(), msg.partition())  # type: ignore
+
                         offset_val = msg.offset()
 
                         if offset_val is None:
@@ -296,22 +306,23 @@ class BrokerPoller:  # Renamed class
                             safe_offset,
                             metadata,
                         )
-                        # 3. Commit to Kafka
+                        # Commit to Kafka
+                        tp_to_commit = KafkaTopicPartition(
+                            tp.topic,
+                            tp.partition,
+                            safe_offset + 1,  # Kafka commits next expected offset
+                        )
+                        tp_to_commit.metadata = metadata
+
                         await asyncio.to_thread(
                             self.consumer.commit,
-                            offsets=[
-                                KafkaTopicPartition(
-                                    tp.topic,
-                                    tp.partition,
-                                    safe_offset
-                                    + 1,  # Kafka commits next expected offset
-                                )
-                            ],
+                            offsets=[tp_to_commit],
                             asynchronous=False,
-                            metadata=metadata,
                         )
-                        # 4. Now, advance the internal state of the tracker
+
+                        # Now, advance the internal state of the tracker
                         offset_tracker = self._offset_trackers[tp]
+
                         offset_tracker.advance_high_water_mark()
 
         except Exception as e:
@@ -480,16 +491,16 @@ class BrokerPoller:  # Renamed class
                     # For now, we're just logging and removing the tracker
                     # TODO: Implement actual graceful commit with timeout
                     if self.consumer:  # Ensure consumer is not None before committing
+                        tp_to_commit = KafkaTopicPartition(
+                            tp_dto.topic,
+                            tp_dto.partition,
+                            safe_offset_to_commit + 1,
+                        )
+                        tp_to_commit.metadata = commit_metadata
+
                         self.consumer.commit(
-                            offsets=[
-                                KafkaTopicPartition(
-                                    tp_dto.topic,
-                                    tp_dto.partition,
-                                    safe_offset_to_commit + 1,
-                                )
-                            ],
+                            offsets=[tp_to_commit],
                             asynchronous=False,
-                            metadata=commit_metadata,
                         )
 
                 # Invalidate the epoch for this partition (or simply remove the tracker)
@@ -556,3 +567,50 @@ class BrokerPoller:  # Renamed class
         self._running = False
         await self._shutdown_event.wait()
         logger.info("Pyrallel-Consumer stopped gracefully.")
+
+    def get_metrics(self) -> SystemMetrics:
+        """
+        시스템의 현재 상태에 대한 메트릭을 수집하여 반환합니다.
+
+        Returns:
+            SystemMetrics: 시스템 전체 및 파티션별 메트릭 정보
+        """
+        partition_metrics_list = []
+
+        virtual_queue_sizes = self._work_manager.get_virtual_queue_sizes()
+
+        for tp, tracker in self._offset_trackers.items():
+            true_lag = max(
+                0, tracker.last_fetched_offset - tracker.last_committed_offset
+            )
+
+            gaps = tracker.get_gaps()
+            gap_count = len(gaps)
+
+            blocking_offset: Optional[int] = None
+            blocking_duration: Optional[float] = None
+
+            if gaps:
+                blocking_offset = gaps[0].start
+                durations = tracker.get_blocking_offset_durations()
+                blocking_duration = durations.get(blocking_offset)
+
+            tp_queue_sizes = virtual_queue_sizes.get(tp, {})
+            queued_count = sum(tp_queue_sizes.values())
+
+            partition_metrics_list.append(
+                PartitionMetrics(
+                    tp=tp,
+                    true_lag=true_lag,
+                    gap_count=gap_count,
+                    blocking_offset=blocking_offset,
+                    blocking_duration_sec=blocking_duration,
+                    queued_count=queued_count,
+                )
+            )
+
+        return SystemMetrics(
+            total_in_flight=self._work_manager.get_total_in_flight_count(),
+            is_paused=self._is_paused,
+            partitions=partition_metrics_list,
+        )

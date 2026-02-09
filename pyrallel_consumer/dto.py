@@ -125,3 +125,41 @@ class EngineMetrics:
 
     in_flight_count: int
     # Potentially other metrics like queue_sizes, error_rates, etc.
+
+
+@dataclass(frozen=True)
+class PartitionMetrics:
+    """
+    개별 파티션에 대한 메트릭 정보입니다.
+
+    Attributes:
+        tp (TopicPartition): 토픽 파티션 정보
+        true_lag (int): 실제 지연 (Last Fetched - Last Committed)
+        gap_count (int): 커밋되지 않은 완료된 오프셋 그룹(Gap)의 수
+        blocking_offset (Optional[int]): 현재 커밋을 막고 있는 가장 낮은 오프셋
+        blocking_duration_sec (Optional[float]): Blocking Offset이 지속된 시간 (초)
+        queued_count (int): 가상 파티션 큐에 대기 중인 메시지 수
+    """
+
+    tp: TopicPartition
+    true_lag: int
+    gap_count: int
+    blocking_offset: Optional[int]
+    blocking_duration_sec: Optional[float]
+    queued_count: int
+
+
+@dataclass(frozen=True)
+class SystemMetrics:
+    """
+    시스템 전체에 대한 메트릭 정보입니다.
+
+    Attributes:
+        total_in_flight (int): 시스템 전체에서 처리 중인 메시지 수
+        is_paused (bool): 백프레셔로 인한 컨슈머 일시 정지 여부
+        partitions (List[PartitionMetrics]): 각 파티션별 메트릭 목록
+    """
+
+    total_in_flight: int
+    is_paused: bool
+    partitions: list[PartitionMetrics]
