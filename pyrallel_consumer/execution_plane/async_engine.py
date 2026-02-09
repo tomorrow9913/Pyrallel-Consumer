@@ -1,61 +1,145 @@
-from typing import List
+import asyncio
+import contextvars
+import logging
+from asyncio import Semaphore, Task
+from collections.abc import Callable
+from typing import Any, List, Optional, Set
 
-from pyrallel_consumer.dto import CompletionEvent, WorkItem
+from pyrallel_consumer.config import ExecutionConfig
+from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
 class AsyncExecutionEngine(BaseExecutionEngine):
     """
-    비동기 실행 엔진의 기본 구현입니다.
+    비동기 실행 엔진의 구현입니다. asyncio.Task를 기반으로 워커 함수를 실행하고,
+    세마포어를 사용하여 동시 실행 태스크 수를 제어합니다.
 
     Args:
-        BaseExecutionEngine (_type_): BaseExecutionEngine을 상속받습니다.
+        config (ExecutionConfig): 실행 엔진 설정.
+        worker_fn (Callable[[WorkItem], Any]): 사용자 정의 비동기 워커 함수.
     """
+
+    def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+        self._config = config
+        self._worker_fn = worker_fn
+        self._semaphore = Semaphore(config.max_in_flight)
+        self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
+        self._in_flight_tasks: Set[Task] = set()
+        self._shutdown_event = asyncio.Event()
+
+        # Logger for this module
+        self._logger = logging.getLogger(__name__)
+
+        # Context propagation (initial capture for consistent logging in tasks)
+        # Note: contextvars.copy_context() is primarily for when the worker function itself
+        # depends on contextvars set up by the caller. For simple logging/tracing,
+        # passing relevant IDs explicitly or relying on thread-local storage might be simpler.
+        self._context = contextvars.copy_context()
 
     async def submit(self, work_item: WorkItem) -> None:
         """
-        제출된 작업 항목을 처리합니다.
+        제출된 작업 항목을 처리합니다. 세마포어를 획득하고, 새 비동기 태스크를 생성하여 워커 함수를 실행합니다.
 
         Args:
             work_item (WorkItem): 제출할 작업 항목
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
         """
-        raise NotImplementedError
+        await self._semaphore.acquire()
+
+        # Create a task to execute the worker function within the captured context
+        task = self._context.copy().run(
+            asyncio.create_task, self._execute_worker_task(work_item)
+        )
+        self._in_flight_tasks.add(task)
+        task.add_done_callback(self._task_done_callback)
+
+    async def _execute_worker_task(self, work_item: WorkItem) -> None:
+        """
+        사용자 워커 함수를 실행하고 결과를 완료 큐에 넣습니다.
+        예외 처리 및 타임아웃 로직을 포함합니다.
+        """
+        status = CompletionStatus.SUCCESS
+        error: Optional[str] = None
+
+        try:
+            # Execute the user's worker function with timeout
+            await asyncio.wait_for(
+                self._worker_fn(work_item),
+                timeout=self._config.async_config.task_timeout_ms / 1000.0,
+            )
+        except asyncio.TimeoutError:
+            status = CompletionStatus.FAILURE
+            error = "Task for offset %d timed out." % work_item.offset
+            self._logger.error(error)
+        except Exception as e:
+            status = CompletionStatus.FAILURE
+            error = str(e)
+            self._logger.exception(
+                "Task for offset %d failed with exception: %s"
+                % (work_item.offset, error)
+            )
+        finally:
+            completion_event = CompletionEvent(
+                id=work_item.id,
+                tp=work_item.tp,
+                offset=work_item.offset,
+                epoch=work_item.epoch,
+                status=status,
+                error=error,
+            )
+            await self._completion_queue.put(completion_event)
+
+    def _task_done_callback(self, task: Task) -> None:
+        """
+        태스크 완료 시 호출되는 콜백. 세마포어를 해제하고 완료된 태스크를 추적 목록에서 제거합니다.
+        """
+        self._in_flight_tasks.discard(task)
+        self._semaphore.release()
+
+        # Check for exceptions that were not caught within _execute_worker_task
+        # (e.g., if the task itself was cancelled or an unexpected error occurred before try/except)
+        if task.cancelled():
+            self._logger.warning("Task %s was cancelled." % task.get_name())
+        elif task.exception():
+            # Exception already handled and logged in _execute_worker_task,
+            # but this catches any unhandled exceptions during the callback itself.
+            self._logger.error(
+                "Unhandled exception in task done callback for task %s."
+                % task.get_name(),
+                exc_info=task.exception(),
+            )
 
     async def poll_completed_events(self) -> List[CompletionEvent]:
         """
-        완료된 이벤트를 폴링합니다.
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-
-        Returns:
-            List[CompletionEvent]: 완료된 이벤트 목록
+        완료 큐에서 모든 완료 이벤트를 가져와 리스트로 반환합니다.
         """
-        raise NotImplementedError
+        completed_events: List[CompletionEvent] = []
+        while not self._completion_queue.empty():
+            completed_events.append(self._completion_queue.get_nowait())
+        return completed_events
 
     def get_in_flight_count(self) -> int:
         """
         현재 처리 중인 작업 항목의 수를 반환합니다.
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-
-        Returns:
-            int: 현재 처리 중인 작업 항목의 수
         """
-        raise NotImplementedError
+        return len(self._in_flight_tasks)
 
     async def shutdown(self) -> None:
         """
-        실행 엔진을 정상적으로 종료합니다.
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-
-        Returns:
-            None
+        실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다.
         """
-        raise NotImplementedError
+        self._logger.info("Initiating AsyncExecutionEngine shutdown.")
+        self._shutdown_event.set()
+
+        # Wait for all in-flight tasks to complete
+        if self._in_flight_tasks:
+            self._logger.info(
+                "Waiting for %d in-flight tasks to complete."
+                % len(self._in_flight_tasks)
+            )
+            # Wait for tasks to complete, with a reasonable timeout.
+            # asyncio.gather returns results and exceptions, or raises if return_exceptions=False
+            await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
+            self._logger.info("All in-flight tasks completed during shutdown.")
+
+        self._logger.info("AsyncExecutionEngine shutdown complete.")

@@ -1,15 +1,22 @@
+from collections.abc import Callable  # Add Callable import
+from typing import Any  # Add Any import
+
 from pyrallel_consumer.config import ExecutionConfig
+from pyrallel_consumer.dto import WorkItem  # Add WorkItem import
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 
-def create_execution_engine(config: ExecutionConfig) -> BaseExecutionEngine:
+def create_execution_engine(
+    config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]
+) -> BaseExecutionEngine:
     """
     실행 구성에 따라 적절한 실행 엔진을 생성합니다.
 
     Args:
         config (ExecutionConfig): 실행 구성
+        worker_fn (Callable[[WorkItem], Any]): 사용자 정의 비동기 또는 동기 워커 함수.
 
     Returns:
         BaseExecutionEngine: 생성된 실행 엔진 인스턴스
@@ -17,8 +24,8 @@ def create_execution_engine(config: ExecutionConfig) -> BaseExecutionEngine:
         ValueError: 알 수 없는 실행 모드가 지정된 경우 발생
     """
     if config.mode == "async":
-        return AsyncExecutionEngine()
+        return AsyncExecutionEngine(config=config, worker_fn=worker_fn)
     elif config.mode == "process":
-        return ProcessExecutionEngine()
+        return ProcessExecutionEngine(config=config, worker_fn=worker_fn)
     else:
         raise ValueError(f"Unknown execution mode: {config.mode}")

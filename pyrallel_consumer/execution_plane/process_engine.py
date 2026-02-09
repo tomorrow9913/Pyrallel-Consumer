@@ -1,67 +1,33 @@
-from typing import List
+from collections.abc import Callable
+from typing import Any, List
 
+from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import CompletionEvent, WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
 class ProcessExecutionEngine(BaseExecutionEngine):
     """
-    비동기 실행 엔진의 기본 구현입니다.
+    프로세스 기반 실행 엔진의 구현입니다.
 
     Args:
-        BaseExecutionEngine (_type_): BaseExecutionEngine을 상속받습니다.
-
-    Attributes:
-        None
-    Methods:
-        submit(work_item: WorkItem) -> None: 제출된 작업 항목을 처리합니다.
-        poll_completed_events() -> List[CompletionEvent]: 완료된 이벤트를 폴링합니다.
-        get_in_flight_count() -> int: 현재 처리 중인 작업 항목의 수를 반환합니다.
-        shutdown() -> None: 실행 엔진을 정상적으로 종료합니다.
+        config (ExecutionConfig): 실행 엔진 설정.
+        worker_fn (Callable[[WorkItem], Any]): 사용자 정의 워커 함수.
     """
 
+    def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+        self._config = config
+        self._worker_fn = worker_fn
+        # TODO: Implement process-specific initialization (e.g., process pool, IPC queues)
+
     async def submit(self, work_item: WorkItem) -> None:
-        """
-        제출된 작업 항목을 처리합니다
-
-        Args:
-            work_item (WorkItem): 제출할 작업 항목
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-        """
         raise NotImplementedError
 
     async def poll_completed_events(self) -> List[CompletionEvent]:
-        """
-        완료된 이벤트를 폴링합니다.
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-        Returns:
-            List[CompletionEvent]: 완료된 이벤트 목록
-        """
         raise NotImplementedError
 
     def get_in_flight_count(self) -> int:
-        """
-        현재 처리 중인 작업 항목의 수를 반환합니다.
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-
-        Returns:
-            int: 현재 처리 중인 작업 항목의 수
-        """
         raise NotImplementedError
 
     async def shutdown(self) -> None:
-        """
-        실행 엔진을 정상적으로 종료합니다
-
-        Raises:
-            NotImplementedError: 구현되지 않은 메서드 호출 시 발생
-        Returns:
-            None
-        """
         raise NotImplementedError
