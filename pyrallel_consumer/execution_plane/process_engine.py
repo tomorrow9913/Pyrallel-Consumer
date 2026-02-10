@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import logging.handlers
 from collections.abc import Callable
-from multiprocessing import Process, Queue, Value
+from multiprocessing import Process, Queue
 from typing import Any, List, Optional
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.logger import LogManager
 
 # Sentinel for graceful shutdown of worker processes
 _SENTINEL = None
@@ -19,13 +21,18 @@ def _worker_loop(
     completion_queue: Queue,
     worker_fn: Callable[[WorkItem], Any],
     process_idx: int,
+    log_queue: Optional[Queue] = None,
 ):
     """
     Worker process loop to fetch tasks, execute the worker function, and put results.
     """
-    _logger.info("ProcessWorker[%d] started.", process_idx)
-    # Re-initialize logger for the new process to avoid issues with inherited loggers
+    # Set up QueueHandler-based logging so all log records are forwarded
+    # to the main process via log_queue, avoiding interleaved output.
+    if log_queue is not None:
+        LogManager.setup_worker_logging(log_queue)
+
     worker_logger = logging.getLogger(__name__)
+    worker_logger.info("ProcessWorker[%d] started.", process_idx)
 
     while True:
         work_item: WorkItem = task_queue.get()
@@ -83,9 +90,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
         self._completion_queue: Queue[CompletionEvent] = Queue()
         self._workers: List[Process] = []
-        self._in_flight_count_tracker: Any = Value("i", 0)  # Track in-flight tasks
+        self._in_flight_count: int = 0
 
         self._logger = logging.getLogger(__name__)
+
+        self._log_queue: Queue[logging.LogRecord] = Queue()
+        main_handlers = tuple(logging.getLogger().handlers)
+        self._log_listener = LogManager.create_queue_listener(
+            self._log_queue, main_handlers
+        )
+        self._log_listener.start()
 
         self._start_workers()
 
@@ -101,6 +115,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     self._completion_queue,
                     self._worker_fn,
                     i,
+                    self._log_queue,
                 ),
             )
             self._workers.append(worker)
@@ -112,30 +127,32 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
         await asyncio.to_thread(self._task_queue.put, work_item)
-        with self._in_flight_count_tracker.get_lock():
-            self._in_flight_count_tracker.value += 1
+        self._in_flight_count += 1
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> List[CompletionEvent]:
         """
-        완료 큐에서 모든 완료 이벤트를 가져와 리스트로 반환합니다.
+        완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
         completed_events: List[CompletionEvent] = []
-        while not self._completion_queue.empty():
+        while (
+            len(completed_events) < batch_limit and not self._completion_queue.empty()
+        ):
             try:
                 event = self._completion_queue.get_nowait()
                 completed_events.append(event)
-                with self._in_flight_count_tracker.get_lock():
-                    self._in_flight_count_tracker.value -= 1
+                self._in_flight_count -= 1
             except Exception as e:
                 _logger.error("Error getting item from completion queue: %s", e)
-                break  # Exit if there's an issue with the queue
+                break
         return completed_events
 
     def get_in_flight_count(self) -> int:
         """
         현재 처리 중인 작업 항목의 수를 반환합니다.
         """
-        return self._in_flight_count_tracker.value
+        return self._in_flight_count
 
     async def shutdown(self) -> None:
         """
@@ -159,3 +176,4 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 worker.terminate()
 
         _logger.info("ProcessExecutionEngine shutdown complete.")
+        self._log_listener.stop()
