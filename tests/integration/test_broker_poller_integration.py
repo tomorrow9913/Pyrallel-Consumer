@@ -8,7 +8,7 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from sortedcontainers import SortedSet
 
 from pyrallel_consumer.config import KafkaConfig
-from pyrallel_consumer.control_plane.broker_poller import BrokerPoller, MessageProcessor
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus
@@ -23,12 +23,17 @@ def mock_kafka_config():
     config.BOOTSTRAP_SERVERS = ["broker:9092"]
     config.get_consumer_config.return_value = {"group.id": "test_group"}
     config.get_producer_config.return_value = {}
+
+    parallel_consumer_mock = MagicMock()
+    parallel_consumer_mock.poll_batch_size = 1000
+    parallel_consumer_mock.worker_pool_size = 8
+
+    execution_mock = MagicMock()
+    execution_mock.max_in_flight = 100
+    parallel_consumer_mock.execution = execution_mock
+
+    config.parallel_consumer = parallel_consumer_mock
     return config
-
-
-@pytest.fixture
-def mock_message_processor():
-    return AsyncMock(spec=MessageProcessor)
 
 
 @pytest.fixture
@@ -136,7 +141,6 @@ def mock_offset_tracker_class(mocker):
 @pytest.fixture
 def broker_poller(
     mock_kafka_config,
-    mock_message_processor,
     mock_execution_engine,
     mock_consumer,
     mock_work_manager,
@@ -151,7 +155,6 @@ def broker_poller(
     poller = BrokerPoller(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
-        message_processor=mock_message_processor,
         execution_engine=mock_execution_engine,
         work_manager=mock_work_manager,
     )
@@ -274,8 +277,8 @@ async def test_run_consumer_loop_basic_flow(
     assert committed_tp.topic == test_tp_kafka.topic
     assert committed_tp.partition == test_tp_kafka.partition
     assert committed_tp.offset == 3
-    assert commit_args.kwargs["metadata"] is not None
-    assert len(commit_args.kwargs["metadata"]) > 0
+    assert committed_tp.metadata is not None
+    assert len(committed_tp.metadata) > 0
 
 
 @pytest.mark.asyncio

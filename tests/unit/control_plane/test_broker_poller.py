@@ -6,7 +6,7 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.config import KafkaConfig
-from pyrallel_consumer.control_plane.broker_poller import BrokerPoller, MessageProcessor
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
@@ -18,12 +18,13 @@ def mock_kafka_config():
     config.BOOTSTRAP_SERVERS = ["broker:9092"]
     config.get_consumer_config.return_value = {"group.id": "test_group"}
     config.get_producer_config.return_value = {}
+
+    parallel_consumer_mock = MagicMock()
+    parallel_consumer_mock.poll_batch_size = 1000
+    parallel_consumer_mock.worker_pool_size = 8
+    config.parallel_consumer = parallel_consumer_mock
+
     return config
-
-
-@pytest.fixture
-def mock_message_processor():
-    return AsyncMock(spec=MessageProcessor)
 
 
 @pytest.fixture
@@ -57,7 +58,10 @@ def mock_offset_tracker_factory():
     mock_factory = MagicMock()
     # Configure the factory to return new AsyncMock instances when called
     mock_factory.side_effect = (
-        lambda tp, starting_offset, max_revoke_grace_ms: AsyncMock(
+        lambda tp,
+        starting_offset,
+        max_revoke_grace_ms,
+        initial_completed_offsets: AsyncMock(
             spec=OffsetTracker,
             topic_partition=tp,
             starting_offset=starting_offset,
@@ -68,18 +72,15 @@ def mock_offset_tracker_factory():
 
 
 @pytest.fixture
-def broker_poller(
-    mock_kafka_config, mock_message_processor, mock_execution_engine
-):  # Modified fixture
+def broker_poller(mock_kafka_config, mock_execution_engine):
     poller = BrokerPoller(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
-        message_processor=mock_message_processor,
-        execution_engine=mock_execution_engine,  # Passed to BrokerPoller
+        execution_engine=mock_execution_engine,
     )
     # Patch Kafka client objects
-    poller.producer = AsyncMock()  # producer should also be async mock for flush
-    poller.consumer = MagicMock(spec=Consumer)  # Original consumer is not async
+    poller.producer = AsyncMock()
+    poller.consumer = MagicMock(spec=Consumer)
     poller.admin = AsyncMock()
     return poller
 

@@ -83,9 +83,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
         self._completion_queue: Queue[CompletionEvent] = Queue()
         self._workers: List[Process] = []
-        self._in_flight_count_tracker: Value[int] = Value(
-            "i", 0
-        )  # Track in-flight tasks
+        self._in_flight_count_tracker: Any = Value("i", 0)  # Track in-flight tasks
 
         self._logger = logging.getLogger(__name__)
 

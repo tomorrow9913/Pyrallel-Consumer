@@ -1,6 +1,6 @@
 from typing import Any, Awaitable, Callable, Union
 
-from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.config import KafkaConfig, ParallelConsumerConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import SystemMetrics, WorkItem
@@ -36,16 +36,20 @@ class PyrallelConsumer:
         self.config = config
         self._topic = topic
 
+        parallel_config = getattr(config, "parallel_consumer", None)
+        if parallel_config is None:
+            parallel_config = ParallelConsumerConfig()
+            setattr(self.config, "parallel_consumer", parallel_config)
+
+        execution_config = parallel_config.execution
+
         # 1. Create Execution Engine
-        self._execution_engine = create_execution_engine(
-            config.parallel_consumer.execution, worker
-        )
+        self._execution_engine = create_execution_engine(execution_config, worker)
 
         # 2. Create Work Manager
-        # Using the control plane max_in_flight limit
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
-            max_in_flight_messages=config.parallel_consumer.execution.max_in_flight_messages,
+            max_in_flight_messages=execution_config.max_in_flight_messages,
         )
 
         # 3. Create Broker Poller (The main loop)

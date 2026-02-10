@@ -17,12 +17,17 @@ def mock_kafka_config():
     config.BOOTSTRAP_SERVERS = ["broker:9092"]
     config.get_consumer_config.return_value = {"group.id": "test_group"}
     config.get_producer_config.return_value = {}
+
+    parallel_consumer_mock = MagicMock()
+    parallel_consumer_mock.poll_batch_size = 1000
+    parallel_consumer_mock.worker_pool_size = 8
+
+    execution_mock = MagicMock()
+    execution_mock.max_in_flight = 100
+    parallel_consumer_mock.execution = execution_mock
+
+    config.parallel_consumer = parallel_consumer_mock
     return config
-
-
-@pytest.fixture
-def mock_message_processor():
-    return AsyncMock()
 
 
 @pytest.fixture
@@ -52,14 +57,12 @@ def mock_offset_tracker():
 @pytest.fixture
 def broker_poller_with_mocks(
     mock_kafka_config,
-    mock_message_processor,
     mock_execution_engine,
     mock_work_manager,
 ):
     poller = BrokerPoller(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
-        message_processor=mock_message_processor,
         execution_engine=mock_execution_engine,
         work_manager=mock_work_manager,
     )
