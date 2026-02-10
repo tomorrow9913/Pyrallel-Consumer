@@ -15,6 +15,7 @@ from ..config import KafkaConfig
 from ..dto import CompletionStatus, PartitionMetrics, SystemMetrics
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
+from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
 
@@ -59,6 +60,7 @@ class BrokerPoller:
         self._shutdown_event = asyncio.Event()
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
+        self._metadata_encoder = MetadataEncoder()
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine
         )
@@ -160,10 +162,19 @@ class BrokerPoller:
                         commits_to_make.append((tp, potential_hwm))
 
                 if commits_to_make:
-                    offsets_to_commit = [
-                        KafkaTopicPartition(tp.topic, tp.partition, safe_offset + 1)
-                        for tp, safe_offset in commits_to_make
-                    ]
+                    offsets_to_commit = []
+                    for tp, safe_offset in commits_to_make:
+                        tracker = self._offset_trackers[tp]
+                        metadata = self._metadata_encoder.encode_metadata(
+                            tracker.completed_offsets, safe_offset + 1
+                        )
+                        kafka_tp = KafkaTopicPartition(
+                            tp.topic,
+                            tp.partition,
+                            safe_offset + 1,
+                            metadata=metadata,
+                        )
+                        offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(
                         self.consumer.commit,
                         offsets=offsets_to_commit,
@@ -288,10 +299,14 @@ class BrokerPoller:
             tracker.advance_high_water_mark()
             safe_offset = tracker.last_committed_offset
             if safe_offset >= 0:
+                metadata = self._metadata_encoder.encode_metadata(
+                    tracker.completed_offsets, safe_offset + 1
+                )
                 tp_to_commit = KafkaTopicPartition(
                     tp_dto.topic,
                     tp_dto.partition,
                     safe_offset + 1,
+                    metadata=metadata,
                 )
                 consumer.commit(offsets=[tp_to_commit], asynchronous=False)
 
