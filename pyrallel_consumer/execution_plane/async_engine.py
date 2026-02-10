@@ -109,12 +109,16 @@ class AsyncExecutionEngine(BaseExecutionEngine):
                 exc_info=task.exception(),
             )
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> List[CompletionEvent]:
         """
-        완료 큐에서 모든 완료 이벤트를 가져와 리스트로 반환합니다.
+        완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
         completed_events: List[CompletionEvent] = []
-        while not self._completion_queue.empty():
+        while (
+            len(completed_events) < batch_limit and not self._completion_queue.empty()
+        ):
             completed_events.append(self._completion_queue.get_nowait())
         return completed_events
 

@@ -24,10 +24,17 @@ class BaseExecutionEngine(ABC):
         """
 
     @abstractmethod
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> List[CompletionEvent]:
         """
         Polls for completed events from the execution engine.
         실행 엔진에서 완료된 이벤트를 폴링합니다.
+
+        Args:
+            batch_limit (int): 한 번의 호출에서 가져올 최대 이벤트 수.
+                Event Loop Starvation 방지를 위해 제한합니다.
+                Defaults to 1000.
 
         Returns:
             List[CompletionEvent]: 완료된 이벤트 리스트
