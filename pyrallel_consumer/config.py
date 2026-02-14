@@ -18,6 +18,11 @@ class ProcessConfig(BaseSettings):
     worker_join_timeout_ms: int = 30000
 
 
+class MetricsConfig(BaseSettings):
+    enabled: bool = True
+    port: int = 9091
+
+
 class ExecutionConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="EXECUTION_",
@@ -66,6 +71,7 @@ class KafkaConfig(BaseSettings):
     AUTO_OFFSET_RESET: Literal["earliest", "latest", "none"] = "earliest"
     ENABLE_AUTO_COMMIT: bool = False
     SESSION_TIMEOUT_MS: int = 60000
+    metrics: MetricsConfig = MetricsConfig()
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
     def get_producer_config(self) -> dict:

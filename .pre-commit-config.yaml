@@ -97,7 +97,7 @@ repos:
       - id: bandit
         name: bandit
         description: "Bandit is a tool for finding common security issues in Python code"
-        entry: bash -c 'bandit -q -lll -x 'tests/**/*.py,./contrib/,./.venv/' -r .'
+        entry: bash -c 'bandit -q -lll -x 'tests/**/*.py,./contrib/,./.venv/,./.worktrees/' -r .'
         language: system
         files: '.*\.py'
 
