@@ -101,7 +101,32 @@ PARALLEL_CONSUMER_EXECUTION_MODE=async # 또는 process
 
 ## 💡 사용법
 
-(이 섹션에는 추후 간단한 코드 사용 예시가 추가될 예정입니다.)
+### Quick Start
+
+```python
+import asyncio
+from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.consumer import PyrallelConsumer
+from pyrallel_consumer.dto import WorkItem
+
+
+async def worker(item: WorkItem) -> None:
+    print("offset=%d payload=%s" % (item.offset, item.payload))
+
+
+async def main() -> None:
+    config = KafkaConfig()
+    consumer = PyrallelConsumer(config=config, worker=worker, topic="my-topic")
+    await consumer.start()
+    try:
+        await asyncio.sleep(60)
+    finally:
+        await consumer.stop()
+
+asyncio.run(main())
+```
+
+For detailed examples including async mode, process mode, configuration tuning, and graceful shutdown patterns, see the **[`examples/`](./examples/)** directory.
 
 ## 🧪 벤치마크 실행
 
