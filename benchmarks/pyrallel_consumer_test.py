@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
@@ -11,6 +13,11 @@ from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+
+from .kafka_admin import TopicConfig, reset_topics_and_groups
+from .stats import BenchmarkResult, BenchmarkStats
 
 topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
@@ -25,11 +32,17 @@ conf: Dict[str, Any] = {
     "session.timeout.ms": 6000,
 }
 
+ExecutionMode = Literal["async", "process"]
 
-def create_topic_if_not_exists(admin_conf: Dict[str, Any], topic_name: str) -> None:
+
+def create_topic_if_not_exists(
+    admin_conf: Dict[str, Any], topic_name: str, num_partitions: int = 1
+) -> None:
     admin_client = AdminClient({"bootstrap.servers": admin_conf["bootstrap.servers"]})
     try:
-        new_topics = [NewTopic(topic_name, num_partitions=1, replication_factor=1)]
+        new_topics = [
+            NewTopic(topic_name, num_partitions=num_partitions, replication_factor=1)
+        ]
         futures = admin_client.create_topics(new_topics)
 
         for tp, future in futures.items():
@@ -82,17 +95,40 @@ class ConsumptionStats:
         return self._processed, runtime, tps
 
 
-def build_kafka_config() -> KafkaConfig:
+def _decode_payload(payload_bytes: bytes) -> None:
+    if not payload_bytes:
+        return
+    try:
+        json.loads(payload_bytes.decode("utf-8"))
+    except json.JSONDecodeError:
+        pass
+
+
+def _process_mode_worker(item: WorkItem) -> None:
+    payload_bytes = item.payload or b""
+    _decode_payload(payload_bytes)
+    time.sleep(0.005)
+
+
+def build_kafka_config(
+    *,
+    bootstrap_servers: Optional[str] = None,
+    consumer_group: Optional[str] = None,
+) -> KafkaConfig:
+    effective_conf = dict(conf)
+    if bootstrap_servers:
+        effective_conf["bootstrap.servers"] = bootstrap_servers
+    if consumer_group:
+        effective_conf["group.id"] = consumer_group
+
     kafka_config = KafkaConfig(
-        BOOTSTRAP_SERVERS=[conf["bootstrap.servers"]],
-        CONSUMER_GROUP=conf["group.id"],
-        AUTO_OFFSET_RESET=conf["auto.offset.reset"],
-        ENABLE_AUTO_COMMIT=conf["enable.auto.commit"],
-        SESSION_TIMEOUT_MS=conf["session.timeout.ms"],
+        BOOTSTRAP_SERVERS=[effective_conf["bootstrap.servers"]],
+        CONSUMER_GROUP=effective_conf["group.id"],
+        AUTO_OFFSET_RESET=effective_conf["auto.offset.reset"],
+        ENABLE_AUTO_COMMIT=effective_conf["enable.auto.commit"],
+        SESSION_TIMEOUT_MS=effective_conf["session.timeout.ms"],
     )
 
-    # Set execution specific configurations for AsyncExecutionEngine
-    kafka_config.parallel_consumer.execution.mode = "async"
     kafka_config.parallel_consumer.execution.max_in_flight = 2000
     kafka_config.parallel_consumer.execution.async_config.task_timeout_ms = 10000
 
@@ -102,50 +138,95 @@ def build_kafka_config() -> KafkaConfig:
 async def run_pyrallel_consumer_test(
     num_messages: Optional[int] = TEST_NUM_MESSAGES,
     timeout_sec: int = DEFAULT_TIMEOUT_SEC,
-) -> None:
-    create_topic_if_not_exists(conf, topic)
+    *,
+    topic_name: Optional[str] = None,
+    bootstrap_servers: Optional[str] = None,
+    consumer_group: Optional[str] = None,
+    execution_mode: ExecutionMode = "async",
+    stats_tracker: Optional[BenchmarkStats] = None,
+    num_partitions: int = 1,
+    reset_topic: bool = False,
+) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
+    effective_topic = topic_name or topic
+    effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
+    effective_group = consumer_group or conf["group.id"]
+    if reset_topic:
+        reset_topics_and_groups(
+            bootstrap_servers=effective_bootstrap,
+            topics={effective_topic: TopicConfig(num_partitions=num_partitions)},
+            consumer_groups=[effective_group],
+        )
+    override_conf = dict(conf)
+    override_conf["bootstrap.servers"] = effective_bootstrap
+    create_topic_if_not_exists(
+        override_conf,
+        effective_topic,
+        num_partitions=num_partitions,
+    )
 
-    kafka_config = build_kafka_config()
-    stats = ConsumptionStats(target=num_messages)
+    kafka_config = build_kafka_config(
+        bootstrap_servers=bootstrap_servers,
+        consumer_group=consumer_group,
+    )
+    consumption_stats = ConsumptionStats(target=num_messages)
     stop_event = asyncio.Event()
+    stats = stats_tracker
+    if stats:
+        stats.start()
 
-    # This is the actual worker function executed by the AsyncExecutionEngine
-    async def actual_benchmark_worker(item: WorkItem) -> None:
+    class BenchmarkMetricsObserver:
+        def __init__(
+            self,
+            benchmark_stats: Optional[BenchmarkStats],
+            cons_stats: ConsumptionStats,
+            completion_event: asyncio.Event,
+        ) -> None:
+            self._stats = benchmark_stats
+            self._consumption_stats = cons_stats
+            self._stop_event = completion_event
+
+        def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            self._consumption_stats.record()
+            if self._stats:
+                self._stats.record(duration_seconds)
+            if self._stats and self._stats.completed_target():
+                self._stop_event.set()
+            elif self._consumption_stats.reached_target():
+                self._stop_event.set()
+
+    metrics_observer = BenchmarkMetricsObserver(stats, consumption_stats, stop_event)
+
+    async def async_worker(item: WorkItem) -> None:
         payload_bytes = item.payload or b""
-        if payload_bytes:
-            try:
-                json.loads(payload_bytes.decode("utf-8"))
-            except json.JSONDecodeError:
-                pass
-        # Simulate some async work
-        await asyncio.sleep(0.0001)  # Small sleep to simulate work
-        stats.record()
-        if stats.reached_target():
-            stop_event.set()
+        _decode_payload(payload_bytes)
+        await asyncio.sleep(0.005)
 
-    # Build ExecutionConfig from KafkaConfig
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
+    execution_config.mode = execution_mode
 
-    # Initialize AsyncExecutionEngine with the actual worker
-    async_execution_engine = AsyncExecutionEngine(
-        config=execution_config, worker_fn=actual_benchmark_worker
-    )
+    engine: BaseExecutionEngine
+    if execution_mode == "process":
+        engine = ProcessExecutionEngine(
+            config=execution_config,
+            worker_fn=_process_mode_worker,
+        )
+    else:
+        engine = AsyncExecutionEngine(config=execution_config, worker_fn=async_worker)
 
-    # Initialize WorkManager with the ExecutionEngine
     work_manager = WorkManager(
-        execution_engine=async_execution_engine,
+        execution_engine=engine,
         max_in_flight_messages=execution_config.max_in_flight,
-    )
+        metrics_exporter=metrics_observer,
+    )  # type: ignore[call-arg]
 
-    # Initialize BrokerPoller
     broker_poller = BrokerPoller(
-        consume_topic=topic,
+        consume_topic=effective_topic,
         kafka_config=kafka_config,
-        execution_engine=async_execution_engine,
+        execution_engine=engine,
         work_manager=work_manager,
     )
 
-    print("Starting PyrallelConsumer test for topic '%s'." % topic)
+    print("Starting PyrallelConsumer test for topic '%s'." % effective_topic)
     if num_messages is not None:
         print("Target messages to process: %d" % num_messages)
     else:
@@ -181,7 +262,7 @@ async def run_pyrallel_consumer_test(
             )
             print(
                 "[diag] processed=%d in_flight=%d paused=%s | %s"
-                % (stats.processed, in_flight, paused, partition_str),
+                % (consumption_stats.processed, in_flight, paused, partition_str),
                 flush=True,
             )
 
@@ -189,15 +270,16 @@ async def run_pyrallel_consumer_test(
 
     timed_out = False
     try:
-        if num_messages is None:
-            await asyncio.wait_for(stop_event.wait(), timeout=timeout_sec)
-        else:
-            await asyncio.wait_for(stop_event.wait(), timeout=timeout_sec)
+        await asyncio.wait_for(stop_event.wait(), timeout=timeout_sec)
     except asyncio.TimeoutError:
         timed_out = True
         print(
             "\n*** Test timed out after %ds (processed %d / %s messages) ***"
-            % (timeout_sec, stats.processed, num_messages if num_messages else "∞"),
+            % (
+                timeout_sec,
+                consumption_stats.processed,
+                num_messages if num_messages else "∞",
+            ),
             flush=True,
         )
     except KeyboardInterrupt:
@@ -212,13 +294,19 @@ async def run_pyrallel_consumer_test(
 
         print("Stopping PyrallelConsumer...")
         await broker_poller.stop()
+        await engine.shutdown()
+        if stats:
+            stats.stop()
 
-        processed, runtime, tps = stats.summary()
+        processed, runtime, tps = consumption_stats.summary()
         print("\n--- PyrallelConsumer Test Summary ---")
         print("Result: %s" % ("TIMEOUT" if timed_out else "COMPLETED"))
         print("Total messages processed: %d" % processed)
         print("Total runtime: %.2f seconds" % runtime)
         print("Final TPS: %.2f" % tps)
+
+    summary = stats.summary() if stats else None
+    return timed_out, consumption_stats, summary
 
 
 if __name__ == "__main__":
@@ -226,5 +314,6 @@ if __name__ == "__main__":
         run_pyrallel_consumer_test(
             num_messages=TEST_NUM_MESSAGES,
             timeout_sec=DEFAULT_TIMEOUT_SEC,
+            reset_topic=True,
         )
     )

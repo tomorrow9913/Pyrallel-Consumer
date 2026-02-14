@@ -1,14 +1,23 @@
 import asyncio
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import CompletionEvent, OffsetRange
+from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, OffsetRange
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
-from pyrallel_consumer.execution_plane.base import (
-    BaseExecutionEngine,  # Assuming this path for now
-)
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+
+
+class MetricsExporter(Protocol):
+    def observe_completion(
+        self,
+        tp: DtoTopicPartition,
+        status: CompletionStatus,
+        duration_seconds: float,
+    ) -> None:
+        ...
 
 
 class WorkManager:
@@ -17,7 +26,10 @@ class WorkManager:
     """
 
     def __init__(
-        self, execution_engine: BaseExecutionEngine, max_in_flight_messages: int = 1000
+        self,
+        execution_engine: BaseExecutionEngine,
+        max_in_flight_messages: int = 1000,
+        metrics_exporter: Optional[MetricsExporter] = None,
     ):
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
@@ -27,10 +39,12 @@ class WorkManager:
         self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
         # Track work items by their unique ID
         self._in_flight_work_items: Dict[str, WorkItem] = {}
+        self._dispatch_timestamps: Dict[str, float] = {}
 
         self._max_in_flight_messages = max_in_flight_messages
         self._current_in_flight_count = 0
         self._rebalancing = False  # New flag to indicate rebalancing state
+        self._metrics_exporter = metrics_exporter
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]) -> None:
         """
@@ -65,6 +79,16 @@ class WorkManager:
         for tp in revoked_tps:
             self._offset_trackers.pop(tp, None)
             self._virtual_partition_queues.pop(tp, None)
+        if revoked_tps:
+            revoked_tp_set = set(revoked_tps)
+            stale_ids = [
+                work_id
+                for work_id, item in self._in_flight_work_items.items()
+                if item.tp in revoked_tp_set
+            ]
+            for work_id in stale_ids:
+                self._in_flight_work_items.pop(work_id, None)
+                self._dispatch_timestamps.pop(work_id, None)
         self._rebalancing = True  # Rebalancing starts when partitions are revoked
 
     async def submit_message(
@@ -177,6 +201,7 @@ class WorkManager:
                 try:
                     await self._execution_engine.submit(item_to_submit)
                     self._current_in_flight_count += 1
+                    self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
                 except Exception as e:
                     print("Error submitting work item %s: %s" % (item_to_submit.id, e))
                     if queue_to_dequeue_from:
@@ -214,6 +239,12 @@ class WorkManager:
                 ):  # Now CompletionEvent has 'id'
                     del self._in_flight_work_items[event.id]
                     self._current_in_flight_count -= 1
+                    dispatch_time = self._dispatch_timestamps.pop(event.id, None)
+                    if dispatch_time is not None and self._metrics_exporter is not None:
+                        duration = max(0.0, time.perf_counter() - dispatch_time)
+                        self._metrics_exporter.observe_completion(
+                            event.tp, event.status, duration
+                        )
                     # After processing a completion, try to submit more tasks
                     await self.schedule()
             else:
@@ -223,6 +254,8 @@ class WorkManager:
                     "Warning: Completion event for unmanaged TopicPartition %s"
                     % event.tp
                 )
+            if event.id in self._dispatch_timestamps:
+                self._dispatch_timestamps.pop(event.id, None)
         return completed_events
 
     def get_blocking_offsets(self) -> Dict[DtoTopicPartition, Optional[OffsetRange]]:

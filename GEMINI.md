@@ -317,6 +317,17 @@ PRD 문서(prd.md, prd_dev.md)와 실제 구현 간의 설계 불일치를 분�
 `prd_dev.md` 기반의 3계층 아키텍처와 TDD 전략, 그리고 Observability 설계를 반영하여
 다음과 같은 단계적 개발 계획을 수립합니다.
 
+### 2026-02-14 – 벤치마크 밸리데이션 & 리셋 준비
+- `uv run pytest` 결과: 단위/통합 테스트는 통과했으나 `tests/e2e/test_ordering.py` 내 4개 시나리오가 실패했습니다. 기존 토픽(`e2e_ordering_test_topic`)이 이전 메시지를 유지하여 순서/카운트가 어긋나는 상태입니다. 토픽/컨슈머 그룹 리셋 기능으로 재시도 예정입니다.
+- `pre-commit run --all-files` 결과: `pretty-format-toml` 훅이 `pkg_resources` 미탑재로 중단되어 훅 전용 venv의 `setuptools` 버전을 69.5.1로 낮춰 해결했습니다. 여전히 `tests/unit/execution_plane/test_base_execution_engine.py`의 mypy 경고는 기존 테스트 더블 제한으로 남아 있습니다.
+- `benchmarks/kafka_admin.py` + `tests/unit/benchmarks/test_kafka_admin.py`를 추가하여 AdminClient 기반 리셋 헬퍼를 구현했습니다. Unknown topic/group 오류는 무시하고 나머지는 재시도 후 예외를 상승시킵니다. 관련 단위 테스트는 green입니다.
+- `benchmarks/run_parallel_benchmark.py`가 기본으로 토픽/컨슈머 그룹을 삭제 후 재생성하며, `--skip-reset` 플래그로 비활성화할 수 있습니다. `README.md` 벤치마크 섹션에 해당 행동을 문서화했고, `benchmarks/pyrparallel_consumer_test.py`는 수동 실행 시 동일 헬퍼를 켤 수 있는 `reset_topic` 옵션을 노출합니다.
+- 장시간 워커 부하를 실험할 수 있도록 `run_parallel_benchmark.py`에 `--timeout-sec` CLI 옵션을 추가해 async/process 라운드의 타임아웃을 조정할 수 있게 했습니다. 해당 옵션을 README에 문서화했습니다.
+- 전체 `uv run pytest`는 `tests/e2e/test_ordering.py` 네 케이스가 여전히 기존 토픽 잔존 메시지로 실패(10k 메시지 요청 대비 11k 처리)했으며, 나머지 86개 테스트는 통과했습니다.
+- `pre-commit run --all-files`는 기존 mypy 경고(테스트 더블 시그니처 불일치)만 남고 전부 green입니다.
+- `uv run python benchmarks/run_parallel_benchmark.py --bootstrap-servers localhost:9092 --num-messages 2000 --num-keys 50 --num-partitions 4`를 실행해 baseline/async/process 라운드를 모두 성공적으로 완료했습니다. 결과 JSON은 `benchmarks/results/20260214T053950Z.json`에 저장되었습니다.
+- **ProcessExecutionEngine 종료 hang 해결 (2026-02-14)**: `pyrparallel_consumer_test.py` `finally` 블록에 `await engine.shutdown()`을 추가해 워커 종료용 sentinel을 전송하도록 수정. `uv run python benchmarks/run_parallel_benchmark.py --num-messages 1000 --num-keys 10 --num-partitions 4 --skip-baseline --skip-async --bootstrap-servers localhost:9092 --topic-prefix pyrallel-benchmark-ci --process-group process-benchmark-group-ci` 실행 시 Process 라운드가 정상 종료되고 프로세스가 자동 종료됨을 확인(결과 JSON: `benchmarks/results/20260214T071451Z.json`).
+
 현재 `BrokerPoller`의 핵심 기능 구현은 완료되었으나, 통합 테스트 단계에서 난관에 봉착했습니다. 따라서 다음 계획은 테스트를 통과시키는 데 집중합니다.
 
 1.  **`test_run_consumer_loop_basic_flow` 통합 테스트 디버깅 및 수정 (완료)**
@@ -466,7 +477,7 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 ### 5.8 E2E 테스트 구현 (2026-02-10)
 
-`tests/e2e/test_ordering.py`에 전체 시스템의 E2E 테스트를 구현했습니다. 실제 Kafka 브로커와 `producer.py`를 사용하여 메시지를 생성하고, `BrokerPoller` → `WorkManager` → `AsyncExecutionEngine` 전체 파이프라인을 검증합니다.
+`tests/e2e/test_ordering.py`에 전체 시스템의 E2E 테스트를 구현했습니다. 실제 Kafka 브로커와 `benchmarks/producer.py`를 사용하여 메시지를 생성하고, `BrokerPoller` → `WorkManager` → `AsyncExecutionEngine` 전체 파이프라인을 검증합니다.
 
 #### 테스트 인프라
 - **`ResultTracker`**: 키별(`results`) 및 파티션별(`partition_results`) 처리 순서를 기록하고 검증하는 헬퍼 클래스
@@ -481,7 +492,7 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 5. **`test_offset_commit_correctness`**: 랜덤 지연 워커로 500개 메시지 처리 후, Kafka에 커밋된 오프셋이 실제 처리된 최대 오프셋+1을 초과하지 않는지 검증. 인라인 구성 사용
 
 #### 주요 버그 수정
-- `producer.py` 호출 시 `--topic` 인자 누락 수정 (기본값 `test_topic` 대신 `e2e_ordering_test_topic` 사용)
+- `benchmarks/producer.py` 호출 시 `--topic` 인자 누락 수정 (기본값 `test_topic` 대신 `e2e_ordering_test_topic` 사용)
 - `test_offset_commit_correctness`의 `stop_event` 접근 불가 버그 수정: 커스텀 `worker_fn`을 `run_ordering_test()`에 전달할 경우 내부 `stop_event`에 접근할 수 없어 항상 타임아웃되던 문제를 인라인 구성으로 리팩토링하여 해결
 
 ### 5.9 운영 안정성 개선 (2026-02-10)

@@ -7,6 +7,8 @@ from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic  # Corrected import for NewTopic
 
+from benchmarks.stats import BenchmarkResult, BenchmarkStats
+
 # Kafka configuration for KRAFT mode
 conf: Dict[str, Any] = {
     "bootstrap.servers": "localhost:9092",  # Connect to Kafka running locally via Docker Compose (external listener)
@@ -49,10 +51,24 @@ def create_topic_if_not_exists(admin_conf, topic_name):
         print(f"An error occurred during topic check/creation: {e}")
 
 
-def consume_messages(num_messages_to_process=None):
-    consumer = Consumer(conf)
+def consume_messages(
+    num_messages_to_process=None,
+    *,
+    bootstrap_servers: str | None = None,
+    topic_name: str | None = None,
+    group_id: str | None = None,
+    stats: BenchmarkStats | None = None,
+) -> BenchmarkResult | None:
+    effective_topic = topic_name or topic
+    consumer_conf = dict(conf)
+    if bootstrap_servers:
+        consumer_conf["bootstrap.servers"] = bootstrap_servers
+    if group_id:
+        consumer_conf["group.id"] = group_id
 
-    consumer.subscribe([topic])
+    consumer = Consumer(consumer_conf)
+
+    consumer.subscribe([effective_topic])
     print(f"Starting baseline consumer for topic '{topic}'.")
     print(
         f"Will process up to {num_messages_to_process} messages if specified, otherwise indefinitely."
@@ -60,6 +76,9 @@ def consume_messages(num_messages_to_process=None):
 
     messages_processed = 0
     start_time = time.time()
+
+    if stats:
+        stats.start()
 
     try:
         while True:
@@ -102,9 +121,12 @@ def consume_messages(num_messages_to_process=None):
                 )
                 continue
 
+            process_start = time.perf_counter()
             msg.value().decode("utf-8")
             # Simulate message processing time
             # asyncio.sleep(0.0001) # Note: consumer.poll is synchronous, so asyncio.sleep is not appropriate here.
+            if stats:
+                stats.record(time.perf_counter() - process_start)
 
             messages_processed += 1
 
@@ -135,6 +157,8 @@ def consume_messages(num_messages_to_process=None):
         consumer.commit(asynchronous=False)  # Synchronous commit for finalization
         consumer.close()
         end_time = time.time()
+        if stats:
+            stats.stop()
         print(
             f"Consumer closed. Total messages processed (approx): {messages_processed}"
         )
@@ -143,6 +167,8 @@ def consume_messages(num_messages_to_process=None):
             tps_final = messages_processed / runtime if runtime > 0 else 0
             print(f"Total runtime: {runtime:.2f} seconds")
             print(f"Final TPS: {tps_final:.2f}")
+
+    return stats.summary() if stats else None
 
 
 if __name__ == "__main__":
