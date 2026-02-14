@@ -5,6 +5,7 @@ import random
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import pytest
@@ -25,6 +26,7 @@ async def _dummy_message_processor(topic: str, batch: List[dict[str, Any]]) -> N
 
 # --- Test Configuration ---
 E2E_TOPIC = "e2e_ordering_test_topic"
+PRODUCER_SCRIPT = Path(__file__).resolve().parents[2] / "benchmarks" / "producer.py"
 E2E_CONF = {
     "bootstrap.servers": "localhost:9092",
     "group.id": "e2e_test_group",
@@ -183,7 +185,7 @@ async def run_ordering_test(
 
     producer_process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "producer.py",
+        str(PRODUCER_SCRIPT),
         "--num-messages",
         str(num_messages),
         "--num-keys",
@@ -291,7 +293,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
 
     producer_process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "producer.py",
+        str(PRODUCER_SCRIPT),
         "--num-messages",
         str(num_messages),
         "--num-keys",
@@ -357,7 +359,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
 
     producer_process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "producer.py",
+        str(PRODUCER_SCRIPT),
         "--num-messages",
         str(num_messages),
         "--num-keys",
