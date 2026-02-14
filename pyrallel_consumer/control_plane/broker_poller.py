@@ -3,7 +3,7 @@
 
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, cast
+from typing import Dict, List, Optional, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -39,14 +39,10 @@ class BrokerPoller:
         kafka_config: KafkaConfig,
         execution_engine: BaseExecutionEngine,
         work_manager: Optional[WorkManager] = None,
-        message_processor: Optional[
-            Callable[[str, List[dict[str, Any]]], Awaitable[None]]
-        ] = None,
     ) -> None:
         self._consume_topic = consume_topic
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
-        self._message_processor = message_processor
 
         self._batch_size = self._kafka_config.parallel_consumer.poll_batch_size
         self._worker_pool_size = self._kafka_config.parallel_consumer.worker_pool_size

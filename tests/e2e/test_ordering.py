@@ -6,7 +6,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import pytest
 from confluent_kafka.admin import AdminClient
@@ -18,11 +18,6 @@ from pyrallel_consumer.control_plane.broker_poller import BrokerPoller, Ordering
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
-
-
-async def _dummy_message_processor(topic: str, batch: List[dict[str, Any]]) -> None:
-    return
-
 
 # --- Test Configuration ---
 E2E_TOPIC = "e2e_ordering_test_topic"
@@ -136,9 +131,6 @@ async def run_ordering_test(
     worker_fn=None,
     max_in_flight: Optional[int] = None,
     timeout: int = 60,
-    message_processor: Optional[
-        Callable[[str, List[dict[str, Any]]], Awaitable[None]]
-    ] = None,
 ):
     stop_event = asyncio.Event()
     result_tracker = ResultTracker()
@@ -179,7 +171,6 @@ async def run_ordering_test(
         kafka_config=kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=message_processor or _dummy_message_processor,
     )
     poller.ORDERING_MODE = ordering_mode
 
@@ -287,7 +278,6 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
         kafka_config=base_kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=_dummy_message_processor,
     )
     poller.ORDERING_MODE = OrderingMode.KEY_HASH
 
@@ -353,7 +343,6 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
         kafka_config=base_kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=_dummy_message_processor,
     )
     poller.ORDERING_MODE = OrderingMode.KEY_HASH
 
