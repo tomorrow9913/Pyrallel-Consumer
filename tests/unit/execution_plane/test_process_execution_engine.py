@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+import pytest_asyncio
 
 from pyrallel_consumer.config import AsyncConfig, ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
@@ -38,10 +39,12 @@ class TestProcessExecutionEngine(BaseExecutionEngineContractTest):
             ),  # Used in shutdown timeout for consistency
         )
 
-    @pytest.fixture
-    def engine(self, config):
+    @pytest_asyncio.fixture
+    async def engine(self, config):
         # ProcessExecutionEngine needs a synchronous worker function
-        return ProcessExecutionEngine(config=config, worker_fn=sync_worker_fn)
+        eng = ProcessExecutionEngine(config=config, worker_fn=sync_worker_fn)
+        yield eng
+        await eng.shutdown()
 
     @pytest.fixture
     def mock_work_item(self):

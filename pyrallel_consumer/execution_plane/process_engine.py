@@ -93,6 +93,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._in_flight_count: int = 0
 
         self._logger = logging.getLogger(__name__)
+        self._is_shutdown: bool = False
 
         self._log_queue: Queue[logging.LogRecord] = Queue()
         main_handlers = tuple(logging.getLogger().handlers)
@@ -157,7 +158,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     async def shutdown(self) -> None:
         """
         실행 엔진을 정상적으로 종료합니다. 모든 워커 프로세스에 종료 시그널을 보내고 대기합니다.
+        이 메서드는 멱등(idempotent)하며, 여러 번 호출해도 안전합니다.
         """
+        if self._is_shutdown:
+            _logger.debug(
+                "ProcessExecutionEngine.shutdown() called but already shut down. Skipping."
+            )
+            return
+        self._is_shutdown = True
+
         _logger.info("Initiating ProcessExecutionEngine shutdown.")
         # Send sentinel to all workers to signal shutdown
         for _ in self._workers:
