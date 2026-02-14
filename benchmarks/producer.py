@@ -48,10 +48,16 @@ def produce_messages(
     num_keys: int,
     num_partitions: int,
     topic_name: str,
+    bootstrap_servers: str | None = None,
 ) -> None:
     """지정된 수의 메시지와 키를 사용하여 테스트 데이터를 생성하고 Kafka에 전송합니다."""
-    producer = Producer(conf)
-    create_topic_if_not_exists(conf, topic_name, num_partitions=num_partitions)
+    producer_conf = dict(conf)
+    if bootstrap_servers:
+        producer_conf["bootstrap.servers"] = bootstrap_servers
+    producer = Producer(producer_conf)
+    topic_conf = dict(conf)
+    topic_conf["bootstrap.servers"] = producer_conf["bootstrap.servers"]
+    create_topic_if_not_exists(topic_conf, topic_name, num_partitions=num_partitions)
 
     print(f"Starting to produce {num_messages} messages with {num_keys} unique keys...")
     start_time = time.time()
@@ -128,6 +134,12 @@ if __name__ == "__main__":
         default=DEFAULT_TOPIC,
         help="Topic name to produce to.",
     )
+    parser.add_argument(
+        "--bootstrap-servers",
+        type=str,
+        default=None,
+        help="Optional bootstrap servers override.",
+    )
     args = parser.parse_args()
 
     produce_messages(
@@ -135,4 +147,5 @@ if __name__ == "__main__":
         num_keys=args.num_keys,
         num_partitions=args.num_partitions,
         topic_name=args.topic,
+        bootstrap_servers=args.bootstrap_servers,
     )
