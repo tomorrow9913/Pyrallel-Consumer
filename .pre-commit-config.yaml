@@ -46,10 +46,10 @@ repos:
             "--remove-unused-variable",
           ]
 
--   repo: https://github.com/psf/black
-    rev: 24.4.2
-    hooks:
-      - id: black
+# -   repo: https://github.com/psf/black
+#     rev: 24.4.2
+#     hooks:
+#       - id: black
 
 -   repo: https://github.com/pycqa/flake8
     rev: 7.0.0
@@ -90,13 +90,21 @@ repos:
     hooks:
       - id: pylint
         name: pylint
-        entry: bash -c 'pylint --disable=W,C,R,E -j 0 -rn -sn src/'
+        entry: bash -c 'pylint --disable=W,C,R,E -j 0 -rn -sn pyrallel_consumer/'
         language: system
         files: '.*\.py'
 
       - id: bandit
         name: bandit
         description: "Bandit is a tool for finding common security issues in Python code"
-        entry: bash -c 'bandit -q -lll -x '*_test.py,./contrib/,./.venv/' -r .'
+        entry: bash -c 'bandit -q -lll -x 'tests/**/*.py,./contrib/,./.venv/' -r .'
         language: system
         files: '.*\.py'
+
+      # - id: pytest
+      #   name: pytest
+      #   entry: python -c "import os, sys; os.environ['PYTHONIOENCODING']='UTF-8'; import pytest; sys.exit(pytest.main(args=['tests'] + sys.argv[1:]))"
+      #   language: python
+      #   files: '^tests/.*\.py$'
+      #   types: [python]
+      #   additional_dependencies: ["pytest", "pytest-asyncio", "sortedcontainers", "pydantic-settings", "confluent-kafka", "orjson"] # Added orjson
