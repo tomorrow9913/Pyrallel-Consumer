@@ -17,6 +17,14 @@ class CompletionStatus(Enum):
     FAILURE = "failure"
 
 
+class OrderingMode(Enum):
+    """Ordering guarantees supported by the consumer."""
+
+    KEY_HASH = "key_hash"
+    PARTITION = "partition"
+    UNORDERED = "unordered"
+
+
 @dataclass(frozen=True)
 class TopicPartition:
     """
