@@ -4,7 +4,12 @@ import uuid
 from typing import Any, Dict, List, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, OffsetRange
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    OffsetRange,
+    OrderingMode,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
@@ -30,6 +35,7 @@ class WorkManager:
         execution_engine: BaseExecutionEngine,
         max_in_flight_messages: int = 1000,
         metrics_exporter: Optional[MetricsExporter] = None,
+        ordering_mode: OrderingMode = OrderingMode.UNORDERED,
     ):
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
@@ -45,6 +51,9 @@ class WorkManager:
         self._current_in_flight_count = 0
         self._rebalancing = False  # New flag to indicate rebalancing state
         self._metrics_exporter = metrics_exporter
+        self._ordering_mode = ordering_mode
+        self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
+        self._partitions_in_flight: set[DtoTopicPartition] = set()
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]) -> None:
         """
@@ -89,6 +98,14 @@ class WorkManager:
             for work_id in stale_ids:
                 self._in_flight_work_items.pop(work_id, None)
                 self._dispatch_timestamps.pop(work_id, None)
+            if self._ordering_mode == OrderingMode.KEY_HASH:
+                self._keys_in_flight = {
+                    (tp_key, key)
+                    for tp_key, key in self._keys_in_flight
+                    if tp_key not in revoked_tp_set
+                }
+            elif self._ordering_mode == OrderingMode.PARTITION:
+                self._partitions_in_flight -= revoked_tp_set
         self._rebalancing = True  # Rebalancing starts when partitions are revoked
 
     async def submit_message(
@@ -125,6 +142,11 @@ class WorkManager:
         await virtual_partition_queue.put(work_item)
         self._in_flight_work_items[work_item_id] = work_item  # Track all work items
 
+        # Keep WorkManager's OffsetTracker in sync so that get_blocking_offsets()
+        # can compute gaps correctly and guide the scheduling policy.
+        if tp in self._offset_trackers:
+            self._offset_trackers[tp].update_last_fetched_offset(offset)
+
         # Attempt to submit to the execution engine
         # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
 
@@ -138,13 +160,13 @@ class WorkManager:
         Returns:
             None
         """
+        blocking_offsets = self.get_blocking_offsets()
+
         while True:
             if self._current_in_flight_count >= self._max_in_flight_messages:
                 return
             if self._rebalancing:
                 return
-
-            blocking_offsets = self.get_blocking_offsets()
 
             best_candidate_item: Optional[WorkItem] = None
             best_candidate_queue: Optional[asyncio.Queue[WorkItem]] = None
@@ -158,11 +180,21 @@ class WorkManager:
                     if queue.empty():
                         continue
 
-                    try:
-                        peek_item = await queue.get()
-                        await queue.put(peek_item)
-                    except asyncio.QueueEmpty:
+                    if (
+                        self._ordering_mode == OrderingMode.KEY_HASH
+                        and (tp, key) in self._keys_in_flight
+                    ):
                         continue
+
+                    if (
+                        self._ordering_mode == OrderingMode.PARTITION
+                        and tp in self._partitions_in_flight
+                    ):
+                        continue
+
+                    # Non-destructive peek: read front of internal deque
+                    # without modifying the queue.
+                    peek_item: WorkItem = queue._queue[0]  # type: ignore[attr-defined]
 
                     is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
 
@@ -191,10 +223,10 @@ class WorkManager:
             queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
 
             if best_candidate_item and best_candidate_queue:
-                item_to_submit = await best_candidate_queue.get()
+                item_to_submit = best_candidate_queue.get_nowait()
                 queue_to_dequeue_from = best_candidate_queue
             elif first_non_blocking_item_seen and first_non_blocking_queue_seen:
-                item_to_submit = await first_non_blocking_queue_seen.get()
+                item_to_submit = first_non_blocking_queue_seen.get_nowait()
                 queue_to_dequeue_from = first_non_blocking_queue_seen
 
             if item_to_submit:
@@ -202,6 +234,12 @@ class WorkManager:
                     await self._execution_engine.submit(item_to_submit)
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
+                    if self._ordering_mode == OrderingMode.KEY_HASH:
+                        self._keys_in_flight.add(
+                            (item_to_submit.tp, item_to_submit.key)
+                        )
+                    elif self._ordering_mode == OrderingMode.PARTITION:
+                        self._partitions_in_flight.add(item_to_submit.tp)
                 except Exception as e:
                     print("Error submitting work item %s: %s" % (item_to_submit.id, e))
                     if queue_to_dequeue_from:
@@ -237,6 +275,14 @@ class WorkManager:
                 if (
                     event.id in self._in_flight_work_items
                 ):  # Now CompletionEvent has 'id'
+                    if self._ordering_mode == OrderingMode.KEY_HASH:
+                        completed_item = self._in_flight_work_items[event.id]
+                        self._keys_in_flight.discard(
+                            (completed_item.tp, completed_item.key)
+                        )
+                    elif self._ordering_mode == OrderingMode.PARTITION:
+                        completed_item = self._in_flight_work_items[event.id]
+                        self._partitions_in_flight.discard(completed_item.tp)
                     del self._in_flight_work_items[event.id]
                     self._current_in_flight_count -= 1
                     dispatch_time = self._dispatch_timestamps.pop(event.id, None)

@@ -2,8 +2,7 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
-from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, cast
+from typing import Dict, List, Optional, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -12,7 +11,7 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import CompletionStatus, PartitionMetrics, SystemMetrics
+from ..dto import CompletionStatus, OrderingMode, PartitionMetrics, SystemMetrics
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from .metadata_encoder import MetadataEncoder
@@ -20,14 +19,6 @@ from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
 
 logger = LogManager.get_logger(__name__)
-
-
-class OrderingMode(Enum):
-    """Ordering guarantees supported by the poller."""
-
-    KEY_HASH = "key_hash"
-    PARTITION = "partition"
-    UNORDERED = "unordered"
 
 
 class BrokerPoller:
@@ -39,14 +30,10 @@ class BrokerPoller:
         kafka_config: KafkaConfig,
         execution_engine: BaseExecutionEngine,
         work_manager: Optional[WorkManager] = None,
-        message_processor: Optional[
-            Callable[[str, List[dict[str, Any]]], Awaitable[None]]
-        ] = None,
     ) -> None:
         self._consume_topic = consume_topic
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
-        self._message_processor = message_processor
 
         self._batch_size = self._kafka_config.parallel_consumer.poll_batch_size
         self._worker_pool_size = self._kafka_config.parallel_consumer.worker_pool_size
@@ -62,7 +49,8 @@ class BrokerPoller:
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
         self._work_manager = work_manager or WorkManager(
-            execution_engine=self._execution_engine
+            execution_engine=self._execution_engine,
+            ordering_mode=self.ORDERING_MODE,
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = (
