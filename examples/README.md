@@ -1,45 +1,62 @@
-# Pyrallel Consumer Examples / 예제
+# Pyrallel Consumer Examples
 
-This directory contains executable examples demonstrating the two core modes of Pyrallel Consumer.
-이 디렉토리는 Pyrallel Consumer의 두 가지 핵심 모드를 보여주는 실행 가능한 예제 코드를 포함하고 있습니다.
+This directory contains runnable examples demonstrating how to use Pyrallel Consumer.
 
-## Prerequisites / 사전 요구사항
+## Prerequisites
 
-Ensure you have a Kafka broker running locally on `localhost:9092` and a topic named `example-topic`.
-로컬 환경의 `localhost:9092`에 Kafka 브로커가 실행 중이어야 하며, `example-topic`이라는 토픽이 생성되어 있어야 합니다.
+1. A running Kafka broker (default: `localhost:9092`)
+2. Install dependencies:
+   ```bash
+   uv pip install -r requirements.txt
+   ```
+3. Produce test messages (using the bundled producer script):
+   ```bash
+   uv run python benchmarks/producer.py --num-messages 1000 --num-keys 50 --topic demo
+   ```
 
-```bash
-# Create topic / 토픽 생성
-kafka-topics --create --topic example-topic --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1
-```
+## Examples
 
-## Examples / 예제 목록
+### `async_simple.py` — Async Execution Engine
 
-### 1. Async IO Consumer (`examples/async_simple.py`)
-*   **Use Case**: I/O bound tasks like API calls, database queries, or network requests.
-*   **Mechanism**: Uses Python `asyncio` to handle thousands of concurrent tasks efficiently within a single process.
-*   **Key Config**: `mode="async"`, `task_timeout_ms`.
-*   **사용 사례**: API 호출, 데이터베이스 쿼리, 네트워크 요청과 같은 I/O 대기 중심의 작업.
-*   **작동 방식**: Python `asyncio`를 사용하여 단일 프로세스 내에서 수천 개의 동시 작업을 효율적으로 처리합니다.
-
-### 2. CPU Bound Process Consumer (`examples/process_cpu.py`)
-*   **Use Case**: CPU heavy tasks like image processing, complex calculations, or ML inference.
-*   **Mechanism**: Uses `multiprocessing` to bypass the GIL (Global Interpreter Lock). Spawns separate worker processes.
-*   **Key Config**: `mode="process"`, `process_count`.
-*   **Note**: The worker function must be top-level and picklable.
-*   **사용 사례**: 이미지 처리, 복잡한 연산, 머신러닝 추론 등 CPU 자원을 많이 사용하는 작업.
-*   **작동 방식**: `multiprocessing`을 사용하여 GIL(Global Interpreter Lock) 제약을 우회하고 별도의 워커 프로세스를 생성합니다.
-*   **주의**: 워커 함수는 직렬화(pickle) 가능해야 하므로 최상위 레벨에 정의되어야 합니다.
-
-## Running / 실행 방법
+Demonstrates the recommended async mode using `PyrallelConsumer` facade. Best for I/O-bound workloads (HTTP calls, database queries, file I/O).
 
 ```bash
-# Set Python path to include the library / 라이브러리 경로 설정
-export PYTHONPATH=$PYTHONPATH:.
-
-# Run Async Example / Async 예제 실행
-python examples/async_simple.py
-
-# Run Process Example / Process 예제 실행
-python examples/process_cpu.py
+uv run python examples/async_simple.py
 ```
+
+### `process_cpu.py` — Process Execution Engine
+
+Demonstrates multiprocessing mode for CPU-bound workloads. Uses micro-batching to reduce IPC overhead.
+
+```bash
+uv run python examples/process_cpu.py
+```
+
+## Configuration
+
+All examples use environment variables or `.env` file for Kafka configuration. Key settings:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
+| `KAFKA_CONSUMER_GROUP` | `pyrallel-consumer-group` | Consumer group ID |
+| `PARALLEL_CONSUMER_EXECUTION__MODE` | `async` | `async` or `process` |
+| `PARALLEL_CONSUMER_EXECUTION__MAX_IN_FLIGHT` | `1000` | Max concurrent messages |
+
+See `pyrallel_consumer/config.py` for the full configuration schema.
+
+## Tuning Guide
+
+### Async Mode (I/O-bound)
+- Increase `max_in_flight` to improve throughput for high-latency workers
+- Set `async_config.task_timeout_ms` to match your SLA
+
+### Process Mode (CPU-bound)
+- `process_config.process_count`: Match your CPU core count
+- `process_config.batch_size`: Larger batches reduce IPC overhead but increase latency
+  - I/O-bound workers: `batch_size=16-32`
+  - CPU-bound workers: `batch_size=64-128`
+- `process_config.max_batch_wait_ms`: Lower = less latency, higher = better batching
+  - Real-time: `1-5ms`
+  - Throughput-optimized: `10-50ms`
+- `process_config.queue_size`: Should be `>= batch_size * process_count * 2`

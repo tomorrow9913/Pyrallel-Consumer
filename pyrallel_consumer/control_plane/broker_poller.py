@@ -2,6 +2,7 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
+from enum import Enum
 from typing import Dict, List, Optional, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
