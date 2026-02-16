@@ -12,7 +12,7 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import CompletionStatus, PartitionMetrics, SystemMetrics
+from ..dto import CompletionStatus, OrderingMode, PartitionMetrics, SystemMetrics
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from .metadata_encoder import MetadataEncoder
@@ -20,14 +20,6 @@ from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
 
 logger = LogManager.get_logger(__name__)
-
-
-class OrderingMode(Enum):
-    """Ordering guarantees supported by the poller."""
-
-    KEY_HASH = "key_hash"
-    PARTITION = "partition"
-    UNORDERED = "unordered"
 
 
 class BrokerPoller:
@@ -58,7 +50,8 @@ class BrokerPoller:
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
         self._work_manager = work_manager or WorkManager(
-            execution_engine=self._execution_engine
+            execution_engine=self._execution_engine,
+            ordering_mode=self.ORDERING_MODE,
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = (
