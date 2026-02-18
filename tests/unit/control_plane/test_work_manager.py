@@ -251,6 +251,7 @@ async def test_poll_completed_events(
             epoch=1,
             status=CompletionStatus.SUCCESS,
             error=None,
+            attempt=1,
         )
         event2 = CompletionEvent(
             id=work_item_id_2,
@@ -259,6 +260,7 @@ async def test_poll_completed_events(
             epoch=1,
             status=CompletionStatus.SUCCESS,
             error=None,
+            attempt=1,
         )
         mock_execution_engine.poll_completed_events.return_value = [event1, event2]
 

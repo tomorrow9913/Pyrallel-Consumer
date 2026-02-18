@@ -89,6 +89,7 @@ async def test_key_hash_unblocks_after_completion(mock_engine, tp):
         epoch=1,
         status=CompletionStatus.SUCCESS,
         error=None,
+        attempt=1,
     )
     mock_engine.poll_completed_events.return_value = [completion]
     await wm.poll_completed_events()
@@ -187,6 +188,7 @@ async def test_partition_unblocks_after_completion(mock_engine, tp):
         epoch=1,
         status=CompletionStatus.SUCCESS,
         error=None,
+        attempt=1,
     )
     mock_engine.poll_completed_events.return_value = [completion]
     await wm.poll_completed_events()
