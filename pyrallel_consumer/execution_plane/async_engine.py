@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import logging
+import random
 from asyncio import Semaphore, Task
 from collections.abc import Callable
 from typing import Any, List, Optional, Set
@@ -60,34 +61,58 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """
         status = CompletionStatus.SUCCESS
         error: Optional[str] = None
+        attempt = 0
 
-        try:
-            # Execute the user's worker function with timeout
-            await asyncio.wait_for(
-                self._worker_fn(work_item),
-                timeout=self._config.async_config.task_timeout_ms / 1000.0,
-            )
-        except asyncio.TimeoutError:
-            status = CompletionStatus.FAILURE
-            error = "Task for offset %d timed out." % work_item.offset
-            self._logger.error(error)
-        except Exception as e:
-            status = CompletionStatus.FAILURE
-            error = str(e)
-            self._logger.exception(
-                "Task for offset %d failed with exception: %s"
-                % (work_item.offset, error)
-            )
-        finally:
-            completion_event = CompletionEvent(
-                id=work_item.id,
-                tp=work_item.tp,
-                offset=work_item.offset,
-                epoch=work_item.epoch,
-                status=status,
-                error=error,
-            )
-            await self._completion_queue.put(completion_event)
+        for attempt in range(1, self._config.max_retries + 1):
+            try:
+                await asyncio.wait_for(
+                    self._worker_fn(work_item),
+                    timeout=self._config.async_config.task_timeout_ms / 1000.0,
+                )
+                status = CompletionStatus.SUCCESS
+                error = None
+                break
+            except asyncio.TimeoutError:
+                status = CompletionStatus.FAILURE
+                error = "Task for offset %d timed out." % work_item.offset
+                self._logger.error(error)
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+            except Exception as e:
+                status = CompletionStatus.FAILURE
+                error = str(e)
+                self._logger.exception(
+                    "Task for offset %d failed with exception: %s"
+                    % (work_item.offset, error)
+                )
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+
+        completion_event = CompletionEvent(
+            id=work_item.id,
+            tp=work_item.tp,
+            offset=work_item.offset,
+            epoch=work_item.epoch,
+            status=status,
+            error=error,
+            attempt=attempt,
+        )
+        await self._completion_queue.put(completion_event)
+
+    async def _apply_backoff(self, attempt: int) -> None:
+        base_delay_ms = self._config.retry_backoff_ms
+
+        if self._config.exponential_backoff:
+            delay_ms = base_delay_ms * (2 ** (attempt - 1))
+            delay_ms = min(delay_ms, self._config.max_retry_backoff_ms)
+        else:
+            delay_ms = base_delay_ms
+
+        if self._config.retry_jitter_ms > 0:
+            jitter = random.uniform(0, self._config.retry_jitter_ms)
+            delay_ms += jitter
+
+        await asyncio.sleep(delay_ms / 1000.0)
 
     def _task_done_callback(self, task: Task) -> None:
         """
