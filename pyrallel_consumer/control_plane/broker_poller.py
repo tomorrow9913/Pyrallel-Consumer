@@ -2,8 +2,8 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
-from enum import Enum
-from typing import Dict, List, Optional, cast
+import random
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -52,6 +52,13 @@ class BrokerPoller:
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
+            blocking_cache_ttl=self._kafka_config.parallel_consumer.blocking_cache_ttl,
+        )
+
+        self._diag_log_every = self._kafka_config.parallel_consumer.diag_log_every
+        self._diag_events_since_log = 0
+        self._blocking_warn_seconds = (
+            self._kafka_config.parallel_consumer.blocking_warn_seconds
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = (
@@ -59,6 +66,93 @@ class BrokerPoller:
         )
         self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = self.MAX_IN_FLIGHT_MESSAGES // 2
         self._is_paused = False
+
+        self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+
+    # ------------------------------------------------------------------
+    async def _publish_to_dlq(
+        self,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+        key: Any,
+        value: Any,
+        error: str,
+        attempt: int,
+    ) -> bool:
+        if self.producer is None:
+            raise RuntimeError("Producer must be initialized for DLQ publishing")
+
+        dlq_topic = self._consume_topic + self._kafka_config.DLQ_TOPIC_SUFFIX
+        headers_raw = [
+            ("x-error-reason", error.encode("utf-8")),
+            ("x-retry-attempt", str(attempt).encode("utf-8")),
+            ("source-topic", tp.topic.encode("utf-8")),
+            ("partition", str(tp.partition).encode("utf-8")),
+            ("offset", str(offset).encode("utf-8")),
+            ("epoch", str(epoch).encode("utf-8")),
+        ]
+        headers: List[Tuple[str, Union[str, bytes, None]]] = cast(
+            List[Tuple[str, Union[str, bytes, None]]], headers_raw
+        )
+
+        exec_config = self._kafka_config.parallel_consumer.execution
+        max_retries = exec_config.max_retries
+        base_backoff_ms = exec_config.retry_backoff_ms
+        max_backoff_ms = exec_config.max_retry_backoff_ms
+        jitter_ms = exec_config.retry_jitter_ms
+        use_exponential = exec_config.exponential_backoff
+
+        for retry_attempt in range(max_retries):
+            try:
+                await asyncio.to_thread(
+                    self.producer.produce,
+                    topic=dlq_topic,
+                    key=key,
+                    value=value,
+                    headers=headers,  # type: ignore[arg-type]
+                )
+                await asyncio.to_thread(
+                    self.producer.flush,
+                    timeout=self._kafka_config.DLQ_FLUSH_TIMEOUT_MS / 1000.0,
+                )
+                logger.info(
+                    "Published to DLQ: %s@%d -> %s",
+                    tp,
+                    offset,
+                    dlq_topic,
+                )
+                return True
+            except Exception as exc:
+                if retry_attempt < max_retries - 1:
+                    if use_exponential:
+                        backoff = min(
+                            base_backoff_ms * (2**retry_attempt), max_backoff_ms
+                        )
+                    else:
+                        backoff = base_backoff_ms
+
+                    jitter = random.uniform(0, jitter_ms)
+                    sleep_time_ms = backoff + jitter
+                    logger.warning(
+                        "DLQ publish failed (attempt %d/%d), retrying in %d ms: %s",
+                        retry_attempt + 1,
+                        max_retries,
+                        int(sleep_time_ms),
+                        exc,
+                    )
+                    await asyncio.sleep(sleep_time_ms / 1000.0)
+                else:
+                    logger.error(
+                        "DLQ publish failed after %d attempts for %s@%d: %s",
+                        max_retries,
+                        tp,
+                        offset,
+                        exc,
+                        exc_info=True,
+                    )
+                    return False
+        return False
 
     # ------------------------------------------------------------------
     async def _run_consumer(self) -> None:
@@ -101,6 +195,9 @@ class BrokerPoller:
                             logger.warning("Untracked partition %s - skipping", tp)
                             continue
 
+                        cache_key = (tp, offset_val)
+                        self._message_cache[cache_key] = (msg.key(), msg.value())
+
                         await self._work_manager.submit_message(
                             tp=tp,
                             offset=offset_val,
@@ -130,7 +227,7 @@ class BrokerPoller:
                                 tracker.get_current_epoch(),
                             )
                             continue
-                        tracker.mark_complete(event.offset)
+
                         if event.status == CompletionStatus.FAILURE:
                             logger.error(
                                 "Message processing failed for %s@%d: %s",
@@ -138,6 +235,49 @@ class BrokerPoller:
                                 event.offset,
                                 event.error,
                             )
+
+                            max_retries = self._kafka_config.parallel_consumer.execution.max_retries
+                            if (
+                                self._kafka_config.dlq_enabled
+                                and event.attempt >= max_retries  # type: ignore[attr-defined]
+                            ):
+                                cache_key = (event.tp, event.offset)
+                                cached_msg = self._message_cache.get(cache_key)
+                                if cached_msg is None:
+                                    logger.warning(
+                                        "No cached message for %s@%d, skipping DLQ publish and commit",
+                                        event.tp,
+                                        event.offset,
+                                    )
+                                    continue
+                                else:
+                                    msg_key, msg_value = cached_msg
+                                    error_text = event.error or "Unknown error"
+                                    dlq_success = await self._publish_to_dlq(
+                                        tp=event.tp,
+                                        offset=event.offset,
+                                        epoch=event.epoch,
+                                        key=msg_key,
+                                        value=msg_value,
+                                        error=error_text,
+                                        attempt=event.attempt,  # type: ignore[attr-defined]
+                                    )
+                                    if not dlq_success:
+                                        logger.error(
+                                            "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
+                                            event.tp,
+                                            event.offset,
+                                        )
+                                        continue
+
+                        tracker.mark_complete(event.offset)
+                        cache_key_to_remove = (event.tp, event.offset)
+                        self._message_cache.pop(cache_key_to_remove, None)
+
+                    self._diag_events_since_log += len(completed_events)
+                    if self._diag_events_since_log >= self._diag_log_every:
+                        self._log_partition_diagnostics()
+                        self._diag_events_since_log = 0
 
                 commits_to_make: List[tuple[DtoTopicPartition, int]] = []
                 for tp, tracker in self._offset_trackers.items():
@@ -154,14 +294,10 @@ class BrokerPoller:
                     offsets_to_commit = []
                     for tp, safe_offset in commits_to_make:
                         tracker = self._offset_trackers[tp]
-                        metadata = self._metadata_encoder.encode_metadata(
-                            tracker.completed_offsets, safe_offset + 1
-                        )
                         kafka_tp = KafkaTopicPartition(
                             tp.topic,
                             tp.partition,
                             safe_offset + 1,
-                            metadata=metadata,
                         )
                         offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(
@@ -191,6 +327,45 @@ class BrokerPoller:
             for size in queue_map.values():
                 total += size
         return total
+
+    def _log_partition_diagnostics(self) -> None:
+        queue_sizes = self._work_manager.get_virtual_queue_sizes()
+        gaps = self._work_manager.get_gaps()
+        blocking = self._work_manager.get_blocking_offsets()
+        parts: list[str] = []
+        for tp, tracker in self._offset_trackers.items():
+            queued = sum(queue_sizes.get(tp, {}).values())
+            gap_count = len(gaps.get(tp, []))
+            blocking_offset = blocking.get(tp)
+            blocking_age = None
+            if blocking_offset is not None:
+                durations = tracker.get_blocking_offset_durations()
+                blocking_age = durations.get(blocking_offset.start)
+            parts.append(
+                "%s-%d queued=%d gaps=%d blocking=%s age=%s"
+                % (
+                    tp.topic,
+                    tp.partition,
+                    queued,
+                    gap_count,
+                    blocking_offset.start if blocking_offset else "none",
+                    "%.2fs" % blocking_age if blocking_age is not None else "n/a",
+                )
+            )
+            if (
+                blocking_offset is not None
+                and blocking_age is not None
+                and blocking_age >= self._blocking_warn_seconds
+            ):
+                logger.warning(
+                    "Prolonged blocking offset %s@%d age=%.2fs gaps=%d queued=%d",
+                    tp,
+                    blocking_offset.start,
+                    blocking_age,
+                    gap_count,
+                    queued,
+                )
+        logger.debug("Partition diag: %s", "; ".join(parts))
 
     async def _check_backpressure(self) -> None:
         if self.consumer is None:
@@ -288,14 +463,10 @@ class BrokerPoller:
             tracker.advance_high_water_mark()
             safe_offset = tracker.last_committed_offset
             if safe_offset >= 0:
-                metadata = self._metadata_encoder.encode_metadata(
-                    tracker.completed_offsets, safe_offset + 1
-                )
                 tp_to_commit = KafkaTopicPartition(
                     tp_dto.topic,
                     tp_dto.partition,
                     safe_offset + 1,
-                    metadata=metadata,
                 )
                 consumer.commit(offsets=[tp_to_commit], asynchronous=False)
 

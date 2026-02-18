@@ -1,6 +1,8 @@
 import asyncio
+import logging
 import time
 import uuid
+from collections import deque
 from typing import Any, Dict, List, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
@@ -36,7 +38,9 @@ class WorkManager:
         max_in_flight_messages: int = 1000,
         metrics_exporter: Optional[MetricsExporter] = None,
         ordering_mode: OrderingMode = OrderingMode.UNORDERED,
+        blocking_cache_ttl: int = 100,
     ):
+        self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._virtual_partition_queues: Dict[
@@ -54,6 +58,14 @@ class WorkManager:
         self._ordering_mode = ordering_mode
         self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
         self._partitions_in_flight: set[DtoTopicPartition] = set()
+        self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
+        self._blocking_cache_ttl = blocking_cache_ttl
+        self._blocking_cache_counter = 0
+
+    @staticmethod
+    def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
+        internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
+        return deque(internal)[0]
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]) -> None:
         """
@@ -131,6 +143,8 @@ class WorkManager:
         # Get or create the virtual partition queue for this key
         if key not in self._virtual_partition_queues[tp]:
             self._virtual_partition_queues[tp][key] = asyncio.Queue()
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.debug("Created virtual queue for %s key=%s", tp, key)
 
         virtual_partition_queue = self._virtual_partition_queues[tp][key]
 
@@ -146,6 +160,7 @@ class WorkManager:
         # can compute gaps correctly and guide the scheduling policy.
         if tp in self._offset_trackers:
             self._offset_trackers[tp].update_last_fetched_offset(offset)
+            self._invalidate_blocking_cache()
 
         # Attempt to submit to the execution engine
         # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
@@ -160,7 +175,13 @@ class WorkManager:
         Returns:
             None
         """
-        blocking_offsets = self.get_blocking_offsets()
+        if self._blocking_cache_counter <= 0:
+            blocking_offsets = self.get_blocking_offsets()
+            self._blocking_cache = blocking_offsets
+            self._blocking_cache_counter = self._blocking_cache_ttl
+        else:
+            blocking_offsets = self._blocking_cache
+            self._blocking_cache_counter -= 1
 
         while True:
             if self._current_in_flight_count >= self._max_in_flight_messages:
@@ -194,14 +215,11 @@ class WorkManager:
 
                     # Non-destructive peek: read front of internal deque
                     # without modifying the queue.
-                    peek_item: WorkItem = queue._queue[0]  # type: ignore[attr-defined]
+                    peek_item: WorkItem = self._peek_queue(queue)
 
-                    is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
-
+                    gap = blocking_offsets.get(tp)
                     is_target_blocking_offset = (
-                        is_blocking_for_this_tp
-                        and blocking_offsets[tp] is not None
-                        and peek_item.offset == blocking_offsets[tp].start  # type: ignore
+                        gap is not None and peek_item.offset == gap.start
                     )
 
                     if is_target_blocking_offset:
@@ -336,6 +354,9 @@ class WorkManager:
             int: 현재 인플라이트 메시지 총 수
         """
         return self._current_in_flight_count  # Updated to use WorkManager's count
+
+    def _invalidate_blocking_cache(self) -> None:
+        self._blocking_cache_counter = 0
 
     def get_gaps(self) -> Dict[DtoTopicPartition, List[OffsetRange]]:
         """

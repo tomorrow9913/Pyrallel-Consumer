@@ -222,6 +222,13 @@ parallel_consumer:
     max_in_flight_messages: 10000   # Control Plane 기준 전체 동시 처리량
     max_revoke_grace_ms: 500 # Rebalance graceful shutdown deadline
 
+    # Retry/Backoff (ExecutionEngine 공통)
+    max_retries: 3
+    retry_backoff_ms: 1000
+    exponential_backoff: true
+    max_retry_backoff_ms: 30000
+    retry_jitter_ms: 200
+
     async:
       max_concurrent_tasks: 500     # Engine 내부 안전장치 (Semaphore)
       task_timeout_ms: 30000
@@ -233,9 +240,19 @@ parallel_consumer:
       batch_size: 64 # Micro-batching: 메시지 개수
       batch_bytes: 256KB # Micro-batching: 배치 바이트 크기
       max_batch_wait_ms: 5 # Micro-batching: 최대 대기 시간
+      task_timeout_ms: 30000
+
+  # 진단/로깅
+  diag_log_every: 1000            # 완료 이벤트 N건마다 파티션 상태 로그
+  blocking_warn_seconds: 5.0      # 블로킹 offset이 N초 이상 지속 시 WARN
+  blocking_cache_ttl: 100         # blocking offset 계산 캐시 주기
 
   commit:
     strategy: "on_complete" # "on_complete" | "periodic"
+
+  # DLQ 설정
+  dlq_enabled: true
+  DLQ_TOPIC_SUFFIX: ".dlq"
 ```
 - `execution.mode`가 `"process"`일 때 워커가 코루틴이면 설정 오류를 발생시켜야 합니다.
 - `max_in_flight_messages`는 `WorkManager`가 제어하는 시스템 전체의 동시성 한도이며, `async.max_concurrent_tasks`는 `AsyncExecutionEngine`의 내부 동시성 제한입니다.

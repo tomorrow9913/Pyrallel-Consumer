@@ -16,6 +16,7 @@ class ProcessConfig(BaseSettings):
     batch_bytes: str = "256KB"
     max_batch_wait_ms: int = 5
     worker_join_timeout_ms: int = 30000
+    task_timeout_ms: int = 30000
 
 
 class MetricsConfig(BaseSettings):
@@ -35,6 +36,11 @@ class ExecutionConfig(BaseSettings):
     mode: Literal["async", "process"] = "async"
     max_in_flight: int = 1000
     max_revoke_grace_ms: int = 500
+    max_retries: int = 3
+    retry_backoff_ms: int = 1000
+    exponential_backoff: bool = True
+    max_retry_backoff_ms: int = 30000
+    retry_jitter_ms: int = 200
     async_config: AsyncConfig = AsyncConfig()
     process_config: ProcessConfig = ProcessConfig()
 
@@ -54,6 +60,9 @@ class ParallelConsumerConfig(BaseSettings):
 
     poll_batch_size: int = 1000
     worker_pool_size: int = 8
+    diag_log_every: int = 1000
+    blocking_warn_seconds: float = 5.0
+    blocking_cache_ttl: int = 100
     execution: ExecutionConfig = ExecutionConfig()
 
 
@@ -68,6 +77,8 @@ class KafkaConfig(BaseSettings):
     BOOTSTRAP_SERVERS: List[str] = ["localhost:9092"]
     CONSUMER_GROUP: str = "pyrallel-consumer-group"
     DLQ_TOPIC_SUFFIX: str = ".dlq"
+    dlq_enabled: bool = True
+    DLQ_FLUSH_TIMEOUT_MS: int = 5000
     AUTO_OFFSET_RESET: Literal["earliest", "latest", "none"] = "earliest"
     ENABLE_AUTO_COMMIT: bool = False
     SESSION_TIMEOUT_MS: int = 60000
@@ -98,6 +109,8 @@ class KafkaConfig(BaseSettings):
                 "bootstrap_servers",
                 "consumer_group",
                 "dlq_topic_suffix",
+                "dlq_enabled",
+                "dlq_flush_timeout_ms",
                 "auto_offset_reset",
                 "enable_auto_commit",
                 "session_timeout_ms",
