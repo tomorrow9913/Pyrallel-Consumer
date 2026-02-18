@@ -25,18 +25,20 @@ def sync_worker_fn(work_item: WorkItem):
 class TestProcessExecutionEngine(BaseExecutionEngineContractTest):
     @pytest.fixture
     def config(self):
-        # Default config for ProcessExecutionEngine tests
         return ExecutionConfig(
             mode="process",
-            max_in_flight=2,  # WorkManager's max_in_flight
+            max_in_flight=2,
+            max_retries=3,
+            retry_backoff_ms=50,
+            exponential_backoff=True,
+            max_retry_backoff_ms=200,
+            retry_jitter_ms=10,
             process_config=ProcessConfig(
-                process_count=2,  # Use 2 processes for testing
+                process_count=2,
                 queue_size=10,
                 require_picklable_worker=True,
             ),
-            async_config=AsyncConfig(
-                task_timeout_ms=1000
-            ),  # Used in shutdown timeout for consistency
+            async_config=AsyncConfig(task_timeout_ms=1000),
         )
 
     @pytest_asyncio.fixture
