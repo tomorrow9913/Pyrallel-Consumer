@@ -45,6 +45,7 @@ class BaseExecutionEngineContractTest(ABC):
             epoch=0,
             status=CompletionStatus.SUCCESS,
             error=None,
+            attempt=1,
         )
 
     @pytest.fixture
@@ -127,6 +128,31 @@ class BaseExecutionEngineContractTest(ABC):
         """
         await engine.submit(mock_failing_work_item)
 
+        await asyncio.sleep(0.5)
+
+        completed_events = await engine.poll_completed_events()
+
+        if not completed_events:
+            await asyncio.sleep(1.5)
+            completed_events = await engine.poll_completed_events()
+
+        assert len(completed_events) == 1
+        assert completed_events[0].id == mock_failing_work_item.id
+        assert completed_events[0].status == CompletionStatus.FAILURE
+        assert completed_events[0].error is not None
+        assert "failure" in str(completed_events[0].error)
+        assert engine.get_in_flight_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_completion_event_has_attempt_field(
+        self, engine: BaseExecutionEngine, mock_work_item: WorkItem
+    ):
+        """
+        Contract: CompletionEvent must include attempt field tracking the attempt count (1-based).
+        Success on first attempt should have attempt=1.
+        """
+        await engine.submit(mock_work_item)
+
         await asyncio.sleep(0.2)
 
         completed_events = await engine.poll_completed_events()
@@ -136,8 +162,32 @@ class BaseExecutionEngineContractTest(ABC):
             completed_events = await engine.poll_completed_events()
 
         assert len(completed_events) == 1
-        assert completed_events[0].id == mock_failing_work_item.id
-        assert completed_events[0].status == CompletionStatus.FAILURE
-        assert completed_events[0].error is not None
-        assert "failure" in str(completed_events[0].error)
-        assert engine.get_in_flight_count() == 0
+        event = completed_events[0]
+        assert hasattr(event, "attempt"), "CompletionEvent must have 'attempt' field"
+        assert event.attempt >= 1, "attempt must be 1-based (>= 1)"
+        assert event.status == CompletionStatus.SUCCESS
+        assert event.attempt == 1, "First successful attempt should have attempt=1"
+
+    @pytest.mark.asyncio
+    async def test_completion_event_attempt_on_failure(
+        self, engine: BaseExecutionEngine, mock_failing_work_item: WorkItem
+    ):
+        """
+        Contract: CompletionEvent for failures must also include attempt field.
+        With retries enabled, attempt count reflects total attempts made.
+        """
+        await engine.submit(mock_failing_work_item)
+
+        await asyncio.sleep(0.5)
+
+        completed_events = await engine.poll_completed_events()
+
+        if not completed_events:
+            await asyncio.sleep(1.5)
+            completed_events = await engine.poll_completed_events()
+
+        assert len(completed_events) == 1
+        event = completed_events[0]
+        assert hasattr(event, "attempt"), "CompletionEvent must have 'attempt' field"
+        assert event.attempt >= 1, "attempt must be 1-based (>= 1)"
+        assert event.status == CompletionStatus.FAILURE

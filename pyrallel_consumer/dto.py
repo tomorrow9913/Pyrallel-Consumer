@@ -17,6 +17,14 @@ class CompletionStatus(Enum):
     FAILURE = "failure"
 
 
+class OrderingMode(Enum):
+    """Ordering guarantees supported by the consumer."""
+
+    KEY_HASH = "key_hash"
+    PARTITION = "partition"
+    UNORDERED = "unordered"
+
+
 @dataclass(frozen=True)
 class TopicPartition:
     """
@@ -43,6 +51,7 @@ class CompletionEvent:
         epoch (int): 처리 에포크
         status (CompletionStatus): 완료 상태
         error (Optional[str]): 오류 메시지 (실패 시)
+        attempt (int): 시도 횟수 (1-based)
     """
 
     id: str
@@ -52,6 +61,7 @@ class CompletionEvent:
     epoch: int
     status: CompletionStatus
     error: Optional[str]
+    attempt: int
 
 
 @dataclass(frozen=True)

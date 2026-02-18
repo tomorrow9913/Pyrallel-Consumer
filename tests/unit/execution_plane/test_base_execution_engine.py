@@ -10,7 +10,9 @@ class ConcreteExecutionEngine(BaseExecutionEngine):
     async def submit(self, work_item: WorkItem) -> None:
         pass
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> List[CompletionEvent]:
         return []
 
     def get_in_flight_count(self) -> int:
@@ -24,7 +26,9 @@ class IncompleteExecutionEngine(BaseExecutionEngine):
     async def submit(self, work_item: WorkItem) -> None:
         pass
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> List[CompletionEvent]:
         return []
 
     # get_in_flight_count and shutdown are intentionally not implemented

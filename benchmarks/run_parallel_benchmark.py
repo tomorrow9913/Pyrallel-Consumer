@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -158,7 +159,19 @@ def main() -> None:
         default=60,
         help="Timeout in seconds for each Pyrallel consumer run",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level for benchmark run",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
     _check_kafka_connection(args.bootstrap_servers)
 

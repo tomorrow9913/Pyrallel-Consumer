@@ -99,9 +99,120 @@ KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION_MODE=async # 또는 process
 ```
 
+### 재시도 및 DLQ (Dead Letter Queue) 설정
+
+Pyrallel Consumer는 실패한 메시지에 대한 자동 재시도와 DLQ 퍼블리싱을 지원합니다.
+
+#### 재시도 설정 (`ExecutionConfig`)
+
+재시도는 각 Execution Engine 내부에서 메시지별로 처리됩니다:
+
+| 환경 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `PARALLEL_CONSUMER_MAX_RETRIES` | `3` | 최대 재시도 횟수 (실패 시 총 시도 횟수 = max_retries) |
+| `PARALLEL_CONSUMER_RETRY_BACKOFF_MS` | `1000` | 초기 백오프 지연 시간 (밀리초) |
+| `PARALLEL_CONSUMER_EXPONENTIAL_BACKOFF` | `true` | 지수 백오프 사용 여부 (`false`면 선형 백오프) |
+| `PARALLEL_CONSUMER_MAX_RETRY_BACKOFF_MS` | `30000` | 최대 백오프 상한선 (밀리초) |
+| `PARALLEL_CONSUMER_RETRY_JITTER_MS` | `200` | 백오프에 추가할 랜덤 지터 범위 (밀리초) |
+
+백오프 계산 방식:
+- **지수 백오프**: `min(retry_backoff_ms * 2^(attempt-1), max_retry_backoff_ms) + random(0, jitter_ms)`
+- **선형 백오프**: `min(retry_backoff_ms * attempt, max_retry_backoff_ms) + random(0, jitter_ms)`
+
+#### DLQ 설정 (`KafkaConfig`)
+
+재시도를 모두 소진한 실패 메시지는 DLQ 토픽으로 퍼블리싱됩니다:
+
+| 환경 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `KAFKA_DLQ_ENABLED` | `true` | DLQ 퍼블리싱 활성화 여부 |
+| `KAFKA_DLQ_TOPIC_SUFFIX` | `.dlq` | 원본 토픽 이름에 붙일 DLQ 토픽 접미사 |
+
+DLQ 토픽으로 전송되는 메시지는 다음 헤더를 포함합니다:
+
+| 헤더 키 | 설명 | 예시 |
+| --- | --- | --- |
+| `x-error-reason` | 최종 실패 에러 메시지 | `"ValueError: invalid data"` |
+| `x-retry-attempt` | 최종 시도 횟수 | `"3"` |
+| `source-topic` | 원본 토픽 이름 | `"orders"` |
+| `partition` | 원본 파티션 번호 | `"2"` |
+| `offset` | 원본 오프셋 | `"12345"` |
+| `epoch` | 파티션 할당 에포크 (리밸런싱 추적용) | `"1"` |
+
+**동작 흐름:**
+1. 워커 함수 실행 실패 시 Execution Engine이 재시도
+2. `max_retries` 도달 시 `CompletionEvent.status = FAILURE`, `attempt = max_retries`로 반환
+3. `BrokerPoller`가 DLQ 퍼블리싱 실행 (활성화된 경우)
+4. DLQ 퍼블리싱 성공 시에만 오프셋 커밋
+5. DLQ 퍼블리싱 실패 시 오프셋 커밋 건너뛰고 에러 로깅
+
+**예제:**
+
+```python
+from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
+
+# 재시도 + DLQ 활성화
+kafka_config = KafkaConfig()
+kafka_config.dlq_enabled = True
+kafka_config.dlq_topic_suffix = ".failed"  # orders → orders.failed
+
+exec_config = ExecutionConfig()
+exec_config.max_retries = 5
+exec_config.retry_backoff_ms = 2000
+exec_config.exponential_backoff = True
+
+consumer = PyrallelConsumer(
+    config=kafka_config,
+    execution_config=exec_config,
+    worker=worker,
+    topic="orders"
+)
+```
+
 ## 💡 사용법
 
-(이 섹션에는 추후 간단한 코드 사용 예시가 추가될 예정입니다.)
+### Quick Start
+
+```python
+import asyncio
+from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.consumer import PyrallelConsumer
+from pyrallel_consumer.dto import WorkItem
+
+
+async def worker(item: WorkItem) -> None:
+    print("offset=%d payload=%s" % (item.offset, item.payload))
+
+
+async def main() -> None:
+    config = KafkaConfig()
+    consumer = PyrallelConsumer(config=config, worker=worker, topic="my-topic")
+    await consumer.start()
+    try:
+        await asyncio.sleep(60)
+    finally:
+        await consumer.stop()
+
+asyncio.run(main())
+
+### 재시도 & DLQ 설정
+
+`KafkaConfig`와 `ExecutionConfig`에 다음 옵션을 제공합니다.
+
+- `KafkaConfig.dlq_enabled` (기본 `True`): 실패 메시지를 DLQ로 발행할지 여부
+- `KafkaConfig.DLQ_TOPIC_SUFFIX` (기본 `.dlq`): DLQ 토픽 접미사 (`<원본토픽><접미사>`)
+- `ExecutionConfig.max_retries` (기본 `3`): 워커 실행 재시도 횟수 (시도 횟수는 1-based)
+- `ExecutionConfig.retry_backoff_ms` (기본 `1000`): 재시도 대기 시작값(ms)
+- `ExecutionConfig.exponential_backoff` (기본 `True`): 지수 백오프 사용 여부
+- `ExecutionConfig.max_retry_backoff_ms` (기본 `30000`): 백오프 상한(ms)
+- `ExecutionConfig.retry_jitter_ms` (기본 `200`): 백오프 지터 상한(ms, 0~값 사이 균등분포 추가)
+
+동작 요약:
+- Async/Process 엔진은 실패/타임아웃 시 위 설정에 따라 재시도하고, 최종 실패 시 `CompletionEvent.attempt`에 최종 시도 횟수를 기록합니다.
+- BrokerPoller는 `dlq_enabled=True`이고 최대 재시도에 도달한 실패 이벤트에 한해 `<topic><DLQ_TOPIC_SUFFIX>`로 원본 `key/value`를 발행하고, 성공적으로 DLQ에 적재된 경우에만 오프셋을 커밋합니다.
+```
+
+For detailed examples including async mode, process mode, configuration tuning, and graceful shutdown patterns, see the **[`examples/`](./examples/)** directory.
 
 ## 🧪 벤치마크 실행
 

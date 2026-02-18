@@ -1,6 +1,8 @@
+import logging
 import time
 from typing import Dict, Optional, Set
 
+from cachetools import LRUCache  # type: ignore[import-untyped]
 from sortedcontainers import SortedSet
 
 from pyrallel_consumer.dto import OffsetRange, TopicPartition
@@ -37,7 +39,7 @@ class OffsetTracker:
         """
         self.topic_partition = topic_partition
         self.last_committed_offset = starting_offset - 1
-        self.completed_offsets: SortedSet[int] = SortedSet(
+        self.completed_offsets: SortedSet = SortedSet(
             initial_completed_offsets
             if initial_completed_offsets is not None
             else set()
@@ -47,6 +49,17 @@ class OffsetTracker:
         self.epoch = 0  # Initial epoch
         # To track when an offset first became blocking
         self._blocking_offset_timestamps: Dict[int, float] = {}
+        self._logger = logging.getLogger(__name__)
+        self._state_version = 0
+        self._gaps_cache: LRUCache = LRUCache(maxsize=1)
+        self._gaps_cache_key: Optional[tuple[int, int, int]] = None
+        self._last_gap_key: Optional[tuple[int, int, int]] = None
+        self._repeat_gap_count: int = 0
+
+    def _bump_version(self) -> None:
+        self._state_version += 1
+        self._gaps_cache.clear()
+        self._gaps_cache_key = None
 
     @property
     def in_flight_offsets(self) -> Set[int]:
@@ -80,7 +93,10 @@ class OffsetTracker:
             None
         """
         if offset > self.last_committed_offset:
+            before_size = len(self.completed_offsets)
             self.completed_offsets.add(offset)
+            if len(self.completed_offsets) != before_size:
+                self._bump_version()
 
     def advance_high_water_mark(self) -> None:
         """
@@ -90,6 +106,7 @@ class OffsetTracker:
         Returns:
             None
         """
+        old_hwm = self.last_committed_offset
         new_hwm = self.last_committed_offset
         # SortedSet allows efficient iteration in sorted order
         for offset in list(
@@ -109,6 +126,14 @@ class OffsetTracker:
                 ):  # Ensure the offset is still in the set before removing
                     self.completed_offsets.remove(i)
             self.last_committed_offset = new_hwm
+            self._bump_version()
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.debug(
+                    "HWM advanced for %s: %d -> %d",
+                    self.topic_partition,
+                    old_hwm,
+                    new_hwm,
+                )
 
     def get_gaps(self) -> list[OffsetRange]:
         """
@@ -117,56 +142,59 @@ class OffsetTracker:
         Returns:
             list[OffsetRange]: 완료되지 않은 오프셋 범위 리스트
         """
+        cache_key = (
+            self.last_committed_offset,
+            self.last_fetched_offset,
+            self._state_version,
+        )
+        cached = self._gaps_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         gaps: list[OffsetRange] = []
 
         start_check_offset = self.last_committed_offset + 1
         end_check_offset = self.last_fetched_offset
 
-        # If there are no offsets to check (e.g., last_committed_offset is already last_fetched_offset)
         if start_check_offset > end_check_offset:
-            # Clear any stale blocking offset timestamps
             self._blocking_offset_timestamps.clear()
             return []
 
-        # Collect all uncompleted offsets within the range [start_check_offset, end_check_offset]
-        uncompleted_offsets = SortedSet()
+        current = start_check_offset
+        for completed in self.completed_offsets.irange(
+            start_check_offset, end_check_offset
+        ):
+            if completed > current:
+                gaps.append(OffsetRange(start=current, end=completed - 1))
+            current = completed + 1
 
-        # Iterate through all possible offsets in the range
-        for offset in range(start_check_offset, end_check_offset + 1):
-            if offset not in self.completed_offsets:
-                uncompleted_offsets.add(offset)
+        if current <= end_check_offset:
+            gaps.append(OffsetRange(start=current, end=end_check_offset))
 
-        if not uncompleted_offsets:
-            # Clear any stale blocking offset timestamps
+        if not gaps:
             self._blocking_offset_timestamps.clear()
             return []
 
-        # Form contiguous OffsetRange objects from uncompleted_offsets
-        current_gap_start = uncompleted_offsets[0]
-        current_gap_end = uncompleted_offsets[0]
+        if cache_key == self._last_gap_key:
+            self._repeat_gap_count += 1
+            if self._repeat_gap_count % 20000 == 0 and self._logger.isEnabledFor(
+                logging.WARNING
+            ):
+                self._logger.warning(
+                    "Repeated gap pattern %s count=%d", gaps, self._repeat_gap_count
+                )
+        else:
+            self._last_gap_key = cache_key
+            self._repeat_gap_count = 0
 
-        for i in range(1, len(uncompleted_offsets)):
-            if uncompleted_offsets[i] == current_gap_end + 1:
-                current_gap_end = uncompleted_offsets[i]
-            else:
-                gaps.append(OffsetRange(start=current_gap_start, end=current_gap_end))
-                current_gap_start = uncompleted_offsets[i]
-                current_gap_end = uncompleted_offsets[i]
-
-        gaps.append(OffsetRange(start=current_gap_start, end=current_gap_end))
-
-        # Update blocking offset timestamps
-        current_blocking_offsets_set = set()
+        current_blocking_offsets_set: Set[int] = set()
         for gap in gaps:
-            for offset in range(gap.start, gap.end + 1):
-                current_blocking_offsets_set.add(offset)
+            current_blocking_offsets_set.update(range(gap.start, gap.end + 1))
 
-        # Add new blocking offsets
         for offset in current_blocking_offsets_set:
             if offset not in self._blocking_offset_timestamps:
                 self._blocking_offset_timestamps[offset] = time.time()
 
-        # Remove no longer blocking offsets
         offsets_to_remove = [
             offset
             for offset in self._blocking_offset_timestamps
@@ -175,6 +203,8 @@ class OffsetTracker:
         for offset in offsets_to_remove:
             del self._blocking_offset_timestamps[offset]
 
+        self._gaps_cache.clear()
+        self._gaps_cache[cache_key] = gaps
         return gaps
 
     def update_last_fetched_offset(self, offset: int) -> None:
@@ -189,6 +219,7 @@ class OffsetTracker:
         """
         if offset > self.last_fetched_offset:
             self.last_fetched_offset = offset
+            self._bump_version()
 
     def get_blocking_offset_durations(self) -> Dict[int, float]:
         """

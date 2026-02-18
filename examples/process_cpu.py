@@ -1,92 +1,91 @@
-import asyncio
-import logging
-import math
-import os
-import time
+#!/usr/bin/env python3
+"""Basic process (multiprocessing) example using PyrallelConsumer.
 
-from pyrallel_consumer.config import (
-    ExecutionConfig,
-    KafkaConfig,
-    ParallelConsumerConfig,
-    ProcessConfig,
-)
+Demonstrates:
+- PyrallelConsumer facade with sync worker (CPU-bound)
+- Micro-batching configuration
+- Graceful shutdown on SIGINT/SIGTERM
+
+Usage:
+    # Produce test messages first:
+    uv run python benchmarks/producer.py --num-messages 5000 --num-keys 100 --topic demo
+
+    # Run this example:
+    uv run python examples/process_cpu.py
+"""
+
+import asyncio
+import hashlib
+import logging
+import signal
+
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import WorkItem
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
-# 1. Define the CPU Bound Worker Function
-# MUST be a top-level function to be picklable for multiprocessing
-def cpu_heavy_worker(item: WorkItem) -> None:
+def my_cpu_worker(item: WorkItem) -> None:
+    """Example sync worker for CPU-bound tasks.
+
+    This runs in a separate process. Must be picklable (top-level function).
+    Replace with your actual CPU-heavy logic (e.g., image processing, ML inference).
     """
-    Simulates a CPU bound task (e.g., heavy calculation, image processing).
-    CPU 집약적인 작업을 시뮬레이션합니다 (예: 복잡한 계산, 이미지 처리).
-    """
-    start = time.time()
+    payload = item.payload
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    # Simulate CPU-bound work
+    for _ in range(100):
+        hashlib.sha256(payload.encode()).hexdigest()
 
-    # Simulate heavy calculation: Verify large prime number
-    # This blocks the CPU core
-    number = 1000003
-    if number > 1:
-        for i in range(2, int(math.sqrt(number)) + 1):
-            if (number % i) == 0:
-                break
 
-    # Simulate some busy wait to make it noticeable
-    # In real world, this would be your actual heavy logic
-    end = time.time()
-    while end - start < 0.1:  # Burn CPU for 100ms
-        end = time.time()
+async def main() -> None:
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = "process"
+    config.parallel_consumer.execution.max_in_flight = 500
+    config.parallel_consumer.execution.process_config.process_count = 4
+    config.parallel_consumer.execution.process_config.batch_size = 32
+    config.parallel_consumer.execution.process_config.max_batch_wait_ms = 10
 
-    print(
-        f"[Process {os.getpid()}] Processed offset {item.offset} in {end - start:.4f}s"
+    consumer = PyrallelConsumer(
+        config=config,
+        worker=my_cpu_worker,
+        topic="demo",
     )
 
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
 
-# 2. Configuration
-def get_config() -> KafkaConfig:
-    return KafkaConfig(
-        BOOTSTRAP_SERVERS=["localhost:9092"],
-        CONSUMER_GROUP="process-example-group",
-        parallel_consumer=ParallelConsumerConfig(
-            execution=ExecutionConfig(
-                mode="process",
-                max_in_flight_messages=50,
-                process_config=ProcessConfig(
-                    process_count=4,  # Use 4 worker processes
-                    queue_size=100,
-                ),
-            )
-        ),
-    )
+    def _signal_handler() -> None:
+        logger.info("Shutdown signal received")
+        stop_event.set()
 
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
 
-# 3. Main Entry Point
-async def main():
-    config = get_config()
-    topic = "example-topic"
+    await consumer.start()
+    logger.info("Consumer started (process mode). Press Ctrl+C to stop.")
 
-    consumer = PyrallelConsumer(config=config, worker=cpu_heavy_worker, topic=topic)
-
-    logger.info("Starting Process Consumer...")
     try:
-        await consumer.start()
-
-        while True:
-            await asyncio.sleep(1)
-
-    except KeyboardInterrupt:
-        logger.info("Stopping consumer...")
+        while not stop_event.is_set():
+            await asyncio.sleep(5.0)
+            metrics = consumer.get_metrics()
+            logger.info(
+                "Metrics: in_flight=%d paused=%s partitions=%d",
+                metrics.total_in_flight,
+                metrics.is_paused,
+                len(metrics.partitions),
+            )
     finally:
+        logger.info("Stopping consumer...")
         await consumer.stop()
+        logger.info("Consumer stopped.")
 
 
 if __name__ == "__main__":
-    # Multiprocessing safety
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

@@ -1,82 +1,89 @@
+#!/usr/bin/env python3
+"""Basic async example using PyrallelConsumer.
+
+Demonstrates:
+- PyrallelConsumer facade with async worker
+- Graceful shutdown on SIGINT/SIGTERM
+- Periodic metrics reporting
+
+Usage:
+    # Produce test messages first:
+    uv run python benchmarks/producer.py --num-messages 1000 --num-keys 50 --topic demo
+
+    # Run this example:
+    uv run python examples/async_simple.py
+"""
+
 import asyncio
 import logging
-import random
+import signal
 
-from pyrallel_consumer.config import (
-    AsyncConfig,
-    ExecutionConfig,
-    KafkaConfig,
-    ParallelConsumerConfig,
-)
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import WorkItem
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
-# 1. Define the Async Worker Function
-async def async_io_worker(item: WorkItem) -> None:
-    """
-    Simulates an I/O bound task (e.g., calling an external API, DB query).
-    비동기 I/O 작업을 시뮬레이션합니다 (예: 외부 API 호출, DB 쿼리).
-    """
-    # Simulate I/O latency (random sleep between 100ms and 500ms)
-    sleep_time = random.uniform(0.1, 0.5)
-    await asyncio.sleep(sleep_time)
+async def my_async_worker(item: WorkItem) -> None:
+    """Example async worker that processes a Kafka message.
 
+    Replace this with your actual business logic (e.g., HTTP call, DB write).
+    """
     logger.info(
-        f"Processed message {item.offset} from partition {item.tp.partition} in {sleep_time:.2f}s"
+        "Processing message: topic=%s partition=%d offset=%d key=%s",
+        item.tp.topic,
+        item.tp.partition,
+        item.offset,
+        item.key,
     )
-    # You can access the payload via item.payload (bytes)
-    # payload_str = item.payload.decode('utf-8')
+    # Simulate async I/O work
+    await asyncio.sleep(0.01)
 
 
-# 2. Configuration
-def get_config() -> KafkaConfig:
-    return KafkaConfig(
-        BOOTSTRAP_SERVERS=["localhost:9092"],
-        CONSUMER_GROUP="async-example-group",
-        parallel_consumer=ParallelConsumerConfig(
-            execution=ExecutionConfig(
-                mode="async",
-                max_in_flight_messages=100,  # Total system limit
-                async_config=AsyncConfig(
-                    max_concurrent_tasks=50,  # Engine limit
-                    task_timeout_ms=5000,
-                ),
-            )
-        ),
+async def main() -> None:
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = "async"
+    config.parallel_consumer.execution.max_in_flight = 200
+
+    consumer = PyrallelConsumer(
+        config=config,
+        worker=my_async_worker,
+        topic="demo",
     )
 
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
 
-# 3. Main Entry Point
-async def main():
-    config = get_config()
-    topic = "example-topic"
+    def _signal_handler() -> None:
+        logger.info("Shutdown signal received")
+        stop_event.set()
 
-    consumer = PyrallelConsumer(config=config, worker=async_io_worker, topic=topic)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
 
-    logger.info("Starting Async Consumer...")
+    await consumer.start()
+    logger.info("Consumer started. Press Ctrl+C to stop.")
+
     try:
-        await consumer.start()
-
-        # Keep the main loop running
-        while True:
-            await asyncio.sleep(1)
-            # Optional: Print metrics periodically
-            # metrics = consumer.get_metrics()
-            # print(f"Lag: {metrics.partitions[0].true_lag if metrics.partitions else 0}")
-
-    except KeyboardInterrupt:
-        logger.info("Stopping consumer...")
+        while not stop_event.is_set():
+            await asyncio.sleep(5.0)
+            metrics = consumer.get_metrics()
+            logger.info(
+                "Metrics: in_flight=%d paused=%s partitions=%d",
+                metrics.total_in_flight,
+                metrics.is_paused,
+                len(metrics.partitions),
+            )
     finally:
+        logger.info("Stopping consumer...")
         await consumer.stop()
+        logger.info("Consumer stopped.")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

@@ -1,6 +1,10 @@
 import asyncio
 import logging
 import logging.handlers
+import random
+import signal
+import threading
+import time
 from collections.abc import Callable
 from multiprocessing import Process, Queue
 from typing import Any, List, Optional
@@ -10,10 +14,97 @@ from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.logger import LogManager
 
-# Sentinel for graceful shutdown of worker processes
 _SENTINEL = None
 
 _logger = logging.getLogger(__name__)
+
+
+class _BatchAccumulator:
+    """Buffers WorkItems and flushes as batches to reduce IPC overhead.
+
+    Flush triggers:
+    - ``batch_size`` items accumulated (eager flush)
+    - ``max_batch_wait_ms`` elapsed since first buffered item (timer flush)
+    """
+
+    def __init__(
+        self,
+        task_queue: Queue,
+        batch_size: int,
+        max_batch_wait_ms: int,
+    ):
+        self._task_queue = task_queue
+        self._batch_size = batch_size
+        self._max_batch_wait_sec = max_batch_wait_ms / 1000.0
+        self._buffer: list[WorkItem] = []
+        self._first_item_time: Optional[float] = None
+        self._lock = threading.Lock()
+        self._flush_timer: Optional[threading.Timer] = None
+        self._closed = False
+
+    def add(self, work_item: WorkItem) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._buffer.append(work_item)
+            if self._first_item_time is None:
+                self._first_item_time = time.monotonic()
+                self._start_flush_timer()
+            if len(self._buffer) >= self._batch_size:
+                self._flush_locked(reason="size")
+
+    def _start_flush_timer(self) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+        self._flush_timer = threading.Timer(self._max_batch_wait_sec, self._timer_flush)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _timer_flush(self) -> None:
+        with self._lock:
+            if self._buffer and not self._closed:
+                self._flush_locked(reason="timer")
+
+    def _flush_locked(self, *, reason: str = "manual") -> None:
+        if not self._buffer:
+            return
+        batch = list(self._buffer)
+        self._buffer.clear()
+        self._first_item_time = None
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug("Batch flush (%s): size=%d", reason, len(batch))
+        self._task_queue.put(batch)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+            if self._buffer:
+                self._flush_locked(reason="close")
+
+
+def _calculate_backoff(
+    attempt: int,
+    retry_backoff_ms: int,
+    exponential_backoff: bool,
+    max_retry_backoff_ms: int,
+    retry_jitter_ms: int,
+) -> float:
+    """Calculate backoff delay in seconds with optional exponential scaling and jitter."""
+    if exponential_backoff:
+        backoff_ms = retry_backoff_ms * (2 ** (attempt - 1))
+    else:
+        backoff_ms = retry_backoff_ms
+
+    backoff_ms = min(backoff_ms, max_retry_backoff_ms)
+    jitter_ms = random.randint(0, retry_jitter_ms) if retry_jitter_ms > 0 else 0
+    total_delay_ms = backoff_ms + jitter_ms
+    return total_delay_ms / 1000.0
 
 
 def _worker_loop(
@@ -21,13 +112,9 @@ def _worker_loop(
     completion_queue: Queue,
     worker_fn: Callable[[WorkItem], Any],
     process_idx: int,
+    execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
 ):
-    """
-    Worker process loop to fetch tasks, execute the worker function, and put results.
-    """
-    # Set up QueueHandler-based logging so all log records are forwarded
-    # to the main process via log_queue, avoiding interleaved output.
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
 
@@ -35,32 +122,83 @@ def _worker_loop(
     worker_logger.info("ProcessWorker[%d] started.", process_idx)
 
     while True:
-        work_item: WorkItem = task_queue.get()
-        if work_item is _SENTINEL:
+        item = task_queue.get()
+        if item is _SENTINEL:
             worker_logger.info(
                 "ProcessWorker[%d] received sentinel, shutting down.", process_idx
             )
             break
 
-        status = CompletionStatus.SUCCESS
-        error: Optional[str] = None
+        work_items = item if isinstance(item, list) else [item]
 
-        try:
-            # Execute the user's worker function
-            # Note: For process-based workers, the worker_fn itself should be synchronous
-            # or handle its own async event loop if it's async.
-            # Here, we assume it's a synchronous callable for simplicity in the process context.
-            # Real async worker in process would need more complex setup.
-            worker_fn(work_item)
-        except Exception as e:
+        for work_item in work_items:
             status = CompletionStatus.FAILURE
-            error = str(e)
-            worker_logger.exception(
-                "Task for offset %d failed with exception in ProcessWorker[%d].",
-                work_item.offset,
-                process_idx,
-            )
-        finally:
+            error: Optional[str] = None
+            attempt = 0
+
+            timeout_ms = getattr(execution_config.process_config, "task_timeout_ms", 0)
+            timeout_sec = timeout_ms / 1000.0
+
+            for attempt in range(1, execution_config.max_retries + 1):
+                try:
+
+                    def _run_with_timeout() -> None:
+                        worker_fn(work_item)
+
+                    if timeout_sec > 0:
+
+                        def _handle_timeout(signum, frame):
+                            raise TimeoutError(
+                                f"Task offset={work_item.offset} exceeded {timeout_sec:.3f}s"
+                            )
+
+                        signal.signal(signal.SIGALRM, _handle_timeout)
+                        signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+                        try:
+                            _run_with_timeout()
+                        finally:
+                            signal.setitimer(signal.ITIMER_REAL, 0)
+                    else:
+                        _run_with_timeout()
+
+                    status = CompletionStatus.SUCCESS
+                    error = None
+                    worker_logger.debug(
+                        "Task offset=%d succeeded on attempt %d in ProcessWorker[%d].",
+                        work_item.offset,
+                        attempt,
+                        process_idx,
+                    )
+                    break
+                except Exception as e:
+                    status = CompletionStatus.FAILURE
+                    error = str(e)
+                    if attempt < execution_config.max_retries:
+                        backoff_sec = _calculate_backoff(
+                            attempt,
+                            execution_config.retry_backoff_ms,
+                            execution_config.exponential_backoff,
+                            execution_config.max_retry_backoff_ms,
+                            execution_config.retry_jitter_ms,
+                        )
+                        worker_logger.warning(
+                            "Task offset=%d failed on attempt %d in ProcessWorker[%d], retrying after %.3fs: %s",
+                            work_item.offset,
+                            attempt,
+                            process_idx,
+                            backoff_sec,
+                            error,
+                        )
+                        time.sleep(backoff_sec)
+                    else:
+                        worker_logger.error(
+                            "Task offset=%d failed after %d attempts in ProcessWorker[%d]: %s",
+                            work_item.offset,
+                            attempt,
+                            process_idx,
+                            error,
+                        )
+
             completion_event = CompletionEvent(
                 id=work_item.id,
                 tp=work_item.tp,
@@ -68,8 +206,18 @@ def _worker_loop(
                 epoch=work_item.epoch,
                 status=status,
                 error=error,
+                attempt=attempt,
             )
-            completion_queue.put(completion_event)
+            try:
+                completion_queue.put(completion_event)
+            except Exception as put_exc:
+                worker_logger.error(
+                    "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
+                    work_item.offset,
+                    process_idx,
+                    put_exc,
+                )
+
     worker_logger.info("ProcessWorker[%d] shutdown complete.", process_idx)
 
 
@@ -91,6 +239,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._completion_queue: Queue[CompletionEvent] = Queue()
         self._workers: List[Process] = []
         self._in_flight_count: int = 0
+        self._in_flight_lock = threading.Lock()
 
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
@@ -101,6 +250,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._log_queue, main_handlers
         )
         self._log_listener.start()
+
+        self._batch_accumulator = _BatchAccumulator(
+            task_queue=self._task_queue,
+            batch_size=config.process_config.batch_size,
+            max_batch_wait_ms=config.process_config.max_batch_wait_ms,
+        )
 
         self._start_workers()
 
@@ -116,6 +271,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     self._completion_queue,
                     self._worker_fn,
                     i,
+                    self._config,
                     self._log_queue,
                 ),
             )
@@ -127,8 +283,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
-        await asyncio.to_thread(self._task_queue.put, work_item)
-        self._in_flight_count += 1
+        await asyncio.to_thread(self._batch_accumulator.add, work_item)
+        with self._in_flight_lock:
+            self._in_flight_count += 1
 
     async def poll_completed_events(
         self, batch_limit: int = 1000
@@ -143,7 +300,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             try:
                 event = self._completion_queue.get_nowait()
                 completed_events.append(event)
-                self._in_flight_count -= 1
+                with self._in_flight_lock:
+                    self._in_flight_count -= 1
             except Exception as e:
                 _logger.error("Error getting item from completion queue: %s", e)
                 break
@@ -153,7 +311,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         현재 처리 중인 작업 항목의 수를 반환합니다.
         """
-        return self._in_flight_count
+        with self._in_flight_lock:
+            return self._in_flight_count
 
     async def shutdown(self) -> None:
         """
@@ -168,6 +327,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._is_shutdown = True
 
         _logger.info("Initiating ProcessExecutionEngine shutdown.")
+        self._batch_accumulator.close()
         # Send sentinel to all workers to signal shutdown
         for _ in self._workers:
             self._task_queue.put(_SENTINEL)
