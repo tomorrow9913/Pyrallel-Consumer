@@ -60,3 +60,7 @@ See `pyrallel_consumer/config.py` for the full configuration schema.
   - Real-time: `1-5ms`
   - Throughput-optimized: `10-50ms`
 - `process_config.queue_size`: Should be `>= batch_size * process_count * 2`
+
+### Scenario Guides
+
+See `examples/scenarios/` for when to pick single vs async vs process, with benchmark results for each workload shape.

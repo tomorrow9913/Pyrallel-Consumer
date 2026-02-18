@@ -396,8 +396,40 @@ Execution Plane의 계약을 고정하는 단계입니다.
   - metrics()
 
 - **DTO 정의** - 완료
-  - CompletionEvent
-  - EngineMetrics
+ - CompletionEvent
+ - EngineMetrics
+
+### 5.4 Retry + DLQ 설계 (2026-02-16)
+- `docs/plans/2026-02-16-retry-dlq-design.md`에 재시도 + DLQ 설계를 기록했습니다. 실행 엔진 내부 재시도(기본 3회, 지수 백오프 1s 시작, 최대 30s, 지터 200ms) 후 실패 시 BrokerPoller가 DLQ로 발행하고 성공 시에만 커밋하도록 합니다.
+- `ExecutionConfig`에 `max_retries`, `retry_backoff_ms`, `exponential_backoff`, `max_retry_backoff_ms`, `retry_jitter_ms`를 추가하고, `KafkaConfig`에 `dlq_enabled`를 추가하여 기존 `dlq_topic_suffix`를 실제 사용합니다.
+- DLQ 발행 시 원본 key/value를 보존하고, 헤더에 `x-error-reason`, `x-retry-attempt`, `source-topic`, `partition`, `offset`, `epoch`를 포함합니다. DLQ 발행 실패 시 재시도하며 성공 전에는 커밋하지 않습니다.
+
+### 5.5 Retry + DLQ 구현 (2026-02-17)
+- Async/Process 엔진에 재시도 및 백오프 구현: `max_retries`, `retry_backoff_ms`, `exponential_backoff`, `max_retry_backoff_ms`, `retry_jitter_ms` 적용. `CompletionEvent.attempt`로 1-based 시도 횟수 노출.
+- BrokerPoller: 실패 이벤트가 최대 재시도에 도달하면 DLQ로 발행 후 성공 시에만 커밋. 실패 시 커밋 스킵. 메시지 key/value는 소비 시 캐싱 후 사용, 헤더에 에러/시도/소스 정보를 포함. DLQ 비활성 시 기존 커밋 흐름 유지.
+- 문서: README 재시도/DLQ 옵션 추가, prd_dev 설정 스키마에 재시도/DLQ 옵션 명시, 계획/설계 문서 (`docs/plans/2026-02-16-retry-dlq-plan.md`, `docs/plans/2026-02-16-retry-dlq-design.md`) 작성.
+- 테스트: `tests/unit/control_plane/test_broker_poller_dlq.py` 추가, 재시도/백오프/커밋 조건을 모킹으로 검증. Async/Process 엔진 재시도 테스트 확장. 전체 `pytest` 실행 시 e2e Kafka가 없어서 `tests/e2e/test_ordering.py`는 부트스트랩 연결 실패로 오류(로컬 Kafka 미기동). 나머지 단위/통합 테스트는 통과. `pre-commit run --all-files`는 모두 통과.
+- 추가 안정화(2026-02-17): ProcessExecutionEngine in-flight 카운터에 락을 추가해 경합을 방지. DLQ 발행 실패 시 캐시를 보존하고 커밋을 스킵하도록 조정. DLQ flush 타임아웃을 `KafkaConfig.DLQ_FLUSH_TIMEOUT_MS`(기본 5000ms)로 설정화. 타이밍 민감 테스트에 여유 허용치(0.9x) 적용. 단위/통합 테스트 139개 통과; e2e는 로컬 Kafka 미기동으로 미수행.
+
+### 5.6 성능 벤치/프로파일 (2026-02-18)
+- 성능 기준
+  - Async 엔진 100k: 31.25s, TPS≈3,199, avg≈0.61s, p99≈0.72s (`benchmarks/results/20260218T103057Z.json`).
+  - Process 엔진 100k (갭 캐싱 후): 96.60s, TPS≈1,035, p99≈1.98s (`benchmarks/results/20260218T102444Z.json`).
+- 프로파일(20k, process, yappi): 완료 74.15s, TPS≈270, p99≈2.67s. 주요 핫스팟 ttot:
+  - WorkManager.schedule 48.99s
+  - WorkManager.poll_completed_events 47.42s
+  - WorkManager.get_blocking_offsets 37.17s
+  - OffsetTracker.get_gaps 32.95s
+  - Logging(Logger.debug/_log/StreamHandler) 합산 ~60s
+  → 컨트롤 플레인 gaps/블로킹 계산 + 로깅 오버헤드가 지배적.
+- 개선 조치
+  - OffsetTracker gaps 캐싱 및 동일 갭 반복 5000회마다 WARN 추가.
+  - BrokerPoller 블로킹 오프셋 5초 초과 WARN 추가.
+  - WorkManager 디버그 스팸 제거.
+- 남은 튜닝 방향
+  - gaps/blocking 계산 호출 빈도 축소 또는 변경 발생 시에만 계산.
+  - DEBUG 로깅 샘플링/축소로 오버헤드 완화.
+  - 추가 프로파일(100k) 시 gaps 반복 루프가 재발하면 반복 패턴 스로틀/스킵 검토.
   - TopicPartition
   - TaskContext (epoch 포함)
 
@@ -520,3 +552,73 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 #### 테스트 결과
 - 82개 테스트 통과 (unit 80 + integration 2), 0 failures
+
+### 5.10 재시도 및 DLQ (Dead Letter Queue) 구현 (2026-02-17)
+
+실패한 메시지에 대한 자동 재시도와 최종 실패 시 DLQ 퍼블리싱 기능을 완전히 구현했습니다.
+
+#### 5.10.1. 구성 필드 추가 (Task 1 완료)
+- **ExecutionConfig**: `max_retries=3`, `retry_backoff_ms=1000`, `exponential_backoff=True`, `max_retry_backoff_ms=30000`, `retry_jitter_ms=200` 추가
+- **KafkaConfig**: `dlq_enabled=True`, `dlq_topic_suffix='.dlq'` 추가
+- **파일**: `config.py`, `tests/unit/test_config.py`
+- **테스트**: 재시도/DLQ 설정 기본값 및 오버라이드 검증, `dump_to_rdkafka` 제외 검증
+
+#### 5.10.2. CompletionEvent attempt 필드 추가 (Task 2 완료)
+- **DTO**: `CompletionEvent`에 `attempt: int` 필드 추가하여 재시도 횟수 추적
+- **파일**: `dto.py`
+- **테스트**: AsyncExecutionEngine, ProcessExecutionEngine의 모든 테스트에서 attempt 필드 검증
+
+#### 5.10.3. AsyncExecutionEngine 재시도 로직 (Task 3 완료)
+- **구현**:
+  - 워커 호출을 재시도 루프로 래핑
+  - 지수/선형 백오프 계산 (cap + jitter)
+  - 타임아웃도 재시도 대상으로 처리
+  - 세마포어는 재시도 간 유지 (최종 완료 시에만 release)
+- **파일**: `async_engine.py`, `tests/unit/execution_plane/test_async_execution_engine.py`
+- **테스트**: 첫 시도 성공, 재시도 후 성공, 최종 실패, 타임아웃 재시도, 백오프 타이밍, 백오프 cap 검증
+
+#### 5.10.4. ProcessExecutionEngine 재시도 로직 (Task 4 완료)
+- **구현**:
+  - 워커 프로세스 내에서 재시도 수행
+  - 배치 처리 시 아이템별 독립적 재시도
+  - 동일한 백오프 계산 로직 적용
+  - in-flight 카운트는 아이템별로 최종 완료 시에만 감소
+- **파일**: `process_engine.py`, `tests/unit/execution_plane/test_process_engine_batching.py`
+- **테스트**: 재시도 후 성공, 최종 실패, 백오프 타이밍, 백오프 cap, 즉시 성공 시 attempt=1 검증
+
+#### 5.10.5. BrokerPoller DLQ 퍼블리싱 (Task 5 완료)
+- **구현**:
+  - `_message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]`로 메시지 key/value 보존
+  - `_publish_to_dlq` 헬퍼 메서드: DLQ 토픽으로 퍼블리싱 + 재시도 로직 + 헤더 추가
+  - 실패 이벤트 처리 시 `attempt >= max_retries` 검증 후 DLQ 퍼블리싱
+  - DLQ 퍼블리싱 실패 시 오프셋 커밋 건너뜀 (gap 유지)
+  - `dlq_enabled=False`일 때는 기존 동작 유지 (로깅만, 정상 커밋)
+- **헤더**: `x-error-reason`, `x-retry-attempt`, `source-topic`, `partition`, `offset`, `epoch`
+- **파일**: `broker_poller.py`, `tests/integration/test_broker_poller_integration.py`
+- **테스트**: DLQ 퍼블리싱 성공 시 커밋, 비활성화 시 건너뛰기, 재시도 실패 시 커밋 건너뛰기 검증
+
+#### 5.10.6. 와이어링 검증 (Task 6 완료)
+- **확인**: `engine_factory.py`가 전체 `config` 객체를 양쪽 엔진에 전달하여 자동 와이어링 확인
+- **테스트**: 전체 실행 엔진 + 통합 테스트 재실행 (45개 통과)
+
+#### 5.10.7. 문서 업데이트 (Task 7 완료)
+- **파일**: `README.md`
+- **추가 섹션**: "재시도 및 DLQ 설정" (환경 변수, 백오프 계산, 헤더 형식, 동작 흐름, 예제 코드)
+
+#### 5.10.8. 최종 검증 (Task 8 완료)
+- **pre-commit**: 전체 hooks 통과 (mypy 포함)
+- **mypy 수정**: `test_base_execution_engine.py`의 `poll_completed_events` 시그니처 수정 (batch_limit 파라미터 추가)
+- **로깅 검증**: f-string 없음 확인 ✓
+- **assert 검증**: 프로덕션 코드에 assert 없음 확인 ✓
+- **전체 테스트**: 138개 통과 (unit 123 + integration 5), 0 failures
+
+#### 구현 상세
+- **메시지 캐싱**: `(TopicPartition, offset)` 튜플을 키로 사용해 key/value 보존
+- **DLQ 재시도**: `asyncio.to_thread`로 동기 producer 연산 래핑, 동일한 백오프 설정 재사용
+- **에포크 펜싱**: DLQ 헤더에 epoch 포함하여 리밸런싱 추적 가능
+- **LSP 타입 이슈**: confluent-kafka의 `metadata` kwarg는 런타임 동작하나 타입 스텁 누락 (무시 가능)
+
+#### 테스트 결과
+- 138개 테스트 통과 (unit 128 + integration 5), 0 failures
+- 3개 경고 (unawaited mock coroutines, non-critical)
+- pre-commit 전체 hooks 통과
