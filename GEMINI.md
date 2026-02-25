@@ -659,6 +659,11 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - 워크로드 옵션에 `all` 추가(sleep→cpu→io 순차 실행, 토픽/그룹 접미사로 충돌 방지). run_name에 워크로드 접두사 부여해 결과/프로파일 구분.
 - `benchmarks/README.md`에 사용법/옵션 업데이트.
 
+### 5.16 consumer/offset_manager 커버리지 보강 (2026-02-25)
+
+- `tests/unit/test_consumer_and_offset_manager.py` 추가: PyrallelConsumer wiring(start/stop/metrics) 더미 객체로 검증, OffsetTracker add/remove/safe_offsets/total_in_flight 테스트로 커버리지 확보.
+- 루트 `README.md`에 프로파일 OFF 벤치마크 샘플(TPS) 표 추가 (sleep/cpu/io workload, 4 partitions, 2000 msgs, 100 keys).
+
 ### 5.15 프로세스 워커 프로파일링 및 벤치마크 README 추가 (2026-02-24)
 
 - `run_parallel_benchmark.py`: 프로파일 모드에서 프로세스 워커 내부에서도 yappi를 시작하고 종료 시 per-worker `.prof`를 `run_name-worker-<pid>.prof`로 저장하도록 래핑(프로파일 실패 시 워커 진행 유지).
