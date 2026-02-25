@@ -33,6 +33,12 @@ class TestExecutionConfigRetryFields:
         assert config.retry_jitter_ms == 500
 
 
+class TestProcessConfigDefaults:
+    def test_process_config_has_msgpack_limit_default(self) -> None:
+        config = ExecutionConfig()
+        assert config.process_config.msgpack_max_bytes == 1_000_000
+
+
 class TestKafkaConfigDLQFields:
     """Test KafkaConfig DLQ-related configuration fields."""
 
@@ -43,6 +49,7 @@ class TestKafkaConfigDLQFields:
         assert config.dlq_enabled is True
         assert config.DLQ_TOPIC_SUFFIX == ".dlq"
         assert config.DLQ_FLUSH_TIMEOUT_MS == 5000
+        assert config.dlq_payload_mode.value == "full"
 
     def test_parallel_consumer_diag_defaults(self) -> None:
         config = KafkaConfig()
@@ -90,6 +97,7 @@ class TestKafkaConfigDumpToRdkafka:
             "bootstrap_servers",
             "consumer_group",
             "dlq_topic_suffix",
+            "dlq_payload_mode",
             "dlq_flush_timeout_ms",
             "auto_offset_reset",
             "enable_auto_commit",

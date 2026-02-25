@@ -101,6 +101,26 @@ uv pip install -r requirements.txt
 uv pip install -r dev-requirements.txt
 ```
 
+### 패키지 설치/배포 (로컬 빌드)
+```bash
+# 로컬 설치 (editable 아님)
+pip install .
+
+# sdist/wheel 빌드
+python -m pip install build
+python -m build
+
+# 생성물: dist/*.tar.gz, dist/*.whl
+# 예시 업로드 (twine 사용 시)
+# python -m pip install twine
+# twine upload dist/*
+```
+
+### 보안/설정 메모
+- Grafana(admin): `docker-compose.yml`는 `GF_SECURITY_ADMIN_PASSWORD`를 환경변수로 기대합니다. 실행 전 `.env`에 값을 넣으세요.
+- DLQ: `KAFKA_DLQ_PAYLOAD_MODE`를 `metadata_only`로 설정하면 키/값 대신 헤더 메타데이터만 DLQ에 게시합니다. 기본값은 `full`(기존 동작 유지).
+- 라이선스: Apache-2.0
+
 ### 설정: `pydantic-settings`
 환경 변수 또는 `.env` 파일을 통해 Kafka 클라이언트 및 컨슈머 설정을 관리합니다. `KafkaConfig` 클래스(pyrallel_consumer/config.py 참조)를 통해 로드됩니다.
 

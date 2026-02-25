@@ -4,7 +4,7 @@ from typing import Any, List, Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pyrallel_consumer.dto import ExecutionMode
+from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode
 
 
 class AsyncConfig(BaseSettings):
@@ -20,6 +20,7 @@ class ProcessConfig(BaseSettings):
     max_batch_wait_ms: int = 5
     worker_join_timeout_ms: int = 30000
     task_timeout_ms: int = 30000
+    msgpack_max_bytes: int = 1_000_000
 
 
 class MetricsConfig(BaseSettings):
@@ -89,6 +90,7 @@ class KafkaConfig(BaseSettings):
     CONSUMER_GROUP: str = "pyrallel-consumer-group"
     DLQ_TOPIC_SUFFIX: str = ".dlq"
     dlq_enabled: bool = True
+    dlq_payload_mode: DLQPayloadMode = DLQPayloadMode.FULL
     DLQ_FLUSH_TIMEOUT_MS: int = 5000
     AUTO_OFFSET_RESET: Literal["earliest", "latest", "none"] = "earliest"
     ENABLE_AUTO_COMMIT: bool = False
@@ -111,6 +113,13 @@ class KafkaConfig(BaseSettings):
             "session.timeout.ms": self.SESSION_TIMEOUT_MS,
         }
 
+    @field_validator("dlq_payload_mode", mode="before")
+    @classmethod
+    def _normalize_dlq_mode(cls, v: Any) -> DLQPayloadMode:
+        if isinstance(v, str):
+            v = v.split("#", 1)[0].strip()
+        return DLQPayloadMode(v)
+
     def dump_to_rdkafka(self) -> dict[str, Any]:
         data = self.model_dump(exclude_none=True)
 
@@ -120,6 +129,7 @@ class KafkaConfig(BaseSettings):
                 "bootstrap_servers",
                 "consumer_group",
                 "dlq_topic_suffix",
+                "dlq_payload_mode",
                 "dlq_enabled",
                 "dlq_flush_timeout_ms",
                 "auto_offset_reset",

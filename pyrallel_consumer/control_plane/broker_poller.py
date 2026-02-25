@@ -13,9 +13,16 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import CompletionStatus, OrderingMode, PartitionMetrics, SystemMetrics
+from ..dto import (
+    CompletionStatus,
+    DLQPayloadMode,
+    OrderingMode,
+    PartitionMetrics,
+    SystemMetrics,
+)
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
+from ..utils.validation import validate_topic_name
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
@@ -87,7 +94,9 @@ class BrokerPoller:
         if self.producer is None:
             raise RuntimeError("Producer must be initialized for DLQ publishing")
 
-        dlq_topic = self._consume_topic + self._kafka_config.DLQ_TOPIC_SUFFIX
+        source_topic = validate_topic_name(self._consume_topic)
+        suffix = validate_topic_name(self._kafka_config.DLQ_TOPIC_SUFFIX)
+        dlq_topic = source_topic + suffix
         headers_raw = [
             ("x-error-reason", error.encode("utf-8")),
             ("x-retry-attempt", str(attempt).encode("utf-8")),
@@ -109,11 +118,16 @@ class BrokerPoller:
 
         for retry_attempt in range(max_retries):
             try:
+                send_key = None
+                send_value = None
+                if self._kafka_config.dlq_payload_mode == DLQPayloadMode.FULL:
+                    send_key = key
+                    send_value = value
                 await asyncio.to_thread(
                     self.producer.produce,
                     topic=dlq_topic,
-                    key=key,
-                    value=value,
+                    key=send_key,
+                    value=send_value,
                     headers=headers,  # type: ignore[arg-type]
                 )
                 await asyncio.to_thread(
@@ -308,10 +322,9 @@ class BrokerPoller:
                     for tp, safe_offset in commits_to_make:
                         tracker = self._offset_trackers[tp]
                         kafka_tp = KafkaTopicPartition(
-                            tp.topic,
-                            tp.partition,
-                            safe_offset + 1,
-                            "pyrallel-consumer",
+                            topic=tp.topic,
+                            partition=tp.partition,
+                            offset=safe_offset + 1,
                         )
                         offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(
@@ -353,6 +366,7 @@ class BrokerPoller:
         blocking = self._work_manager.get_blocking_offsets()
         parts: list[str] = []
         for tp, tracker in self._offset_trackers.items():
+            safe_topic = validate_topic_name(tp.topic)
             queued = sum(queue_sizes.get(tp, {}).values())
             gap_count = len(gaps.get(tp, []))
             blocking_offset = blocking.get(tp)
@@ -368,7 +382,7 @@ class BrokerPoller:
             parts.append(
                 "%s-%d queued=%d gaps=%d blocking=%s age=%s"
                 % (
-                    tp.topic,
+                    safe_topic,
                     tp.partition,
                     queued,
                     gap_count,

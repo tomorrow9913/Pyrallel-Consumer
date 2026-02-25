@@ -30,6 +30,11 @@ class ExecutionMode(Enum):
     PROCESS = "process"
 
 
+class DLQPayloadMode(str, Enum):
+    FULL = "full"
+    METADATA_ONLY = "metadata_only"
+
+
 @dataclass(frozen=True)
 class TopicPartition:
     """

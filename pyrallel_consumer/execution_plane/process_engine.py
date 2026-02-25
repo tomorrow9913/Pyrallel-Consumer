@@ -76,6 +76,21 @@ def _completion_event_from_dict(payload: dict) -> CompletionEvent:
     )
 
 
+def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
+    if isinstance(item, (bytes, bytearray)):
+        if len(item) > max_bytes:
+            raise ValueError("payload_too_large")
+        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=max_bytes)
+        unpacker.feed(item)
+        decoded = list(unpacker)
+        if len(decoded) == 1 and isinstance(decoded[0], list):
+            decoded = decoded[0]
+        return [_work_item_from_dict(entry) for entry in decoded]
+    if isinstance(item, list):
+        return item
+    return [item]
+
+
 class _BatchAccumulator:
     """Buffers WorkItems and flushes as batches to reduce IPC overhead.
 
@@ -189,14 +204,33 @@ def _worker_loop(
             )
             break
 
-        work_items: list[WorkItem]
-        if isinstance(item, (bytes, bytearray)):
-            decoded = msgpack.unpackb(item, raw=False)
-            work_items = [_work_item_from_dict(entry) for entry in decoded]
-        elif isinstance(item, list):
-            work_items = item
-        else:
-            work_items = [item]
+        try:
+            work_items = _decode_incoming_item(
+                item, execution_config.process_config.msgpack_max_bytes
+            )
+        except Exception as decode_exc:
+            completion_event = CompletionEvent(
+                id="",
+                tp=TopicPartition("", 0),
+                offset=-1,
+                epoch=0,
+                status=CompletionStatus.FAILURE,
+                error=str(decode_exc),
+                attempt=1,
+            )
+            try:
+                completion_queue.put(  # type: ignore[arg-type]
+                    msgpack.packb(
+                        _completion_event_to_dict(completion_event), use_bin_type=True
+                    )
+                )
+            except Exception as put_exc:
+                worker_logger.error(
+                    "Failed to enqueue decode failure in ProcessWorker[%d]: %s",
+                    process_idx,
+                    put_exc,
+                )
+            continue
 
         for work_item in work_items:
             if in_flight_registry is not None:
@@ -346,7 +380,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._task_queue: Queue[Optional[WorkItem]] = Queue(
             maxsize=config.process_config.queue_size
         )
-        self._completion_queue: Queue[CompletionEvent] = Queue()
+        self._completion_queue: Queue[Any] = Queue()
         self._manager = Manager()
         self._in_flight_registry = self._manager.dict()
         self._workers: List[Process] = []
@@ -428,7 +462,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                                 _completion_event_to_dict(completion_event),
                                 use_bin_type=True,
                             )
-                            self._completion_queue.put(packed)
+                            self._completion_queue.put(packed)  # type: ignore[arg-type]
                         except Exception as push_exc:
                             self._logger.error(
                                 "Failed to emit failure for worker %d item offset=%s: %s",

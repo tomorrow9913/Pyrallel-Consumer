@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for BrokerPoller DLQ functionality."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +14,7 @@ from pyrallel_consumer.config import (
 )
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus
+from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, DLQPayloadMode
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
@@ -596,3 +597,226 @@ async def test_completion_event_dlq_missing_cache_entry(broker_poller_with_dlq):
     broker_poller_with_dlq._publish_to_dlq.assert_not_called()
 
     assert offset not in tracker.completed_offsets
+
+
+@pytest.mark.asyncio
+async def test_completion_event_dlq_publish_success_from_capped_failure(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    offset = 42
+
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=offset - 1,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = offset - 1
+    tracker.last_fetched_offset = offset
+    tracker.increment_epoch()
+    broker_poller_with_dlq._offset_trackers[tp] = tracker
+
+    broker_poller_with_dlq._message_cache[(tp, offset)] = (b"key", b"value")
+    broker_poller_with_dlq._publish_to_dlq = AsyncMock(return_value=True)
+    broker_poller_with_dlq.consumer = MagicMock()
+
+    event = CompletionEvent(
+        id="dead-worker",
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.FAILURE,
+        error="worker_died_max_retries",
+        attempt=broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries,
+    )
+
+    max_retries = (
+        broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries
+    )
+    if (
+        broker_poller_with_dlq._kafka_config.dlq_enabled
+        and event.attempt >= max_retries
+    ):
+        cache_key = (event.tp, event.offset)
+        cached_msg = broker_poller_with_dlq._message_cache.get(cache_key)
+        if cached_msg:
+            msg_key, msg_value = cached_msg
+            dlq_success = await broker_poller_with_dlq._publish_to_dlq(
+                tp=event.tp,
+                offset=event.offset,
+                epoch=event.epoch,
+                key=msg_key,
+                value=msg_value,
+                error=event.error or "Unknown error",
+                attempt=event.attempt,
+            )
+            if dlq_success:
+                tracker.mark_complete(event.offset)
+                broker_poller_with_dlq._message_cache.pop(cache_key, None)
+                await asyncio.to_thread(
+                    broker_poller_with_dlq.consumer.commit, offsets=[]
+                )
+
+    broker_poller_with_dlq._publish_to_dlq.assert_called_once_with(
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        key=b"key",
+        value=b"value",
+        error="worker_died_max_retries",
+        attempt=max_retries,
+    )
+    assert offset in tracker.completed_offsets
+    assert (tp, offset) not in broker_poller_with_dlq._message_cache
+
+
+@pytest.mark.asyncio
+async def test_completion_event_dlq_publish_failure_from_capped_failure(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    offset = 43
+
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=offset - 1,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = offset - 1
+    tracker.last_fetched_offset = offset
+    tracker.increment_epoch()
+    broker_poller_with_dlq._offset_trackers[tp] = tracker
+
+    broker_poller_with_dlq._message_cache[(tp, offset)] = (b"key", b"value")
+    broker_poller_with_dlq._publish_to_dlq = AsyncMock(return_value=False)
+
+    event = CompletionEvent(
+        id="dead-worker",
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.FAILURE,
+        error="worker_died_max_retries",
+        attempt=broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries,
+    )
+
+    max_retries = (
+        broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries
+    )
+    if (
+        broker_poller_with_dlq._kafka_config.dlq_enabled
+        and event.attempt >= max_retries
+    ):
+        cache_key = (event.tp, event.offset)
+        cached_msg = broker_poller_with_dlq._message_cache.get(cache_key)
+        if cached_msg:
+            msg_key, msg_value = cached_msg
+            dlq_success = await broker_poller_with_dlq._publish_to_dlq(
+                tp=event.tp,
+                offset=event.offset,
+                epoch=event.epoch,
+                key=msg_key,
+                value=msg_value,
+                error=event.error or "Unknown error",
+                attempt=event.attempt,
+            )
+            if dlq_success:
+                tracker.mark_complete(event.offset)
+                broker_poller_with_dlq._message_cache.pop(cache_key, None)
+
+    broker_poller_with_dlq._publish_to_dlq.assert_called_once()
+    assert offset not in tracker.completed_offsets
+    assert (tp, offset) in broker_poller_with_dlq._message_cache
+
+
+@pytest.mark.asyncio
+async def test_completion_event_dlq_capped_failure_missing_cache(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    offset = 44
+
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=offset - 1,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = offset - 1
+    tracker.increment_epoch()
+    broker_poller_with_dlq._offset_trackers[tp] = tracker
+
+    broker_poller_with_dlq._publish_to_dlq = AsyncMock()
+
+    event = CompletionEvent(
+        id="dead-worker",
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.FAILURE,
+        error="worker_died_max_retries",
+        attempt=broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries,
+    )
+
+    max_retries = (
+        broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries
+    )
+    if (
+        broker_poller_with_dlq._kafka_config.dlq_enabled
+        and event.attempt >= max_retries
+    ):
+        cache_key = (event.tp, event.offset)
+        cached_msg = broker_poller_with_dlq._message_cache.get(cache_key)
+        if cached_msg:
+            msg_key, msg_value = cached_msg
+            await broker_poller_with_dlq._publish_to_dlq(
+                tp=event.tp,
+                offset=event.offset,
+                epoch=event.epoch,
+                key=msg_key,
+                value=msg_value,
+                error=event.error or "Unknown error",
+                attempt=event.attempt,
+            )
+
+    broker_poller_with_dlq._publish_to_dlq.assert_not_called()
+    assert offset not in tracker.completed_offsets
+
+
+@pytest.mark.asyncio
+async def test_publish_to_dlq_metadata_only(broker_poller_with_dlq):
+    broker_poller_with_dlq._kafka_config.dlq_payload_mode = DLQPayloadMode.METADATA_ONLY
+    broker_poller_with_dlq.producer.produce = MagicMock()
+    broker_poller_with_dlq.producer.flush = MagicMock()
+
+    result = await broker_poller_with_dlq._publish_to_dlq(
+        tp=DtoTopicPartition(topic="test-topic", partition=0),
+        offset=1,
+        epoch=0,
+        key=b"key",
+        value=b"value",
+        error="err",
+        attempt=1,
+    )
+
+    assert result is True
+    _, kwargs = broker_poller_with_dlq.producer.produce.call_args
+    assert kwargs["key"] is None
+    assert kwargs["value"] is None
+
+
+@pytest.mark.asyncio
+async def test_publish_to_dlq_invalid_suffix_raises(broker_poller_with_dlq):
+    broker_poller_with_dlq._kafka_config.DLQ_TOPIC_SUFFIX = "bad suffix!"
+    with pytest.raises(ValueError):
+        await broker_poller_with_dlq._publish_to_dlq(
+            tp=DtoTopicPartition(topic="test-topic", partition=0),
+            offset=1,
+            epoch=0,
+            key=b"key",
+            value=b"value",
+            error="err",
+            attempt=1,
+        )
