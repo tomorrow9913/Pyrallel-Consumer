@@ -36,6 +36,7 @@ def _work_item_to_dict(item: WorkItem) -> dict:
         "epoch": item.epoch,
         "key": item.key,
         "payload": item.payload,
+        "requeue_attempts": 0,
     }
 
 
@@ -199,9 +200,15 @@ def _worker_loop(
 
         for work_item in work_items:
             if in_flight_registry is not None:
-                inflight_list = in_flight_registry.get(process_idx)
-                if inflight_list is not None:
-                    inflight_list.append(_work_item_to_dict(work_item))
+                key = (
+                    process_idx,
+                    work_item.tp.topic,
+                    work_item.tp.partition,
+                    work_item.offset,
+                )
+                payload = _work_item_to_dict(work_item)
+                payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+                in_flight_registry[key] = payload
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
@@ -306,19 +313,13 @@ def _worker_loop(
                 )
             finally:
                 if in_flight_registry is not None and not fatal_timeout:
-                    inflight_list = in_flight_registry.get(process_idx)
-                    if inflight_list is not None:
-                        try:
-                            for i, entry in enumerate(list(inflight_list)):
-                                if (
-                                    entry.get("offset") == work_item.offset
-                                    and entry.get("partition") == work_item.tp.partition
-                                    and entry.get("topic") == work_item.tp.topic
-                                ):
-                                    inflight_list.pop(i)
-                                    break
-                        except Exception:
-                            pass
+                    key = (
+                        process_idx,
+                        work_item.tp.topic,
+                        work_item.tp.partition,
+                        work_item.offset,
+                    )
+                    in_flight_registry.pop(key, None)
 
             if fatal_timeout:
                 worker_logger.error(
@@ -371,8 +372,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._start_workers()
 
     def _start_worker(self, idx: int) -> Process:
-        if idx not in self._in_flight_registry:
-            self._in_flight_registry[idx] = self._manager.list()
         worker = Process(
             target=_worker_loop,
             args=(
@@ -402,26 +401,60 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             if worker.is_alive():
                 continue
             exitcode = worker.exitcode
-            if idx in self._in_flight_registry:
-                try:
-                    work_list = list(self._in_flight_registry.get(idx, []))
-                    if work_list:
-                        packed = msgpack.packb(work_list, use_bin_type=True)
-                        self._task_queue.put(packed)
-                        offsets = [entry.get("offset") for entry in work_list]
-                        self._logger.warning(
-                            "Requeued %d lost work item(s) offsets=%s from dead worker %d",
-                            len(work_list),
-                            offsets,
-                            idx,
-                        )
-                    inflight_list = self._in_flight_registry.get(idx)
-                    if inflight_list is not None:
-                        inflight_list[:] = []
-                except Exception as requeue_exc:
-                    self._logger.error(
-                        "Failed to requeue work from worker %d: %s", idx, requeue_exc
+            try:
+                items = [
+                    (key, payload)
+                    for key, payload in self._in_flight_registry.items()
+                    if key[0] == idx
+                ]
+                to_requeue = []
+                for key, payload in items:
+                    attempts = payload.get("requeue_attempts", 0)
+                    if attempts >= self._config.max_retries:
+                        try:
+                            completion_event = CompletionEvent(
+                                id=payload.get("id", ""),
+                                tp=TopicPartition(
+                                    payload.get("topic", ""),
+                                    payload.get("partition", 0),
+                                ),
+                                offset=payload.get("offset", -1),
+                                epoch=payload.get("epoch", 0),
+                                status=CompletionStatus.FAILURE,
+                                error="worker_died_max_retries",
+                                attempt=attempts,
+                            )
+                            packed = msgpack.packb(
+                                _completion_event_to_dict(completion_event),
+                                use_bin_type=True,
+                            )
+                            self._completion_queue.put(packed)
+                        except Exception as push_exc:
+                            self._logger.error(
+                                "Failed to emit failure for worker %d item offset=%s: %s",
+                                idx,
+                                payload.get("offset"),
+                                push_exc,
+                            )
+                    else:
+                        payload["requeue_attempts"] = attempts + 1
+                        to_requeue.append(payload)
+                    self._in_flight_registry.pop(key, None)
+
+                if to_requeue:
+                    packed = msgpack.packb(to_requeue, use_bin_type=True)
+                    self._task_queue.put(packed)
+                    offsets = [entry.get("offset") for entry in to_requeue]
+                    self._logger.warning(
+                        "Requeued %d lost work item(s) offsets=%s from dead worker %d",
+                        len(to_requeue),
+                        offsets,
+                        idx,
                     )
+            except Exception as requeue_exc:
+                self._logger.error(
+                    "Failed to requeue work from worker %d: %s", idx, requeue_exc
+                )
             self._logger.error(
                 "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
                 idx,
@@ -432,19 +465,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         min_offset = None
-        for worker_idx, payload_list in self._in_flight_registry.items():
-            try:
-                for payload in list(payload_list):
-                    if (
-                        payload.get("topic") == tp.topic
-                        and payload.get("partition") == tp.partition
-                    ):
-                        off = payload.get("offset")
-                        if isinstance(off, int):
-                            if min_offset is None or off < min_offset:
-                                min_offset = off
-            except Exception:
-                continue
+        for (_w, topic, partition, _o), payload in self._in_flight_registry.items():
+            if topic == tp.topic and partition == tp.partition:
+                off = payload.get("offset")
+                if isinstance(off, int):
+                    if min_offset is None or off < min_offset:
+                        min_offset = off
         return min_offset
 
     async def submit(self, work_item: WorkItem) -> None:
