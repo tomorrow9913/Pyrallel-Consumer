@@ -679,6 +679,24 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - `pyrallel_consumer.dto.ExecutionMode` 추가, `ExecutionConfig.mode`를 Enum으로 전환하고 `engine_factory`에서 문자열 입력 시 Enum으로 정상 변환하도록 처리.
 - README 예제를 `ExecutionMode.ASYNC/PROCESS`로 갱신. 주요 유닛/통합 테스트 재실행(통과, 기존 경고만 유지).
 
+### 5.20 IPC 직렬화 msgpack 전환 및 모니터링 스택 확장 (2026-02-25)
+
+- `process_engine`: multiprocessing 큐에서 pickle을 제거하고 WorkItem/CompletionEvent를 msgpack으로 직렬화/역직렬화하도록 변경. 헬퍼 추가, 배치 버퍼 플러시 시 msgpack bytes 전송, 워커/메인 모두 디코딩 후 처리. `pyproject.toml`에 `msgpack` 의존성 추가.
+- `docker-compose.yml`에 Prometheus(9090), Grafana(3000), Kafka Exporter(9308) 추가. `monitoring/prometheus.yml` 작성.
+- README 모니터링 가이드 추가(메트릭 활성화, compose up, Grafana 데이터소스). 사용법 섹션 재정리.
+- `.env.sample` 추가: Kafka/Parallel Consumer/Execution/Metrics/DLQ 설정 예시 포함.
+
+### 5.21 Backpressure 큐 한도 추가 (2026-02-25)
+
+- `ParallelConsumerConfig.queue_max_messages` 기본 5000 도입, BrokerPoller에서 총 대기 메시지가 한도 초과 시 pause, 70% 이하로 줄면 resume(기존 in-flight 기반 히스테리시스와 병행).
+- `.env.sample`/README 예시에 queue_max_messages 추가.
+
+### 5.22 ProcessEngine in-flight 레지스트리 확장 및 커밋 클램프 (2026-02-25)
+
+- ProcessExecutionEngine: Manager 기반 in-flight 레지스트리를 워커별 리스트로 확장하여 워커가 잡은 다중 작업을 추적. 워커 사망 시 리스트의 모든 작업을 msgpack으로 재큐잉 후 워커 재시작. 최소 in-flight 오프셋 조회가 파티션별로 다중 항목을 고려하도록 변경.
+- BrokerPoller: 커밋 계산 시 레지스트리 최소 오프셋을 커밋 상한으로 적용해 더 안전한 커밋 지점 확보.
+- 단위 회귀: clamp 테스트 추가(`test_broker_poller_inflight_clamp`), 프로세스 엔진 관련 빠른 회귀 통과.
+
 ### 5.15 프로세스 워커 프로파일링 및 벤치마크 README 추가 (2026-02-24)
 
 - `run_parallel_benchmark.py`: 프로파일 모드에서 프로세스 워커 내부에서도 yappi를 시작하고 종료 시 per-worker `.prof`를 `run_name-worker-<pid>.prof`로 저장하도록 래핑(프로파일 실패 시 워커 진행 유지).

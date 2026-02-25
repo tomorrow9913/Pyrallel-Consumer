@@ -10,6 +10,7 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 from ..config import KafkaConfig
 from ..dto import CompletionStatus, OrderingMode, PartitionMetrics, SystemMetrics
@@ -296,6 +297,9 @@ class BrokerPoller:
                             potential_hwm = offset
                         else:
                             break
+                    min_inflight = self._get_min_inflight_offset(tp)
+                    if min_inflight is not None and min_inflight <= potential_hwm:
+                        potential_hwm = min_inflight - 1
                     if potential_hwm > tracker.last_committed_offset:
                         commits_to_make.append((tp, potential_hwm))
 
@@ -337,6 +341,11 @@ class BrokerPoller:
             for size in queue_map.values():
                 total += size
         return total
+
+    def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
+        if not isinstance(self._execution_engine, ProcessExecutionEngine):
+            return None
+        return self._execution_engine.get_min_inflight_offset(tp)
 
     def _log_partition_diagnostics(self) -> None:
         queue_sizes = self._work_manager.get_virtual_queue_sizes()

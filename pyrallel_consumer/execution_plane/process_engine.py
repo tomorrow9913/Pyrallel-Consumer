@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import logging.handlers
+import os
 import random
 import signal
 import threading
@@ -198,10 +199,13 @@ def _worker_loop(
 
         for work_item in work_items:
             if in_flight_registry is not None:
-                in_flight_registry[process_idx] = _work_item_to_dict(work_item)
+                inflight_list = in_flight_registry.get(process_idx)
+                if inflight_list is not None:
+                    inflight_list.append(_work_item_to_dict(work_item))
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
+            fatal_timeout = False
 
             timeout_ms = getattr(execution_config.process_config, "task_timeout_ms", 0)
             timeout_sec = timeout_ms / 1000.0
@@ -235,6 +239,18 @@ def _worker_loop(
                         work_item.offset,
                         attempt,
                         process_idx,
+                    )
+                    break
+                except TimeoutError as e:
+                    fatal_timeout = True
+                    status = CompletionStatus.FAILURE
+                    error = str(e)
+                    worker_logger.error(
+                        "Task offset=%d timed out after %.3fs in ProcessWorker[%d]: %s",
+                        work_item.offset,
+                        timeout_sec,
+                        process_idx,
+                        error,
                     )
                     break
                 except Exception as e:
@@ -289,8 +305,27 @@ def _worker_loop(
                     put_exc,
                 )
             finally:
-                if in_flight_registry is not None:
-                    in_flight_registry.pop(process_idx, None)
+                if in_flight_registry is not None and not fatal_timeout:
+                    inflight_list = in_flight_registry.get(process_idx)
+                    if inflight_list is not None:
+                        try:
+                            for i, entry in enumerate(list(inflight_list)):
+                                if (
+                                    entry.get("offset") == work_item.offset
+                                    and entry.get("partition") == work_item.tp.partition
+                                    and entry.get("topic") == work_item.tp.topic
+                                ):
+                                    inflight_list.pop(i)
+                                    break
+                        except Exception:
+                            pass
+
+            if fatal_timeout:
+                worker_logger.error(
+                    "ProcessWorker[%d] exiting due to task timeout; parent will respawn",
+                    process_idx,
+                )
+                os._exit(1)
 
     worker_logger.info("ProcessWorker[%d] shutdown complete.", process_idx)
 
@@ -336,6 +371,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._start_workers()
 
     def _start_worker(self, idx: int) -> Process:
+        if idx not in self._in_flight_registry:
+            self._in_flight_registry[idx] = self._manager.list()
         worker = Process(
             target=_worker_loop,
             args=(
@@ -367,15 +404,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             exitcode = worker.exitcode
             if idx in self._in_flight_registry:
                 try:
-                    work_dict = self._in_flight_registry.pop(idx)
-                    work_item = _work_item_from_dict(work_dict)
-                    packed = msgpack.packb([work_dict], use_bin_type=True)
-                    self._task_queue.put(packed)
-                    self._logger.warning(
-                        "Requeued lost work item offset=%d from dead worker %d",
-                        work_item.offset,
-                        idx,
-                    )
+                    work_list = list(self._in_flight_registry.get(idx, []))
+                    if work_list:
+                        packed = msgpack.packb(work_list, use_bin_type=True)
+                        self._task_queue.put(packed)
+                        offsets = [entry.get("offset") for entry in work_list]
+                        self._logger.warning(
+                            "Requeued %d lost work item(s) offsets=%s from dead worker %d",
+                            len(work_list),
+                            offsets,
+                            idx,
+                        )
+                    inflight_list = self._in_flight_registry.get(idx)
+                    if inflight_list is not None:
+                        inflight_list[:] = []
                 except Exception as requeue_exc:
                     self._logger.error(
                         "Failed to requeue work from worker %d: %s", idx, requeue_exc
@@ -387,6 +429,23 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
             new_worker = self._start_worker(idx)
             self._workers[idx] = new_worker
+
+    def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        min_offset = None
+        for worker_idx, payload_list in self._in_flight_registry.items():
+            try:
+                for payload in list(payload_list):
+                    if (
+                        payload.get("topic") == tp.topic
+                        and payload.get("partition") == tp.partition
+                    ):
+                        off = payload.get("offset")
+                        if isinstance(off, int):
+                            if min_offset is None or off < min_offset:
+                                min_offset = off
+            except Exception:
+                continue
+        return min_offset
 
     async def submit(self, work_item: WorkItem) -> None:
         """
