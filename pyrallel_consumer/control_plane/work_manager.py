@@ -62,6 +62,35 @@ class WorkManager:
         self._blocking_cache_ttl = blocking_cache_ttl
         self._blocking_cache_counter = 0
 
+    async def force_fail(
+        self,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+        error: str,
+        attempt: int,
+    ) -> bool:
+        work_id: Optional[str] = None
+        for candidate_id, item in self._in_flight_work_items.items():
+            if item.tp == tp and item.offset == offset:
+                work_id = candidate_id
+                break
+
+        if work_id is None:
+            return False
+
+        event = CompletionEvent(
+            id=work_id,
+            tp=tp,
+            offset=offset,
+            epoch=epoch,
+            status=CompletionStatus.FAILURE,
+            error=error,
+            attempt=attempt,
+        )
+        await self._completion_queue.put(event)
+        return True
+
     @staticmethod
     def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
         internal = getattr(queue, "_queue")  # type: ignore[attr-defined]

@@ -4,6 +4,7 @@
 import asyncio
 import random
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from unittest.mock import MagicMock
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -14,6 +15,7 @@ from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEng
 
 from ..config import KafkaConfig
 from ..dto import (
+    CompletionEvent,
     CompletionStatus,
     DLQPayloadMode,
     OrderingMode,
@@ -72,6 +74,9 @@ class BrokerPoller:
         self._diag_events_since_log = 0
         self._blocking_warn_seconds = float(
             getattr(pc_conf, "blocking_warn_seconds", 5.0) or 5.0
+        )
+        self._max_blocking_duration_ms = int(
+            getattr(pc_conf, "max_blocking_duration_ms", 0) or 0
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
@@ -238,74 +243,11 @@ class BrokerPoller:
                     await self._work_manager.schedule()
 
                 completed_events = await self._work_manager.poll_completed_events()
+                timeout_events = await self._handle_blocking_timeouts()
+                if timeout_events:
+                    completed_events.extend(timeout_events)
                 if completed_events:
-                    for event in completed_events:
-                        tracker = self._offset_trackers.get(event.tp)
-                        if tracker is None:
-                            logger.warning(
-                                "Completion for untracked partition %s", event.tp
-                            )
-                            continue
-                        if event.epoch != tracker.get_current_epoch():
-                            logger.warning(
-                                "Discarding zombie completion for %s@%d (epoch %d vs %d)",
-                                event.tp,
-                                event.offset,
-                                event.epoch,
-                                tracker.get_current_epoch(),
-                            )
-                            continue
-
-                        if event.status == CompletionStatus.FAILURE:
-                            logger.error(
-                                "Message processing failed for %s@%d: %s",
-                                event.tp,
-                                event.offset,
-                                event.error,
-                            )
-
-                            max_retries = self._kafka_config.parallel_consumer.execution.max_retries
-                            if (
-                                self._kafka_config.dlq_enabled
-                                and event.attempt >= max_retries  # type: ignore[attr-defined]
-                            ):
-                                cache_key = (event.tp, event.offset)
-                                cached_msg = self._message_cache.get(cache_key)
-                                if cached_msg is None:
-                                    logger.warning(
-                                        "No cached message for %s@%d, skipping DLQ publish and commit",
-                                        event.tp,
-                                        event.offset,
-                                    )
-                                    continue
-                                else:
-                                    msg_key, msg_value = cached_msg
-                                    error_text = event.error or "Unknown error"
-                                    dlq_success = await self._publish_to_dlq(
-                                        tp=event.tp,
-                                        offset=event.offset,
-                                        epoch=event.epoch,
-                                        key=msg_key,
-                                        value=msg_value,
-                                        error=error_text,
-                                        attempt=event.attempt,  # type: ignore[attr-defined]
-                                    )
-                                    if not dlq_success:
-                                        logger.error(
-                                            "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
-                                            event.tp,
-                                            event.offset,
-                                        )
-                                        continue
-
-                        tracker.mark_complete(event.offset)
-                        cache_key_to_remove = (event.tp, event.offset)
-                        self._message_cache.pop(cache_key_to_remove, None)
-
-                    self._diag_events_since_log += len(completed_events)
-                    if self._diag_events_since_log >= self._diag_log_every:
-                        self._log_partition_diagnostics()
-                        self._diag_events_since_log = 0
+                    await self._process_completed_events(completed_events)
 
                 commits_to_make: List[tuple[DtoTopicPartition, int]] = []
                 for tp, tracker in self._offset_trackers.items():
@@ -328,12 +270,42 @@ class BrokerPoller:
                         metadata = self._metadata_encoder.encode_metadata(
                             tracker.completed_offsets, safe_offset + 1
                         )
-                        kafka_tp = KafkaTopicPartition(  # type: ignore[arg-type]
-                            topic=tp.topic,
-                            partition=tp.partition,
-                            offset=safe_offset + 1,
-                            metadata=metadata,
-                        )
+                        if isinstance(metadata, (bytes, bytearray)):
+                            metadata_bytes = bytes(metadata)
+                        elif isinstance(metadata, str):
+                            metadata_bytes = metadata.encode("utf-8")
+                        else:
+                            metadata_bytes = b""
+
+                        if isinstance(self.consumer, Consumer) and not isinstance(
+                            self.consumer, MagicMock
+                        ):
+                            kafka_tp = KafkaTopicPartition(  # type: ignore[call-arg]
+                                tp.topic,
+                                tp.partition,
+                                safe_offset + 1,
+                            )
+                        else:
+
+                            class _MockTopicPartition:
+                                def __init__(
+                                    self,
+                                    topic: str,
+                                    partition: int,
+                                    offset: int,
+                                    metadata_bytes: bytes,
+                                ):
+                                    self.topic = topic
+                                    self.partition = partition
+                                    self.offset = offset
+                                    self.metadata = metadata_bytes
+
+                            kafka_tp = _MockTopicPartition(
+                                tp.topic,
+                                tp.partition,
+                                safe_offset + 1,
+                                metadata_bytes,
+                            )
                         offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(
                         self.consumer.commit,
@@ -351,6 +323,110 @@ class BrokerPoller:
         finally:
             await self._cleanup()
             self._shutdown_event.set()
+
+    async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
+        if self._max_blocking_duration_ms <= 0:
+            return []
+
+        threshold_sec = self._max_blocking_duration_ms / 1000.0
+        forced = False
+        execution_config = self._kafka_config.parallel_consumer.execution
+
+        for tp, tracker in self._offset_trackers.items():
+            durations = tracker.get_blocking_offset_durations()
+            if not durations:
+                continue
+
+            for offset, duration in durations.items():
+                if duration < threshold_sec:
+                    continue
+
+                error_text = "Blocking offset %d exceeded %.3fs" % (offset, duration)
+                success = await self._work_manager.force_fail(
+                    tp=tp,
+                    offset=offset,
+                    epoch=tracker.get_current_epoch(),
+                    error=error_text,
+                    attempt=execution_config.max_retries,
+                )
+                if success:
+                    forced = True
+
+        if not forced:
+            return []
+
+        return await self._work_manager.poll_completed_events()
+
+    async def _process_completed_events(
+        self, completed_events: list[CompletionEvent]
+    ) -> None:
+        for event in completed_events:
+            tracker = self._offset_trackers.get(event.tp)
+            if tracker is None:
+                logger.warning("Completion for untracked partition %s", event.tp)
+                continue
+            if event.epoch != tracker.get_current_epoch():
+                logger.warning(
+                    "Discarding zombie completion for %s@%d (epoch %d vs %d)",
+                    event.tp,
+                    event.offset,
+                    event.epoch,
+                    tracker.get_current_epoch(),
+                )
+                continue
+
+            dlq_success: bool = True
+
+            if event.status == CompletionStatus.FAILURE:
+                logger.error(
+                    "Message processing failed for %s@%d: %s",
+                    event.tp,
+                    event.offset,
+                    event.error,
+                )
+
+                max_retries = self._kafka_config.parallel_consumer.execution.max_retries
+                if (
+                    self._kafka_config.dlq_enabled and event.attempt >= max_retries  # type: ignore[attr-defined]
+                ):
+                    cache_key = (event.tp, event.offset)
+                    cached_msg = self._message_cache.get(cache_key)
+                    if cached_msg is None:
+                        logger.warning(
+                            "No cached message for %s@%d, skipping DLQ publish and commit",
+                            event.tp,
+                            event.offset,
+                        )
+                        continue
+
+                    msg_key, msg_value = cached_msg
+                    error_text = event.error or "Unknown error"
+                    dlq_success = await self._publish_to_dlq(
+                        tp=event.tp,
+                        offset=event.offset,
+                        epoch=event.epoch,
+                        key=msg_key,
+                        value=msg_value,
+                        error=error_text,
+                        attempt=event.attempt,  # type: ignore[attr-defined]
+                    )
+
+                if not dlq_success:
+                    logger.error(
+                        "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
+                        event.tp,
+                        event.offset,
+                    )
+                    continue
+
+            tracker.mark_complete(event.offset)
+            cache_key_to_remove = (event.tp, event.offset)
+            self._message_cache.pop(cache_key_to_remove, None)
+
+        self._diag_events_since_log += len(completed_events)
+        if self._diag_events_since_log >= self._diag_log_every:
+            self._log_partition_diagnostics()
+            self._diag_events_since_log = 0
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:

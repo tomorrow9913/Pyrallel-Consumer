@@ -84,6 +84,7 @@ class ParallelConsumerConfig(BaseSettings):
     queue_max_messages: int = 5000
     diag_log_every: int = 1000
     blocking_warn_seconds: float = 5.0
+    max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     execution: ExecutionConfig = ExecutionConfig()
 
