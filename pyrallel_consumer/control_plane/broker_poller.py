@@ -36,8 +36,9 @@ class BrokerPoller:
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
 
-        self._batch_size = self._kafka_config.parallel_consumer.poll_batch_size
-        self._worker_pool_size = self._kafka_config.parallel_consumer.worker_pool_size
+        pc_conf = self._kafka_config.parallel_consumer
+        self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
+        self._worker_pool_size = getattr(pc_conf, "worker_pool_size", 0) or 0
         self.ORDERING_MODE = OrderingMode.KEY_HASH
 
         self.producer: Optional[Producer] = None
@@ -52,18 +53,16 @@ class BrokerPoller:
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
-            blocking_cache_ttl=self._kafka_config.parallel_consumer.blocking_cache_ttl,
+            blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
         )
 
-        self._diag_log_every = self._kafka_config.parallel_consumer.diag_log_every
+        self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
         self._diag_events_since_log = 0
-        self._blocking_warn_seconds = (
-            self._kafka_config.parallel_consumer.blocking_warn_seconds
+        self._blocking_warn_seconds = float(
+            getattr(pc_conf, "blocking_warn_seconds", 5.0) or 5.0
         )
 
-        self.MAX_IN_FLIGHT_MESSAGES = (
-            self._kafka_config.parallel_consumer.execution.max_in_flight
-        )
+        self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
         self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = self.MAX_IN_FLIGHT_MESSAGES // 2
         self._is_paused = False
 
@@ -198,11 +197,17 @@ class BrokerPoller:
                         cache_key = (tp, offset_val)
                         self._message_cache[cache_key] = (msg.key(), msg.value())
 
+                        submit_key: Any
+                        if self.ORDERING_MODE == OrderingMode.PARTITION:
+                            submit_key = tp.partition
+                        else:
+                            submit_key = msg.key()
+
                         await self._work_manager.submit_message(
                             tp=tp,
                             offset=offset_val,
                             epoch=tracker.get_current_epoch(),
-                            key=msg.key(),
+                            key=submit_key,
                             payload=msg.value(),
                         )
                         tracker.update_last_fetched_offset(offset_val)
@@ -298,6 +303,7 @@ class BrokerPoller:
                             tp.topic,
                             tp.partition,
                             safe_offset + 1,
+                            "pyrallel-consumer",
                         )
                         offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(
@@ -341,6 +347,11 @@ class BrokerPoller:
             if blocking_offset is not None:
                 durations = tracker.get_blocking_offset_durations()
                 blocking_age = durations.get(blocking_offset.start)
+            age_str = (
+                "%.2fs" % blocking_age
+                if isinstance(blocking_age, (int, float))
+                else "n/a"
+            )
             parts.append(
                 "%s-%d queued=%d gaps=%d blocking=%s age=%s"
                 % (
@@ -349,12 +360,12 @@ class BrokerPoller:
                     queued,
                     gap_count,
                     blocking_offset.start if blocking_offset else "none",
-                    "%.2fs" % blocking_age if blocking_age is not None else "n/a",
+                    age_str,
                 )
             )
             if (
                 blocking_offset is not None
-                and blocking_age is not None
+                and isinstance(blocking_age, (int, float))
                 and blocking_age >= self._blocking_warn_seconds
             ):
                 logger.warning(

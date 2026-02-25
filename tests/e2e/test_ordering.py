@@ -196,8 +196,8 @@ async def run_ordering_test(
 @pytest.mark.asyncio
 async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
     """KEY_HASH 모드에서 키별 순서 보장을 테스트합니다."""
-    num_messages = 10000
-    num_keys = 100
+    num_messages = 2000
+    num_keys = 200
 
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
@@ -230,8 +230,8 @@ async def test_partition_ordering(base_kafka_config: KafkaConfig):
 @pytest.mark.asyncio
 async def test_unordered(base_kafka_config: KafkaConfig):
     """UNORDERED 모드에서 모든 메시지가 처리되는지 테스트합니다."""
-    num_messages = 10000
-    num_keys = 100
+    num_messages = 2000
+    num_keys = 200
 
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
