@@ -116,11 +116,15 @@ class BrokerPoller:
         jitter_ms = exec_config.retry_jitter_ms
         use_exponential = exec_config.exponential_backoff
 
+        payload_mode = getattr(
+            self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
+        )
+
         for retry_attempt in range(max_retries):
             try:
                 send_key = None
                 send_value = None
-                if self._kafka_config.dlq_payload_mode == DLQPayloadMode.FULL:
+                if payload_mode == DLQPayloadMode.FULL:
                     send_key = key
                     send_value = value
                 await asyncio.to_thread(
@@ -321,10 +325,14 @@ class BrokerPoller:
                     offsets_to_commit = []
                     for tp, safe_offset in commits_to_make:
                         tracker = self._offset_trackers[tp]
-                        kafka_tp = KafkaTopicPartition(
+                        metadata = self._metadata_encoder.encode_metadata(
+                            tracker.completed_offsets, safe_offset + 1
+                        )
+                        kafka_tp = KafkaTopicPartition(  # type: ignore[arg-type]
                             topic=tp.topic,
                             partition=tp.partition,
                             offset=safe_offset + 1,
+                            metadata=metadata,
                         )
                         offsets_to_commit.append(kafka_tp)
                     await asyncio.to_thread(

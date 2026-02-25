@@ -12,6 +12,14 @@ class AsyncConfig(BaseSettings):
 
 
 class ProcessConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="PROCESS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
     process_count: int = 8
     queue_size: int = 2048
     require_picklable_worker: bool = True
@@ -21,6 +29,8 @@ class ProcessConfig(BaseSettings):
     worker_join_timeout_ms: int = 30000
     task_timeout_ms: int = 30000
     msgpack_max_bytes: int = 1_000_000
+    max_tasks_per_child: int = 0
+    recycle_jitter_ms: int = 0
 
 
 class MetricsConfig(BaseSettings):

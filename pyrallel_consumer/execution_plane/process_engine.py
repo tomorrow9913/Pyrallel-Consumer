@@ -170,6 +170,7 @@ def _calculate_backoff(
     retry_jitter_ms: int,
 ) -> float:
     """Calculate backoff delay in seconds with optional exponential scaling and jitter."""
+
     if exponential_backoff:
         backoff_ms = retry_backoff_ms * (2 ** (attempt - 1))
     else:
@@ -195,6 +196,19 @@ def _worker_loop(
 
     worker_logger = logging.getLogger(__name__)
     worker_logger.info("ProcessWorker[%d] started.", process_idx)
+
+    tasks_processed = 0
+    max_tasks_per_child = execution_config.process_config.max_tasks_per_child
+    recycle_jitter_ms = execution_config.process_config.recycle_jitter_ms
+    should_exit_after_batch = False
+
+    # Sample jitter once at worker start (constant for this worker's lifetime)
+    sampled_jitter = (
+        random.randint(0, recycle_jitter_ms) if recycle_jitter_ms > 0 else 0
+    )
+    recycle_limit = (
+        max_tasks_per_child + sampled_jitter if max_tasks_per_child > 0 else None
+    )
 
     while True:
         item = task_queue.get()
@@ -232,7 +246,7 @@ def _worker_loop(
                 )
             continue
 
-        for work_item in work_items:
+        for idx, work_item in enumerate(work_items):
             if in_flight_registry is not None:
                 key = (
                     process_idx,
@@ -261,7 +275,8 @@ def _worker_loop(
 
                         def _handle_timeout(signum, frame):
                             raise TimeoutError(
-                                f"Task offset={work_item.offset} exceeded {timeout_sec:.3f}s"
+                                "Task offset=%d exceeded %.3fs"
+                                % (work_item.offset, timeout_sec)
                             )
 
                         signal.signal(signal.SIGALRM, _handle_timeout)
@@ -355,12 +370,40 @@ def _worker_loop(
                     )
                     in_flight_registry.pop(key, None)
 
+            # Check worker recycling after task completion
+            if recycle_limit is not None:
+                tasks_processed += 1
+                if tasks_processed >= recycle_limit:
+                    worker_logger.info(
+                        "ProcessWorker[%d] recycling after %d tasks (limit=%d, jitter=%d)",
+                        process_idx,
+                        tasks_processed,
+                        max_tasks_per_child,
+                        sampled_jitter,
+                    )
+                    remaining = work_items[idx + 1 :]
+                    if remaining:
+                        remaining_payloads = [
+                            _work_item_to_dict(item) for item in remaining
+                        ]
+                        packed_remaining = msgpack.packb(
+                            remaining_payloads, use_bin_type=True
+                        )
+                        task_queue.put(packed_remaining)
+                    should_exit_after_batch = True
+
             if fatal_timeout:
                 worker_logger.error(
                     "ProcessWorker[%d] exiting due to task timeout; parent will respawn",
                     process_idx,
                 )
                 os._exit(1)
+
+            if should_exit_after_batch:
+                break
+
+        if should_exit_after_batch:
+            break
 
     worker_logger.info("ProcessWorker[%d] shutdown complete.", process_idx)
 
