@@ -171,6 +171,18 @@ DLQ 토픽으로 전송되는 메시지는 다음 헤더를 포함합니다:
 - `ExecutionConfig.max_retry_backoff_ms` (기본 `30000`), `retry_jitter_ms` (기본 `200`)
 - 동작: 최대 재시도 후 실패 시 DLQ로 발행(`dlq_enabled=True`), DLQ 적재 성공 시에만 커밋
 
+예시 `.env` (발췌)
+```env
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_CONSUMER_GROUP=my-consumer-group
+PARALLEL_CONSUMER__EXECUTION__MODE=async   # async | process
+PARALLEL_CONSUMER__EXECUTION__MAX_IN_FLIGHT=512
+KAFKA_DLQ_ENABLED=true
+KAFKA_DLQ_TOPIC_SUFFIX=.failed
+METRICS__ENABLED=true
+METRICS__PORT=9091
+```
+
 ```python
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
@@ -280,6 +292,36 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 -   **`prd_dev.md`**: 개발자를 위한 요약 문서. 프로젝트의 주요 기능, 아키텍처, 개발 방법론 등을 간결하게 설명합니다.
 -   **`prd.md`**: 상세 설계 해설서. 각 컴포넌트의 의도, 기술 선정 이유, 인터페이스 정의 등 "왜"라는 질문에 대한 깊이 있는 답변을 제공하는 문서입니다.
+
+## 📊 모니터링 스택 (Prometheus + Grafana)
+
+- `docker-compose.yml`에 Prometheus(9090), Grafana(3000), Kafka Exporter(9308), Kafka UI(8080), Kafka(9092)가 포함됩니다.
+- Prometheus 설정은 `monitoring/prometheus.yml`에서 관리하며 기본으로 `kafka-exporter`와 호스트의 Pyrallel Consumer(메트릭 포트 9091)를 스크랩합니다. 컨슈머가 컨테이너 내에서 돌면 해당 주소를 컨테이너 호스트네임으로 변경하세요.
+
+사용 방법
+1) 메트릭 활성화(애플리케이션):
+```python
+config.metrics.enabled = True
+config.metrics.port = 9091
+```
+
+2) 스택 실행:
+```bash
+docker compose up -d
+```
+
+3) 확인:
+- Prometheus: http://localhost:9090 (target 상태 확인)
+- Grafana: http://localhost:3000 (기본 admin / admin)
+
+4) Grafana 데이터소스 추가:
+- Type: Prometheus
+- URL: http://prometheus:9090
+- Access: Server
+
+5) 대시보드:
+- Kafka Exporter 기본 지표 + Pyrallel Consumer `consumer_*` 메트릭을 선택하여 그래프 패널을 추가하면 됩니다.
+- 예시 쿼리: `consumer_processed_total`, `consumer_processing_latency_seconds_bucket`, `consumer_in_flight_count`.
 
 ## 🤝 기여하기
 

@@ -670,6 +670,15 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - E2E ordering 테스트 속도 단축(대량 메시지 2000으로 감소) 및 PARTITION 모드 정렬 실패 수정.
 - 통합 테스트(`tests/integration`)와 E2E ordering 전체 통과 확인.
 
+### 5.18 README 시작 가이드 추가 (2026-02-25)
+
+- 루트 `README.md`에 설치/설정/워커 정의( async I/O, CPU, sleep ), 실행 엔진 선택 예시를 포함한 빠른 시작 섹션을 추가했습니다.
+
+### 5.19 ExecutionMode Enum 도입 (2026-02-25)
+
+- `pyrallel_consumer.dto.ExecutionMode` 추가, `ExecutionConfig.mode`를 Enum으로 전환하고 `engine_factory`에서 문자열 입력 시 Enum으로 정상 변환하도록 처리.
+- README 예제를 `ExecutionMode.ASYNC/PROCESS`로 갱신. 주요 유닛/통합 테스트 재실행(통과, 기존 경고만 유지).
+
 ### 5.15 프로세스 워커 프로파일링 및 벤치마크 README 추가 (2026-02-24)
 
 - `run_parallel_benchmark.py`: 프로파일 모드에서 프로세스 워커 내부에서도 yappi를 시작하고 종료 시 per-worker `.prof`를 `run_name-worker-<pid>.prof`로 저장하도록 래핑(프로파일 실패 시 워커 진행 유지).
