@@ -39,6 +39,10 @@ class BrokerPoller:
         pc_conf = self._kafka_config.parallel_consumer
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
         self._worker_pool_size = getattr(pc_conf, "worker_pool_size", 0) or 0
+        self.QUEUE_MAX_MESSAGES = int(getattr(pc_conf, "queue_max_messages", 0) or 0)
+        self._queue_resume_threshold = (
+            int(self.QUEUE_MAX_MESSAGES * 0.7) if self.QUEUE_MAX_MESSAGES else 0
+        )
         self.ORDERING_MODE = OrderingMode.KEY_HASH
 
         self.producer: Optional[Producer] = None
@@ -390,7 +394,13 @@ class BrokerPoller:
         if not partitions:
             return
 
-        if not self._is_paused and current_load > self.MAX_IN_FLIGHT_MESSAGES:
+        queue_full = (
+            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        )
+
+        if not self._is_paused and (
+            current_load > self.MAX_IN_FLIGHT_MESSAGES or queue_full
+        ):
             logger.warning(
                 "Backpressure: pausing consumer (load=%d limit=%d)",
                 current_load,
@@ -398,7 +408,13 @@ class BrokerPoller:
             )
             self.consumer.pause(partitions)
             self._is_paused = True
-        elif self._is_paused and current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME:
+        elif self._is_paused and (
+            current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME
+            and (
+                self._queue_resume_threshold == 0
+                or total_queued <= self._queue_resume_threshold
+            )
+        ):
             logger.info(
                 "Backpressure released: resuming consumer (load=%d resume=%d)",
                 current_load,

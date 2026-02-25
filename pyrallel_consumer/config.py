@@ -1,6 +1,7 @@
 import socket
 from typing import Any, List, Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import ExecutionMode
@@ -46,6 +47,13 @@ class ExecutionConfig(BaseSettings):
     async_config: AsyncConfig = AsyncConfig()
     process_config: ProcessConfig = ProcessConfig()
 
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, v: Any) -> ExecutionMode:
+        if isinstance(v, str):
+            v = v.split("#", 1)[0].strip()
+        return ExecutionMode(v)
+
     @property
     def max_in_flight_messages(self) -> int:
         return self.max_in_flight
@@ -62,6 +70,7 @@ class ParallelConsumerConfig(BaseSettings):
 
     poll_batch_size: int = 1000
     worker_pool_size: int = 8
+    queue_max_messages: int = 5000
     diag_log_every: int = 1000
     blocking_warn_seconds: float = 5.0
     blocking_cache_ttl: int = 100

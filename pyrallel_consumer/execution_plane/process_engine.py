@@ -6,17 +6,72 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from multiprocessing import Process, Queue
+from multiprocessing import Manager, Process, Queue
 from typing import Any, List, Optional
 
+import msgpack
+
 from pyrallel_consumer.config import ExecutionConfig
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    TopicPartition,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.logger import LogManager
 
 _SENTINEL = None
 
 _logger = logging.getLogger(__name__)
+
+
+def _work_item_to_dict(item: WorkItem) -> dict:
+    return {
+        "id": item.id,
+        "topic": item.tp.topic,
+        "partition": item.tp.partition,
+        "offset": item.offset,
+        "epoch": item.epoch,
+        "key": item.key,
+        "payload": item.payload,
+    }
+
+
+def _work_item_from_dict(payload: dict) -> WorkItem:
+    return WorkItem(
+        id=payload["id"],
+        tp=TopicPartition(payload["topic"], payload["partition"]),
+        offset=payload["offset"],
+        epoch=payload["epoch"],
+        key=payload.get("key"),
+        payload=payload.get("payload"),
+    )
+
+
+def _completion_event_to_dict(event: CompletionEvent) -> dict:
+    return {
+        "id": event.id,
+        "topic": event.tp.topic,
+        "partition": event.tp.partition,
+        "offset": event.offset,
+        "epoch": event.epoch,
+        "status": event.status.value,
+        "error": event.error,
+        "attempt": event.attempt,
+    }
+
+
+def _completion_event_from_dict(payload: dict) -> CompletionEvent:
+    return CompletionEvent(
+        id=payload["id"],
+        tp=TopicPartition(payload["topic"], payload["partition"]),
+        offset=payload["offset"],
+        epoch=payload["epoch"],
+        status=CompletionStatus(payload["status"]),
+        error=payload.get("error"),
+        attempt=payload["attempt"],
+    )
 
 
 class _BatchAccumulator:
@@ -76,7 +131,9 @@ class _BatchAccumulator:
             self._flush_timer = None
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug("Batch flush (%s): size=%d", reason, len(batch))
-        self._task_queue.put(batch)
+        payload = [_work_item_to_dict(item) for item in batch]
+        packed = msgpack.packb(payload, use_bin_type=True)
+        self._task_queue.put(packed)
 
     def close(self) -> None:
         with self._lock:
@@ -114,6 +171,7 @@ def _worker_loop(
     process_idx: int,
     execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
+    in_flight_registry=None,
 ):
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
@@ -129,9 +187,18 @@ def _worker_loop(
             )
             break
 
-        work_items = item if isinstance(item, list) else [item]
+        work_items: list[WorkItem]
+        if isinstance(item, (bytes, bytearray)):
+            decoded = msgpack.unpackb(item, raw=False)
+            work_items = [_work_item_from_dict(entry) for entry in decoded]
+        elif isinstance(item, list):
+            work_items = item
+        else:
+            work_items = [item]
 
         for work_item in work_items:
+            if in_flight_registry is not None:
+                in_flight_registry[process_idx] = _work_item_to_dict(work_item)
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
@@ -209,7 +276,11 @@ def _worker_loop(
                 attempt=attempt,
             )
             try:
-                completion_queue.put(completion_event)
+                completion_queue.put(
+                    msgpack.packb(
+                        _completion_event_to_dict(completion_event), use_bin_type=True
+                    )
+                )
             except Exception as put_exc:
                 worker_logger.error(
                     "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
@@ -217,6 +288,9 @@ def _worker_loop(
                     process_idx,
                     put_exc,
                 )
+            finally:
+                if in_flight_registry is not None:
+                    in_flight_registry.pop(process_idx, None)
 
     worker_logger.info("ProcessWorker[%d] shutdown complete.", process_idx)
 
@@ -237,6 +311,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             maxsize=config.process_config.queue_size
         )
         self._completion_queue: Queue[CompletionEvent] = Queue()
+        self._manager = Manager()
+        self._in_flight_registry = self._manager.dict()
         self._workers: List[Process] = []
         self._in_flight_count: int = 0
         self._in_flight_lock = threading.Lock()
@@ -259,25 +335,58 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         self._start_workers()
 
+    def _start_worker(self, idx: int) -> Process:
+        worker = Process(
+            target=_worker_loop,
+            args=(
+                self._task_queue,
+                self._completion_queue,
+                self._worker_fn,
+                idx,
+                self._config,
+                self._log_queue,
+                self._in_flight_registry,
+            ),
+        )
+        worker.start()
+        self._logger.info("Started ProcessWorker[%d] (PID: %d)", idx, worker.pid)
+        return worker
+
     def _start_workers(self):
         """
         워커 프로세스 풀을 시작합니다.
         """
         for i in range(self._config.process_config.process_count):
-            worker = Process(
-                target=_worker_loop,
-                args=(
-                    self._task_queue,
-                    self._completion_queue,
-                    self._worker_fn,
-                    i,
-                    self._config,
-                    self._log_queue,
-                ),
-            )
+            worker = self._start_worker(i)
             self._workers.append(worker)
-            worker.start()
-            self._logger.info("Started ProcessWorker[%d] (PID: %d)", i, worker.pid)
+
+    def _ensure_workers_alive(self) -> None:
+        for idx, worker in enumerate(self._workers):
+            if worker.is_alive():
+                continue
+            exitcode = worker.exitcode
+            if idx in self._in_flight_registry:
+                try:
+                    work_dict = self._in_flight_registry.pop(idx)
+                    work_item = _work_item_from_dict(work_dict)
+                    packed = msgpack.packb([work_dict], use_bin_type=True)
+                    self._task_queue.put(packed)
+                    self._logger.warning(
+                        "Requeued lost work item offset=%d from dead worker %d",
+                        work_item.offset,
+                        idx,
+                    )
+                except Exception as requeue_exc:
+                    self._logger.error(
+                        "Failed to requeue work from worker %d: %s", idx, requeue_exc
+                    )
+            self._logger.error(
+                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                idx,
+                exitcode,
+            )
+            new_worker = self._start_worker(idx)
+            self._workers[idx] = new_worker
 
     async def submit(self, work_item: WorkItem) -> None:
         """
@@ -293,12 +402,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
+        self._ensure_workers_alive()
         completed_events: List[CompletionEvent] = []
         while (
             len(completed_events) < batch_limit and not self._completion_queue.empty()
         ):
             try:
-                event = self._completion_queue.get_nowait()
+                raw_event = self._completion_queue.get_nowait()
+                if isinstance(raw_event, (bytes, bytearray)):
+                    event = _completion_event_from_dict(
+                        msgpack.unpackb(raw_event, raw=False)
+                    )
+                else:
+                    event = raw_event
+
                 completed_events.append(event)
                 with self._in_flight_lock:
                     self._in_flight_count -= 1
