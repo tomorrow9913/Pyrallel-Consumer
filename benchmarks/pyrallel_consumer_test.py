@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
@@ -146,6 +146,8 @@ async def run_pyrallel_consumer_test(
     stats_tracker: Optional[BenchmarkStats] = None,
     num_partitions: int = 1,
     reset_topic: bool = False,
+    async_worker_fn: Optional[Callable[[WorkItem], Awaitable[None]]] = None,
+    process_worker_fn: Optional[Callable[[WorkItem], None]] = None,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -201,6 +203,9 @@ async def run_pyrallel_consumer_test(
         _decode_payload(payload_bytes)
         await asyncio.sleep(0.005)
 
+    process_worker = process_worker_fn or _process_mode_worker
+    async_worker_impl = async_worker_fn or async_worker
+
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
     execution_config.mode = execution_mode
 
@@ -208,10 +213,12 @@ async def run_pyrallel_consumer_test(
     if execution_mode == "process":
         engine = ProcessExecutionEngine(
             config=execution_config,
-            worker_fn=_process_mode_worker,
+            worker_fn=process_worker,
         )
     else:
-        engine = AsyncExecutionEngine(config=execution_config, worker_fn=async_worker)
+        engine = AsyncExecutionEngine(
+            config=execution_config, worker_fn=async_worker_impl
+        )
 
     work_manager = WorkManager(
         execution_engine=engine,

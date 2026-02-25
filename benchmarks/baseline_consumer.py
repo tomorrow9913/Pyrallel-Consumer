@@ -1,7 +1,7 @@
 # baseline_consumer.py
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
@@ -58,6 +58,7 @@ def consume_messages(
     topic_name: str | None = None,
     group_id: str | None = None,
     stats: BenchmarkStats | None = None,
+    worker_fn: Callable[[bytes], None] | None = None,
 ) -> BenchmarkResult | None:
     effective_topic = topic_name or topic
     consumer_conf = dict(conf)
@@ -122,9 +123,10 @@ def consume_messages(
                 continue
 
             process_start = time.perf_counter()
-            msg.value().decode("utf-8")
-            # Simulate message processing time
-            # asyncio.sleep(0.0001) # Note: consumer.poll is synchronous, so asyncio.sleep is not appropriate here.
+            payload_bytes = msg.value() or b""
+            payload_bytes.decode("utf-8")
+            if worker_fn:
+                worker_fn(payload_bytes)
             if stats:
                 stats.record(time.perf_counter() - process_start)
 

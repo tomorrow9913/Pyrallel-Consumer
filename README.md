@@ -41,6 +41,18 @@ consumer = PyrallelConsumer(config, worker, topic="demo")
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
 
+## 📊 벤치마크 샘플 (프로파일 OFF)
+
+최근 실행(4 partitions, 2000 msgs, 100 keys, profiling off)의 처리량(TPS)을 아래에 공유합니다. 워크로드는 `benchmarks/run_parallel_benchmark.py`의 `--workload` 옵션을 사용했습니다. 실행 시 프로파일링은 모두 비활성화했습니다.
+
+| Workload | 설정 | baseline TPS | async TPS | process TPS |
+| --- | --- | --- | --- | --- |
+| sleep | `--workload sleep --worker-sleep-ms 5` | 159.69 | 2206.35 | 910.04 |
+| cpu | `--workload cpu --worker-cpu-iterations 500` | 2598.79 | 1403.07 | 2072.26 |
+| io | `--workload io --worker-io-sleep-ms 5` | 159.89 | 2797.18 | 916.60 |
+
+> 주의: 프로세스 모드는 안정성을 위해 프로파일을 비활성화한 상태로 실행했습니다. 프로파일이 필요하면 baseline/async 위주로 사용하거나 별도 외부 프로파일러(py-spy 등)를 권장합니다.
+
 ## 🚀 아키텍처 개요
 
 `Pyrallel Consumer`는 **Control Plane**, **Execution Plane**, **Worker Layer**로 명확하게 계층을 분리하여 설계되었습니다. `Control Plane`은 Kafka와의 통신 및 오프셋 관리를 담당하며, 어떤 `Execution Engine`이 사용되는지에 독립적으로 작동합니다. `Execution Plane`은 `Asyncio Task` 또는 `멀티프로세스`를 활용하여 사용자 정의 워커의 병렬 실행을 관리합니다.

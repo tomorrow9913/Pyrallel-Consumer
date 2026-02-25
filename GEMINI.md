@@ -622,3 +622,44 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - 138개 테스트 통과 (unit 128 + integration 5), 0 failures
 - 3개 경고 (unawaited mock coroutines, non-critical)
 - pre-commit 전체 hooks 통과
+
+### 5.11 Yappi 프로파일링 계획 수립 (2026-02-24)
+
+- `docs/plans/2026-02-24-profile-analysis-design.md`에 baseline/async/process 벤치마크를 yappi로 프로파일링하고 snakeviz로 시각화하는 절차(풀볼륨/스모크/오프라인 분석 옵션 포함)를 정리했습니다.
+- `benchmarks/results/profiles/` 경로에 `.prof` 산출물이 아직 없으며, 실행에는 로컬 Kafka 클러스터가 필요합니다.
+- 다음 단계: Kafka를 띄운 뒤 `uv run python -m benchmarks.profile_benchmark_yappi --bootstrap-servers localhost:9092 --modes baseline async process`(메시지/키/파티션 수는 용량에 맞게 조정)로 프로파일 생성 → pstats/console 요약과 snakeviz로 병목 비교.
+
+### 5.12 Yappi 프로파일 실행 및 병목 관찰 (2026-02-24)
+
+- 실행: `uv run python -m benchmarks.profile_benchmark_yappi` (10k msgs, 100 keys, 8 partitions, timeout 120s).
+- 산출물: `benchmarks/results/profiles/20260224T091356Z/` 내 `baseline_profile.prof`, `async_profile.prof`, `process_profile.prof`.
+- 요약 (실측 TPS/런타임): baseline 0.23s / 44,364 TPS; async 4.33s / 2,309 TPS; process 8.60s / 1,163 TPS.
+- Hotspot (async): yappi 누적 대부분이 `asyncio.tasks.sleep`(10,010 calls, ~1,498 cum sec)와 `asyncio.wait_for` → 벤치마크 워커의 5ms 슬립이 전체 병목. 실제 런타임 4.33s로 합산된 wall-time은 동시성 합.
+- Hotspot (process): 누적 상위에 `asyncio.sleep`(diag/worker), `Queue.get`(~8.5s), `BrokerPoller._run_consumer`(~8.5s); 프로파일은 메인 프로세스만 캡처(워커 프로세스 yappi 미수집).
+- 개선 아이디어: (1) 벤치마크 워커 슬립을 파라미터화/기본 축소하여 엔진 오버헤드만 측정, (2) 프로세스 워커에서 yappi 시작/저장하도록 래핑해 실제 워커 호출 스택 수집, (3) 프로파일 시 diag 루프(5s sleep) 비활성화 옵션 추가로 노이즈 축소.
+
+### 5.13 프로파일러 정합성 개선 및 재실행 (2026-02-24)
+
+- 변경: baseline/async/process 모두 동일한 워크로드를 사용하도록 벤치마크 정렬.
+  - `profile_benchmark_yappi.py`에 `--worker-sleep-ms` 추가(기본 5ms), 공통 슬립 워커를 baseline/async/process에 적용.
+  - `run_pyrallel_consumer_test`는 커스텀 워커 주입(비동기/프로세스) 허용, baseline 소비자도 커스텀 worker_fn을 받아 동일 워크로드 실행.
+- 재실행: `uv run python -m benchmarks.profile_benchmark_yappi --worker-sleep-ms 5` 산출물 `benchmarks/results/profiles/20260224T111936Z/`.
+- 실측 TPS/런타임(10k msgs, 5ms work): baseline 61.8s / 161.7 TPS; async 4.19s / 2,387 TPS; process 8.59s / 1,163 TPS.
+- Hotspot 정합: 이제 세 모드 모두 동일 슬립이 상단에 나타남 (`_sleep_work_*` / `asyncio.sleep`), 병렬 처리 이점(특히 async) 명확하게 비교 가능. Process 프로파일은 여전히 메인 프로세스 중심(워커별 yappi 미포함)으로 표시되므로 워커 프로파일링 필요 시 추가 수집 필요.
+
+### 5.14 벤치마크/프로파일 통합 플래그 및 워크로드 선택 추가 (2026-02-24)
+
+- `benchmarks/run_parallel_benchmark.py`에 프로파일 토글/출력 옵션 추가: `--profile`, `--profile-dir`, `--profile-clock`, `--profile-top-n`, `--profile-threads`, `--profile-greenlets`(yappi 필요, 기본 off).
+- 동일 스크립트에 워크로드 선택 추가: `--workload {sleep,cpu,io}` + `--worker-sleep-ms`/`--worker-cpu-iterations`/`--worker-io-sleep-ms`를 baseline/async/process 공통으로 주입(커스텀 워커 훅 사용).
+- 프로파일 .prof는 모드명으로 `profile_dir/run_name.prof` 저장, top-N 출력 옵션 지원. 프로세스 모드 워커 내부 yappi는 아직 미적용(필요 시 후속 작업).
+
+### 5.15 프로세스 워커 프로파일링 및 벤치마크 README 추가 (2026-02-24)
+
+- `run_parallel_benchmark.py`: 프로파일 모드에서 프로세스 워커 내부에서도 yappi를 시작하고 종료 시 per-worker `.prof`를 `run_name-worker-<pid>.prof`로 저장하도록 래핑(프로파일 실패 시 워커 진행 유지). `datetime.utcnow()` 사용을 UTC aware `datetime.now(datetime.UTC)`로 교체.
+- 워크로드 옵션에 `all` 추가(sleep→cpu→io 순차 실행, 토픽/그룹 접미사로 충돌 방지). run_name에 워크로드 접두사 부여해 결과/프로파일 구분.
+- `benchmarks/README.md`에 사용법/옵션 업데이트.
+
+### 5.15 프로세스 워커 프로파일링 및 벤치마크 README 추가 (2026-02-24)
+
+- `run_parallel_benchmark.py`: 프로파일 모드에서 프로세스 워커 내부에서도 yappi를 시작하고 종료 시 per-worker `.prof`를 `run_name-worker-<pid>.prof`로 저장하도록 래핑(프로파일 실패 시 워커 진행 유지).
+- 동일 파일에 프로파일/워크로드 옵션 문서화용 README 추가: `benchmarks/README.md`에 사용 예시, 옵션 요약, 출력 위치 설명.
