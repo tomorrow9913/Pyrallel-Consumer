@@ -25,6 +25,11 @@ class OrderingMode(Enum):
     UNORDERED = "unordered"
 
 
+class ExecutionMode(Enum):
+    ASYNC = "async"
+    PROCESS = "process"
+
+
 @dataclass(frozen=True)
 class TopicPartition:
     """

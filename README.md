@@ -160,45 +160,88 @@ DLQ 토픽으로 전송되는 메시지는 다음 헤더를 포함합니다:
 
 **예제:**
 
-```python
-from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
-
-# 재시도 + DLQ 활성화
-kafka_config = KafkaConfig()
-kafka_config.dlq_enabled = True
-kafka_config.dlq_topic_suffix = ".failed"  # orders → orders.failed
-
-exec_config = ExecutionConfig()
-exec_config.max_retries = 5
-exec_config.retry_backoff_ms = 2000
-exec_config.exponential_backoff = True
-
-consumer = PyrallelConsumer(
-    config=kafka_config,
-    execution_config=exec_config,
-    worker=worker,
-    topic="orders"
-)
-```
-
 ## 💡 사용법
 
-### Quick Start
+### 재시도 & DLQ 설정 (요약)
+- `KafkaConfig.dlq_enabled` (기본 `True`): 실패 메시지를 DLQ로 발행할지 여부
+- `KafkaConfig.DLQ_TOPIC_SUFFIX` (기본 `.dlq`): DLQ 토픽 접미사 (`<원본토픽><접미사>`)
+- `ExecutionConfig.max_retries` (기본 `3`): 워커 실행 재시도 횟수
+- `ExecutionConfig.retry_backoff_ms` (기본 `1000`): 재시도 대기 시작값(ms)
+- `ExecutionConfig.exponential_backoff` (기본 `True`): 지수 백오프 사용 여부
+- `ExecutionConfig.max_retry_backoff_ms` (기본 `30000`), `retry_jitter_ms` (기본 `200`)
+- 동작: 최대 재시도 후 실패 시 DLQ로 발행(`dlq_enabled=True`), DLQ 적재 성공 시에만 커밋
 
 ```python
-import asyncio
-from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
+config = KafkaConfig()
+config.dlq_enabled = True
+config.DLQ_TOPIC_SUFFIX = ".failed"
 
-async def worker(item: WorkItem) -> None:
-    print("offset=%d payload=%s" % (item.offset, item.payload))
+exec_conf = ExecutionConfig()
+exec_conf.mode = ExecutionMode.ASYNC
+exec_conf.max_retries = 5
+exec_conf.retry_backoff_ms = 2000
 
+async def worker(item: WorkItem):
+    ...
 
-async def main() -> None:
-    config = KafkaConfig()
-    consumer = PyrallelConsumer(config=config, worker=worker, topic="my-topic")
+consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
+```
+
+### 🏁 빠른 시작 (선택) — DLQ 설정 포함 예제
+
+1) 설치
+```bash
+pip install -r requirements.txt
+```
+
+2) 설정 + 워커 + 실행
+```python
+import asyncio
+import hashlib
+import time
+
+from pyrallel_consumer.consumer import PyrallelConsumer
+from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
+
+config = KafkaConfig(
+    BOOTSTRAP_SERVERS=["localhost:9092"],
+    CONSUMER_GROUP="demo-group",
+    AUTO_OFFSET_RESET="earliest",
+)
+config.dlq_enabled = True
+config.DLQ_TOPIC_SUFFIX = ".failed"
+
+exec_conf = ExecutionConfig()
+exec_conf.mode = ExecutionMode.ASYNC  # 또는 ExecutionMode.PROCESS
+exec_conf.max_in_flight = 512
+exec_conf.max_retries = 5
+exec_conf.retry_backoff_ms = 2000
+
+async def io_worker(item: WorkItem):
+    _ = (item.payload or b"").decode("utf-8")
+    await asyncio.sleep(0.005)
+
+def cpu_worker(item: WorkItem):
+    data = item.payload or b""
+    for _ in range(500):
+        data = hashlib.sha256(data).digest()
+
+def sleep_worker(item: WorkItem):
+    _ = (item.payload or b"").decode("utf-8")
+    time.sleep(0.005)
+
+consumer = PyrallelConsumer(
+    config=config,
+    worker=io_worker,  # 또는 cpu_worker / sleep_worker
+    topic="demo-topic",
+)
+
+async def main():
     await consumer.start()
     try:
         await asyncio.sleep(60)
@@ -206,23 +249,12 @@ async def main() -> None:
         await consumer.stop()
 
 asyncio.run(main())
-
-### 재시도 & DLQ 설정
-
-`KafkaConfig`와 `ExecutionConfig`에 다음 옵션을 제공합니다.
-
-- `KafkaConfig.dlq_enabled` (기본 `True`): 실패 메시지를 DLQ로 발행할지 여부
-- `KafkaConfig.DLQ_TOPIC_SUFFIX` (기본 `.dlq`): DLQ 토픽 접미사 (`<원본토픽><접미사>`)
-- `ExecutionConfig.max_retries` (기본 `3`): 워커 실행 재시도 횟수 (시도 횟수는 1-based)
-- `ExecutionConfig.retry_backoff_ms` (기본 `1000`): 재시도 대기 시작값(ms)
-- `ExecutionConfig.exponential_backoff` (기본 `True`): 지수 백오프 사용 여부
-- `ExecutionConfig.max_retry_backoff_ms` (기본 `30000`): 백오프 상한(ms)
-- `ExecutionConfig.retry_jitter_ms` (기본 `200`): 백오프 지터 상한(ms, 0~값 사이 균등분포 추가)
-
-동작 요약:
-- Async/Process 엔진은 실패/타임아웃 시 위 설정에 따라 재시도하고, 최종 실패 시 `CompletionEvent.attempt`에 최종 시도 횟수를 기록합니다.
-- BrokerPoller는 `dlq_enabled=True`이고 최대 재시도에 도달한 실패 이벤트에 한해 `<topic><DLQ_TOPIC_SUFFIX>`로 원본 `key/value`를 발행하고, 성공적으로 DLQ에 적재된 경우에만 오프셋을 커밋합니다.
 ```
+
+3) 실행 엔진 선택 팁
+- I/O 바운드: `ExecutionMode.ASYNC`, async 워커 사용
+- CPU 바운드: `ExecutionMode.PROCESS`, picklable sync 워커 사용
+- 동시 처리량: `max_in_flight`, `worker_pool_size`를 함께 조정
 
 For detailed examples including async mode, process mode, configuration tuning, and graceful shutdown patterns, see the **[`examples/`](./examples/)** directory.
 

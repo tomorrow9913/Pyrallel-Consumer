@@ -3,6 +3,8 @@ from typing import Any, List, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from pyrallel_consumer.dto import ExecutionMode
+
 
 class AsyncConfig(BaseSettings):
     task_timeout_ms: int = 30000
@@ -33,7 +35,7 @@ class ExecutionConfig(BaseSettings):
         extra="ignore",
     )
 
-    mode: Literal["async", "process"] = "async"
+    mode: ExecutionMode = ExecutionMode.ASYNC
     max_in_flight: int = 1000
     max_revoke_grace_ms: int = 500
     max_retries: int = 3

@@ -2,7 +2,7 @@ from collections.abc import Callable  # Add Callable import
 from typing import Any  # Add Any import
 
 from pyrallel_consumer.config import ExecutionConfig
-from pyrallel_consumer.dto import WorkItem  # Add WorkItem import
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
@@ -23,9 +23,12 @@ def create_execution_engine(
     Raises:
         ValueError: 알 수 없는 실행 모드가 지정된 경우 발생
     """
-    if config.mode == "async":
+    mode = config.mode
+    if isinstance(mode, str):
+        mode = ExecutionMode(mode)
+
+    if mode == ExecutionMode.ASYNC:
         return AsyncExecutionEngine(config=config, worker_fn=worker_fn)
-    elif config.mode == "process":
+    if mode == ExecutionMode.PROCESS:
         return ProcessExecutionEngine(config=config, worker_fn=worker_fn)
-    else:
-        raise ValueError(f"Unknown execution mode: {config.mode}")
+    raise ValueError(f"Unknown execution mode: {mode}")
