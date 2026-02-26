@@ -4,6 +4,9 @@ import argparse
 import asyncio
 import hashlib
 import logging
+import shutil
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -368,6 +371,110 @@ def _print_table(results: List[BenchmarkResult]) -> None:
         print(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
 
 
+_PYSPY_FORMAT_EXTENSIONS: dict[str, str] = {
+    "flamegraph": ".svg",
+    "speedscope": ".json",
+    "chrometrace": ".json",
+    "raw": ".txt",
+}
+
+
+def _relaunch_with_pyspy(args: argparse.Namespace) -> int:
+    """Re-execute the benchmark script under py-spy.
+
+    Builds a ``py-spy record`` (or ``py-spy top``) command that wraps the
+    current interpreter re-running this module with ``--_pyspy-child`` so the
+    child process skips the relaunch and runs the actual benchmark.  py-spy's
+    ``--subprocesses`` flag captures worker processes spawned by the
+    ``ProcessExecutionEngine``.
+    """
+    py_spy_bin = shutil.which("py-spy")
+    if py_spy_bin is None:
+        raise RuntimeError(
+            "py-spy not found on PATH. Install it via: uv add --dev py-spy"
+        )
+
+    output_dir = Path(args.py_spy_output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # -- build the child command (strip py-spy flags, add sentinel) --
+    child_argv: list[str] = [sys.executable, "-m", "benchmarks.run_parallel_benchmark"]
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        # strip all --py-spy* flags
+        if (
+            arg == "--py-spy"
+            or arg == "--py-spy-native"
+            or arg == "--py-spy-idle"
+            or arg == "--py-spy-top"
+        ):
+            continue
+        if arg.startswith("--py-spy-format"):
+            if "=" not in arg:
+                skip_next = True
+            continue
+        if arg.startswith("--py-spy-output"):
+            if "=" not in arg:
+                skip_next = True
+            continue
+        if arg.startswith("--py-spy-rate"):
+            if "=" not in arg:
+                skip_next = True
+            continue
+        child_argv.append(arg)
+    child_argv.append("--_pyspy-child")
+
+    # -- build the py-spy command --
+    if args.py_spy_top:
+        # top mode: interactive live view
+        cmd: list[str] = [py_spy_bin, "top", "--subprocesses"]
+        cmd.extend(["--rate", str(args.py_spy_rate)])
+        if args.py_spy_native:
+            cmd.append("--native")
+        if args.py_spy_idle:
+            cmd.append("--idle")
+        cmd.append("--")
+        cmd.extend(child_argv)
+        print(f"[py-spy top] {' '.join(cmd)}")
+        result = subprocess.run(cmd)
+        return result.returncode
+
+    # record mode: write profile to file
+    fmt = args.py_spy_format
+    ext = _PYSPY_FORMAT_EXTENSIONS.get(fmt, ".svg")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_file = output_dir / f"pyspy-{fmt}-{timestamp}{ext}"
+
+    cmd = [
+        py_spy_bin,
+        "record",
+        "--subprocesses",
+        "--format",
+        fmt,
+        "--output",
+        str(output_file),
+        "--rate",
+        str(args.py_spy_rate),
+    ]
+    if args.py_spy_native:
+        cmd.append("--native")
+    if args.py_spy_idle:
+        cmd.append("--idle")
+    cmd.append("--")
+    cmd.extend(child_argv)
+
+    print(f"[py-spy record] {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode == 0:
+        print(f"\n[py-spy] profile saved to {output_file}")
+    else:
+        print(f"\n[py-spy] py-spy exited with code {result.returncode}")
+    return result.returncode
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Pyrallel throughput benchmarks")
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
@@ -450,7 +557,7 @@ def main() -> None:
     parser.add_argument(
         "--worker-sleep-ms",
         type=float,
-        default=5.0,
+        default=0.5,
         help="Sleep per message for sleep workload",
     )
     parser.add_argument(
@@ -462,10 +569,60 @@ def main() -> None:
     parser.add_argument(
         "--worker-io-sleep-ms",
         type=float,
-        default=5.0,
+        default=0.5,
         help="Sleep per message for IO workload (simulated IO wait)",
     )
+    # -- py-spy profiling options (process mode) --
+    parser.add_argument(
+        "--py-spy",
+        action="store_true",
+        help="Enable py-spy profiling for process mode (wraps the benchmark via self-relaunch)",
+    )
+    parser.add_argument(
+        "--py-spy-format",
+        choices=["flamegraph", "speedscope", "raw", "chrometrace"],
+        default="flamegraph",
+        help="py-spy output format (default: flamegraph)",
+    )
+    parser.add_argument(
+        "--py-spy-output",
+        default="benchmarks/results/pyspy",
+        help="Directory to write py-spy output files (default: benchmarks/results/pyspy)",
+    )
+    parser.add_argument(
+        "--py-spy-rate",
+        type=int,
+        default=100,
+        help="py-spy sampling rate in Hz (default: 100)",
+    )
+    parser.add_argument(
+        "--py-spy-native",
+        action="store_true",
+        help="Include native C extension frames in py-spy output",
+    )
+    parser.add_argument(
+        "--py-spy-idle",
+        action="store_true",
+        help="Include idle thread stacks in py-spy output",
+    )
+    parser.add_argument(
+        "--py-spy-top",
+        action="store_true",
+        help="Use py-spy top (live view) instead of record",
+    )
+    parser.add_argument(
+        "--_pyspy-child",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,  # internal: marks this as the child process under py-spy
+    )
     args = parser.parse_args()
+
+    # -- py-spy self-relaunch gate --
+    # When --py-spy is requested and we are NOT already the child process,
+    # re-execute ourselves under py-spy and exit with its return code.
+    if args.py_spy and not args._pyspy_child:
+        raise SystemExit(_relaunch_with_pyspy(args))
 
     log_level = getattr(logging, args.log_level, logging.INFO)
     logging.basicConfig(

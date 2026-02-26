@@ -29,9 +29,9 @@ uv run python -m benchmarks.run_parallel_benchmark --profile --workload io --wor
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.
 - Workload selection (applies to baseline/async/process uniformly):
   - `--workload {sleep,cpu,io,all}` (default `sleep`; `all` runs sleep→cpu→io sequentially with suffixed topic/group names).
-  - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 5ms).
+  - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
-  - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 5ms).
+  - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).
 - Profiling (yappi):
   - `--profile`: enable profiling (baseline/async only; process mode profiling is disabled by default).
   - `--profile-dir`: directory to write `.prof` files (default `benchmarks/results/profiles`).
@@ -39,10 +39,21 @@ uv run python -m benchmarks.run_parallel_benchmark --profile --workload io --wor
   - `--profile-top-n`: print top-N functions by total time (0 to skip).
   - `--profile-threads`, `--profile-greenlets`: include threads/async tasks.
   - `--profile-process-workers`: also profile process workers (off by default; may be unstable on some platforms).
+- Profiling (py-spy — process mode):
+  - `--py-spy`: enable py-spy profiling (wraps benchmark via self-relaunch with `--subprocesses` to capture worker processes).
+  - `--py-spy-format {flamegraph,speedscope,raw,chrometrace}`: output format (default `flamegraph`).
+  - `--py-spy-output DIR`: directory for py-spy output files (default `benchmarks/results/pyspy/`).
+  - `--py-spy-rate HZ`: sampling rate in Hz (default 100).
+  - `--py-spy-native`: include native C extension frames.
+  - `--py-spy-idle`: include idle thread stacks.
+  - `--py-spy-top`: use live `top` view instead of `record` mode.
+
 
 ## Outputs
 - Benchmark results: console table + JSON summary (default `benchmarks/results/<timestamp>.json`).
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
+- py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
+
 
 ## Recent sample results (no profiling, 4 partitions, 2000 msgs, 100 keys)
 - Workload `sleep` (5ms): baseline 159.69 TPS; async 2206.35 TPS; process 910.04 TPS.
@@ -66,3 +77,33 @@ The JSON summary reports both wall-clock throughput (`throughput_tps`, `total_ti
 - **Baseline**: Single-threaded; lowest TPS but lowest per-message latency because there is no queueing/backpressure.
 
 When comparing runs, use TPS for throughput and `avg/p99_processing_ms` for user-facing latency. Higher TPS usually means higher queueing latency unless you also reduce work per message.
+
+## py-spy profiling (process mode)
+
+py-spy profiles the process execution engine including all child worker processes.
+It uses a self-relaunch pattern: the script re-executes itself under `py-spy record --subprocesses`.
+
+```bash
+# Flamegraph (default) — process mode only
+uv run python -m benchmarks.run_parallel_benchmark \
+  --py-spy --skip-baseline --skip-async
+
+# Speedscope format for interactive exploration
+uv run python -m benchmarks.run_parallel_benchmark \
+  --py-spy --py-spy-format speedscope --skip-baseline --skip-async
+
+# Chrome trace format (load in chrome://tracing)
+uv run python -m benchmarks.run_parallel_benchmark \
+  --py-spy --py-spy-format chrometrace --skip-baseline --skip-async
+
+# High sampling rate with native frames
+uv run python -m benchmarks.run_parallel_benchmark \
+  --py-spy --py-spy-rate 250 --py-spy-native --skip-baseline --skip-async
+
+# Live top view (interactive)
+uv run python -m benchmarks.run_parallel_benchmark \
+  --py-spy --py-spy-top --skip-baseline --skip-async
+```
+
+> **macOS note**: py-spy may require `sudo` due to System Integrity Protection.
+> Homebrew/pyenv Python installs typically work without `sudo`.
