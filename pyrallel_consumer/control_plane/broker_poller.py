@@ -143,7 +143,7 @@ class BrokerPoller:
                     self.producer.flush,
                     timeout=self._kafka_config.DLQ_FLUSH_TIMEOUT_MS / 1000.0,
                 )
-                logger.info(
+                logger.debug(
                     "Published to DLQ: %s@%d -> %s",
                     tp,
                     offset,
@@ -183,7 +183,7 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     async def _run_consumer(self) -> None:
-        logger.info("Starting consumer loop")
+        logger.debug("Starting consumer loop")
         if self.consumer is None:
             raise RuntimeError("Kafka consumer must be initialized")
 
@@ -522,7 +522,7 @@ class BrokerPoller:
                 or total_queued <= self._queue_resume_threshold
             )
         ):
-            logger.info(
+            logger.debug(
                 "Backpressure released: resuming consumer (load=%d resume=%d)",
                 current_load,
                 self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
@@ -545,7 +545,7 @@ class BrokerPoller:
     def _on_assign(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
     ) -> None:
-        logger.info(
+        logger.debug(
             "Partitions assigned: %s",
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
@@ -621,7 +621,7 @@ class BrokerPoller:
             )
             self._running = True
             asyncio.create_task(self._run_consumer())
-            logger.info("Kafka consumer subscribed to %s", self._consume_topic)
+            logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:
             logger.error("Failed to start BrokerPoller: %s", exc, exc_info=True)
             raise
@@ -629,10 +629,10 @@ class BrokerPoller:
     async def stop(self) -> None:
         if not self._running:
             return
-        logger.info("Shutdown signal received")
+        logger.debug("Shutdown signal received")
         self._running = False
         await self._shutdown_event.wait()
-        logger.info("BrokerPoller stopped")
+        logger.debug("BrokerPoller stopped")
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:

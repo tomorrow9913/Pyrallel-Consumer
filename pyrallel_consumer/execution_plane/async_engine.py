@@ -157,18 +157,18 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """
         실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다.
         """
-        self._logger.info("Initiating AsyncExecutionEngine shutdown.")
+        self._logger.debug("Initiating AsyncExecutionEngine shutdown.")
         self._shutdown_event.set()
 
         # Wait for all in-flight tasks to complete
         if self._in_flight_tasks:
-            self._logger.info(
+            self._logger.debug(
                 "Waiting for %d in-flight tasks to complete."
                 % len(self._in_flight_tasks)
             )
             # Wait for tasks to complete, with a reasonable timeout.
             # asyncio.gather returns results and exceptions, or raises if return_exceptions=False
             await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
-            self._logger.info("All in-flight tasks completed during shutdown.")
+            self._logger.debug("All in-flight tasks completed during shutdown.")
 
-        self._logger.info("AsyncExecutionEngine shutdown complete.")
+        self._logger.debug("AsyncExecutionEngine shutdown complete.")

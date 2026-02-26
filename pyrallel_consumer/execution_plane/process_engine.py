@@ -195,7 +195,7 @@ def _worker_loop(
         LogManager.setup_worker_logging(log_queue)
 
     worker_logger = logging.getLogger(__name__)
-    worker_logger.info("ProcessWorker[%d] started.", process_idx)
+    worker_logger.debug("ProcessWorker[%d] started.", process_idx)
 
     tasks_processed = 0
     max_tasks_per_child = execution_config.process_config.max_tasks_per_child
@@ -213,7 +213,7 @@ def _worker_loop(
     while True:
         item = task_queue.get()
         if item is _SENTINEL:
-            worker_logger.info(
+            worker_logger.debug(
                 "ProcessWorker[%d] received sentinel, shutting down.", process_idx
             )
             break
@@ -374,7 +374,7 @@ def _worker_loop(
             if recycle_limit is not None:
                 tasks_processed += 1
                 if tasks_processed >= recycle_limit:
-                    worker_logger.info(
+                    worker_logger.debug(
                         "ProcessWorker[%d] recycling after %d tasks (limit=%d, jitter=%d)",
                         process_idx,
                         tasks_processed,
@@ -405,7 +405,7 @@ def _worker_loop(
         if should_exit_after_batch:
             break
 
-    worker_logger.info("ProcessWorker[%d] shutdown complete.", process_idx)
+    worker_logger.debug("ProcessWorker[%d] shutdown complete.", process_idx)
 
 
 class ProcessExecutionEngine(BaseExecutionEngine):
@@ -462,7 +462,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             ),
         )
         worker.start()
-        self._logger.info("Started ProcessWorker[%d] (PID: %d)", idx, worker.pid)
+        self._logger.debug("Started ProcessWorker[%d] (PID: %d)", idx, worker.pid)
         return worker
 
     def _start_workers(self):
@@ -605,7 +605,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
         self._is_shutdown = True
 
-        _logger.info("Initiating ProcessExecutionEngine shutdown.")
+        _logger.debug("Initiating ProcessExecutionEngine shutdown.")
         self._batch_accumulator.close()
         # Send sentinel to all workers to signal shutdown
         for _ in self._workers:
@@ -623,5 +623,5 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 )
                 worker.terminate()
 
-        _logger.info("ProcessExecutionEngine shutdown complete.")
+        _logger.debug("ProcessExecutionEngine shutdown complete.")
         self._log_listener.stop()

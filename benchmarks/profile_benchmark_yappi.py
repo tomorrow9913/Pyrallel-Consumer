@@ -150,6 +150,7 @@ def _profile_baseline(
     stats = BenchmarkStats(
         run_name="baseline-profile",
         run_type="baseline",
+        workload="baseline",
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -184,8 +185,9 @@ async def _profile_pyrallel(
         bootstrap_servers=bootstrap_servers,
     )
     stats = BenchmarkStats(
-        run_name="%s-profile" % mode,
-        run_type=mode,
+        run_name="%s-profile" % mode.value,
+        run_type=mode.value,
+        workload=mode.value,
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -194,7 +196,7 @@ async def _profile_pyrallel(
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
         consumer_group=group_id,
-        execution_mode=mode,
+        execution_mode=mode.value,
         num_partitions=num_partitions,
         stats_tracker=stats,
         timeout_sec=timeout_sec,
@@ -289,7 +291,7 @@ def run_profile(argv: Sequence[str] | None = None) -> None:
         try:
             asyncio.run(
                 _profile_pyrallel(
-                    mode="async",
+                    mode=ExecutionMode.ASYNC,
                     bootstrap_servers=args.bootstrap_servers,
                     topic_name=topic_map["async"],
                     group_id=group_map["async"],
@@ -313,7 +315,7 @@ def run_profile(argv: Sequence[str] | None = None) -> None:
         try:
             asyncio.run(
                 _profile_pyrallel(
-                    mode="process",
+                    mode=ExecutionMode.PROCESS,
                     bootstrap_servers=args.bootstrap_servers,
                     topic_name=topic_map["process"],
                     group_id=group_map["process"],

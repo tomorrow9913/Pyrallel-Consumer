@@ -77,7 +77,7 @@ def _delete_topics_with_retries(
                 ignored_codes={UNKNOWN_TOPIC_CODE},
                 action="delete topics",
             )
-            logger.info("Deleted topics: %s", ", ".join(topics))
+            logger.debug("Deleted topics: %s", ", ".join(topics))
             return
         except KafkaException as exc:
             if attempt == retries:
@@ -108,7 +108,7 @@ def _delete_groups_with_retries(
                 ignored_codes={GROUP_ID_NOT_FOUND_CODE},
                 action="delete consumer groups",
             )
-            logger.info("Deleted consumer groups: %s", ", ".join(groups))
+            logger.debug("Deleted consumer groups: %s", ", ".join(groups))
             return
         except KafkaException as exc:
             if attempt == retries:
@@ -143,7 +143,7 @@ def _create_topics_with_retries(
         futures = admin.create_topics(new_topics, operation_timeout=operation_timeout)
         try:
             _await_admin_results(futures, ignored_codes=set(), action="create topics")
-            logger.info("Created topics: %s", ", ".join(topics.keys()))
+            logger.debug("Created topics: %s", ", ".join(topics.keys()))
             return
         except KafkaException as exc:
             if attempt == retries:
@@ -168,7 +168,7 @@ def _await_admin_results(
             future.result()
         except KafkaException as exc:
             if _should_ignore(exc, ignored_codes):
-                logger.info("Ignoring %s error for %s: %s", action, name, exc)
+                logger.debug("Ignoring %s error for %s: %s", action, name, exc)
                 continue
             raise
 

@@ -42,6 +42,7 @@ def _run_baseline_round(
     num_keys: int,
     group_id: str,
     worker_fn: Callable[[bytes], None],
+    workload: str,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -53,6 +54,7 @@ def _run_baseline_round(
     stats = BenchmarkStats(
         run_name="baseline",
         run_type="baseline",
+        workload=workload,
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -290,7 +292,7 @@ def _wrap_process_worker_for_profile(
     return worker_fn
 
 
-async def _run_pyrallel_round(
+async def _run_pyrparallel_round(
     *,
     topic_name: str,
     run_name: str,
@@ -303,6 +305,7 @@ async def _run_pyrallel_round(
     timeout_sec: int,
     async_worker_fn: Callable[[WorkItem], Awaitable[None]],
     process_worker_fn: Callable[[WorkItem], None],
+    workload: str,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -313,7 +316,8 @@ async def _run_pyrallel_round(
     )
     stats = BenchmarkStats(
         run_name=run_name,
-        run_type=mode,
+        run_type=mode.value,
+        workload=workload,
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -322,7 +326,7 @@ async def _run_pyrallel_round(
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
         consumer_group=group_id,
-        execution_mode=mode,
+        execution_mode=mode.value,
         num_partitions=num_partitions,
         stats_tracker=stats,
         timeout_sec=timeout_sec,
@@ -396,9 +400,9 @@ def main() -> None:
     parser.add_argument(
         "--log-level",
         type=str,
-        default="INFO",
+        default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level for benchmark run",
+        help="Logging level for benchmark run (use WARNING for cleaner TPS measurements)",
     )
     parser.add_argument(
         "--profile",
@@ -463,10 +467,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    log_level = getattr(logging, args.log_level, logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, args.log_level, logging.INFO),
+        level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    logging.getLogger("pyrallel_consumer").setLevel(log_level)
+    logging.getLogger("benchmarks").setLevel(log_level)
 
     _check_kafka_connection(args.bootstrap_servers)
 
@@ -540,6 +547,7 @@ def main() -> None:
                         num_keys=args.num_keys,
                         group_id=f"{args.baseline_group}{suffix}",
                         worker_fn=baseline_worker,
+                        workload=workload,
                     )
                 )
 
@@ -558,10 +566,10 @@ def main() -> None:
                     top_n=args.profile_top_n,
                 ):
                     async_results.append(
-                        await _run_pyrallel_round(
+                        await _run_pyrparallel_round(
                             topic_name=topic_name,
                             run_name=run_name,
-                            mode="async",
+                            mode=ExecutionMode.ASYNC,
                             num_messages=args.num_messages,
                             bootstrap_servers=args.bootstrap_servers,
                             num_partitions=args.num_partitions,
@@ -570,6 +578,7 @@ def main() -> None:
                             timeout_sec=args.timeout_sec,
                             async_worker_fn=async_worker_fn,
                             process_worker_fn=process_worker_fn,
+                            workload=workload,
                         )
                     )
             if not args.skip_process:
@@ -587,10 +596,10 @@ def main() -> None:
                     )
                 # Skip profiling for process mode to avoid yappi instability.
                 async_results.append(
-                    await _run_pyrallel_round(
+                    await _run_pyrparallel_round(
                         topic_name=topic_name,
                         run_name=run_name,
-                        mode="process",
+                        mode=ExecutionMode.PROCESS,
                         num_messages=args.num_messages,
                         bootstrap_servers=args.bootstrap_servers,
                         num_partitions=args.num_partitions,
@@ -599,6 +608,7 @@ def main() -> None:
                         timeout_sec=args.timeout_sec,
                         async_worker_fn=async_worker_fn,
                         process_worker_fn=prof_process_worker,
+                        workload=workload,
                     )
                 )
                 if args.profile and args.profile_process_workers:
@@ -617,7 +627,8 @@ def main() -> None:
     if output_path is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_path = f"benchmarks/results/{timestamp}.json"
-    write_results_json(results, Path(output_path))
+    options = {k: v for k, v in vars(args).items()}
+    write_results_json(results, Path(output_path), options=options)
     print(f"\nJSON summary written to {output_path}")
 
 

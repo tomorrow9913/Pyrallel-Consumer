@@ -5,7 +5,8 @@ from multiprocessing import Queue
 from typing import Tuple
 
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
 
@@ -20,7 +21,7 @@ class LogManager:
         root.handlers.clear()
         handler = logging.handlers.QueueHandler(log_queue)
         root.addHandler(handler)
-        root.setLevel(logging.DEBUG)
+        root.setLevel(logging.INFO)
 
     @staticmethod
     def create_queue_listener(
