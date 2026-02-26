@@ -128,7 +128,7 @@ python -m build
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
-PARALLEL_CONSUMER_EXECUTION_MODE=async # 또는 process
+EXECUTION_MODE=async # 또는 process
 ```
 
 ### 재시도 및 DLQ (Dead Letter Queue) 설정
@@ -141,11 +141,11 @@ Pyrallel Consumer는 실패한 메시지에 대한 자동 재시도와 DLQ 퍼�
 
 | 환경 변수 | 기본값 | 설명 |
 | --- | --- | --- |
-| `PARALLEL_CONSUMER_MAX_RETRIES` | `3` | 최대 재시도 횟수 (실패 시 총 시도 횟수 = max_retries) |
-| `PARALLEL_CONSUMER_RETRY_BACKOFF_MS` | `1000` | 초기 백오프 지연 시간 (밀리초) |
-| `PARALLEL_CONSUMER_EXPONENTIAL_BACKOFF` | `true` | 지수 백오프 사용 여부 (`false`면 선형 백오프) |
-| `PARALLEL_CONSUMER_MAX_RETRY_BACKOFF_MS` | `30000` | 최대 백오프 상한선 (밀리초) |
-| `PARALLEL_CONSUMER_RETRY_JITTER_MS` | `200` | 백오프에 추가할 랜덤 지터 범위 (밀리초) |
+| `EXECUTION_MAX_RETRIES` | `3` | 최대 재시도 횟수 (실패 시 총 시도 횟수 = max_retries) |
+| `EXECUTION_RETRY_BACKOFF_MS` | `1000` | 초기 백오프 지연 시간 (밀리초) |
+| `EXECUTION_EXPONENTIAL_BACKOFF` | `true` | 지수 백오프 사용 여부 (`false`면 선형 백오프) |
+| `EXECUTION_MAX_RETRY_BACKOFF_MS` | `30000` | 최대 백오프 상한선 (밀리초) |
+| `EXECUTION_RETRY_JITTER_MS` | `200` | 백오프에 추가할 랜덤 지터 범위 (밀리초) |
 
 백오프 계산 방식:
 - **지수 백오프**: `min(retry_backoff_ms * 2^(attempt-1), max_retry_backoff_ms) + random(0, jitter_ms)`
@@ -195,12 +195,12 @@ DLQ 토픽으로 전송되는 메시지는 다음 헤더를 포함합니다:
 ```env
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
-PARALLEL_CONSUMER__EXECUTION__MODE=async   # async | process
-PARALLEL_CONSUMER__EXECUTION__MAX_IN_FLIGHT=512
+EXECUTION_MODE=async              # async | process
+EXECUTION_MAX_IN_FLIGHT=512
 KAFKA_DLQ_ENABLED=true
 KAFKA_DLQ_TOPIC_SUFFIX=.failed
-METRICS__ENABLED=true
-METRICS__PORT=9091
+METRICS_ENABLED=true
+METRICS_PORT=9091
 ```
 
 ```python

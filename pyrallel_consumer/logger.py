@@ -4,10 +4,9 @@ import logging.handlers
 from multiprocessing import Queue
 from typing import Tuple
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Library best practice: add NullHandler so log messages are silently
+# discarded unless the application configures logging.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 
 class LogManager:

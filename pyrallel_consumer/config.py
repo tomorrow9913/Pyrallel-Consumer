@@ -1,5 +1,5 @@
 import socket
-from typing import Any, List, Literal
+from typing import Any, List, Literal, Union
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,7 +34,14 @@ class ProcessConfig(BaseSettings):
 
 
 class MetricsConfig(BaseSettings):
-    enabled: bool = True
+    model_config = SettingsConfigDict(
+        env_prefix="METRICS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
     port: int = 9091
 
 
@@ -91,13 +98,14 @@ class ParallelConsumerConfig(BaseSettings):
 
 class KafkaConfig(BaseSettings):
     model_config = SettingsConfigDict(
+        env_prefix="KAFKA_",
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",
     )
 
-    BOOTSTRAP_SERVERS: List[str] = ["localhost:9092"]
+    BOOTSTRAP_SERVERS: Union[str, List[str]] = ["localhost:9092"]
     CONSUMER_GROUP: str = "pyrallel-consumer-group"
     DLQ_TOPIC_SUFFIX: str = ".dlq"
     dlq_enabled: bool = True
@@ -131,23 +139,34 @@ class KafkaConfig(BaseSettings):
             v = v.split("#", 1)[0].strip()
         return DLQPayloadMode(v)
 
+    @field_validator("BOOTSTRAP_SERVERS", mode="before")
+    @classmethod
+    def _parse_bootstrap_servers(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
+
     def dump_to_rdkafka(self) -> dict[str, Any]:
         data = self.model_dump(exclude_none=True)
 
+        _exclude = {
+            "BOOTSTRAP_SERVERS",
+            "CONSUMER_GROUP",
+            "DLQ_TOPIC_SUFFIX",
+            "dlq_payload_mode",
+            "dlq_enabled",
+            "DLQ_FLUSH_TIMEOUT_MS",
+            "AUTO_OFFSET_RESET",
+            "ENABLE_AUTO_COMMIT",
+            "SESSION_TIMEOUT_MS",
+            "rebalance_protocol",
+            "metrics",
+            "parallel_consumer",
+        }
+
         conf: dict[str, Any] = {}
         for k, v in data.items():
-            if k in [
-                "bootstrap_servers",
-                "consumer_group",
-                "dlq_topic_suffix",
-                "dlq_payload_mode",
-                "dlq_enabled",
-                "dlq_flush_timeout_ms",
-                "auto_offset_reset",
-                "enable_auto_commit",
-                "session_timeout_ms",
-                "rebalance_protocol",
-            ]:
+            if k in _exclude:
                 continue
             conf[k.replace("_", ".")] = v
 
