@@ -264,56 +264,7 @@ class BrokerPoller:
                         commits_to_make.append((tp, potential_hwm))
 
                 if commits_to_make:
-                    offsets_to_commit = []
-                    for tp, safe_offset in commits_to_make:
-                        tracker = self._offset_trackers[tp]
-                        metadata = self._metadata_encoder.encode_metadata(
-                            tracker.completed_offsets, safe_offset + 1
-                        )
-                        if isinstance(metadata, (bytes, bytearray)):
-                            metadata_bytes = bytes(metadata)
-                        elif isinstance(metadata, str):
-                            metadata_bytes = metadata.encode("utf-8")
-                        else:
-                            metadata_bytes = b""
-
-                        if isinstance(self.consumer, Consumer) and not isinstance(
-                            self.consumer, MagicMock
-                        ):
-                            kafka_tp = KafkaTopicPartition(  # type: ignore[call-arg]
-                                tp.topic,
-                                tp.partition,
-                                safe_offset + 1,
-                            )
-                        else:
-
-                            class _MockTopicPartition:
-                                def __init__(
-                                    self,
-                                    topic: str,
-                                    partition: int,
-                                    offset: int,
-                                    metadata_bytes: bytes,
-                                ):
-                                    self.topic = topic
-                                    self.partition = partition
-                                    self.offset = offset
-                                    self.metadata = metadata_bytes
-
-                            kafka_tp = _MockTopicPartition(
-                                tp.topic,
-                                tp.partition,
-                                safe_offset + 1,
-                                metadata_bytes,
-                            )
-                        offsets_to_commit.append(kafka_tp)
-                    await asyncio.to_thread(
-                        self.consumer.commit,
-                        offsets=offsets_to_commit,
-                        asynchronous=False,
-                    )
-                    for tp, _ in commits_to_make:
-                        self._offset_trackers[tp].advance_high_water_mark()
+                    await self._commit_offsets(commits_to_make)
 
                 if not messages:
                     await asyncio.sleep(0.1)
@@ -427,6 +378,87 @@ class BrokerPoller:
         if self._diag_events_since_log >= self._diag_log_every:
             self._log_partition_diagnostics()
             self._diag_events_since_log = 0
+
+    # ------------------------------------------------------------------
+    async def _commit_offsets(
+        self, commits_to_make: List[tuple[DtoTopicPartition, int]]
+    ) -> None:
+        """Build offset list and commit to Kafka with retry on transient failure.
+
+        On success, advances each tracker's high water mark.
+        On failure after retry, logs a warning and continues without crashing.
+        """
+        if self.consumer is None:
+            return
+        offsets_to_commit = []
+        for tp, safe_offset in commits_to_make:
+            tracker = self._offset_trackers[tp]
+            metadata = self._metadata_encoder.encode_metadata(
+                tracker.completed_offsets, safe_offset + 1
+            )
+            if isinstance(metadata, (bytes, bytearray)):
+                metadata_bytes = bytes(metadata)
+            elif isinstance(metadata, str):
+                metadata_bytes = metadata.encode("utf-8")
+            else:
+                metadata_bytes = b""
+
+            if isinstance(self.consumer, Consumer) and not isinstance(
+                self.consumer, MagicMock
+            ):
+                kafka_tp = KafkaTopicPartition(  # type: ignore[call-arg]
+                    tp.topic,
+                    tp.partition,
+                    safe_offset + 1,
+                )
+            else:
+
+                class _MockTopicPartition:
+                    def __init__(
+                        self,
+                        topic: str,
+                        partition: int,
+                        offset: int,
+                        metadata_bytes: bytes,
+                    ):
+                        self.topic = topic
+                        self.partition = partition
+                        self.offset = offset
+                        self.metadata = metadata_bytes
+
+                kafka_tp = _MockTopicPartition(
+                    tp.topic,
+                    tp.partition,
+                    safe_offset + 1,
+                    metadata_bytes,
+                )
+            offsets_to_commit.append(kafka_tp)
+
+        max_attempts = 2  # 1 initial + 1 retry
+        for attempt in range(max_attempts):
+            try:
+                await asyncio.to_thread(
+                    self.consumer.commit,
+                    offsets=offsets_to_commit,
+                    asynchronous=False,
+                )
+                for tp, _ in commits_to_make:
+                    self._offset_trackers[tp].advance_high_water_mark()
+                return
+            except KafkaException as exc:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "Commit failed (attempt %d/%d), retrying: %s",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "Commit failed after %d attempts, skipping: %s",
+                        max_attempts,
+                        exc,
+                    )
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
@@ -602,7 +634,16 @@ class BrokerPoller:
                     tp_dto.partition,
                     safe_offset + 1,
                 )
-                consumer.commit(offsets=[tp_to_commit], asynchronous=False)
+                try:
+                    consumer.commit(offsets=[tp_to_commit], asynchronous=False)
+                except KafkaException as exc:
+                    logger.warning(
+                        "Revoke commit failed for %s-%d at offset %d: %s",
+                        tp_dto.topic,
+                        tp_dto.partition,
+                        safe_offset + 1,
+                        exc,
+                    )
 
             del self._offset_trackers[tp_dto]
 

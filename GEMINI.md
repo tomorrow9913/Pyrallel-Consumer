@@ -1,6 +1,26 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 2월 10일 화요일*
+*최종 업데이트: 2026년 2월 26일 목요일*
+
+## 최근 업데이트 (2026-02-26)
+- Gap 타임아웃 가드 추가: `ParallelConsumerConfig.max_blocking_duration_ms`(기본 0=비활성). BrokerPoller가 `get_blocking_offset_durations`를 기준으로 임계 초과 시 강제 실패 이벤트를 생성하고, WorkManager 경로를 통해 DLQ/커밋 처리. 관련 단위 테스트 추가 (`tests/unit/control_plane/test_blocking_timeout.py`).
+- Shutdown 드레인 보강: BrokerPoller 종료 시 남은 completion 이벤트/타임아웃 이벤트를 한 번 더 처리해 커밋 누락을 최소화.
+
+## 최근 업데이트 (2026-02-25)
+- DLQ retry-cap: 프로세스 엔진의 `worker_died_max_retries` 경로를 커버하는 단위 테스트 추가 (`tests/unit/execution_plane/test_process_execution_engine.py`, `tests/unit/control_plane/test_broker_poller_dlq.py`).
+- 모니터링 스택 스모크 테스트: `docker compose up -d kafka-1 kafka-exporter prometheus grafana` 후 확인.
+  - Prometheus `/-/ready` OK, active targets 중 `kafka-exporter` health=up, `pyrallel-consumer` health=down은 앱 미실행으로 정상.
+  - Grafana `/api/health` OK (10.4.2, DB ok).
+  - Kafka exporter `/metrics` 응답 확인.
+  - 테스트 후 `docker compose down`으로 정리 완료.
+- 패키징 준비: `pyproject.toml`에 build-system(setuptools/wheel), 메타데이터(3.12+, classifiers, keywords) 정리. `python -m build`로 sdist/wheel 빌드 성공(`dist/` 생성). 라이선스는 임시 `Proprietary` 텍스트 사용 중이며 setuptools에서 라이선스 필드 테이블은 추후 SPDX 문자열로 전환 필요(경고 발생).
+- 라이선스 전환: 프로젝트 라이선스를 Apache-2.0으로 지정, LICENSE 파일 추가, `pyproject.toml`에 SPDX 표현/라이선스 파일 설정 반영. `python -m build` 재확인 성공.
+- 보안 하드닝 (2026-02-25):
+  - `docker-compose.yml`의 Grafana admin 비밀번호 하드코딩 제거 → env 주입(`GF_SECURITY_ADMIN_PASSWORD=${...:?missing}`), `.env.sample`에 placeholder 추가.
+  - DLQ payload 모드 추가: `KAFKA_DLQ_PAYLOAD_MODE=metadata_only` 시 key/value 미전송, 기본 `full` 유지. 토픽/접미사 화이트리스트 검증 추가.
+  - 토픽/로그 검증 유틸 추가(`pyrallel_consumer/utils/validation.py`) 적용.
+  - msgpack 역직렬화 크기 제한(`msgpack_max_bytes`, 기본 1,000,000) 및 decode 가드 추가.
+  - 관련 단위 테스트 추가/통과, `python -m build` 재확인 (라이선스 경고만 남음).
 
 ## 목차
 - 1. 프로젝트 철학 및 목표
@@ -142,6 +162,14 @@ Oracle 분석을 통해 기존 설계 문제들을 식별하고 `prd_dev.md`로 
 ### 3.3. v2 아키텍처 구현 진행 상황 (신규)
 
 `prd_dev.md`의 TDD 실행 순서에 따라 **Phase 1 – Control Plane Core** 구현이 완료되었으며, **Phase 2 – WorkManager & Scheduling**의 일부가 진행 중입니다.
+
+#### 2026-02-26 – ProcessExecutionEngine 프로액티브 워커 리사이클링
+- `ProcessConfig`에 `max_tasks_per_child`(기본 0, 비활성)와 `recycle_jitter_ms`(기본 0) 추가.
+- 프로세스 워커가 작업을 처리할 때마다 카운트하며, `max_tasks_per_child + jitter`에 도달하면 현재 배치에서 남은 WorkItem을 재큐잉 후 종료; 부모 `_ensure_workers_alive()`가 동일 인덱스에 새 워커를 재시작.
+- 로깅: `%` 포맷 사용 (`ProcessWorker[%d] recycling after %d tasks (limit=%d, jitter=%d)`). 타임아웃 예외 메시지도 `%` 포맷으로 교체.
+- 테스트: `pytest tests/unit/execution_plane/test_process_execution_engine.py -vv` 전체 12건 통과. 브로커 통합: `pytest tests/integration/test_broker_poller_integration.py -vv` 통과.
+- DLQ 퍼블리시: `dlq_payload_mode`가 모킹된 설정에 없을 때 `DLQPayloadMode.FULL`을 기본값으로 사용해 통합 테스트 통과.
+- 커밋 메타데이터: `MetadataEncoder.encode_metadata` 결과를 Kafka commit 오프셋에 세팅(메타데이터 None 방지).
 
 - **v2 아키텍처 구조 개편**:
     - `control_plane`, `execution_plane`, `worker_layer` 디렉토리 구조를 생성했습니다.
