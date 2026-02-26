@@ -15,9 +15,13 @@ from pyrallel_consumer.dto import CompletionStatus, SystemMetrics, TopicPartitio
 
 
 class PrometheusMetricsExporter:
-    def __init__(self, config: Optional[MetricsConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[MetricsConfig] = None,
+        registry: Optional[CollectorRegistry] = None,
+    ) -> None:
         self._config = config or MetricsConfig()
-        self._registry = CollectorRegistry()
+        self._registry = registry or CollectorRegistry()
 
         self._processed_total = Counter(
             "consumer_processed_total",
