@@ -2,9 +2,6 @@ import pytest
 
 pytest.importorskip("prometheus_client")
 from prometheus_client import CollectorRegistry  # noqa: E402
-from pyrparallel_consumer.metrics_exporter import (  # noqa: E402
-    PrometheusMetricsExporter,
-)
 
 from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
@@ -13,6 +10,7 @@ from pyrallel_consumer.dto import (  # noqa: E402
     SystemMetrics,
     TopicPartition,
 )
+from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter  # noqa: E402
 
 
 def _make_partition_metrics(topic: str, partition: int) -> PartitionMetrics:
