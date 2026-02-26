@@ -1,4 +1,7 @@
+import logging
 from typing import Set
+
+logger = logging.getLogger(__name__)
 
 
 class MetadataEncoder:
@@ -62,14 +65,14 @@ class MetadataEncoder:
 
     def _bitset_encode_offsets(self, offsets: Set[int], base_offset: int) -> str:
         """bitset으로 인코딩된 오프셋을 반환합니다.
-        ex) {1,2,3,5} with base_offset 1 -> "1:11101"
+        ex) {1,2,3,5} with base_offset 1 -> "1:17" (hex)
 
         Args:
             offsets (Set[int]): 인코딩할 오프셋 집합
             base_offset (int): 기준 오프셋
 
         Returns:
-            str: bitset 인코딩 문자열
+            str: bitset 인코딩 문자열 (hex payload)
         """
         if not offsets:
             return f"{base_offset}:"
@@ -81,16 +84,19 @@ class MetadataEncoder:
             return f"{base_offset}:"
 
         max_relative_offset = relative_offsets[-1]
+        bit_length = max_relative_offset + 1
+        byte_length = (bit_length + 7) // 8
+        if byte_length > self.max_metadata_size:
+            return ""
 
-        bit_string_length = max_relative_offset + 1
-        if bit_string_length > self.max_metadata_size * 8:  # Rough estimate
-            return f"{base_offset}:"
-
-        bit_array = ["0"] * (max_relative_offset + 1)
+        bit_bytes = bytearray(byte_length)
         for rel_offset in relative_offsets:
-            bit_array[rel_offset] = "1"
+            byte_index = rel_offset // 8
+            bit_index = rel_offset % 8
+            bit_bytes[byte_index] |= 1 << bit_index
 
-        return f"{base_offset}:{''.join(bit_array)}"
+        bit_hex = bit_bytes.hex()
+        return f"{base_offset}:{bit_hex}"
 
     def encode_metadata(self, offsets: Set[int], base_offset: int) -> str:
         """
@@ -107,22 +113,22 @@ class MetadataEncoder:
         bitset_encoded = self._bitset_encode_offsets(offsets, base_offset)
 
         rle_payload = f"R{rle_encoded}"
-        bitset_payload = f"B{bitset_encoded}"
+        bitset_payload = f"B{bitset_encoded}" if bitset_encoded != "" else None
 
-        if (
-            len(rle_payload) > self.max_metadata_size
-            and len(bitset_payload) > self.max_metadata_size
+        if len(rle_payload) > self.max_metadata_size and (
+            bitset_payload is None or len(bitset_payload) > self.max_metadata_size
         ):
-            return ""
-        elif len(rle_payload) > self.max_metadata_size:
-            return bitset_payload
-        elif len(bitset_payload) > self.max_metadata_size:
+            return "O"
+        if len(rle_payload) > self.max_metadata_size:
+            return bitset_payload or "O"
+        if bitset_payload is None:
+            return rle_payload
+        if len(bitset_payload) > self.max_metadata_size:
             return rle_payload
 
         if len(rle_payload) <= len(bitset_payload):
             return rle_payload
-        else:
-            return bitset_payload
+        return bitset_payload
 
     def _rle_decode_offsets(self, encoded_str: str) -> Set[int]:
         """
@@ -145,18 +151,26 @@ class MetadataEncoder:
     def _bitset_decode_offsets(self, encoded_str: str) -> Set[int]:
         """
         Bitset으로 인코딩된 문자열을 오프셋 집합으로 디코딩합니다.
-        ex) "1:11101" -> {1,2,3,5}
+        ex) "1:17" -> {1,2,3,5}
         """
         offsets: Set[int] = set()
         if ":" not in encoded_str:
             return offsets
 
-        base_offset_str, bit_string = encoded_str.split(":", 1)
-        base_offset = int(base_offset_str)
+        base_offset_str, bit_hex = encoded_str.split(":", 1)
+        try:
+            base_offset = int(base_offset_str)
+            bit_bytes = bytes.fromhex(bit_hex) if bit_hex else b""
+        except ValueError as exc:
+            logger.warning("Failed to decode metadata: %s", exc)
+            return offsets
 
-        for i, bit in enumerate(bit_string):
-            if bit == "1":
-                offsets.add(base_offset + i)
+        for byte_index, byte in enumerate(bit_bytes):
+            if byte == 0:
+                continue
+            for bit_index in range(8):
+                if byte & (1 << bit_index):
+                    offsets.add(base_offset + byte_index * 8 + bit_index)
         return offsets
 
     def decode_metadata(self, metadata: str) -> Set[int]:
@@ -166,12 +180,17 @@ class MetadataEncoder:
         if not metadata:
             return set()
 
-        encoding_type = metadata[0]
-        encoded_payload = metadata[1:]
+        try:
+            encoding_type = metadata[0]
+            encoded_payload = metadata[1:]
 
-        if encoding_type == "R":
-            return self._rle_decode_offsets(encoded_payload)
-        elif encoding_type == "B":
-            return self._bitset_decode_offsets(encoded_payload)
-
-        return set()
+            if encoding_type == "R":
+                return self._rle_decode_offsets(encoded_payload)
+            if encoding_type == "B":
+                return self._bitset_decode_offsets(encoded_payload)
+            if encoding_type == "O":
+                return set()
+            return set()
+        except Exception as exc:
+            logger.warning("Failed to decode metadata: %s", exc)
+            return set()

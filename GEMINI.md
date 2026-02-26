@@ -5,6 +5,7 @@
 ## 최근 업데이트 (2026-02-26)
 - Gap 타임아웃 가드 추가: `ParallelConsumerConfig.max_blocking_duration_ms`(기본 0=비활성). BrokerPoller가 `get_blocking_offset_durations`를 기준으로 임계 초과 시 강제 실패 이벤트를 생성하고, WorkManager 경로를 통해 DLQ/커밋 처리. 관련 단위 테스트 추가 (`tests/unit/control_plane/test_blocking_timeout.py`).
 - Shutdown 드레인 보강: BrokerPoller 종료 시 남은 completion 이벤트/타임아웃 이벤트를 한 번 더 처리해 커밋 누락을 최소화.
+- MetadataEncoder 견고화: Bitset 인코딩을 hex 기반으로 변경해 메타데이터 크기 축소, RLE/Bitset 모두 초과 시 sentinel("O")로 overflow 표시, decode 실패 시 fail-closed(set 반환) + 경고 로깅. 신규 단위 테스트 추가(`tests/unit/control_plane/test_metadata_encoder.py`).
 
 ## 최근 업데이트 (2026-02-25)
 - DLQ retry-cap: 프로세스 엔진의 `worker_died_max_retries` 경로를 커버하는 단위 테스트 추가 (`tests/unit/execution_plane/test_process_execution_engine.py`, `tests/unit/control_plane/test_broker_poller_dlq.py`).
