@@ -4,7 +4,6 @@
 import asyncio
 import random
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from unittest.mock import MagicMock
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -397,41 +396,21 @@ class BrokerPoller:
                 tracker.completed_offsets, safe_offset + 1
             )
             if isinstance(metadata, (bytes, bytearray)):
-                metadata_bytes = bytes(metadata)
+                metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
             elif isinstance(metadata, str):
-                metadata_bytes = metadata.encode("utf-8")
+                metadata_text = metadata
             else:
-                metadata_bytes = b""
+                metadata_text = ""
 
-            if isinstance(self.consumer, Consumer) and not isinstance(
-                self.consumer, MagicMock
-            ):
-                kafka_tp = KafkaTopicPartition(  # type: ignore[call-arg]
+            kafka_tp = cast(
+                KafkaTopicPartition,
+                cast(Any, KafkaTopicPartition)(
                     tp.topic,
                     tp.partition,
                     safe_offset + 1,
-                )
-            else:
-
-                class _MockTopicPartition:
-                    def __init__(
-                        self,
-                        topic: str,
-                        partition: int,
-                        offset: int,
-                        metadata_bytes: bytes,
-                    ):
-                        self.topic = topic
-                        self.partition = partition
-                        self.offset = offset
-                        self.metadata = metadata_bytes
-
-                kafka_tp = _MockTopicPartition(
-                    tp.topic,
-                    tp.partition,
-                    safe_offset + 1,
-                    metadata_bytes,
-                )
+                    metadata=metadata_text,
+                ),
+            )
             offsets_to_commit.append(kafka_tp)
 
         max_attempts = 2  # 1 initial + 1 retry
@@ -650,11 +629,23 @@ class BrokerPoller:
     # ------------------------------------------------------------------
     async def start(self) -> None:
         try:
-            self.producer = Producer(self._kafka_config.get_producer_config())
-            self.admin = AdminClient(
-                {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]}
+            producer_conf = cast(
+                dict[str, str | int | float | bool],
+                self._kafka_config.get_producer_config(),
             )
-            self.consumer = Consumer(self._kafka_config.get_consumer_config())
+            self.producer = Producer(producer_conf)  # type: ignore[arg-type]
+
+            admin_conf = cast(
+                dict[str, str | int | float | bool],
+                {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]},
+            )
+            self.admin = AdminClient(admin_conf)  # type: ignore[arg-type]
+
+            consumer_conf = cast(
+                dict[str, str | int | float | bool | None],
+                self._kafka_config.get_consumer_config(),
+            )
+            self.consumer = Consumer(consumer_conf)  # type: ignore[arg-type]
             self.consumer.subscribe(
                 [self._consume_topic],
                 on_assign=self._on_assign,

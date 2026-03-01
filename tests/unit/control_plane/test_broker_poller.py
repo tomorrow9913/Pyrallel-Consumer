@@ -58,14 +58,13 @@ def mock_offset_tracker_factory():
     mock_factory = MagicMock()
     # Configure the factory to return new AsyncMock instances when called
     mock_factory.side_effect = (
-        lambda tp,
-        starting_offset,
-        max_revoke_grace_ms,
-        initial_completed_offsets: AsyncMock(
-            spec=OffsetTracker,
-            topic_partition=tp,
-            starting_offset=starting_offset,
-            max_revoke_grace_ms=max_revoke_grace_ms,
+        lambda tp, starting_offset, max_revoke_grace_ms, initial_completed_offsets: (
+            AsyncMock(
+                spec=OffsetTracker,
+                topic_partition=tp,
+                starting_offset=starting_offset,
+                max_revoke_grace_ms=max_revoke_grace_ms,
+            )
         )
     )
     return mock_factory
@@ -222,6 +221,36 @@ class TestOnRevokeCommitExceptionDefense:
             "commit" in record.message.lower() and "test-topic" in record.message
             for record in caplog.records
         )
+
+
+@pytest.mark.asyncio
+async def test_commit_offsets_uses_topic_partition_with_metadata(broker_poller):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.mark_complete(0)
+    tracker.mark_complete(1)
+    broker_poller._offset_trackers[tp] = tracker
+
+    expected_metadata = broker_poller._metadata_encoder.encode_metadata(  # type: ignore[attr-defined]
+        tracker.completed_offsets, 2
+    )
+
+    broker_poller.consumer = MagicMock(spec=Consumer)
+
+    await broker_poller._commit_offsets([(tp, 1)])
+
+    _, kwargs = broker_poller.consumer.commit.call_args
+    offsets_arg = kwargs["offsets"]
+    assert len(offsets_arg) == 1
+    kafka_tp = offsets_arg[0]
+    assert isinstance(kafka_tp, KafkaTopicPartition)
+
+    assert kafka_tp.metadata == expected_metadata
 
 
 class TestRunConsumerCommitExceptionDefense:
