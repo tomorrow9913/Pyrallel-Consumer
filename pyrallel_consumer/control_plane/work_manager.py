@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 import uuid
-from collections import deque
 from typing import Any, Dict, List, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
@@ -94,7 +93,18 @@ class WorkManager:
     @staticmethod
     def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
         internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
-        return deque(internal)[0]
+        return internal[0]
+
+    def _cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
+        queues = self._virtual_partition_queues.get(tp)
+        if not queues:
+            return
+
+        queue = queues.get(key)
+        if queue and queue.empty():
+            queues.pop(key, None)
+            if not queues:
+                self._virtual_partition_queues.pop(tp, None)
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]) -> None:
         """
@@ -322,14 +332,17 @@ class WorkManager:
                 if (
                     event.id in self._in_flight_work_items
                 ):  # Now CompletionEvent has 'id'
+                    completed_item = self._in_flight_work_items[event.id]
+
                     if self._ordering_mode == OrderingMode.KEY_HASH:
-                        completed_item = self._in_flight_work_items[event.id]
                         self._keys_in_flight.discard(
                             (completed_item.tp, completed_item.key)
                         )
                     elif self._ordering_mode == OrderingMode.PARTITION:
-                        completed_item = self._in_flight_work_items[event.id]
                         self._partitions_in_flight.discard(completed_item.tp)
+
+                    self._cleanup_empty_queue(completed_item.tp, completed_item.key)
+
                     del self._in_flight_work_items[event.id]
                     self._current_in_flight_count -= 1
                     dispatch_time = self._dispatch_timestamps.pop(event.id, None)

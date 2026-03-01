@@ -562,3 +562,31 @@ async def test_get_virtual_queue_sizes(work_manager, mock_dto_topic_partition):
         }
 
         assert queue_sizes == expected_sizes
+
+
+@pytest.mark.asyncio
+async def test_cleanup_removes_empty_virtual_queue(work_manager):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    work_manager.on_assign([tp])
+    work_manager._execution_engine.poll_completed_events.return_value = []
+
+    await work_manager.submit_message(tp, offset=0, epoch=0, key="k1", payload=b"p")
+
+    queue = work_manager._virtual_partition_queues[tp]["k1"]
+    work_item: WorkItem = await queue.get()
+    work_manager._current_in_flight_count = 1
+
+    event = CompletionEvent(
+        id=work_item.id,
+        tp=tp,
+        offset=work_item.offset,
+        epoch=work_item.epoch,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+
+    await work_manager._completion_queue.put(event)
+    await work_manager.poll_completed_events()
+
+    assert tp not in work_manager._virtual_partition_queues
