@@ -1,7 +1,7 @@
 import socket
-from typing import Any, List, Literal, Union
+from typing import ClassVar, Literal, cast
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode
@@ -9,10 +9,11 @@ from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode
 
 class AsyncConfig(BaseSettings):
     task_timeout_ms: int = 30000
+    shutdown_grace_timeout_ms: int = 5000
 
 
 class ProcessConfig(BaseSettings):
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="PROCESS_",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -34,7 +35,7 @@ class ProcessConfig(BaseSettings):
 
 
 class MetricsConfig(BaseSettings):
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="METRICS_",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -46,7 +47,7 @@ class MetricsConfig(BaseSettings):
 
 
 class ExecutionConfig(BaseSettings):
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="EXECUTION_",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -67,10 +68,13 @@ class ExecutionConfig(BaseSettings):
 
     @field_validator("mode", mode="before")
     @classmethod
-    def _normalize_mode(cls, v: Any) -> ExecutionMode:
+    def _normalize_mode(cls, v: object) -> ExecutionMode:
+        if isinstance(v, ExecutionMode):
+            return v
         if isinstance(v, str):
-            v = v.split("#", 1)[0].strip()
-        return ExecutionMode(v)
+            cleaned = v.split("#", 1)[0].strip()
+            return ExecutionMode(cleaned)
+        raise TypeError(f"mode must be str or ExecutionMode, got {type(v).__name__}")
 
     @property
     def max_in_flight_messages(self) -> int:
@@ -78,7 +82,7 @@ class ExecutionConfig(BaseSettings):
 
 
 class ParallelConsumerConfig(BaseSettings):
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="PARALLEL_CONSUMER_",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -86,8 +90,8 @@ class ParallelConsumerConfig(BaseSettings):
         extra="ignore",
     )
 
-    poll_batch_size: int = 1000
-    worker_pool_size: int = 8
+    poll_batch_size: int = Field(default=1000, gt=0)
+    worker_pool_size: int = Field(default=8, gt=0)
     queue_max_messages: int = 5000
     diag_log_every: int = 1000
     blocking_warn_seconds: float = 5.0
@@ -97,7 +101,7 @@ class ParallelConsumerConfig(BaseSettings):
 
 
 class KafkaConfig(BaseSettings):
-    model_config = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="KAFKA_",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -105,7 +109,7 @@ class KafkaConfig(BaseSettings):
         extra="ignore",
     )
 
-    BOOTSTRAP_SERVERS: Union[str, List[str]] = ["localhost:9092"]
+    BOOTSTRAP_SERVERS: str | list[str] = ["localhost:9092"]
     CONSUMER_GROUP: str = "pyrallel-consumer-group"
     DLQ_TOPIC_SUFFIX: str = ".dlq"
     dlq_enabled: bool = True
@@ -117,13 +121,13 @@ class KafkaConfig(BaseSettings):
     metrics: MetricsConfig = MetricsConfig()
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
-    def get_producer_config(self) -> dict:
+    def get_producer_config(self) -> dict[str, str]:
         return {
             "bootstrap.servers": ",".join(self.BOOTSTRAP_SERVERS),
             "client.id": socket.gethostname(),
         }
 
-    def get_consumer_config(self) -> dict:
+    def get_consumer_config(self) -> dict[str, str | int | bool]:
         return {
             "bootstrap.servers": ",".join(self.BOOTSTRAP_SERVERS),
             "group.id": self.CONSUMER_GROUP,
@@ -134,20 +138,34 @@ class KafkaConfig(BaseSettings):
 
     @field_validator("dlq_payload_mode", mode="before")
     @classmethod
-    def _normalize_dlq_mode(cls, v: Any) -> DLQPayloadMode:
+    def _normalize_dlq_mode(cls, v: object) -> DLQPayloadMode:
+        if isinstance(v, DLQPayloadMode):
+            return v
         if isinstance(v, str):
-            v = v.split("#", 1)[0].strip()
-        return DLQPayloadMode(v)
+            cleaned = v.split("#", 1)[0].strip()
+            return DLQPayloadMode(cleaned)
+        raise TypeError(
+            f"dlq_payload_mode must be str or DLQPayloadMode, got {type(v).__name__}"
+        )
 
     @field_validator("BOOTSTRAP_SERVERS", mode="before")
     @classmethod
-    def _parse_bootstrap_servers(cls, v: Any) -> list[str]:
+    def _parse_bootstrap_servers(cls, v: object) -> list[str]:
         if isinstance(v, str):
             return [s.strip() for s in v.split(",") if s.strip()]
-        return v
+        if isinstance(v, list):
+            for item in cast(list[object], v):
+                if not isinstance(item, str):
+                    raise TypeError("BOOTSTRAP_SERVERS list entries must be str")
+            string_list = cast(list[str], v)
+            cleaned: list[str] = [item.strip() for item in string_list if item.strip()]
+            return cleaned
+        raise TypeError(
+            f"BOOTSTRAP_SERVERS must be str or list[str], got {type(v).__name__}"
+        )
 
-    def dump_to_rdkafka(self) -> dict[str, Any]:
-        data = self.model_dump(exclude_none=True)
+    def dump_to_rdkafka(self) -> dict[str, object]:
+        data: dict[str, object] = self.model_dump(exclude_none=True)
 
         _exclude = {
             "BOOTSTRAP_SERVERS",
@@ -164,13 +182,14 @@ class KafkaConfig(BaseSettings):
             "parallel_consumer",
         }
 
-        conf: dict[str, Any] = {}
+        conf: dict[str, object] = {}
         for k, v in data.items():
             if k in _exclude:
                 continue
             conf[k.replace("_", ".")] = v
 
         if self.model_extra:
-            for k, v in self.model_extra.items():
+            extras_source = cast(dict[str, object], self.model_extra)
+            for k, v in extras_source.items():
                 conf[k.replace("_", ".").lower()] = v
         return conf

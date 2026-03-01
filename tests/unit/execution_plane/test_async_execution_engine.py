@@ -3,7 +3,12 @@ import asyncio
 import pytest
 
 from pyrallel_consumer.config import AsyncConfig, ExecutionConfig
-from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionStatus,
+    ExecutionMode,
+    TopicPartition,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from tests.unit.execution_plane.test_execution_engine_contract import (
     BaseExecutionEngineContractTest,
@@ -41,7 +46,7 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
     @pytest.fixture
     def config(self):
         return ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=2,
             max_retries=1,
             async_config=AsyncConfig(task_timeout_ms=500),
@@ -132,6 +137,51 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
         assert timeout_event.status == CompletionStatus.FAILURE
         assert timeout_event.error is not None and "timed out" in timeout_event.error
 
+    @pytest.mark.asyncio
+    async def test_submit_rejects_after_shutdown(
+        self, config, mock_work_item: WorkItem
+    ):
+        engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
+
+        await engine.shutdown()
+
+        with pytest.raises(RuntimeError):
+            await engine.submit(mock_work_item)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_after_grace_timeout(self):
+        async_cfg = AsyncConfig(task_timeout_ms=5000)
+        setattr(async_cfg, "shutdown_grace_timeout_ms", 50)  # type: ignore[attr-defined]
+
+        grace_config = ExecutionConfig(
+            mode=ExecutionMode.ASYNC,
+            max_in_flight=1,
+            async_config=async_cfg,
+        )
+
+        async def blocking_worker(_: WorkItem):
+            await asyncio.sleep(5)
+
+        engine = AsyncExecutionEngine(config=grace_config, worker_fn=blocking_worker)
+
+        work_item = WorkItem(
+            id="blocking",
+            tp=TopicPartition(topic="test", partition=0),
+            offset=0,
+            epoch=0,
+            key="k",
+            payload=b"block",
+        )
+
+        await engine.submit(work_item)
+
+        start = asyncio.get_event_loop().time()
+        await engine.shutdown()
+        elapsed = asyncio.get_event_loop().time() - start
+
+        assert elapsed < 1.0
+        assert engine.get_in_flight_count() == 0
+
 
 class TestAsyncExecutionEngineRetries:
     """Test retry logic with backoff in AsyncExecutionEngine"""
@@ -140,7 +190,7 @@ class TestAsyncExecutionEngineRetries:
     async def test_success_on_first_attempt_shows_attempt_1(self):
         """When worker succeeds immediately, CompletionEvent.attempt should be 1"""
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=3,
             retry_backoff_ms=100,
@@ -177,7 +227,7 @@ class TestAsyncExecutionEngineRetries:
         retry_attempt_counter = 0
 
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=3,
             retry_backoff_ms=50,
@@ -213,7 +263,7 @@ class TestAsyncExecutionEngineRetries:
     async def test_failure_after_max_retries(self):
         """When worker fails all retries, CompletionEvent.attempt should equal max_retries"""
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=3,
             retry_backoff_ms=20,
@@ -250,7 +300,7 @@ class TestAsyncExecutionEngineRetries:
     async def test_timeout_retried_and_counted(self):
         """Timeouts should be treated as failures and retried"""
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=2,
             retry_backoff_ms=10,
@@ -289,7 +339,7 @@ class TestAsyncExecutionEngineRetries:
         retry_attempt_counter = 0
 
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=3,
             retry_backoff_ms=50,
@@ -328,7 +378,7 @@ class TestAsyncExecutionEngineRetries:
     async def test_backoff_respects_max_cap(self):
         """Verify backoff doesn't exceed max_retry_backoff_ms"""
         config = ExecutionConfig(
-            mode="async",
+            mode=ExecutionMode.ASYNC,
             max_in_flight=10,
             max_retries=5,
             retry_backoff_ms=100,

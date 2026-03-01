@@ -45,6 +45,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         Args:
             work_item (WorkItem): 제출할 작업 항목
         """
+        if self._shutdown_event.is_set():
+            raise RuntimeError("Engine is shutting down, cannot accept new work")
+
         await self._semaphore.acquire()
 
         # Create a task to execute the worker function within the captured context
@@ -160,15 +163,28 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._logger.debug("Initiating AsyncExecutionEngine shutdown.")
         self._shutdown_event.set()
 
-        # Wait for all in-flight tasks to complete
+        grace_timeout = self._config.async_config.shutdown_grace_timeout_ms / 1000.0
+
         if self._in_flight_tasks:
             self._logger.debug(
                 "Waiting for %d in-flight tasks to complete."
                 % len(self._in_flight_tasks)
             )
-            # Wait for tasks to complete, with a reasonable timeout.
-            # asyncio.gather returns results and exceptions, or raises if return_exceptions=False
-            await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
-            self._logger.debug("All in-flight tasks completed during shutdown.")
+
+            done, pending = await asyncio.wait(
+                self._in_flight_tasks, timeout=grace_timeout
+            )
+
+            if pending:
+                self._logger.warning(
+                    "Cancelling %d task(s) after shutdown grace timeout", len(pending)
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            if done:
+                await asyncio.gather(*done, return_exceptions=True)
+            self._logger.debug("All in-flight tasks handled during shutdown.")
 
         self._logger.debug("AsyncExecutionEngine shutdown complete.")
