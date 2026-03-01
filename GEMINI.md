@@ -1,6 +1,17 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 2월 26일 목요일*
+*최종 업데이트: 2026년 2월 27일 금요일*
+
+## 최근 업데이트 (2026-03-01)
+- `ParallelConsumerConfig.poll_batch_size`/`worker_pool_size`에 0 방지 검증(gt=0) 추가, Pydantic Field 제약으로 초기화 시 ValidationError 발생하도록 수정. 단위 테스트 보강(`tests/unit/test_config.py`)으로 0 값 거부 경로 검증.
+- `KafkaConfig` 타입 힌트/LSP 정비: basedpyright 설치 후 경고 해소(bootstrap servers 파서 타입 체크, model_extra 캐스팅 등)하여 LSP clean 상태 확인.
+- BrokerPoller 커밋 경로에서 MagicMock 분기 제거, `KafkaTopicPartition`를 일관 사용하며 metadata 전달(테스트 추가: `test_commit_offsets_uses_topic_partition_with_metadata`).
+- AsyncExecutionEngine 종료 강화: shutdown 후 `submit` 거부, grace timeout(`AsyncConfig.shutdown_grace_timeout_ms`, 기본 5000ms) 적용해 미완료 태스크 취소 + gather, 관련 테스트 추가 두 건.
+- WorkManager 키 큐 정리: `_peek_queue` 복사 제거 + completion 처리 시 빈 virtual queue 삭제 (키/파티션/무순서 공통), 검증 테스트 추가.
+- 운영 플레이북 문서 추가(`docs/ops_playbooks.md`) 및 README 링크: 프로필별 권장 설정, 장애 대응, 모니터링/알람 기준, 튜닝 체크리스트, 워크로드 가이드, 성능 테스트 매트릭스 포함.
+
+## 최근 업데이트 (2026-02-27)
+- `docs/index.md` 생성: `docs/` 루트와 `plans/` 서브디렉터리 문서를 스캔하고, 내용 기반 3-10 단어 설명을 포함한 인덱스를 추가했습니다. 숨김 파일은 제외하고 상대 경로(`./`) 기준으로 정렬했습니다.
 
 ## 최근 업데이트 (2026-02-26)
 - Gap 타임아웃 가드 추가: `ParallelConsumerConfig.max_blocking_duration_ms`(기본 0=비활성). BrokerPoller가 `get_blocking_offset_durations`를 기준으로 임계 초과 시 강제 실패 이벤트를 생성하고, WorkManager 경로를 통해 DLQ/커밋 처리. 관련 단위 테스트 추가 (`tests/unit/control_plane/test_blocking_timeout.py`).
