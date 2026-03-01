@@ -13,6 +13,7 @@ from typing import Any, Optional
 class BenchmarkResult:
     run_name: str
     run_type: str
+    workload: str
     topic: str
     messages_processed: int
     total_time_sec: float
@@ -29,11 +30,13 @@ class BenchmarkStats:
         self,
         run_name: str,
         run_type: str,
+        workload: str,
         topic: str,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
         self.run_type = run_type
+        self.workload = workload
         self.topic = topic
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
@@ -76,6 +79,7 @@ class BenchmarkStats:
         return BenchmarkResult(
             run_name=self.run_name,
             run_type=self.run_type,
+            workload=self.workload,
             topic=self.topic,
             messages_processed=self._processed,
             total_time_sec=total_time,
@@ -108,9 +112,14 @@ def _percentile(values: list[float], percentile: float) -> float:
     return lower_value + (upper_value - lower_value) * fraction
 
 
-def write_results_json(results: list[BenchmarkResult], output_path: Path) -> None:
+def write_results_json(
+    results: list[BenchmarkResult],
+    output_path: Path,
+    options: dict[str, Any] | None = None,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "options": options or {},
         "results": [result.to_dict() for result in results],
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

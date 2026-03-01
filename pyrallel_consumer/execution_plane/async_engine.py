@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import logging
+import random
 from asyncio import Semaphore, Task
 from collections.abc import Callable
 from typing import Any, List, Optional, Set
@@ -44,6 +45,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         Args:
             work_item (WorkItem): 제출할 작업 항목
         """
+        if self._shutdown_event.is_set():
+            raise RuntimeError("Engine is shutting down, cannot accept new work")
+
         await self._semaphore.acquire()
 
         # Create a task to execute the worker function within the captured context
@@ -60,34 +64,58 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """
         status = CompletionStatus.SUCCESS
         error: Optional[str] = None
+        attempt = 0
 
-        try:
-            # Execute the user's worker function with timeout
-            await asyncio.wait_for(
-                self._worker_fn(work_item),
-                timeout=self._config.async_config.task_timeout_ms / 1000.0,
-            )
-        except asyncio.TimeoutError:
-            status = CompletionStatus.FAILURE
-            error = "Task for offset %d timed out." % work_item.offset
-            self._logger.error(error)
-        except Exception as e:
-            status = CompletionStatus.FAILURE
-            error = str(e)
-            self._logger.exception(
-                "Task for offset %d failed with exception: %s"
-                % (work_item.offset, error)
-            )
-        finally:
-            completion_event = CompletionEvent(
-                id=work_item.id,
-                tp=work_item.tp,
-                offset=work_item.offset,
-                epoch=work_item.epoch,
-                status=status,
-                error=error,
-            )
-            await self._completion_queue.put(completion_event)
+        for attempt in range(1, self._config.max_retries + 1):
+            try:
+                await asyncio.wait_for(
+                    self._worker_fn(work_item),
+                    timeout=self._config.async_config.task_timeout_ms / 1000.0,
+                )
+                status = CompletionStatus.SUCCESS
+                error = None
+                break
+            except asyncio.TimeoutError:
+                status = CompletionStatus.FAILURE
+                error = "Task for offset %d timed out." % work_item.offset
+                self._logger.error(error)
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+            except Exception as e:
+                status = CompletionStatus.FAILURE
+                error = str(e)
+                self._logger.exception(
+                    "Task for offset %d failed with exception: %s"
+                    % (work_item.offset, error)
+                )
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+
+        completion_event = CompletionEvent(
+            id=work_item.id,
+            tp=work_item.tp,
+            offset=work_item.offset,
+            epoch=work_item.epoch,
+            status=status,
+            error=error,
+            attempt=attempt,
+        )
+        await self._completion_queue.put(completion_event)
+
+    async def _apply_backoff(self, attempt: int) -> None:
+        base_delay_ms = self._config.retry_backoff_ms
+
+        if self._config.exponential_backoff:
+            delay_ms = base_delay_ms * (2 ** (attempt - 1))
+            delay_ms = min(delay_ms, self._config.max_retry_backoff_ms)
+        else:
+            delay_ms = base_delay_ms
+
+        if self._config.retry_jitter_ms > 0:
+            jitter = random.uniform(0, self._config.retry_jitter_ms)
+            delay_ms += jitter
+
+        await asyncio.sleep(delay_ms / 1000.0)
 
     def _task_done_callback(self, task: Task) -> None:
         """
@@ -132,18 +160,31 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """
         실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다.
         """
-        self._logger.info("Initiating AsyncExecutionEngine shutdown.")
+        self._logger.debug("Initiating AsyncExecutionEngine shutdown.")
         self._shutdown_event.set()
 
-        # Wait for all in-flight tasks to complete
+        grace_timeout = self._config.async_config.shutdown_grace_timeout_ms / 1000.0
+
         if self._in_flight_tasks:
-            self._logger.info(
+            self._logger.debug(
                 "Waiting for %d in-flight tasks to complete."
                 % len(self._in_flight_tasks)
             )
-            # Wait for tasks to complete, with a reasonable timeout.
-            # asyncio.gather returns results and exceptions, or raises if return_exceptions=False
-            await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
-            self._logger.info("All in-flight tasks completed during shutdown.")
 
-        self._logger.info("AsyncExecutionEngine shutdown complete.")
+            done, pending = await asyncio.wait(
+                self._in_flight_tasks, timeout=grace_timeout
+            )
+
+            if pending:
+                self._logger.warning(
+                    "Cancelling %d task(s) after shutdown grace timeout", len(pending)
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            if done:
+                await asyncio.gather(*done, return_exceptions=True)
+            self._logger.debug("All in-flight tasks handled during shutdown.")
+
+        self._logger.debug("AsyncExecutionEngine shutdown complete.")

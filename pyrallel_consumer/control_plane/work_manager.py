@@ -1,10 +1,16 @@
 import asyncio
+import logging
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, OffsetRange
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    OffsetRange,
+    OrderingMode,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
@@ -30,7 +36,10 @@ class WorkManager:
         execution_engine: BaseExecutionEngine,
         max_in_flight_messages: int = 1000,
         metrics_exporter: Optional[MetricsExporter] = None,
+        ordering_mode: OrderingMode = OrderingMode.UNORDERED,
+        blocking_cache_ttl: int = 100,
     ):
+        self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._virtual_partition_queues: Dict[
@@ -45,6 +54,57 @@ class WorkManager:
         self._current_in_flight_count = 0
         self._rebalancing = False  # New flag to indicate rebalancing state
         self._metrics_exporter = metrics_exporter
+        self._ordering_mode = ordering_mode
+        self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
+        self._partitions_in_flight: set[DtoTopicPartition] = set()
+        self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
+        self._blocking_cache_ttl = blocking_cache_ttl
+        self._blocking_cache_counter = 0
+
+    async def force_fail(
+        self,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+        error: str,
+        attempt: int,
+    ) -> bool:
+        work_id: Optional[str] = None
+        for candidate_id, item in self._in_flight_work_items.items():
+            if item.tp == tp and item.offset == offset:
+                work_id = candidate_id
+                break
+
+        if work_id is None:
+            return False
+
+        event = CompletionEvent(
+            id=work_id,
+            tp=tp,
+            offset=offset,
+            epoch=epoch,
+            status=CompletionStatus.FAILURE,
+            error=error,
+            attempt=attempt,
+        )
+        await self._completion_queue.put(event)
+        return True
+
+    @staticmethod
+    def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
+        internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
+        return internal[0]
+
+    def _cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
+        queues = self._virtual_partition_queues.get(tp)
+        if not queues:
+            return
+
+        queue = queues.get(key)
+        if queue and queue.empty():
+            queues.pop(key, None)
+            if not queues:
+                self._virtual_partition_queues.pop(tp, None)
 
     def on_assign(self, assigned_tps: List[DtoTopicPartition]) -> None:
         """
@@ -89,6 +149,14 @@ class WorkManager:
             for work_id in stale_ids:
                 self._in_flight_work_items.pop(work_id, None)
                 self._dispatch_timestamps.pop(work_id, None)
+            if self._ordering_mode == OrderingMode.KEY_HASH:
+                self._keys_in_flight = {
+                    (tp_key, key)
+                    for tp_key, key in self._keys_in_flight
+                    if tp_key not in revoked_tp_set
+                }
+            elif self._ordering_mode == OrderingMode.PARTITION:
+                self._partitions_in_flight -= revoked_tp_set
         self._rebalancing = True  # Rebalancing starts when partitions are revoked
 
     async def submit_message(
@@ -114,6 +182,8 @@ class WorkManager:
         # Get or create the virtual partition queue for this key
         if key not in self._virtual_partition_queues[tp]:
             self._virtual_partition_queues[tp][key] = asyncio.Queue()
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.debug("Created virtual queue for %s key=%s", tp, key)
 
         virtual_partition_queue = self._virtual_partition_queues[tp][key]
 
@@ -124,6 +194,12 @@ class WorkManager:
         )
         await virtual_partition_queue.put(work_item)
         self._in_flight_work_items[work_item_id] = work_item  # Track all work items
+
+        # Keep WorkManager's OffsetTracker in sync so that get_blocking_offsets()
+        # can compute gaps correctly and guide the scheduling policy.
+        if tp in self._offset_trackers:
+            self._offset_trackers[tp].update_last_fetched_offset(offset)
+            self._invalidate_blocking_cache()
 
         # Attempt to submit to the execution engine
         # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
@@ -138,13 +214,19 @@ class WorkManager:
         Returns:
             None
         """
+        if self._blocking_cache_counter <= 0:
+            blocking_offsets = self.get_blocking_offsets()
+            self._blocking_cache = blocking_offsets
+            self._blocking_cache_counter = self._blocking_cache_ttl
+        else:
+            blocking_offsets = self._blocking_cache
+            self._blocking_cache_counter -= 1
+
         while True:
             if self._current_in_flight_count >= self._max_in_flight_messages:
                 return
             if self._rebalancing:
                 return
-
-            blocking_offsets = self.get_blocking_offsets()
 
             best_candidate_item: Optional[WorkItem] = None
             best_candidate_queue: Optional[asyncio.Queue[WorkItem]] = None
@@ -158,18 +240,25 @@ class WorkManager:
                     if queue.empty():
                         continue
 
-                    try:
-                        peek_item = await queue.get()
-                        await queue.put(peek_item)
-                    except asyncio.QueueEmpty:
+                    if (
+                        self._ordering_mode == OrderingMode.KEY_HASH
+                        and (tp, key) in self._keys_in_flight
+                    ):
                         continue
 
-                    is_blocking_for_this_tp = blocking_offsets.get(tp) is not None
+                    if (
+                        self._ordering_mode == OrderingMode.PARTITION
+                        and tp in self._partitions_in_flight
+                    ):
+                        continue
 
+                    # Non-destructive peek: read front of internal deque
+                    # without modifying the queue.
+                    peek_item: WorkItem = self._peek_queue(queue)
+
+                    gap = blocking_offsets.get(tp)
                     is_target_blocking_offset = (
-                        is_blocking_for_this_tp
-                        and blocking_offsets[tp] is not None
-                        and peek_item.offset == blocking_offsets[tp].start  # type: ignore
+                        gap is not None and peek_item.offset == gap.start
                     )
 
                     if is_target_blocking_offset:
@@ -191,10 +280,10 @@ class WorkManager:
             queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
 
             if best_candidate_item and best_candidate_queue:
-                item_to_submit = await best_candidate_queue.get()
+                item_to_submit = best_candidate_queue.get_nowait()
                 queue_to_dequeue_from = best_candidate_queue
             elif first_non_blocking_item_seen and first_non_blocking_queue_seen:
-                item_to_submit = await first_non_blocking_queue_seen.get()
+                item_to_submit = first_non_blocking_queue_seen.get_nowait()
                 queue_to_dequeue_from = first_non_blocking_queue_seen
 
             if item_to_submit:
@@ -202,6 +291,12 @@ class WorkManager:
                     await self._execution_engine.submit(item_to_submit)
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
+                    if self._ordering_mode == OrderingMode.KEY_HASH:
+                        self._keys_in_flight.add(
+                            (item_to_submit.tp, item_to_submit.key)
+                        )
+                    elif self._ordering_mode == OrderingMode.PARTITION:
+                        self._partitions_in_flight.add(item_to_submit.tp)
                 except Exception as e:
                     print("Error submitting work item %s: %s" % (item_to_submit.id, e))
                     if queue_to_dequeue_from:
@@ -237,6 +332,17 @@ class WorkManager:
                 if (
                     event.id in self._in_flight_work_items
                 ):  # Now CompletionEvent has 'id'
+                    completed_item = self._in_flight_work_items[event.id]
+
+                    if self._ordering_mode == OrderingMode.KEY_HASH:
+                        self._keys_in_flight.discard(
+                            (completed_item.tp, completed_item.key)
+                        )
+                    elif self._ordering_mode == OrderingMode.PARTITION:
+                        self._partitions_in_flight.discard(completed_item.tp)
+
+                    self._cleanup_empty_queue(completed_item.tp, completed_item.key)
+
                     del self._in_flight_work_items[event.id]
                     self._current_in_flight_count -= 1
                     dispatch_time = self._dispatch_timestamps.pop(event.id, None)
@@ -290,6 +396,9 @@ class WorkManager:
             int: 현재 인플라이트 메시지 총 수
         """
         return self._current_in_flight_count  # Updated to use WorkManager's count
+
+    def _invalidate_blocking_cache(self) -> None:
+        self._blocking_cache_counter = 0
 
     def get_gaps(self) -> Dict[DtoTopicPartition, List[OffsetRange]]:
         """

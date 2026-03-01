@@ -23,6 +23,9 @@ def mock_kafka_config():
     config.BOOTSTRAP_SERVERS = ["broker:9092"]
     config.get_consumer_config.return_value = {"group.id": "test_group"}
     config.get_producer_config.return_value = {}
+    config.dlq_enabled = True
+    config.DLQ_TOPIC_SUFFIX = ".dlq"
+    config.DLQ_FLUSH_TIMEOUT_MS = 5000
 
     parallel_consumer_mock = MagicMock()
     parallel_consumer_mock.poll_batch_size = 1000
@@ -30,6 +33,11 @@ def mock_kafka_config():
 
     execution_mock = MagicMock()
     execution_mock.max_in_flight = 100
+    execution_mock.max_retries = 3
+    execution_mock.retry_backoff_ms = 100
+    execution_mock.exponential_backoff = True
+    execution_mock.max_retry_backoff_ms = 1000
+    execution_mock.retry_jitter_ms = 10
     parallel_consumer_mock.execution = execution_mock
 
     config.parallel_consumer = parallel_consumer_mock
@@ -228,6 +236,7 @@ async def test_run_consumer_loop_basic_flow(
             epoch=item.epoch,
             status=CompletionStatus.SUCCESS,
             error=None,
+            attempt=1,
         )
         mock_work_manager._push_completion_event(completion_event)
 
@@ -348,3 +357,282 @@ async def test_backpressure_pause_resume_hysteresis(
     mock_consumer.resume.assert_called_once()
     mock_consumer.resume.assert_called_with([test_tp_kafka])
     mock_consumer.pause.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dlq_publish_on_failure_with_retries_exhausted(
+    broker_poller,
+    mock_consumer,
+    mock_execution_engine,
+    setup_assigned_partitions,
+    mock_work_manager,
+    mock_kafka_config,
+):
+    """
+    Test DLQ publishing when a message fails after max retries.
+    Verify:
+    1. Message published to DLQ with correct topic suffix
+    2. Original key/value preserved
+    3. Headers include error metadata
+    4. Offset committed only after DLQ publish succeeds
+    """
+    # Configure DLQ
+    mock_kafka_config.dlq_enabled = True
+    mock_kafka_config.DLQ_TOPIC_SUFFIX = ".dlq"
+    mock_kafka_config.parallel_consumer.execution.max_retries = 3
+
+    test_tp_kafka, mock_offset_tracker_instance = setup_assigned_partitions
+    test_tp_dto = DtoTopicPartition(test_tp_kafka.topic, test_tp_kafka.partition)
+
+    # Create a message
+    msg = MagicMock(spec=Message)
+    msg.topic.return_value = test_tp_kafka.topic
+    msg.partition.return_value = test_tp_kafka.partition
+    msg.offset.return_value = 100
+    msg.key.return_value = b"test-key"
+    msg.value.return_value = b"test-value"
+    msg.error.return_value = None
+
+    # Mock consume to return the message once
+    mock_consumer.consume.side_effect = lambda num_messages, timeout: [msg]
+
+    # Mock producer
+    broker_poller.producer.produce = MagicMock()
+    broker_poller.producer.flush = MagicMock()
+
+    # Start consumer loop
+    broker_poller._running = True
+    consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    # Wait for message to be submitted
+    timeout_seconds = 2
+    start_time = asyncio.get_event_loop().time()
+    while len(mock_work_manager.submitted_messages) < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for message submission")
+        await asyncio.sleep(0.01)
+
+    submitted_item = mock_work_manager.submitted_messages[0]
+
+    # Simulate failure after max retries
+    failure_event = CompletionEvent(
+        id=submitted_item.id,
+        tp=test_tp_dto,
+        offset=100,
+        epoch=submitted_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="Processing failed",
+        attempt=3,
+    )
+    mock_work_manager._push_completion_event(failure_event)
+
+    # Wait for completion processing
+    start_time = asyncio.get_event_loop().time()
+    while mock_offset_tracker_instance.mark_complete.call_count < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for completion")
+        await asyncio.sleep(0.01)
+
+    # Wait for DLQ publish
+    start_time = asyncio.get_event_loop().time()
+    while broker_poller.producer.produce.call_count < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for DLQ publish")
+        await asyncio.sleep(0.01)
+
+    # Stop consumer
+    broker_poller._running = False
+    await consumer_task
+
+    # Verify DLQ publish
+    broker_poller.producer.produce.assert_called_once()
+    call_kwargs = broker_poller.producer.produce.call_args.kwargs
+
+    assert call_kwargs["topic"] == "test-topic.dlq"
+
+    assert call_kwargs["key"] == b"test-key"
+    assert call_kwargs["value"] == b"test-value"
+
+    headers = dict(call_kwargs["headers"])
+    assert headers["x-error-reason"] == b"Processing failed"
+    assert headers["x-retry-attempt"] == b"3"
+    assert headers["source-topic"] == b"test-topic"
+    assert headers["partition"] == b"0"
+    assert headers["offset"] == b"100"
+    assert "epoch" in headers
+
+    broker_poller.producer.flush.assert_called()
+
+    assert mock_offset_tracker_instance.mark_complete.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dlq_disabled_failure_commits_normally(
+    broker_poller,
+    mock_consumer,
+    mock_execution_engine,
+    setup_assigned_partitions,
+    mock_work_manager,
+    mock_kafka_config,
+):
+    """
+    Test that when DLQ is disabled, failures are logged and offset is committed
+    without attempting to publish to DLQ.
+    """
+    # Disable DLQ
+    mock_kafka_config.dlq_enabled = False
+    mock_kafka_config.parallel_consumer.execution.max_retries = 3
+
+    test_tp_kafka, mock_offset_tracker_instance = setup_assigned_partitions
+    test_tp_dto = DtoTopicPartition(test_tp_kafka.topic, test_tp_kafka.partition)
+
+    # Create a message
+    msg = MagicMock(spec=Message)
+    msg.topic.return_value = test_tp_kafka.topic
+    msg.partition.return_value = test_tp_kafka.partition
+    msg.offset.return_value = 100
+    msg.key.return_value = b"test-key"
+    msg.value.return_value = b"test-value"
+    msg.error.return_value = None
+
+    # Mock consume
+    mock_consumer.consume.side_effect = lambda num_messages, timeout: [msg]
+
+    # Mock producer
+    broker_poller.producer.produce = MagicMock()
+
+    # Start consumer loop
+    broker_poller._running = True
+    consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    # Wait for message submission
+    timeout_seconds = 2
+    start_time = asyncio.get_event_loop().time()
+    while len(mock_work_manager.submitted_messages) < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for message submission")
+        await asyncio.sleep(0.01)
+
+    submitted_item = mock_work_manager.submitted_messages[0]
+
+    # Simulate failure
+    failure_event = CompletionEvent(
+        id=submitted_item.id,
+        tp=test_tp_dto,
+        offset=100,
+        epoch=submitted_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="Processing failed",
+        attempt=3,
+    )
+    mock_work_manager._push_completion_event(failure_event)
+
+    # Wait for completion processing
+    start_time = asyncio.get_event_loop().time()
+    while mock_offset_tracker_instance.mark_complete.call_count < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for completion")
+        await asyncio.sleep(0.01)
+
+    # Wait a bit to ensure no DLQ publish
+    await asyncio.sleep(0.1)
+
+    # Stop consumer
+    broker_poller._running = False
+    await consumer_task
+
+    # Verify NO DLQ publish
+    broker_poller.producer.produce.assert_not_called()
+
+    # Verify commit still happened (offset marked complete)
+    assert mock_offset_tracker_instance.mark_complete.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dlq_publish_retry_on_failure(
+    broker_poller,
+    mock_consumer,
+    mock_execution_engine,
+    setup_assigned_partitions,
+    mock_work_manager,
+    mock_kafka_config,
+    mocker,
+):
+    """
+    Test that DLQ publish is retried on failure using configured retry settings.
+    """
+    mock_kafka_config.dlq_enabled = True
+    mock_kafka_config.DLQ_TOPIC_SUFFIX = ".dlq"
+    mock_kafka_config.parallel_consumer.execution.max_retries = 2
+    mock_kafka_config.parallel_consumer.execution.retry_backoff_ms = 10
+    mock_kafka_config.parallel_consumer.execution.exponential_backoff = False
+    mock_kafka_config.parallel_consumer.execution.max_retry_backoff_ms = 30000
+    mock_kafka_config.parallel_consumer.execution.retry_jitter_ms = 0
+
+    test_tp_kafka, mock_offset_tracker_instance = setup_assigned_partitions
+    test_tp_dto = DtoTopicPartition(test_tp_kafka.topic, test_tp_kafka.partition)
+
+    msg = MagicMock(spec=Message)
+    msg.topic.return_value = test_tp_kafka.topic
+    msg.partition.return_value = test_tp_kafka.partition
+    msg.offset.return_value = 100
+    msg.key.return_value = b"test-key"
+    msg.value.return_value = b"test-value"
+    msg.error.return_value = None
+
+    mock_consumer.consume.side_effect = lambda num_messages, timeout: [msg]
+
+    produce_call_count = 0
+
+    def produce_side_effect(*args, **kwargs):
+        nonlocal produce_call_count
+        produce_call_count += 1
+        if produce_call_count == 1:
+            raise Exception("DLQ publish failed")
+
+    broker_poller.producer.produce = MagicMock(side_effect=produce_side_effect)
+    broker_poller.producer.flush = MagicMock()
+
+    original_publish_to_dlq = broker_poller._publish_to_dlq
+
+    async def mock_publish_to_dlq(*args, **kwargs):
+        with mocker.patch("asyncio.sleep", new_callable=AsyncMock):
+            return await original_publish_to_dlq(*args, **kwargs)
+
+    broker_poller._publish_to_dlq = mock_publish_to_dlq
+
+    broker_poller._running = True
+    consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    timeout_seconds = 2
+    start_time = asyncio.get_event_loop().time()
+    while len(mock_work_manager.submitted_messages) < 1:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for message submission")
+        await asyncio.sleep(0.01)
+
+    submitted_item = mock_work_manager.submitted_messages[0]
+
+    failure_event = CompletionEvent(
+        id=submitted_item.id,
+        tp=test_tp_dto,
+        offset=100,
+        epoch=submitted_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="Processing failed",
+        attempt=2,
+    )
+    mock_work_manager._push_completion_event(failure_event)
+
+    start_time = asyncio.get_event_loop().time()
+    while broker_poller.producer.produce.call_count < 2:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            raise AssertionError("Timeout waiting for DLQ retry")
+        await asyncio.sleep(0.01)
+
+    broker_poller._running = False
+    await consumer_task
+
+    assert broker_poller.producer.produce.call_count == 2
+
+    broker_poller.producer.flush.assert_called()

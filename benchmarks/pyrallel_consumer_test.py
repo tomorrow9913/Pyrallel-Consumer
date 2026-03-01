@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
@@ -11,7 +11,7 @@ from confluent_kafka.cimpl import NewTopic
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
@@ -31,8 +31,6 @@ conf: Dict[str, Any] = {
     "enable.auto.commit": False,
     "session.timeout.ms": 6000,
 }
-
-ExecutionMode = Literal["async", "process"]
 
 
 def create_topic_if_not_exists(
@@ -142,10 +140,12 @@ async def run_pyrallel_consumer_test(
     topic_name: Optional[str] = None,
     bootstrap_servers: Optional[str] = None,
     consumer_group: Optional[str] = None,
-    execution_mode: ExecutionMode = "async",
+    execution_mode: str = "async",
     stats_tracker: Optional[BenchmarkStats] = None,
     num_partitions: int = 1,
     reset_topic: bool = False,
+    async_worker_fn: Optional[Callable[[WorkItem], Awaitable[None]]] = None,
+    process_worker_fn: Optional[Callable[[WorkItem], None]] = None,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -201,17 +201,24 @@ async def run_pyrallel_consumer_test(
         _decode_payload(payload_bytes)
         await asyncio.sleep(0.005)
 
+    process_worker = process_worker_fn or _process_mode_worker
+    async_worker_impl = async_worker_fn or async_worker
+
+    mode_value = ExecutionMode(execution_mode)
+
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
-    execution_config.mode = execution_mode
+    execution_config.mode = mode_value
 
     engine: BaseExecutionEngine
-    if execution_mode == "process":
+    if mode_value == ExecutionMode.PROCESS:
         engine = ProcessExecutionEngine(
             config=execution_config,
-            worker_fn=_process_mode_worker,
+            worker_fn=process_worker,
         )
     else:
-        engine = AsyncExecutionEngine(config=execution_config, worker_fn=async_worker)
+        engine = AsyncExecutionEngine(
+            config=execution_config, worker_fn=async_worker_impl
+        )
 
     work_manager = WorkManager(
         execution_engine=engine,

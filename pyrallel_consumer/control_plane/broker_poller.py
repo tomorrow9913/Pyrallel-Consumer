@@ -2,32 +2,33 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
-from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, cast
+import random
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import CompletionStatus, PartitionMetrics, SystemMetrics
+from ..dto import (
+    CompletionEvent,
+    CompletionStatus,
+    DLQPayloadMode,
+    OrderingMode,
+    PartitionMetrics,
+    SystemMetrics,
+)
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
+from ..utils.validation import validate_topic_name
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
 
 logger = LogManager.get_logger(__name__)
-
-
-class OrderingMode(Enum):
-    """Ordering guarantees supported by the poller."""
-
-    KEY_HASH = "key_hash"
-    PARTITION = "partition"
-    UNORDERED = "unordered"
 
 
 class BrokerPoller:
@@ -39,17 +40,18 @@ class BrokerPoller:
         kafka_config: KafkaConfig,
         execution_engine: BaseExecutionEngine,
         work_manager: Optional[WorkManager] = None,
-        message_processor: Optional[
-            Callable[[str, List[dict[str, Any]]], Awaitable[None]]
-        ] = None,
     ) -> None:
         self._consume_topic = consume_topic
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
-        self._message_processor = message_processor
 
-        self._batch_size = self._kafka_config.parallel_consumer.poll_batch_size
-        self._worker_pool_size = self._kafka_config.parallel_consumer.worker_pool_size
+        pc_conf = self._kafka_config.parallel_consumer
+        self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
+        self._worker_pool_size = getattr(pc_conf, "worker_pool_size", 0) or 0
+        self.QUEUE_MAX_MESSAGES = int(getattr(pc_conf, "queue_max_messages", 0) or 0)
+        self._queue_resume_threshold = (
+            int(self.QUEUE_MAX_MESSAGES * 0.7) if self.QUEUE_MAX_MESSAGES else 0
+        )
         self.ORDERING_MODE = OrderingMode.KEY_HASH
 
         self.producer: Optional[Producer] = None
@@ -62,18 +64,125 @@ class BrokerPoller:
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
         self._work_manager = work_manager or WorkManager(
-            execution_engine=self._execution_engine
+            execution_engine=self._execution_engine,
+            ordering_mode=self.ORDERING_MODE,
+            blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
         )
 
-        self.MAX_IN_FLIGHT_MESSAGES = (
-            self._kafka_config.parallel_consumer.execution.max_in_flight
+        self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
+        self._diag_events_since_log = 0
+        self._blocking_warn_seconds = float(
+            getattr(pc_conf, "blocking_warn_seconds", 5.0) or 5.0
         )
+        self._max_blocking_duration_ms = int(
+            getattr(pc_conf, "max_blocking_duration_ms", 0) or 0
+        )
+
+        self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
         self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = self.MAX_IN_FLIGHT_MESSAGES // 2
         self._is_paused = False
 
+        self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+
+    # ------------------------------------------------------------------
+    async def _publish_to_dlq(
+        self,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+        key: Any,
+        value: Any,
+        error: str,
+        attempt: int,
+    ) -> bool:
+        if self.producer is None:
+            raise RuntimeError("Producer must be initialized for DLQ publishing")
+
+        source_topic = validate_topic_name(self._consume_topic)
+        suffix = validate_topic_name(self._kafka_config.DLQ_TOPIC_SUFFIX)
+        dlq_topic = source_topic + suffix
+        headers_raw = [
+            ("x-error-reason", error.encode("utf-8")),
+            ("x-retry-attempt", str(attempt).encode("utf-8")),
+            ("source-topic", tp.topic.encode("utf-8")),
+            ("partition", str(tp.partition).encode("utf-8")),
+            ("offset", str(offset).encode("utf-8")),
+            ("epoch", str(epoch).encode("utf-8")),
+        ]
+        headers: List[Tuple[str, Union[str, bytes, None]]] = cast(
+            List[Tuple[str, Union[str, bytes, None]]], headers_raw
+        )
+
+        exec_config = self._kafka_config.parallel_consumer.execution
+        max_retries = exec_config.max_retries
+        base_backoff_ms = exec_config.retry_backoff_ms
+        max_backoff_ms = exec_config.max_retry_backoff_ms
+        jitter_ms = exec_config.retry_jitter_ms
+        use_exponential = exec_config.exponential_backoff
+
+        payload_mode = getattr(
+            self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
+        )
+
+        for retry_attempt in range(max_retries):
+            try:
+                send_key = None
+                send_value = None
+                if payload_mode == DLQPayloadMode.FULL:
+                    send_key = key
+                    send_value = value
+                await asyncio.to_thread(
+                    self.producer.produce,
+                    topic=dlq_topic,
+                    key=send_key,
+                    value=send_value,
+                    headers=headers,  # type: ignore[arg-type]
+                )
+                await asyncio.to_thread(
+                    self.producer.flush,
+                    timeout=self._kafka_config.DLQ_FLUSH_TIMEOUT_MS / 1000.0,
+                )
+                logger.debug(
+                    "Published to DLQ: %s@%d -> %s",
+                    tp,
+                    offset,
+                    dlq_topic,
+                )
+                return True
+            except Exception as exc:
+                if retry_attempt < max_retries - 1:
+                    if use_exponential:
+                        backoff = min(
+                            base_backoff_ms * (2**retry_attempt), max_backoff_ms
+                        )
+                    else:
+                        backoff = base_backoff_ms
+
+                    jitter = random.uniform(0, jitter_ms)
+                    sleep_time_ms = backoff + jitter
+                    logger.warning(
+                        "DLQ publish failed (attempt %d/%d), retrying in %d ms: %s",
+                        retry_attempt + 1,
+                        max_retries,
+                        int(sleep_time_ms),
+                        exc,
+                    )
+                    await asyncio.sleep(sleep_time_ms / 1000.0)
+                else:
+                    logger.error(
+                        "DLQ publish failed after %d attempts for %s@%d: %s",
+                        max_retries,
+                        tp,
+                        offset,
+                        exc,
+                        exc_info=True,
+                    )
+                    return False
+        return False
+
     # ------------------------------------------------------------------
     async def _run_consumer(self) -> None:
-        logger.info("Starting consumer loop")
+        logger.debug("Starting consumer loop")
         if self.consumer is None:
             raise RuntimeError("Kafka consumer must be initialized")
 
@@ -112,11 +221,20 @@ class BrokerPoller:
                             logger.warning("Untracked partition %s - skipping", tp)
                             continue
 
+                        cache_key = (tp, offset_val)
+                        self._message_cache[cache_key] = (msg.key(), msg.value())
+
+                        submit_key: Any
+                        if self.ORDERING_MODE == OrderingMode.PARTITION:
+                            submit_key = tp.partition
+                        else:
+                            submit_key = msg.key()
+
                         await self._work_manager.submit_message(
                             tp=tp,
                             offset=offset_val,
                             epoch=tracker.get_current_epoch(),
-                            key=msg.key(),
+                            key=submit_key,
                             payload=msg.value(),
                         )
                         tracker.update_last_fetched_offset(offset_val)
@@ -124,31 +242,11 @@ class BrokerPoller:
                     await self._work_manager.schedule()
 
                 completed_events = await self._work_manager.poll_completed_events()
+                timeout_events = await self._handle_blocking_timeouts()
+                if timeout_events:
+                    completed_events.extend(timeout_events)
                 if completed_events:
-                    for event in completed_events:
-                        tracker = self._offset_trackers.get(event.tp)
-                        if tracker is None:
-                            logger.warning(
-                                "Completion for untracked partition %s", event.tp
-                            )
-                            continue
-                        if event.epoch != tracker.get_current_epoch():
-                            logger.warning(
-                                "Discarding zombie completion for %s@%d (epoch %d vs %d)",
-                                event.tp,
-                                event.offset,
-                                event.epoch,
-                                tracker.get_current_epoch(),
-                            )
-                            continue
-                        tracker.mark_complete(event.offset)
-                        if event.status == CompletionStatus.FAILURE:
-                            logger.error(
-                                "Message processing failed for %s@%d: %s",
-                                event.tp,
-                                event.offset,
-                                event.error,
-                            )
+                    await self._process_completed_events(completed_events)
 
                 commits_to_make: List[tuple[DtoTopicPartition, int]] = []
                 for tp, tracker in self._offset_trackers.items():
@@ -158,30 +256,14 @@ class BrokerPoller:
                             potential_hwm = offset
                         else:
                             break
+                    min_inflight = self._get_min_inflight_offset(tp)
+                    if min_inflight is not None and min_inflight <= potential_hwm:
+                        potential_hwm = min_inflight - 1
                     if potential_hwm > tracker.last_committed_offset:
                         commits_to_make.append((tp, potential_hwm))
 
                 if commits_to_make:
-                    offsets_to_commit = []
-                    for tp, safe_offset in commits_to_make:
-                        tracker = self._offset_trackers[tp]
-                        metadata = self._metadata_encoder.encode_metadata(
-                            tracker.completed_offsets, safe_offset + 1
-                        )
-                        kafka_tp = KafkaTopicPartition(
-                            tp.topic,
-                            tp.partition,
-                            safe_offset + 1,
-                            metadata=metadata,
-                        )
-                        offsets_to_commit.append(kafka_tp)
-                    await asyncio.to_thread(
-                        self.consumer.commit,
-                        offsets=offsets_to_commit,
-                        asynchronous=False,
-                    )
-                    for tp, _ in commits_to_make:
-                        self._offset_trackers[tp].advance_high_water_mark()
+                    await self._commit_offsets(commits_to_make)
 
                 if not messages:
                     await asyncio.sleep(0.1)
@@ -191,6 +273,171 @@ class BrokerPoller:
         finally:
             await self._cleanup()
             self._shutdown_event.set()
+
+    async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
+        if self._max_blocking_duration_ms <= 0:
+            return []
+
+        threshold_sec = self._max_blocking_duration_ms / 1000.0
+        forced = False
+        execution_config = self._kafka_config.parallel_consumer.execution
+
+        for tp, tracker in self._offset_trackers.items():
+            durations = tracker.get_blocking_offset_durations()
+            if not durations:
+                continue
+
+            for offset, duration in durations.items():
+                if duration < threshold_sec:
+                    continue
+
+                error_text = "Blocking offset %d exceeded %.3fs" % (offset, duration)
+                success = await self._work_manager.force_fail(
+                    tp=tp,
+                    offset=offset,
+                    epoch=tracker.get_current_epoch(),
+                    error=error_text,
+                    attempt=execution_config.max_retries,
+                )
+                if success:
+                    forced = True
+
+        if not forced:
+            return []
+
+        return await self._work_manager.poll_completed_events()
+
+    async def _process_completed_events(
+        self, completed_events: list[CompletionEvent]
+    ) -> None:
+        for event in completed_events:
+            tracker = self._offset_trackers.get(event.tp)
+            if tracker is None:
+                logger.warning("Completion for untracked partition %s", event.tp)
+                continue
+            if event.epoch != tracker.get_current_epoch():
+                logger.warning(
+                    "Discarding zombie completion for %s@%d (epoch %d vs %d)",
+                    event.tp,
+                    event.offset,
+                    event.epoch,
+                    tracker.get_current_epoch(),
+                )
+                continue
+
+            dlq_success: bool = True
+
+            if event.status == CompletionStatus.FAILURE:
+                logger.error(
+                    "Message processing failed for %s@%d: %s",
+                    event.tp,
+                    event.offset,
+                    event.error,
+                )
+
+                max_retries = self._kafka_config.parallel_consumer.execution.max_retries
+                if (
+                    self._kafka_config.dlq_enabled and event.attempt >= max_retries  # type: ignore[attr-defined]
+                ):
+                    cache_key = (event.tp, event.offset)
+                    cached_msg = self._message_cache.get(cache_key)
+                    if cached_msg is None:
+                        logger.warning(
+                            "No cached message for %s@%d, skipping DLQ publish and commit",
+                            event.tp,
+                            event.offset,
+                        )
+                        continue
+
+                    msg_key, msg_value = cached_msg
+                    error_text = event.error or "Unknown error"
+                    dlq_success = await self._publish_to_dlq(
+                        tp=event.tp,
+                        offset=event.offset,
+                        epoch=event.epoch,
+                        key=msg_key,
+                        value=msg_value,
+                        error=error_text,
+                        attempt=event.attempt,  # type: ignore[attr-defined]
+                    )
+
+                if not dlq_success:
+                    logger.error(
+                        "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
+                        event.tp,
+                        event.offset,
+                    )
+                    continue
+
+            tracker.mark_complete(event.offset)
+            cache_key_to_remove = (event.tp, event.offset)
+            self._message_cache.pop(cache_key_to_remove, None)
+
+        self._diag_events_since_log += len(completed_events)
+        if self._diag_events_since_log >= self._diag_log_every:
+            self._log_partition_diagnostics()
+            self._diag_events_since_log = 0
+
+    # ------------------------------------------------------------------
+    async def _commit_offsets(
+        self, commits_to_make: List[tuple[DtoTopicPartition, int]]
+    ) -> None:
+        """Build offset list and commit to Kafka with retry on transient failure.
+
+        On success, advances each tracker's high water mark.
+        On failure after retry, logs a warning and continues without crashing.
+        """
+        if self.consumer is None:
+            return
+        offsets_to_commit = []
+        for tp, safe_offset in commits_to_make:
+            tracker = self._offset_trackers[tp]
+            metadata = self._metadata_encoder.encode_metadata(
+                tracker.completed_offsets, safe_offset + 1
+            )
+            if isinstance(metadata, (bytes, bytearray)):
+                metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
+            elif isinstance(metadata, str):
+                metadata_text = metadata
+            else:
+                metadata_text = ""
+
+            kafka_tp = cast(
+                KafkaTopicPartition,
+                cast(Any, KafkaTopicPartition)(
+                    tp.topic,
+                    tp.partition,
+                    safe_offset + 1,
+                    metadata=metadata_text,
+                ),
+            )
+            offsets_to_commit.append(kafka_tp)
+
+        max_attempts = 2  # 1 initial + 1 retry
+        for attempt in range(max_attempts):
+            try:
+                await asyncio.to_thread(
+                    self.consumer.commit,
+                    offsets=offsets_to_commit,
+                    asynchronous=False,
+                )
+                for tp, _ in commits_to_make:
+                    self._offset_trackers[tp].advance_high_water_mark()
+                return
+            except KafkaException as exc:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "Commit failed (attempt %d/%d), retrying: %s",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "Commit failed after %d attempts, skipping: %s",
+                        max_attempts,
+                        exc,
+                    )
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
@@ -202,6 +449,56 @@ class BrokerPoller:
             for size in queue_map.values():
                 total += size
         return total
+
+    def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
+        if not isinstance(self._execution_engine, ProcessExecutionEngine):
+            return None
+        return self._execution_engine.get_min_inflight_offset(tp)
+
+    def _log_partition_diagnostics(self) -> None:
+        queue_sizes = self._work_manager.get_virtual_queue_sizes()
+        gaps = self._work_manager.get_gaps()
+        blocking = self._work_manager.get_blocking_offsets()
+        parts: list[str] = []
+        for tp, tracker in self._offset_trackers.items():
+            safe_topic = validate_topic_name(tp.topic)
+            queued = sum(queue_sizes.get(tp, {}).values())
+            gap_count = len(gaps.get(tp, []))
+            blocking_offset = blocking.get(tp)
+            blocking_age = None
+            if blocking_offset is not None:
+                durations = tracker.get_blocking_offset_durations()
+                blocking_age = durations.get(blocking_offset.start)
+            age_str = (
+                "%.2fs" % blocking_age
+                if isinstance(blocking_age, (int, float))
+                else "n/a"
+            )
+            parts.append(
+                "%s-%d queued=%d gaps=%d blocking=%s age=%s"
+                % (
+                    safe_topic,
+                    tp.partition,
+                    queued,
+                    gap_count,
+                    blocking_offset.start if blocking_offset else "none",
+                    age_str,
+                )
+            )
+            if (
+                blocking_offset is not None
+                and isinstance(blocking_age, (int, float))
+                and blocking_age >= self._blocking_warn_seconds
+            ):
+                logger.warning(
+                    "Prolonged blocking offset %s@%d age=%.2fs gaps=%d queued=%d",
+                    tp,
+                    blocking_offset.start,
+                    blocking_age,
+                    gap_count,
+                    queued,
+                )
+        logger.debug("Partition diag: %s", "; ".join(parts))
 
     async def _check_backpressure(self) -> None:
         if self.consumer is None:
@@ -215,7 +512,13 @@ class BrokerPoller:
         if not partitions:
             return
 
-        if not self._is_paused and current_load > self.MAX_IN_FLIGHT_MESSAGES:
+        queue_full = (
+            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        )
+
+        if not self._is_paused and (
+            current_load > self.MAX_IN_FLIGHT_MESSAGES or queue_full
+        ):
             logger.warning(
                 "Backpressure: pausing consumer (load=%d limit=%d)",
                 current_load,
@@ -223,8 +526,14 @@ class BrokerPoller:
             )
             self.consumer.pause(partitions)
             self._is_paused = True
-        elif self._is_paused and current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME:
-            logger.info(
+        elif self._is_paused and (
+            current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME
+            and (
+                self._queue_resume_threshold == 0
+                or total_queued <= self._queue_resume_threshold
+            )
+        ):
+            logger.debug(
                 "Backpressure released: resuming consumer (load=%d resume=%d)",
                 current_load,
                 self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
@@ -247,7 +556,7 @@ class BrokerPoller:
     def _on_assign(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
     ) -> None:
-        logger.info(
+        logger.debug(
             "Partitions assigned: %s",
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
@@ -299,27 +608,44 @@ class BrokerPoller:
             tracker.advance_high_water_mark()
             safe_offset = tracker.last_committed_offset
             if safe_offset >= 0:
-                metadata = self._metadata_encoder.encode_metadata(
-                    tracker.completed_offsets, safe_offset + 1
-                )
                 tp_to_commit = KafkaTopicPartition(
                     tp_dto.topic,
                     tp_dto.partition,
                     safe_offset + 1,
-                    metadata=metadata,
                 )
-                consumer.commit(offsets=[tp_to_commit], asynchronous=False)
+                try:
+                    consumer.commit(offsets=[tp_to_commit], asynchronous=False)
+                except KafkaException as exc:
+                    logger.warning(
+                        "Revoke commit failed for %s-%d at offset %d: %s",
+                        tp_dto.topic,
+                        tp_dto.partition,
+                        safe_offset + 1,
+                        exc,
+                    )
 
             del self._offset_trackers[tp_dto]
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
         try:
-            self.producer = Producer(self._kafka_config.get_producer_config())
-            self.admin = AdminClient(
-                {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]}
+            producer_conf = cast(
+                dict[str, str | int | float | bool],
+                self._kafka_config.get_producer_config(),
             )
-            self.consumer = Consumer(self._kafka_config.get_consumer_config())
+            self.producer = Producer(producer_conf)  # type: ignore[arg-type]
+
+            admin_conf = cast(
+                dict[str, str | int | float | bool],
+                {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]},
+            )
+            self.admin = AdminClient(admin_conf)  # type: ignore[arg-type]
+
+            consumer_conf = cast(
+                dict[str, str | int | float | bool | None],
+                self._kafka_config.get_consumer_config(),
+            )
+            self.consumer = Consumer(consumer_conf)  # type: ignore[arg-type]
             self.consumer.subscribe(
                 [self._consume_topic],
                 on_assign=self._on_assign,
@@ -327,7 +653,7 @@ class BrokerPoller:
             )
             self._running = True
             asyncio.create_task(self._run_consumer())
-            logger.info("Kafka consumer subscribed to %s", self._consume_topic)
+            logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:
             logger.error("Failed to start BrokerPoller: %s", exc, exc_info=True)
             raise
@@ -335,10 +661,10 @@ class BrokerPoller:
     async def stop(self) -> None:
         if not self._running:
             return
-        logger.info("Shutdown signal received")
+        logger.debug("Shutdown signal received")
         self._running = False
         await self._shutdown_event.wait()
-        logger.info("BrokerPoller stopped")
+        logger.debug("BrokerPoller stopped")
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:

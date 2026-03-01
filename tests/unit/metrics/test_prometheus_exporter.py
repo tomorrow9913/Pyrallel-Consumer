@@ -1,7 +1,7 @@
-import sys
-from pathlib import Path
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+pytest.importorskip("prometheus_client")
+from prometheus_client import CollectorRegistry  # noqa: E402
 
 from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
@@ -13,49 +13,73 @@ from pyrallel_consumer.dto import (  # noqa: E402
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter  # noqa: E402
 
 
-def _make_metrics(paused: bool = True) -> SystemMetrics:
-    partition = PartitionMetrics(
-        tp=TopicPartition(topic="bench", partition=1),
-        true_lag=5,
+def _make_partition_metrics(topic: str, partition: int) -> PartitionMetrics:
+    return PartitionMetrics(
+        tp=TopicPartition(topic=topic, partition=partition),
+        true_lag=3,
         gap_count=2,
         blocking_offset=10,
         blocking_duration_sec=1.5,
         queued_count=7,
     )
-    return SystemMetrics(total_in_flight=3, is_paused=paused, partitions=[partition])
 
 
-def test_update_from_system_metrics_sets_gauges():
-    exporter = PrometheusMetricsExporter(MetricsConfig(enabled=False, port=0))
-    metrics = _make_metrics()
+def test_exporter_uses_provided_registry_and_no_http_when_disabled(monkeypatch):
+    registry = CollectorRegistry()
+    monkeypatch.setattr(
+        "pyrallel_consumer.metrics_exporter.start_http_server",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not start")),
+    )
+
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False, port=9100), registry=registry
+    )
+
+    assert exporter._registry is registry
+
+
+def test_exporter_updates_metrics_and_observes_completion():
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    metrics = SystemMetrics(
+        total_in_flight=5,
+        is_paused=True,
+        partitions=[
+            _make_partition_metrics("topic-a", 0),
+            _make_partition_metrics("topic-b", 1),
+        ],
+    )
+
     exporter.update_from_system_metrics(metrics)
 
-    labels = ("bench", "1")
-    assert exporter._lag_gauge.labels(*labels)._value.get() == 5
-    assert exporter._gap_gauge.labels(*labels)._value.get() == 2
-    assert exporter._queued_gauge.labels(*labels)._value.get() == 7
-    assert exporter._blocking_duration_gauge.labels(*labels)._value.get() == 1.5
+    assert exporter._in_flight_gauge._value.get() == 5
     assert exporter._backpressure_gauge._value.get() == 1
-    assert exporter._in_flight_gauge._value.get() == 3
 
+    lag = exporter._lag_gauge.labels("topic-a", "0")._value.get()
+    gaps = exporter._gap_gauge.labels("topic-b", "1")._value.get()
+    queued = exporter._queued_gauge.labels("topic-a", "0")._value.get()
+    blocking = exporter._blocking_duration_gauge.labels("topic-b", "1")._value.get()
 
-def test_observe_completion_updates_counters_and_histogram():
-    exporter = PrometheusMetricsExporter(MetricsConfig(enabled=False, port=0))
-    tp = TopicPartition(topic="bench", partition=2)
-    exporter.observe_completion(tp, CompletionStatus.SUCCESS, 0.25)
+    assert lag == 3
+    assert gaps == 2
+    assert queued == 7
+    assert blocking == 1.5
 
-    counter_sample = exporter._processed_total.labels(
-        topic="bench", partition="2", status=CompletionStatus.SUCCESS.value
+    tp = TopicPartition(topic="topic-a", partition=0)
+    exporter.observe_completion(tp, CompletionStatus.SUCCESS, duration_seconds=0.12)
+    exporter.update_metadata_size(topic="topic-a", size_bytes=42)
+
+    processed = exporter._processed_total.labels(
+        topic="topic-a", partition="0", status="success"
     )._value.get()
-    assert counter_sample == 1
-
-    histogram_sum = exporter._latency_hist.labels(
-        topic="bench", partition="2"
+    latency_sum = exporter._latency_hist.labels(
+        topic="topic-a", partition="0"
     )._sum.get()
-    assert histogram_sum == 0.25
+    metadata_size = exporter._metadata_size_gauge.labels(topic="topic-a")._value.get()
 
-
-def test_update_metadata_size_sets_gauge():
-    exporter = PrometheusMetricsExporter(MetricsConfig(enabled=False, port=0))
-    exporter.update_metadata_size("bench", 1234)
-    assert exporter._metadata_size_gauge.labels(topic="bench")._value.get() == 1234
+    assert processed == 1
+    assert pytest.approx(latency_sum, rel=1e-6) == 0.12
+    assert metadata_size == 42

@@ -53,23 +53,9 @@ class PyrallelConsumer:
         )
 
         # 3. Create Broker Poller (The main loop)
-        # MessageProcessor in BrokerPoller is conceptually different from the Worker.
-        # BrokerPoller uses MessageProcessor for raw handling, but in our architecture,
-        # it submits to WorkManager. So we might pass a dummy or None if allowed,
-        # but BrokerPoller currently requires it.
-        # However, looking at BrokerPoller implementation, it submits to WorkManager directly.
-        # The `message_processor` arg in BrokerPoller seems legacy or unused in the new flow?
-        # Let's check BrokerPoller again. It stores it but doesn't seem to use it in `_run_consumer`.
-        # It calls `self._work_manager.submit_message`.
-        # We will pass a no-op dummy for now to satisfy the type signature.
-
-        async def dummy_processor(topic: str, batch: list[dict[str, Any]]) -> None:
-            pass
-
         self._poller = BrokerPoller(
             consume_topic=topic,
             kafka_config=config,
-            message_processor=dummy_processor,
             execution_engine=self._execution_engine,
             work_manager=self._work_manager,
         )

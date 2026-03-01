@@ -29,5 +29,5 @@ def test_create_process_execution_engine():
 
 
 def test_create_execution_engine_unknown_mode_config_validation():
-    with pytest.raises(ValidationError, match="Input should be 'async' or 'process'"):
+    with pytest.raises(ValidationError, match="not a valid ExecutionMode"):
         ExecutionConfig(mode="unknown")  # Assert Validation during config creation

@@ -33,20 +33,20 @@ def test_bitset_encode_empty_offsets(metadata_encoder):
 
 
 def test_bitset_encode_single_offset(metadata_encoder):
-    assert metadata_encoder._bitset_encode_offsets({0}, 0) == "0:1"
-    assert metadata_encoder._bitset_encode_offsets({5}, 0) == "0:000001"
+    assert metadata_encoder._bitset_encode_offsets({0}, 0) == "0:01"
+    assert metadata_encoder._bitset_encode_offsets({5}, 0) == "0:20"
 
 
 def test_bitset_encode_contiguous_offsets(metadata_encoder):
-    assert metadata_encoder._bitset_encode_offsets({0, 1, 2, 3}, 0) == "0:1111"
+    assert metadata_encoder._bitset_encode_offsets({0, 1, 2, 3}, 0) == "0:0f"
 
 
 def test_bitset_encode_discontiguous_offsets(metadata_encoder):
-    assert metadata_encoder._bitset_encode_offsets({0, 2, 3, 5}, 0) == "0:101101"
+    assert metadata_encoder._bitset_encode_offsets({0, 2, 3, 5}, 0) == "0:2d"
 
 
 def test_bitset_encode_with_different_base_offset(metadata_encoder):
-    assert metadata_encoder._bitset_encode_offsets({10, 11, 13, 15}, 10) == "10:110101"
+    assert metadata_encoder._bitset_encode_offsets({10, 11, 13, 15}, 10) == "10:2b"
 
 
 def test_encode_metadata_rle_shorter(metadata_encoder):
@@ -91,20 +91,20 @@ def test_bitset_decode_empty_string(metadata_encoder):
 
 
 def test_bitset_decode_single_offset(metadata_encoder):
-    assert metadata_encoder._bitset_decode_offsets("0:1") == {0}
-    assert metadata_encoder._bitset_decode_offsets("0:000001") == {5}
+    assert metadata_encoder._bitset_decode_offsets("0:01") == {0}
+    assert metadata_encoder._bitset_decode_offsets("0:20") == {5}
 
 
 def test_bitset_decode_contiguous_offsets(metadata_encoder):
-    assert metadata_encoder._bitset_decode_offsets("0:1111") == {0, 1, 2, 3}
+    assert metadata_encoder._bitset_decode_offsets("0:0f") == {0, 1, 2, 3}
 
 
 def test_bitset_decode_discontiguous_offsets(metadata_encoder):
-    assert metadata_encoder._bitset_decode_offsets("0:101101") == {0, 2, 3, 5}
+    assert metadata_encoder._bitset_decode_offsets("0:2d") == {0, 2, 3, 5}
 
 
 def test_bitset_decode_with_different_base_offset(metadata_encoder):
-    assert metadata_encoder._bitset_decode_offsets("10:110101") == {10, 11, 13, 15}
+    assert metadata_encoder._bitset_decode_offsets("10:2b") == {10, 11, 13, 15}
 
 
 def test_decode_metadata_empty(metadata_encoder):
@@ -116,7 +116,7 @@ def test_decode_metadata_rle(metadata_encoder):
 
 
 def test_decode_metadata_bitset(metadata_encoder):
-    assert metadata_encoder.decode_metadata("B10:110101") == {10, 11, 13, 15}
+    assert metadata_encoder.decode_metadata("B10:2b") == {10, 11, 13, 15}
 
 
 def test_decode_metadata_unknown_type(metadata_encoder):
@@ -129,3 +129,32 @@ def test_roundtrip_encoding_decoding(metadata_encoder):
     encoded = metadata_encoder.encode_metadata(offsets, base_offset)
     decoded = metadata_encoder.decode_metadata(encoded)
     assert decoded == offsets
+
+
+def test_decode_metadata_fail_closed_on_invalid_rle(metadata_encoder, caplog):
+    with caplog.at_level("WARNING"):
+        decoded = metadata_encoder.decode_metadata("Rbad-range")
+    assert decoded == set()
+    assert any("Failed to decode metadata" in rec.message for rec in caplog.records)
+
+
+def test_decode_metadata_fail_closed_on_invalid_bitset(metadata_encoder, caplog):
+    with caplog.at_level("WARNING"):
+        decoded = metadata_encoder.decode_metadata("Bnotint:zz")
+    assert decoded == set()
+    assert any("Failed to decode metadata" in rec.message for rec in caplog.records)
+
+
+def test_encode_metadata_overflow_sentinel_and_decode():
+    encoder = MetadataEncoder(max_metadata_size=5)
+    offsets = set(range(0, 500))
+    encoded = encoder.encode_metadata(offsets, 0)
+    assert encoded == "O"
+    assert encoder.decode_metadata(encoded) == set()
+
+
+def test_bitset_encode_hex_roundtrip(metadata_encoder):
+    offsets = {1, 2, 3, 5}
+    encoded = metadata_encoder.encode_metadata(offsets, 1)
+    assert encoded.startswith("B1:")
+    assert metadata_encoder.decode_metadata(encoded) == offsets

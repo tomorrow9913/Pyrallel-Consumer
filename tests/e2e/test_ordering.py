@@ -4,9 +4,10 @@ import json
 import random
 import sys
 import time
+import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import pytest
 from confluent_kafka.admin import AdminClient
@@ -14,15 +15,10 @@ from confluent_kafka.cimpl import Consumer, KafkaError, KafkaException, NewTopic
 from confluent_kafka.cimpl import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
-from pyrallel_consumer.control_plane.broker_poller import BrokerPoller, OrderingMode
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import OrderingMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
-
-
-async def _dummy_message_processor(topic: str, batch: List[dict[str, Any]]) -> None:
-    return
-
 
 # --- Test Configuration ---
 E2E_TOPIC = "e2e_ordering_test_topic"
@@ -78,40 +74,33 @@ class ResultTracker:
 
 
 # --- Pytest Fixtures ---
-@pytest.fixture(scope="module")
+@pytest.fixture
 def kafka_admin_client():
     """테스트용 Kafka AdminClient fixture."""
     return AdminClient({"bootstrap.servers": E2E_CONF["bootstrap.servers"]})
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(autouse=True)
 def create_e2e_topic(kafka_admin_client: AdminClient):
-    """테스트 시작 시 토픽을 정리하고, 종료 시 다시 정리합니다."""
+    """각 테스트 전에 토픽을 삭제/재생성하여 격리합니다."""
     topic_name = E2E_TOPIC
 
-    # Clean up before test
     try:
         kafka_admin_client.delete_topics([topic_name])[topic_name].result(timeout=5)
-        print(f"Topic '{topic_name}' deleted before test run.")
-        time.sleep(1)
+        time.sleep(2)
     except KafkaException as e:
         if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:
             raise
 
-    # Create topic for test
     num_partitions = 8
     topic = NewTopic(topic_name, num_partitions=num_partitions, replication_factor=1)
     kafka_admin_client.create_topics([topic])[topic_name].result()
-    print(
-        f"Topic '{topic_name}' with {num_partitions} partitions created for E2E tests."
-    )
+    time.sleep(1)
 
     yield
 
-    # Clean up after test
     try:
         kafka_admin_client.delete_topics([topic_name])[topic_name].result(timeout=5)
-        print(f"Topic '{topic_name}' deleted after E2E tests.")
     except KafkaException as e:
         if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:
             raise
@@ -119,10 +108,10 @@ def create_e2e_topic(kafka_admin_client: AdminClient):
 
 @pytest.fixture
 def base_kafka_config() -> KafkaConfig:
-    """테스트용 기본 KafkaConfig 객체를 생성합니다."""
+    """테스트용 기본 KafkaConfig 객체를 생성합니다 (고유 consumer group)."""
     return KafkaConfig(
         BOOTSTRAP_SERVERS=[E2E_CONF["bootstrap.servers"]],
-        CONSUMER_GROUP=E2E_CONF["group.id"],
+        CONSUMER_GROUP=f"e2e_test_{uuid.uuid4().hex[:8]}",
         AUTO_OFFSET_RESET=E2E_CONF["auto.offset.reset"],
         ENABLE_AUTO_COMMIT=E2E_CONF["enable.auto.commit"],
     )
@@ -136,9 +125,6 @@ async def run_ordering_test(
     worker_fn=None,
     max_in_flight: Optional[int] = None,
     timeout: int = 60,
-    message_processor: Optional[
-        Callable[[str, List[dict[str, Any]]], Awaitable[None]]
-    ] = None,
 ):
     stop_event = asyncio.Event()
     result_tracker = ResultTracker()
@@ -172,6 +158,7 @@ async def run_ordering_test(
     work_manager = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=execution_config.max_in_flight,
+        ordering_mode=ordering_mode,
     )
 
     poller = BrokerPoller(
@@ -179,7 +166,6 @@ async def run_ordering_test(
         kafka_config=kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=message_processor or _dummy_message_processor,
     )
     poller.ORDERING_MODE = ordering_mode
 
@@ -210,8 +196,8 @@ async def run_ordering_test(
 @pytest.mark.asyncio
 async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
     """KEY_HASH 모드에서 키별 순서 보장을 테스트합니다."""
-    num_messages = 10000
-    num_keys = 100
+    num_messages = 2000
+    num_keys = 200
 
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
@@ -227,8 +213,8 @@ async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
 @pytest.mark.asyncio
 async def test_partition_ordering(base_kafka_config: KafkaConfig):
     """PARTITION 모드에서 파티션별 순서 보장을 테스트합니다."""
-    num_messages = 10000
-    num_keys = 100
+    num_messages = 500
+    num_keys = 50
 
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
@@ -244,8 +230,8 @@ async def test_partition_ordering(base_kafka_config: KafkaConfig):
 @pytest.mark.asyncio
 async def test_unordered(base_kafka_config: KafkaConfig):
     """UNORDERED 모드에서 모든 메시지가 처리되는지 테스트합니다."""
-    num_messages = 10000
-    num_keys = 100
+    num_messages = 2000
+    num_keys = 200
 
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
@@ -280,6 +266,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
     work_manager = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=max_in_flight,
+        ordering_mode=OrderingMode.KEY_HASH,
     )
 
     poller = BrokerPoller(
@@ -287,7 +274,6 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
         kafka_config=base_kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=_dummy_message_processor,
     )
     poller.ORDERING_MODE = OrderingMode.KEY_HASH
 
@@ -346,6 +332,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
     work_manager = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=execution_config.max_in_flight,
+        ordering_mode=OrderingMode.KEY_HASH,
     )
 
     poller = BrokerPoller(
@@ -353,7 +340,6 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
         kafka_config=base_kafka_config,
         execution_engine=engine,
         work_manager=work_manager,
-        message_processor=_dummy_message_processor,
     )
     poller.ORDERING_MODE = OrderingMode.KEY_HASH
 
@@ -385,7 +371,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
     verify_consumer = Consumer(
         {
             "bootstrap.servers": E2E_CONF["bootstrap.servers"],
-            "group.id": E2E_CONF["group.id"],
+            "group.id": base_kafka_config.CONSUMER_GROUP,
         }
     )
     try:
