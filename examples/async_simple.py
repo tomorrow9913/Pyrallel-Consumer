@@ -20,7 +20,7 @@ import signal
 
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +47,7 @@ async def my_async_worker(item: WorkItem) -> None:
 
 async def main() -> None:
     config = KafkaConfig()
-    config.parallel_consumer.execution.mode = "async"
+    config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
     config.parallel_consumer.execution.max_in_flight = 200
 
     consumer = PyrallelConsumer(
