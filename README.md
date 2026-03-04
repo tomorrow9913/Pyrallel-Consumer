@@ -51,6 +51,22 @@ These metrics are based on the same values returned by `BrokerPoller.get_metrics
 
 Recent run (4 partitions, 2000 messages, 100 keys, profiling off):
 
+### Workload semantics (what each option actually does)
+
+- `sleep` workload (`--worker-sleep-ms N`)
+  - Simulates blocking latency by calling `time.sleep(N/1000)` per message.
+  - Useful for modeling external blocking work with minimal CPU usage.
+
+- `io` workload (`--worker-io-sleep-ms N`)
+  - Simulates async I/O latency by awaiting `asyncio.sleep(N/1000)` per message.
+  - Useful for network/DB-like I/O-bound behavior.
+
+- `cpu` workload (`--worker-cpu-iterations K`)
+  - Simulates CPU-bound work by repeatedly applying hash computation (`sha256`) `K` times per message.
+  - Higher `K` means more CPU pressure per message.
+
+These options are implemented in the benchmark workers and directly control per-message work cost.
+
 | Workload | Setting | baseline TPS | async TPS | process TPS |
 | --- | --- | --- | --- | --- |
 | sleep | `--workload sleep --worker-sleep-ms 5` | 159.69 | 2206.35 | 910.04 |

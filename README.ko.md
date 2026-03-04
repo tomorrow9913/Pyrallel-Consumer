@@ -57,6 +57,22 @@ consumer = PyrallelConsumer(config, worker, topic="demo")
 
 최근 실행(4 partitions, 2000 msgs, 100 keys, profiling off)의 처리량(TPS)을 아래에 공유합니다. 워크로드는 `benchmarks/run_parallel_benchmark.py`의 `--workload` 옵션을 사용했습니다. 실행 시 프로파일링은 모두 비활성화했습니다.
 
+### 워크로드 옵션이 실제로 하는 일
+
+- `sleep` 워크로드 (`--worker-sleep-ms N`)
+  - 메시지마다 `time.sleep(N/1000)`을 호출해 블로킹 지연을 시뮬레이션합니다.
+  - CPU 사용은 낮고, 외부 블로킹 작업 지연 모델링에 적합합니다.
+
+- `io` 워크로드 (`--worker-io-sleep-ms N`)
+  - 메시지마다 `await asyncio.sleep(N/1000)`으로 비동기 I/O 지연을 시뮬레이션합니다.
+  - 네트워크/DB 같은 I/O 바운드 시나리오를 모델링합니다.
+
+- `cpu` 워크로드 (`--worker-cpu-iterations K`)
+  - 메시지마다 `sha256` 해시 연산을 `K`회 반복하여 CPU 부하를 시뮬레이션합니다.
+  - `K`가 클수록 메시지당 CPU 비용이 증가합니다.
+
+즉, 위 옵션들은 메시지당 작업 비용을 직접 제어하는 파라미터입니다.
+
 | Workload | 설정 | baseline TPS | async TPS | process TPS |
 | --- | --- | --- | --- | --- |
 | sleep | `--workload sleep --worker-sleep-ms 5` | 159.69 | 2206.35 | 910.04 |
