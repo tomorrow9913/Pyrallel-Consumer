@@ -4,7 +4,17 @@
 
 ## 고성능 Kafka 병렬 처리 라이브러리
 
-`Pyrallel Consumer`는 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, Python `asyncio` 환경에 최적화된 고성능 Kafka 병렬 처리 라이브러리입니다. 메시지를 효율적으로 병렬 처리하면서도 데이터 정합성과 순서 보장을 최우선으로 설계되었습니다.
+
+## 🔎 Search Keywords
+
+- Python Kafka parallel consumer
+- parallel consumer for Kafka in Python
+- key-ordered Kafka processing
+
+`Pyrallel Consumer`는 **Python Kafka 병렬 컨슈머(Parallel Consumer)**로, 고처리량 스트림 처리에 최적화된 라이브러리입니다.
+즉, **Python에서 Kafka 병렬 컨슈머를 찾는 경우**를 대상으로 하며, **키 기준 순서 보장(key-ordered processing)**, 안정적인 오프셋 커밋, 런타임 선택형 실행 엔진(`asyncio`/multiprocessing)을 제공합니다.
+
+Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
 ## 🌟 주요 특징
 

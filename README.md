@@ -4,8 +4,10 @@
 
 ## High-performance Kafka Parallel Processing Library
 
-`Pyrallel Consumer` is a high-throughput Kafka parallel processing library for Python `asyncio`, inspired by Java's `confluentinc/parallel-consumer`.
-It is designed to maximize parallelism while preserving ordering guarantees and data consistency.
+`Pyrallel Consumer` is a **Python Kafka parallel consumer** for high-throughput stream processing.
+If you are looking for a **parallel consumer for Kafka in Python**, this project provides **key-ordered processing**, robust offset commit semantics, and runtime-selectable execution engines (`asyncio` / multiprocessing).
+
+Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
 ## 🌟 Key Features
 

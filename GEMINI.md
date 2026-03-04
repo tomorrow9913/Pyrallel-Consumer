@@ -3,6 +3,7 @@
 *최종 업데이트: 2026년 2월 27일 금요일*
 
 ## 최근 업데이트 (2026-03-01)
+- v0.1.1 PyPI 릴리스: `pyproject.toml`/`uv.lock` 버전 0.1.1로 갱신, `uv run pytest tests/unit` 통과, `uv run python -m build`로 sdist/wheel 생성 후 `uv run twine check dist/*` 검증, `uv run twine upload --repository pypi dist/*` 성공(https://pypi.org/project/pyrallel-consumer/0.1.1/).
 - `ParallelConsumerConfig.poll_batch_size`/`worker_pool_size`에 0 방지 검증(gt=0) 추가, Pydantic Field 제약으로 초기화 시 ValidationError 발생하도록 수정. 단위 테스트 보강(`tests/unit/test_config.py`)으로 0 값 거부 경로 검증.
 - `KafkaConfig` 타입 힌트/LSP 정비: basedpyright 설치 후 경고 해소(bootstrap servers 파서 타입 체크, model_extra 캐스팅 등)하여 LSP clean 상태 확인.
 - BrokerPoller 커밋 경로에서 MagicMock 분기 제거, `KafkaTopicPartition`를 일관 사용하며 metadata 전달(테스트 추가: `test_commit_offsets_uses_topic_partition_with_metadata`).
