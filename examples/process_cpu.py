@@ -21,7 +21,7 @@ import signal
 
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +46,7 @@ def my_cpu_worker(item: WorkItem) -> None:
 
 async def main() -> None:
     config = KafkaConfig()
-    config.parallel_consumer.execution.mode = "process"
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
     config.parallel_consumer.execution.max_in_flight = 500
     config.parallel_consumer.execution.process_config.process_count = 4
     config.parallel_consumer.execution.process_config.batch_size = 32
