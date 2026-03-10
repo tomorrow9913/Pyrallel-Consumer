@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import logging.handlers
@@ -22,12 +24,15 @@ from pyrallel_consumer.dto import (
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.logger import LogManager
 
+SerializedWorkItem = dict[str, Any]
+SerializedCompletionEvent = dict[str, Any]
+
 _SENTINEL = None
 
 _logger = logging.getLogger(__name__)
 
 
-def _work_item_to_dict(item: WorkItem) -> dict:
+def _work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
     return {
         "id": item.id,
         "topic": item.tp.topic,
@@ -40,7 +45,7 @@ def _work_item_to_dict(item: WorkItem) -> dict:
     }
 
 
-def _work_item_from_dict(payload: dict) -> WorkItem:
+def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
     return WorkItem(
         id=payload["id"],
         tp=TopicPartition(payload["topic"], payload["partition"]),
@@ -51,7 +56,9 @@ def _work_item_from_dict(payload: dict) -> WorkItem:
     )
 
 
-def _completion_event_to_dict(event: CompletionEvent) -> dict:
+def _completion_event_to_dict(
+    event: CompletionEvent,
+) -> SerializedCompletionEvent:
     return {
         "id": event.id,
         "topic": event.tp.topic,
@@ -64,7 +71,9 @@ def _completion_event_to_dict(event: CompletionEvent) -> dict:
     }
 
 
-def _completion_event_from_dict(payload: dict) -> CompletionEvent:
+def _completion_event_from_dict(
+    payload: SerializedCompletionEvent,
+) -> CompletionEvent:
     return CompletionEvent(
         id=payload["id"],
         tp=TopicPartition(payload["topic"], payload["partition"]),
@@ -101,7 +110,7 @@ class _BatchAccumulator:
 
     def __init__(
         self,
-        task_queue: Queue,
+        task_queue: Queue[Any],
         batch_size: int,
         max_batch_wait_ms: int,
     ):
@@ -183,12 +192,12 @@ def _calculate_backoff(
 
 
 def _worker_loop(
-    task_queue: Queue,
-    completion_queue: Queue,
+    task_queue: Queue[Any],
+    completion_queue: Queue[Any],
     worker_fn: Callable[[WorkItem], Any],
     process_idx: int,
     execution_config: ExecutionConfig,
-    log_queue: Optional[Queue] = None,
+    log_queue: Optional[Queue[Any]] = None,
     in_flight_registry=None,
 ):
     if log_queue is not None:
@@ -247,8 +256,9 @@ def _worker_loop(
             continue
 
         for idx, work_item in enumerate(work_items):
+            in_flight_key = None
             if in_flight_registry is not None:
-                key = (
+                in_flight_key = (
                     process_idx,
                     work_item.tp.topic,
                     work_item.tp.partition,
@@ -256,7 +266,7 @@ def _worker_loop(
                 )
                 payload = _work_item_to_dict(work_item)
                 payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-                in_flight_registry[key] = payload
+                in_flight_registry[in_flight_key] = payload
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
@@ -301,6 +311,12 @@ def _worker_loop(
                     fatal_timeout = True
                     status = CompletionStatus.FAILURE
                     error = str(e)
+                    if in_flight_registry is not None and in_flight_key is not None:
+                        payload = dict(in_flight_registry.get(in_flight_key, {}))
+                        payload["timed_out"] = True
+                        payload["timeout_error"] = error
+                        payload["attempt"] = attempt
+                        in_flight_registry[in_flight_key] = payload
                     worker_logger.error(
                         "Task offset=%d timed out after %.3fs in ProcessWorker[%d]: %s",
                         work_item.offset,
@@ -338,37 +354,33 @@ def _worker_loop(
                             error,
                         )
 
-            completion_event = CompletionEvent(
-                id=work_item.id,
-                tp=work_item.tp,
-                offset=work_item.offset,
-                epoch=work_item.epoch,
-                status=status,
-                error=error,
-                attempt=attempt,
-            )
-            try:
-                completion_queue.put(
-                    msgpack.packb(
-                        _completion_event_to_dict(completion_event), use_bin_type=True
+            if not fatal_timeout:
+                completion_event = CompletionEvent(
+                    id=work_item.id,
+                    tp=work_item.tp,
+                    offset=work_item.offset,
+                    epoch=work_item.epoch,
+                    status=status,
+                    error=error,
+                    attempt=attempt,
+                )
+                try:
+                    completion_queue.put(
+                        msgpack.packb(
+                            _completion_event_to_dict(completion_event),
+                            use_bin_type=True,
+                        )
                     )
-                )
-            except Exception as put_exc:
-                worker_logger.error(
-                    "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
-                    work_item.offset,
-                    process_idx,
-                    put_exc,
-                )
-            finally:
-                if in_flight_registry is not None and not fatal_timeout:
-                    key = (
-                        process_idx,
-                        work_item.tp.topic,
-                        work_item.tp.partition,
+                except Exception as put_exc:
+                    worker_logger.error(
+                        "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
                         work_item.offset,
+                        process_idx,
+                        put_exc,
                     )
-                    in_flight_registry.pop(key, None)
+                finally:
+                    if in_flight_registry is not None and in_flight_key is not None:
+                        in_flight_registry.pop(in_flight_key, None)
 
             # Check worker recycling after task completion
             if recycle_limit is not None:
@@ -486,6 +498,34 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 ]
                 to_requeue = []
                 for key, payload in items:
+                    if payload.get("timed_out"):
+                        try:
+                            completion_event = CompletionEvent(
+                                id=payload.get("id", ""),
+                                tp=TopicPartition(
+                                    payload.get("topic", ""),
+                                    payload.get("partition", 0),
+                                ),
+                                offset=payload.get("offset", -1),
+                                epoch=payload.get("epoch", 0),
+                                status=CompletionStatus.FAILURE,
+                                error=payload.get("timeout_error", "task_timeout"),
+                                attempt=payload.get("attempt", 1),
+                            )
+                            packed = msgpack.packb(
+                                _completion_event_to_dict(completion_event),
+                                use_bin_type=True,
+                            )
+                            self._completion_queue.put(packed)  # type: ignore[arg-type]
+                        except Exception as push_exc:
+                            self._logger.error(
+                                "Failed to emit timeout failure for worker %d item offset=%s: %s",
+                                idx,
+                                payload.get("offset"),
+                                push_exc,
+                            )
+                        self._in_flight_registry.pop(key, None)
+                        continue
                     attempts = payload.get("requeue_attempts", 0)
                     if attempts >= self._config.max_retries:
                         try:

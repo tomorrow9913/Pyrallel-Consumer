@@ -1,8 +1,12 @@
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from _pytest.monkeypatch import MonkeyPatch
 
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
+from pyrallel_consumer.dto import OrderingMode
 from pyrallel_consumer.offset_manager import OffsetTracker
 
 
@@ -15,9 +19,10 @@ class _DummyEngine:
 
 
 class _DummyWorkManager:
-    def __init__(self, *, execution_engine, max_in_flight_messages):
+    def __init__(self, *, execution_engine, max_in_flight_messages, ordering_mode=None):
         self.execution_engine = execution_engine
         self.max_in_flight_messages = max_in_flight_messages
+        self.ordering_mode = ordering_mode
 
 
 class _DummyPoller:
@@ -41,7 +46,7 @@ class _DummyPoller:
 
 
 @pytest.mark.asyncio
-async def test_pyrallel_consumer_starts_and_stops(monkeypatch):
+async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     dummy_engine = _DummyEngine()
 
     def _create_engine(execution_config, worker):  # noqa: ARG001
@@ -49,11 +54,14 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch):
 
     dummy_work_manager = None
 
-    def _create_work_manager(*, execution_engine, max_in_flight_messages):
+    def _create_work_manager(
+        *, execution_engine, max_in_flight_messages, ordering_mode=None
+    ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
             execution_engine=execution_engine,
             max_in_flight_messages=max_in_flight_messages,
+            ordering_mode=ordering_mode,
         )
         return dummy_work_manager
 
@@ -75,7 +83,7 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch):
     monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
     monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
 
-    config = SimpleNamespace(parallel_consumer=None)
+    config = cast(KafkaConfig, cast(object, SimpleNamespace(parallel_consumer=None)))
 
     consumer = PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
 
@@ -86,14 +94,16 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch):
         dummy_work_manager.max_in_flight_messages
         == consumer.config.parallel_consumer.execution.max_in_flight_messages
     )
+    assert dummy_work_manager.ordering_mode == OrderingMode.KEY_HASH
 
     await consumer.start()
     await consumer.stop()
 
+    dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
     assert dummy_poller.started is True
     assert dummy_poller.stopped is True
     assert dummy_engine.shutdown_called is True
-    assert consumer.get_metrics().source == "dummy"
+    assert dummy_poller.metrics.source == "dummy"
 
 
 @pytest.mark.asyncio

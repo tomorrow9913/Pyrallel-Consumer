@@ -102,6 +102,37 @@ async def test_on_assign_initializes_offset_trackers(broker_poller, mock_consume
 
 
 @pytest.mark.asyncio
+async def test_on_assign_passes_starting_offsets_to_work_manager(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    tps_to_assign = [
+        KafkaTopicPartition("test-topic", 0, 100),
+        KafkaTopicPartition("test-topic", 1, 200),
+    ]
+
+    broker_poller._on_assign(mock_consumer, tps_to_assign)
+
+    mock_work_manager.on_assign.assert_called_once()
+    assignments = mock_work_manager.on_assign.call_args.args[0]
+    expected_tp_0 = DtoTopicPartition(topic="test-topic", partition=0)
+    expected_tp_1 = DtoTopicPartition(topic="test-topic", partition=1)
+
+    assert set(assignments) == {expected_tp_0, expected_tp_1}
+    assert assignments[expected_tp_0] is broker_poller._offset_trackers[expected_tp_0]
+    assert assignments[expected_tp_1] is broker_poller._offset_trackers[expected_tp_1]
+    assert assignments[expected_tp_0].last_committed_offset == 99
+    assert assignments[expected_tp_1].last_committed_offset == 199
+
+
+@pytest.mark.asyncio
 async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
     tps_assigned = [
         KafkaTopicPartition("test-topic", 0, 100),

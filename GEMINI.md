@@ -2,7 +2,18 @@
 
 *최종 업데이트: 2026년 2월 27일 금요일*
 
+## 최근 업데이트 (2026-03-09)
+- WorkManager scheduler scan-cost 완화: `WorkManager.schedule()`가 매 dispatch마다 모든 virtual queue head를 선형 재스캔하지 않도록 runnable queue deque + head-offset index를 추가했습니다. blocking offset은 `(tp, offset)` head 인덱스로 바로 찾고, 일반 dispatch는 runnable deque round-robin으로 선택해 same-key / partition ordering 보장을 유지하면서 tail-latency 악화를 줄였습니다. submit 실패 시 requeue 경로도 새 인덱스를 복구하도록 보강했습니다.
+- 회귀 테스트 추가: `tests/unit/control_plane/test_work_manager.py`에 virtual queue head 재스캔 방지 회귀 테스트를 추가했고, `tests/unit/control_plane/test_work_manager.py` + `tests/unit/control_plane/test_work_manager_ordering.py` 전체 통과로 ordering / submit-failure 동작을 재검증했습니다.
+
 ## 최근 업데이트 (2026-03-01)
+- OffsetTracker single-source step: `BrokerPoller._on_assign` now creates the per-partition `OffsetTracker` objects first and passes those shared tracker instances into `WorkManager.on_assign`, so BrokerPoller/WorkManager stop diverging on separate tracker objects. `WorkManager` now recognizes shared tracker assignments, skips duplicate completion mutation for shared trackers, invalidates blocking-cache on assign/revoke, and BrokerPoller reschedules after completion processing. Regression tests added for shared tracker wiring and shared-tracker completion handling (`tests/unit/control_plane/test_broker_poller.py`, `tests/unit/control_plane/test_work_manager.py`).
+- ProcessExecutionEngine 타입 정리: timeout duplicate-execution 회귀 테스트와 함께 직렬화 helper/IPC queue 경계에 명시적 타입 별칭을 추가하고 `from __future__ import annotations`를 적용해 basedpyright가 수정된 process 엔진 경로에서 0 errors를 보고하도록 정리했습니다.
+- WorkManager logging 정리: submit 실패와 unmanaged completion 경로의 `print(...)`를 structured logging(`logger.exception` / `logger.warning`)으로 교체해 운영 로그와 일관성을 맞췄습니다. 단위 테스트(`tests/unit/control_plane/test_work_manager.py`)로 두 경로의 로그 방출과 재큐잉/경고 동작을 검증했습니다.
+- `PyrallelConsumer` public facade ordering wiring 수정: facade가 직접 생성하는 `WorkManager`에 `OrderingMode.KEY_HASH`를 명시적으로 전달해, BrokerPoller 기본 경로와 동일한 same-key 직렬화 기본값을 사용하도록 정렬했습니다. 회귀 테스트(`tests/unit/test_consumer_and_offset_manager.py`)에 facade wiring 검증을 추가했습니다.
+- ProcessExecutionEngine timeout duplicate-execution 방지: 워커 태임아웃 시 completion을 워커가 직접 enqueue하지 않고, in-flight registry에 `timed_out/timeout_error/attempt`를 남긴 뒤 종료하도록 조정했습니다. 부모 `_ensure_workers_alive()`는 해당 엔트리를 재큐잉하지 않고 단일 FAILURE completion으로 변환합니다. 회귀 단위 테스트 추가: `tests/unit/execution_plane/test_process_execution_engine.py`.
+- BrokerPoller↔WorkManager assignment coupling 보정: `BrokerPoller._on_assign`가 WorkManager로 파티션별 시작 오프셋을 함께 전달하도록 수정했고, `WorkManager.on_assign`는 기존 리스트 호출을 유지하면서 `{TopicPartition: starting_offset}` 매핑도 받아 OffsetTracker를 정확한 시작 지점으로 초기화하도록 확장했습니다.
+- 회귀 테스트 추가: `tests/unit/control_plane/test_work_manager.py`, `tests/unit/control_plane/test_broker_poller.py`에 시작 오프셋 전달/초기화 계약 테스트를 보강했습니다.
 - v0.1.1 PyPI 릴리스: `pyproject.toml`/`uv.lock` 버전 0.1.1로 갱신, `uv run pytest tests/unit` 통과, `uv run python -m build`로 sdist/wheel 생성 후 `uv run twine check dist/*` 검증, `uv run twine upload --repository pypi dist/*` 성공(https://pypi.org/project/pyrallel-consumer/0.1.1/).
 - `ParallelConsumerConfig.poll_batch_size`/`worker_pool_size`에 0 방지 검증(gt=0) 추가, Pydantic Field 제약으로 초기화 시 ValidationError 발생하도록 수정. 단위 테스트 보강(`tests/unit/test_config.py`)으로 0 값 거부 경로 검증.
 - `KafkaConfig` 타입 힌트/LSP 정비: basedpyright 설치 후 경고 해소(bootstrap servers 파서 타입 체크, model_extra 캐스팅 등)하여 LSP clean 상태 확인.

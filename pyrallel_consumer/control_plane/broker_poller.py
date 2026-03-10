@@ -237,7 +237,6 @@ class BrokerPoller:
                             key=submit_key,
                             payload=msg.value(),
                         )
-                        tracker.update_last_fetched_offset(offset_val)
 
                     await self._work_manager.schedule()
 
@@ -247,6 +246,7 @@ class BrokerPoller:
                     completed_events.extend(timeout_events)
                 if completed_events:
                     await self._process_completed_events(completed_events)
+                    await self._work_manager.schedule()
 
                 commits_to_make: List[tuple[DtoTopicPartition, int]] = []
                 for tp, tracker in self._offset_trackers.items():
@@ -561,11 +561,7 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        tp_dtos = [
-            DtoTopicPartition(topic=tp.topic, partition=tp.partition)
-            for tp in partitions
-        ]
-        self._work_manager.on_assign(tp_dtos)
+        work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
 
         for partition in partitions:
             tp_dto = DtoTopicPartition(partition.topic, partition.partition)
@@ -584,6 +580,9 @@ class BrokerPoller:
             tracker.last_fetched_offset = last_committed
             tracker.increment_epoch()
             self._offset_trackers[tp_dto] = tracker
+            work_manager_assignments[tp_dto] = tracker
+
+        self._work_manager.on_assign(work_manager_assignments)
 
     def _on_revoke(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
