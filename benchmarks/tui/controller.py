@@ -22,9 +22,25 @@ class BenchmarkProcessController:
         self._on_output = on_output
         self._on_progress = on_progress
         self._on_complete = on_complete
-        self._parser = BenchmarkLogParser(workload_mode=state.workload)
+        self._parser = BenchmarkLogParser(
+            workload_mode=state.workload,
+            active_phases=self._active_phases(state),
+        )
         self._process: asyncio.subprocess.Process | None = None
         self._cancel_requested = False
+
+    @staticmethod
+    def _active_phases(state: BenchmarkTuiState) -> tuple[str, ...]:
+        phases: list[str] = []
+        if not state.skip_baseline:
+            phases.append("baseline")
+        if not state.skip_async:
+            phases.append("async")
+        if not state.skip_process:
+            phases.append("process")
+        if phases:
+            return tuple(phases)
+        return ("baseline", "async", "process")
 
     async def run(self) -> None:
         argv = [

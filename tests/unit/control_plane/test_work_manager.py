@@ -305,6 +305,47 @@ async def test_schedule_does_not_rescan_every_virtual_queue_head(
 
 
 @pytest.mark.asyncio
+async def test_schedule_keeps_assigned_partition_after_queue_drains(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        mock_tracker_instance.get_gaps.return_value = []
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 0, 1, b"message-key", b"payload-0"
+        )
+
+        await work_manager.schedule()
+
+        assert mock_dto_topic_partition in work_manager._virtual_partition_queues
+        assert work_manager._virtual_partition_queues[mock_dto_topic_partition] == {}
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 1, 1, b"message-key", b"payload-1"
+        )
+
+        assert (
+            work_manager._virtual_partition_queues[mock_dto_topic_partition][
+                b"message-key"
+            ].qsize()
+            == 1
+        )
+
+
+@pytest.mark.asyncio
 async def test_submit_message_unassigned_tp_raises_error(
     work_manager, mock_dto_topic_partition
 ):
@@ -711,7 +752,8 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
     await work_manager._completion_queue.put(event)
     await work_manager.poll_completed_events()
 
-    assert tp not in work_manager._virtual_partition_queues
+    assert tp in work_manager._virtual_partition_queues
+    assert work_manager._virtual_partition_queues[tp] == {}
 
 
 @pytest.mark.asyncio

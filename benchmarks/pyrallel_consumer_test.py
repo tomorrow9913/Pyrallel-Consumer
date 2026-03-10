@@ -38,6 +38,10 @@ def create_topic_if_not_exists(
 ) -> None:
     admin_client = AdminClient({"bootstrap.servers": admin_conf["bootstrap.servers"]})
     try:
+        metadata = admin_client.list_topics(timeout=5)
+        if topic_name in metadata.topics:
+            return
+
         new_topics = [
             NewTopic(topic_name, num_partitions=num_partitions, replication_factor=1)
         ]
@@ -108,6 +112,34 @@ def _process_mode_worker(item: WorkItem) -> None:
     time.sleep(0.005)
 
 
+async def _wait_for_partition_assignment(
+    broker_poller: BrokerPoller,
+    *,
+    topic_name: str,
+    timeout_sec: float,
+    poll_interval_sec: float = 0.1,
+) -> None:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_sec:
+        metrics = broker_poller.get_metrics()
+        if metrics.partitions:
+            assigned = ", ".join(
+                "%s-%d" % (partition.tp.topic, partition.tp.partition)
+                for partition in metrics.partitions
+            )
+            print(
+                "Assigned partitions after %.2fs: %s"
+                % (time.monotonic() - start, assigned),
+                flush=True,
+            )
+            return
+        await asyncio.sleep(poll_interval_sec)
+
+    raise RuntimeError(
+        "No partitions assigned within %.1fs for topic '%s'" % (timeout_sec, topic_name)
+    )
+
+
 def build_kafka_config(
     *,
     bootstrap_servers: Optional[str] = None,
@@ -146,6 +178,7 @@ async def run_pyrallel_consumer_test(
     reset_topic: bool = False,
     async_worker_fn: Optional[Callable[[WorkItem], Awaitable[None]]] = None,
     process_worker_fn: Optional[Callable[[WorkItem], None]] = None,
+    ensure_topic_exists: bool = True,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -156,13 +189,15 @@ async def run_pyrallel_consumer_test(
             topics={effective_topic: TopicConfig(num_partitions=num_partitions)},
             consumer_groups=[effective_group],
         )
-    override_conf = dict(conf)
-    override_conf["bootstrap.servers"] = effective_bootstrap
-    create_topic_if_not_exists(
-        override_conf,
-        effective_topic,
-        num_partitions=num_partitions,
-    )
+        ensure_topic_exists = False
+    if ensure_topic_exists:
+        override_conf = dict(conf)
+        override_conf["bootstrap.servers"] = effective_bootstrap
+        create_topic_if_not_exists(
+            override_conf,
+            effective_topic,
+            num_partitions=num_partitions,
+        )
 
     kafka_config = build_kafka_config(
         bootstrap_servers=bootstrap_servers,
@@ -241,6 +276,12 @@ async def run_pyrallel_consumer_test(
     print("Timeout: %ds" % timeout_sec)
 
     await broker_poller.start()
+    assignment_timeout_sec = min(max(timeout_sec / 4, 1.0), 10.0)
+    await _wait_for_partition_assignment(
+        broker_poller,
+        topic_name=effective_topic,
+        timeout_sec=assignment_timeout_sec,
+    )
 
     async def _print_diagnostics() -> None:
         while not stop_event.is_set():

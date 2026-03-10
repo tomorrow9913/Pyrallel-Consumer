@@ -14,6 +14,12 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, List, Sequence
 
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parent.parent
+    project_root_str = str(project_root)
+    if project_root_str not in sys.path:
+        sys.path.insert(0, project_root_str)
+
 from confluent_kafka.admin import AdminClient
 
 from benchmarks.baseline_consumer import consume_messages
@@ -38,6 +44,7 @@ def _check_kafka_connection(bootstrap_servers: str) -> None:
 
 def _run_baseline_round(
     *,
+    run_name: str,
     topic_name: str,
     num_messages: int,
     bootstrap_servers: str,
@@ -46,6 +53,7 @@ def _run_baseline_round(
     group_id: str,
     worker_fn: Callable[[bytes], None],
     workload: str,
+    ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -53,9 +61,10 @@ def _run_baseline_round(
         num_partitions=num_partitions,
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
+        ensure_topic_exists=ensure_topic_exists,
     )
     stats = BenchmarkStats(
-        run_name="baseline",
+        run_name=run_name,
         run_type="baseline",
         workload=workload,
         topic=topic_name,
@@ -309,6 +318,7 @@ async def _run_pyrparallel_round(
     async_worker_fn: Callable[[WorkItem], Awaitable[None]],
     process_worker_fn: Callable[[WorkItem], None],
     workload: str,
+    ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -316,6 +326,7 @@ async def _run_pyrparallel_round(
         num_partitions=num_partitions,
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
+        ensure_topic_exists=ensure_topic_exists,
     )
     stats = BenchmarkStats(
         run_name=run_name,
@@ -335,6 +346,7 @@ async def _run_pyrparallel_round(
         timeout_sec=timeout_sec,
         async_worker_fn=async_worker_fn,
         process_worker_fn=process_worker_fn,
+        ensure_topic_exists=ensure_topic_exists,
     )
     if timed_out:
         raise RuntimeError(
@@ -619,6 +631,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reset_run_targets(
+    *,
+    bootstrap_servers: str,
+    topic_name: str,
+    group_id: str,
+    num_partitions: int,
+) -> None:
+    print("Resetting benchmark topics/groups: %s | groups=%s" % (topic_name, group_id))
+    reset_topics_and_groups(
+        bootstrap_servers=bootstrap_servers,
+        topics={topic_name: TopicConfig(num_partitions=num_partitions)},
+        consumer_groups=[group_id],
+    )
+
+
 def launch_tui() -> None:
     from benchmarks.tui.app import BenchmarkTuiApp
 
@@ -653,38 +680,9 @@ def run_benchmark(
 
     for workload in workloads:
         suffix = f"-{workload}" if args.workload == "all" else ""
-        topic_configs: dict[str, TopicConfig] = {}
-        consumer_groups: list[str] = []
-        if not args.skip_baseline:
-            topic_configs[f"{args.topic_prefix}{suffix}-baseline"] = TopicConfig(
-                num_partitions=args.num_partitions
-            )
-            consumer_groups.append(f"{args.baseline_group}{suffix}")
-        if not args.skip_async:
-            topic_configs[f"{args.topic_prefix}{suffix}-async"] = TopicConfig(
-                num_partitions=args.num_partitions
-            )
-            consumer_groups.append(f"{args.async_group}{suffix}")
-        if not args.skip_process:
-            topic_configs[f"{args.topic_prefix}{suffix}-process"] = TopicConfig(
-                num_partitions=args.num_partitions
-            )
-            consumer_groups.append(f"{args.process_group}{suffix}")
-
-        if not topic_configs:
+        has_runs = not (args.skip_baseline and args.skip_async and args.skip_process)
+        if not has_runs:
             raise RuntimeError("All benchmark runs are skipped; nothing to execute")
-
-        if not args.skip_reset:
-            unique_groups = list(dict.fromkeys(consumer_groups))
-            print(
-                "Resetting benchmark topics/groups: %s | groups=%s"
-                % (", ".join(topic_configs.keys()), ", ".join(unique_groups))
-            )
-            reset_topics_and_groups(
-                bootstrap_servers=args.bootstrap_servers,
-                topics=topic_configs,
-                consumer_groups=unique_groups,
-            )
 
         baseline_worker, async_worker_fn, process_worker_fn = _select_workers(
             workload=workload,
@@ -707,16 +705,26 @@ def run_benchmark(
                 profile_greenlets=args.profile_greenlets,
                 top_n=args.profile_top_n,
             ):
+                group_id = f"{args.baseline_group}{suffix}"
+                if not args.skip_reset:
+                    _reset_run_targets(
+                        bootstrap_servers=args.bootstrap_servers,
+                        topic_name=topic_name,
+                        group_id=group_id,
+                        num_partitions=args.num_partitions,
+                    )
                 results.append(
                     _run_baseline_round(
+                        run_name=run_name,
                         topic_name=topic_name,
                         num_messages=args.num_messages,
                         bootstrap_servers=args.bootstrap_servers,
                         num_partitions=args.num_partitions,
                         num_keys=args.num_keys,
-                        group_id=f"{args.baseline_group}{suffix}",
+                        group_id=group_id,
                         worker_fn=baseline_worker,
                         workload=workload,
+                        ensure_topic_exists=args.skip_reset,
                     )
                 )
 
@@ -725,6 +733,14 @@ def run_benchmark(
             if not args.skip_async:
                 topic_name = f"{args.topic_prefix}{suffix}-async"
                 run_name = f"{workload_prefix}pyrallel-async"
+                group_id = f"{args.async_group}{suffix}"
+                if not args.skip_reset:
+                    _reset_run_targets(
+                        bootstrap_servers=args.bootstrap_servers,
+                        topic_name=topic_name,
+                        group_id=group_id,
+                        num_partitions=args.num_partitions,
+                    )
                 with _profile_session(
                     enabled=args.profile,
                     run_name=run_name,
@@ -743,16 +759,25 @@ def run_benchmark(
                             bootstrap_servers=args.bootstrap_servers,
                             num_partitions=args.num_partitions,
                             num_keys=args.num_keys,
-                            group_id=f"{args.async_group}{suffix}",
+                            group_id=group_id,
                             timeout_sec=args.timeout_sec,
                             async_worker_fn=async_worker_fn,
                             process_worker_fn=process_worker_fn,
                             workload=workload,
+                            ensure_topic_exists=args.skip_reset,
                         )
                     )
             if not args.skip_process:
                 topic_name = f"{args.topic_prefix}{suffix}-process"
                 run_name = f"{workload_prefix}pyrallel-process"
+                group_id = f"{args.process_group}{suffix}"
+                if not args.skip_reset:
+                    _reset_run_targets(
+                        bootstrap_servers=args.bootstrap_servers,
+                        topic_name=topic_name,
+                        group_id=group_id,
+                        num_partitions=args.num_partitions,
+                    )
                 prof_process_worker = process_worker_fn
                 if args.profile and args.profile_process_workers:
                     prof_process_worker = _wrap_process_worker_for_profile(
@@ -773,11 +798,12 @@ def run_benchmark(
                         bootstrap_servers=args.bootstrap_servers,
                         num_partitions=args.num_partitions,
                         num_keys=args.num_keys,
-                        group_id=f"{args.process_group}{suffix}",
+                        group_id=group_id,
                         timeout_sec=args.timeout_sec,
                         async_worker_fn=async_worker_fn,
                         process_worker_fn=prof_process_worker,
                         workload=workload,
+                        ensure_topic_exists=args.skip_reset,
                     )
                 )
                 if args.profile and args.profile_process_workers:

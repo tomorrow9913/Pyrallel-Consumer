@@ -114,8 +114,6 @@ class WorkManager:
         if queue and queue.empty():
             self._deactivate_queue_key((tp, key))
             queues.pop(key, None)
-            if not queues:
-                self._virtual_partition_queues.pop(tp, None)
 
     def _deactivate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
         self._active_runnable_queue_keys.discard(queue_key)

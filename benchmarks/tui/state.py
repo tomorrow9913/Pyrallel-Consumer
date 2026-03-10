@@ -20,6 +20,7 @@ class BenchmarkTuiState:
     skip_reset: bool = False
     timeout_sec: int = 60
     log_level: str = "WARNING"
+    profiling_enabled: bool = False
     profile: bool = False
     profile_dir: str = "benchmarks/results/profiles"
     profile_clock: str = "wall"
@@ -61,12 +62,6 @@ class BenchmarkTuiState:
             str(self.timeout_sec),
             "--log-level",
             self.log_level,
-            "--profile-dir",
-            self.profile_dir,
-            "--profile-clock",
-            self.profile_clock,
-            "--profile-top-n",
-            str(self.profile_top_n),
             "--workload",
             self.workload,
             "--worker-sleep-ms",
@@ -75,13 +70,25 @@ class BenchmarkTuiState:
             str(self.worker_cpu_iterations),
             "--worker-io-sleep-ms",
             str(self.worker_io_sleep_ms),
-            "--py-spy-format",
-            self.py_spy_format,
-            "--py-spy-output",
-            self.py_spy_output,
-            "--py-spy-rate",
-            str(self.py_spy_rate),
         ]
+
+        if self.profiling_enabled:
+            argv.extend(
+                [
+                    "--profile-dir",
+                    self.profile_dir,
+                    "--profile-clock",
+                    self.profile_clock,
+                    "--profile-top-n",
+                    str(self.profile_top_n),
+                    "--py-spy-format",
+                    self.py_spy_format,
+                    "--py-spy-output",
+                    self.py_spy_output,
+                    "--py-spy-rate",
+                    str(self.py_spy_rate),
+                ]
+            )
 
         if self.json_output:
             argv.extend(["--json-output", self.json_output])
@@ -91,14 +98,17 @@ class BenchmarkTuiState:
             (self.skip_async, "--skip-async"),
             (self.skip_process, "--skip-process"),
             (self.skip_reset, "--skip-reset"),
-            (self.profile, "--profile"),
-            (self.profile_threads, "--profile-threads"),
-            (self.profile_greenlets, "--profile-greenlets"),
-            (self.profile_process_workers, "--profile-process-workers"),
-            (self.py_spy, "--py-spy"),
-            (self.py_spy_native, "--py-spy-native"),
-            (self.py_spy_idle, "--py-spy-idle"),
-            (self.py_spy_top, "--py-spy-top"),
+            (self.profiling_enabled and self.profile, "--profile"),
+            (self.profiling_enabled and self.profile_threads, "--profile-threads"),
+            (self.profiling_enabled and self.profile_greenlets, "--profile-greenlets"),
+            (
+                self.profiling_enabled and self.profile_process_workers,
+                "--profile-process-workers",
+            ),
+            (self.profiling_enabled and self.py_spy, "--py-spy"),
+            (self.profiling_enabled and self.py_spy_native, "--py-spy-native"),
+            (self.profiling_enabled and self.py_spy_idle, "--py-spy-idle"),
+            (self.profiling_enabled and self.py_spy_top, "--py-spy-top"),
         ):
             if enabled:
                 argv.append(flag)

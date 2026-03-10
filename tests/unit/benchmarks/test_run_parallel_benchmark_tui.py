@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 from benchmarks import run_parallel_benchmark
@@ -36,3 +39,19 @@ def test_main_runs_cli_when_args_are_supplied(monkeypatch) -> None:
     assert args.num_messages == 42
     assert args.skip_process is True
     assert captured["raw_argv"] == ["--num-messages", "42", "--skip-process"]
+
+
+def test_script_path_execution_supports_help() -> None:
+    script_path = (
+        Path(__file__).resolve().parents[3] / "benchmarks" / "run_parallel_benchmark.py"
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Run Pyrallel throughput benchmarks" in result.stdout
