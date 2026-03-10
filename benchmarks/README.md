@@ -8,6 +8,9 @@ This folder contains the benchmarking and profiling entrypoints for Pyrallel Con
 
 ## Quick start
 ```bash
+# Launch the Textual TUI (no CLI flags)
+uv run python -m benchmarks.run_parallel_benchmark
+
 # Standard benchmark (no profiling)
 uv run python -m benchmarks.run_parallel_benchmark --num-messages 100000 --num-partitions 8
 
@@ -26,6 +29,7 @@ uv run python -m benchmarks.run_parallel_benchmark --profile --workload io --wor
 ```
 
 ## Key options
+- No arguments: launches the Textual TUI so you can configure and start the benchmark interactively.
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.
 - Workload selection (applies to baseline/async/process uniformly):
   - `--workload {sleep,cpu,io,all}` (default `sleep`; `all` runs sleep→cpu→io sequentially with suffixed topic/group names).

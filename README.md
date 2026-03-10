@@ -199,6 +199,9 @@ For detailed runnable patterns, see [`examples/`](./examples/).
 ## 🧪 Run Benchmarks
 
 ```bash
+uv run python -m benchmarks.run_parallel_benchmark
+
+# or pass flags directly for the existing CLI flow
 uv run python benchmarks/run_parallel_benchmark.py \
   --bootstrap-servers localhost:9092 \
   --num-messages 50000 \
@@ -207,6 +210,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 ```
 
 - JSON report is saved to `benchmarks/results/<UTC timestamp>.json`.
+- No flags: launches a Textual TUI so you can configure the benchmark interactively.
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
 

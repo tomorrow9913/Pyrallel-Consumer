@@ -1,6 +1,11 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 2월 27일 금요일*
+*최종 업데이트: 2026년 3월 10일 화요일*
+
+## 최근 업데이트 (2026-03-10)
+- Benchmark Textual TUI TDD 시작: 무옵션 실행 시 TUI 진입, TUI state→argv 매핑, 로그 진행상태 파서, Textual 앱 스모크를 검증하는 신규 red 테스트를 추가했습니다 (`tests/unit/benchmarks/test_run_parallel_benchmark_tui.py`, `tests/unit/benchmarks/test_tui_state.py`, `tests/unit/benchmarks/test_tui_log_parser.py`, `tests/unit/benchmarks/test_tui_app.py`). 현재 `textual` 미설치와 신규 모듈 부재로 수집 단계에서 실패하는 상태를 먼저 확인했습니다.
+- Benchmark Textual TUI 구현: `benchmarks/run_parallel_benchmark.py`를 `main(argv)`/`build_parser()`/`run_benchmark()`/`launch_tui()`로 분리해 무인자 실행 시 Textual 앱으로 진입하고, 인자가 있으면 기존 CLI 흐름을 유지하도록 조정했습니다. `benchmarks/tui/`에 state/argv builder, 로그 진행상태 파서, subprocess controller, Textual app/screens를 추가했고 `textual` 의존성을 프로젝트에 반영했습니다. 사용법은 `benchmarks/README.md`와 루트 `README.md` 벤치마크 섹션에 문서화했습니다.
+- 리뷰 반영: RunScreen의 Back이 활성 benchmark subprocess를 정리하지 않던 문제와 cancel 상태가 실패 상태로 덮이던 문제를 수정했습니다. `action_back()`는 실행 중이면 먼저 cancel+await 후 pop하도록 바꾸고, controller는 pre-spawn cancel 요청도 기억하도록 보강했습니다. `textual`은 코어 런타임 의존성에서 제거하고 dev dependency로 이동했습니다. 회귀 테스트 추가 후 `pytest tests/unit/benchmarks` 12건 통과를 확인했습니다.
 
 ## 최근 업데이트 (2026-03-09)
 - WorkManager scheduler scan-cost 완화: `WorkManager.schedule()`가 매 dispatch마다 모든 virtual queue head를 선형 재스캔하지 않도록 runnable queue deque + head-offset index를 추가했습니다. blocking offset은 `(tp, offset)` head 인덱스로 바로 찾고, 일반 dispatch는 runnable deque round-robin으로 선택해 same-key / partition ordering 보장을 유지하면서 tail-latency 악화를 줄였습니다. submit 실패 시 requeue 경로도 새 인덱스를 복구하도록 보강했습니다.

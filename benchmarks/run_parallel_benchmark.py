@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, List
+from typing import Any, Awaitable, Callable, Iterable, List, Sequence
 
 from confluent_kafka.admin import AdminClient
 
@@ -400,7 +400,7 @@ def _relaunch_with_pyspy(args: argparse.Namespace) -> int:
     # -- build the child command (strip py-spy flags, add sentinel) --
     child_argv: list[str] = [sys.executable, "-m", "benchmarks.run_parallel_benchmark"]
     skip_next = False
-    for arg in sys.argv[1:]:
+    for arg in args._raw_argv:
         if skip_next:
             skip_next = False
             continue
@@ -475,7 +475,7 @@ def _relaunch_with_pyspy(args: argparse.Namespace) -> int:
     return result.returncode
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Pyrallel throughput benchmarks")
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument("--num-messages", type=int, default=100_000)
@@ -616,7 +616,19 @@ def main() -> None:
         default=False,
         help=argparse.SUPPRESS,  # internal: marks this as the child process under py-spy
     )
-    args = parser.parse_args()
+    return parser
+
+
+def launch_tui() -> None:
+    from benchmarks.tui.app import BenchmarkTuiApp
+
+    BenchmarkTuiApp().run()
+
+
+def run_benchmark(
+    args: argparse.Namespace, raw_argv: Sequence[str] | None = None
+) -> None:
+    args._raw_argv = list(raw_argv or [])
 
     # -- py-spy self-relaunch gate --
     # When --py-spy is requested and we are NOT already the child process,
@@ -787,6 +799,17 @@ def main() -> None:
     options = {k: v for k, v in vars(args).items()}
     write_results_json(results, Path(output_path), options=options)
     print(f"\nJSON summary written to {output_path}")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        launch_tui()
+        return
+
+    parser = build_parser()
+    args = parser.parse_args(raw_argv)
+    run_benchmark(args, raw_argv=raw_argv)
 
 
 if __name__ == "__main__":
