@@ -472,7 +472,8 @@ class WorkManager:
         """
         blocking_offsets: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
         for tp, tracker in self._offset_trackers.items():
-            tracker.advance_high_water_mark()  # Ensure HWM is up-to-date
+            if tp not in self._shared_offset_trackers:
+                tracker.advance_high_water_mark()  # Ensure HWM is up-to-date
             gaps = tracker.get_gaps()
             if gaps:
                 # The first gap's start is the lowest blocking offset

@@ -6,7 +6,12 @@ from typing import Any, cast
 
 import pytest
 
-from benchmarks import producer, pyrallel_consumer_test, run_parallel_benchmark
+from benchmarks import (
+    baseline_consumer,
+    producer,
+    pyrallel_consumer_test,
+    run_parallel_benchmark,
+)
 from benchmarks.stats import BenchmarkResult
 
 
@@ -17,6 +22,7 @@ def benchmark_result() -> BenchmarkResult:
         run_type="baseline",
         workload="sleep",
         topic="demo-topic",
+        ordering="key_hash",
         messages_processed=10,
         total_time_sec=1.0,
         throughput_tps=10.0,
@@ -42,7 +48,8 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "num_keys": 2,
         "timeout_sec": 5,
         "bootstrap_servers": "localhost:9092",
-        "workload": "sleep",
+        "workloads": ["sleep"],
+        "order": ["key_hash"],
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
         "log_level": "WARNING",
@@ -101,12 +108,81 @@ def test_run_benchmark_resets_each_mode_immediately_before_round(
     )
 
     assert events == [
-        ("reset", "demo-topic-baseline"),
-        ("groups", "baseline-group"),
-        ("run", "demo-topic-baseline"),
-        ("reset", "demo-topic-async"),
-        ("groups", "async-group"),
-        ("run", "demo-topic-async"),
+        ("reset", "demo-topic-sleep-key_hash-baseline"),
+        ("groups", "baseline-group-sleep-key_hash"),
+        ("run", "demo-topic-sleep-key_hash-baseline"),
+        ("reset", "demo-topic-sleep-key_hash-async"),
+        ("groups", "async-group-sleep-key_hash"),
+        ("run", "demo-topic-sleep-key_hash-async"),
+    ]
+
+
+def test_run_benchmark_expands_selected_workloads_and_orderings(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    baseline_calls: list[tuple[str, str, str]] = []
+    async_calls: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+
+    def _baseline_round(**kwargs) -> BenchmarkResult:
+        baseline_calls.append(
+            (kwargs["run_name"], kwargs["workload"], kwargs["ordering"])
+        )
+        return benchmark_result
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        async_calls.append((kwargs["run_name"], kwargs["workload"], kwargs["ordering"]))
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_baseline_round", _baseline_round)
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            workloads=["sleep", "cpu"],
+            order=["key_hash", "partition"],
+        ),
+        raw_argv=[
+            "--workloads",
+            "sleep,cpu",
+            "--order",
+            "key_hash,partition",
+        ],
+    )
+
+    assert baseline_calls == [
+        ("sleep-key_hash-baseline", "sleep", "key_hash"),
+        ("sleep-partition-baseline", "sleep", "partition"),
+        ("cpu-key_hash-baseline", "cpu", "key_hash"),
+        ("cpu-partition-baseline", "cpu", "partition"),
+    ]
+    assert async_calls == [
+        ("sleep-key_hash-pyrallel-async", "sleep", "key_hash"),
+        ("sleep-partition-pyrallel-async", "sleep", "partition"),
+        ("cpu-key_hash-pyrallel-async", "cpu", "key_hash"),
+        ("cpu-partition-pyrallel-async", "cpu", "partition"),
     ]
 
 
@@ -154,6 +230,7 @@ def test_run_baseline_round_preserves_workload_specific_run_name(
             run_type="baseline",
             workload="sleep",
             topic="demo-topic",
+            ordering="key_hash",
             messages_processed=10,
             total_time_sec=1.0,
             throughput_tps=10.0,
@@ -172,9 +249,38 @@ def test_run_baseline_round_preserves_workload_specific_run_name(
         group_id="demo-group",
         worker_fn=lambda _payload: None,
         workload="sleep",
+        ordering="key_hash",
     )
 
     assert result.run_name == "sleep-baseline"
+
+
+def test_baseline_consumer_logs_effective_topic_name(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _FakeConsumer:
+        def subscribe(self, topics) -> None:
+            self.topics = topics
+
+        def poll(self, timeout: float = 1.0):
+            del timeout
+            return None
+
+        def commit(self, asynchronous: bool = False) -> None:
+            del asynchronous
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(baseline_consumer, "Consumer", lambda _conf: _FakeConsumer())
+
+    baseline_consumer.consume_messages(
+        num_messages_to_process=0,
+        topic_name="demo-baseline-topic",
+    )
+
+    output = capsys.readouterr().out
+    assert "Starting baseline consumer for topic 'demo-baseline-topic'." in output
 
 
 @pytest.mark.asyncio
@@ -264,6 +370,63 @@ async def test_run_pyrallel_consumer_test_skips_topic_creation_after_reset(
         )
     ]
     assert create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_stops_poller_and_engine_when_assignment_wait_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            events.append("engine.shutdown")
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def start(self) -> None:
+            events.append("poller.start")
+
+        def get_metrics(self):
+            return SimpleNamespace(partitions=[])
+
+        async def stop(self) -> None:
+            events.append("poller.stop")
+
+    async def _fail_wait(*args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("assignment failed")
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "AsyncExecutionEngine", lambda **kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "WorkManager", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _fail_wait,
+    )
+
+    with pytest.raises(RuntimeError, match="assignment failed"):
+        await pyrallel_consumer_test.run_pyrallel_consumer_test(
+            num_messages=1,
+            timeout_sec=1,
+            topic_name="demo-topic",
+            execution_mode="async",
+            stats_tracker=None,
+        )
+
+    assert events == ["poller.start", "poller.stop", "engine.shutdown"]
 
 
 @pytest.mark.asyncio

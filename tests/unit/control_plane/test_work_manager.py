@@ -212,6 +212,27 @@ async def test_poll_completed_events_does_not_mark_complete_for_shared_trackers(
 
 
 @pytest.mark.asyncio
+async def test_get_blocking_offsets_does_not_advance_shared_tracker_commit_state(
+    work_manager, mock_dto_topic_partition
+):
+    shared_tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    shared_tracker.update_last_fetched_offset(1)
+    shared_tracker.mark_complete(0)
+    shared_tracker.mark_complete(1)
+    work_manager.on_assign({mock_dto_topic_partition: shared_tracker})
+
+    blocking_offsets = work_manager.get_blocking_offsets()
+
+    assert blocking_offsets == {mock_dto_topic_partition: None}
+    assert shared_tracker.last_committed_offset == -1
+    assert list(shared_tracker.completed_offsets) == [0, 1]
+
+
+@pytest.mark.asyncio
 async def test_submit_message(
     work_manager, mock_dto_topic_partition, mock_execution_engine
 ):

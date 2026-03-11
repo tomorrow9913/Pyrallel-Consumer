@@ -12,6 +12,7 @@ from textual.widgets import (
     Label,
     LoadingIndicator,
     ProgressBar,
+    SelectionList,
     Static,
     Switch,
 )
@@ -71,6 +72,11 @@ async def test_options_screen_orders_input_blocks_label_help_control() -> None:
             "Static",
             "Input",
         ]
+        assert _block_child_types(app, "workloads") == [
+            "Label",
+            "Static",
+            "SelectionList",
+        ]
         assert _block_child_types(app, "json-output") == [
             "Label",
             "Static",
@@ -126,7 +132,8 @@ async def test_options_screen_shows_human_readable_field_labels() -> None:
     assert "Number of keys" in labels
     assert "Number of partitions" in labels
     assert "Timeout (sec)" in labels
-    assert "Workload" in labels
+    assert "Workloads" in labels
+    assert "Ordering modes" in labels
 
 
 @pytest.mark.asyncio
@@ -178,8 +185,9 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
         bootstrap_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-bootstrap-servers")
         )
-        sleep_ancestors = _ancestor_ids(
-            app.screen.query_one("#option-block-worker-sleep-ms")
+        sleep_ancestors = _ancestor_ids(app.screen.query_one("#option-block-workloads"))
+        ordering_ancestors = _ancestor_ids(
+            app.screen.query_one("#option-block-ordering-modes")
         )
         output_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-json-output")
@@ -193,9 +201,23 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
 
     assert "option-section-cluster-workload" in bootstrap_ancestors
     assert "option-section-cluster-workload" in sleep_ancestors
+    assert "option-section-cluster-workload" in ordering_ancestors
     assert "option-section-output-execution" in output_ancestors
     assert "option-section-profiling" in profiling_ancestors
     assert "option-section-advanced-options" in topic_prefix_ancestors
+
+
+@pytest.mark.asyncio
+async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        del pilot
+        workloads = app.screen.query_one("#workloads", SelectionList)
+        ordering = app.screen.query_one("#ordering-modes", SelectionList)
+
+    assert workloads.selected == ["sleep"]
+    assert ordering.selected == ["key_hash"]
 
 
 @pytest.mark.asyncio
@@ -292,11 +314,19 @@ async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
-        app.push_screen(RunScreen(BenchmarkTuiState(workload="all")))
+        app.push_screen(
+            RunScreen(
+                BenchmarkTuiState(
+                    workloads=("sleep", "cpu", "io"),
+                    ordering_modes=("key_hash", "partition"),
+                )
+            )
+        )
         await pilot.pause()
 
         phase_badge = app.screen.query_one("#phase-badge", Static)
         workload_badge = app.screen.query_one("#workload-badge", Static)
+        ordering_badge = app.screen.query_one("#ordering-badge", Static)
         progress_badge = app.screen.query_one("#progress-badge", Static)
         baseline_pill = app.screen.query_one("#phase-pill-baseline", Static)
         sleep_pill = app.screen.query_one("#workload-pill-sleep", Static)
@@ -305,14 +335,33 @@ async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
         summary_table = app.screen.query_one("#run-summary", DataTable)
         assert str(phase_badge.content) == "PHASE Pending"
         assert str(workload_badge.content) == "WORKLOAD —"
-        assert str(progress_badge.content) == "PROGRESS 0 / 9"
+        assert str(ordering_badge.content) == "ORDERING —"
+        assert str(progress_badge.content) == "PROGRESS 0 / 18"
         assert str(baseline_pill.content) == "baseline pending"
         assert str(sleep_pill.content) == "sleep pending"
-        assert progress_bar.total == 9
+        assert progress_bar.total == 18
         assert loading_indicator.display is True
-        assert summary_table.get_row("sleep") == ["sleep", "…", "…", "…"]
-        assert summary_table.get_row("cpu") == ["cpu", "…", "…", "…"]
-        assert summary_table.get_row("io") == ["io", "…", "…", "…"]
+        assert summary_table.get_row("sleep-key_hash") == [
+            "sleep",
+            "key_hash",
+            "…",
+            "…",
+            "…",
+        ]
+        assert summary_table.get_row("cpu-partition") == [
+            "cpu",
+            "partition",
+            "…",
+            "…",
+            "…",
+        ]
+        assert summary_table.get_row("io-partition") == [
+            "io",
+            "partition",
+            "…",
+            "…",
+            "…",
+        ]
 
 
 @pytest.mark.asyncio
@@ -325,29 +374,57 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
-        app.push_screen(RunScreen(BenchmarkTuiState(workload="all")))
+        app.push_screen(
+            RunScreen(
+                BenchmarkTuiState(
+                    workloads=("sleep", "cpu", "io"),
+                    ordering_modes=("key_hash", "partition"),
+                )
+            )
+        )
         await pilot.pause()
 
         run_screen = app.screen
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 completed_runs=2,
-                total_runs=9,
-                tps_by_workload={
+                total_runs=18,
+                tps_by_workload_ordering={
                     "sleep": {
-                        "baseline": "111.11",
-                        "async": "222.22",
-                        "process": "--",
+                        "key_hash": {
+                            "baseline": "111.11",
+                            "async": "222.22",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
                     },
                     "cpu": {
-                        "baseline": "--",
-                        "async": "--",
-                        "process": "--",
+                        "key_hash": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
                     },
                     "io": {
-                        "baseline": "--",
-                        "async": "--",
-                        "process": "--",
+                        "key_hash": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
                     },
                 },
             )
@@ -358,9 +435,94 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
         summary_table = run_screen.query_one("#run-summary", DataTable)
 
     assert progress_bar.progress == 2
-    assert summary_table.get_row("sleep") == [
+    assert summary_table.get_row("sleep-key_hash") == [
         "sleep",
+        "key_hash",
         "111.11 TPS",
+        "222.22 TPS",
+        "…",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FakeController
+    )
+    _FakeController.instances.clear()
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        app.push_screen(
+            RunScreen(
+                BenchmarkTuiState(
+                    workloads=("sleep",),
+                    ordering_modes=("key_hash", "partition"),
+                )
+            )
+        )
+        await pilot.pause()
+
+        run_screen = app.screen
+        run_screen._render_snapshot(
+            BenchmarkProgressSnapshot(
+                status_message="Running async benchmark",
+                current_workload="sleep",
+                current_ordering="partition",
+                completed_runs=1,
+                total_runs=6,
+                progress_value=1.5,
+                tps_by_workload_ordering={
+                    "sleep": {
+                        "key_hash": {
+                            "baseline": "111.11",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "222.22",
+                            "process": "--",
+                        },
+                    },
+                    "cpu": {
+                        "key_hash": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                    },
+                    "io": {
+                        "key_hash": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                    },
+                },
+            )
+        )
+        await pilot.pause()
+
+        ordering_badge = run_screen.query_one("#ordering-badge", Static)
+        summary_table = run_screen.query_one("#run-summary", DataTable)
+
+    assert str(ordering_badge.content) == "ORDERING partition"
+    assert summary_table.get_row("sleep-partition") == [
+        "sleep",
+        "partition",
+        "…",
         "222.22 TPS",
         "…",
     ]
@@ -376,7 +538,7 @@ async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
-        app.push_screen(RunScreen(BenchmarkTuiState(workload="sleep")))
+        app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
         run_screen = app.screen
@@ -406,7 +568,7 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
-        app.push_screen(RunScreen(BenchmarkTuiState(workload="sleep")))
+        app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
         run_screen = app.screen
@@ -414,6 +576,7 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
                 current_workload="sleep",
+                current_ordering="key_hash",
                 completed_runs=1,
                 total_runs=3,
                 progress_value=1.5,
@@ -433,6 +596,15 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
                         "async": "--",
                         "process": "--",
                     },
+                },
+                tps_by_workload_ordering={
+                    "sleep": {
+                        "key_hash": {
+                            "baseline": "111.11",
+                            "async": "--",
+                            "process": "--",
+                        }
+                    }
                 },
             )
         )
@@ -465,7 +637,7 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
-        app.push_screen(RunScreen(BenchmarkTuiState(workload="sleep")))
+        app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
         run_screen = app.screen
@@ -473,6 +645,7 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
                 current_workload="sleep",
+                current_ordering="key_hash",
                 phase_statuses={
                     "baseline": "completed",
                     "async": "running",

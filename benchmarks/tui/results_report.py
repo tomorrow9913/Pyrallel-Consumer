@@ -34,6 +34,7 @@ class ResultsTableData:
 @dataclass(frozen=True, slots=True)
 class WorkloadWinner:
     workload: str
+    ordering: str
     run_type: str
     throughput_tps: str
     total_time_sec: str
@@ -100,7 +101,7 @@ def load_results_table_data(output_path: str | Path) -> ResultsTableData | None:
 
 def summarize_workload_winners(
     output_path: str | Path,
-) -> dict[str, WorkloadWinner]:
+) -> dict[str, dict[str, WorkloadWinner]]:
     path = Path(output_path).expanduser()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -111,23 +112,29 @@ def summarize_workload_winners(
     if not isinstance(results, list) or not results:
         return {}
 
-    winners: dict[str, dict[str, Any]] = {}
+    winners: dict[tuple[str, str], dict[str, Any]] = {}
     for result in results:
         if not isinstance(result, dict):
             continue
         workload = str(result.get("workload", "")).strip()
+        ordering = str(result.get("ordering", "")).strip()
         if not workload:
             continue
-        current_best = winners.get(workload)
+        if not ordering:
+            continue
+        winner_key = (ordering, workload)
+        current_best = winners.get(winner_key)
         current_tps = _float_value(result.get("throughput_tps"))
         if current_best is None or current_tps > _float_value(
             current_best.get("throughput_tps")
         ):
-            winners[workload] = result
+            winners[winner_key] = result
 
-    return {
-        workload: WorkloadWinner(
+    ordering_groups: dict[str, dict[str, WorkloadWinner]] = {}
+    for (ordering, workload), result in winners.items():
+        ordering_groups.setdefault(ordering, {})[workload] = WorkloadWinner(
             workload=workload,
+            ordering=ordering,
             run_type=_display_run_type(
                 str(result.get("run_type", "—")) or "—",
                 str(result.get("run_name", "")),
@@ -135,8 +142,7 @@ def summarize_workload_winners(
             throughput_tps=_format_float(result.get("throughput_tps"), 2),
             total_time_sec=_format_float(result.get("total_time_sec"), 2),
         )
-        for workload, result in winners.items()
-    }
+    return ordering_groups
 
 
 def render_results_summary(output_path: str | Path) -> str:

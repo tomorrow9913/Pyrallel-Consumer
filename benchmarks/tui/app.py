@@ -20,6 +20,7 @@ from textual.widgets import (
     Log,
     ProgressBar,
     Select,
+    SelectionList,
     Static,
     Switch,
 )
@@ -38,6 +39,7 @@ from benchmarks.tui.state import BenchmarkTuiState
 
 _PHASE_NAMES = ("baseline", "async", "process")
 _WORKLOAD_NAMES = ("sleep", "cpu", "io")
+_ORDERING_NAMES = ("key_hash", "partition", "unordered")
 
 
 def _safe_int(value: str, default: int) -> int:
@@ -126,6 +128,20 @@ class OptionsScreen(Screen[None]):
             )
 
     @classmethod
+    def _labeled_selection_list(
+        cls,
+        *,
+        option_id: str,
+        selections: list[tuple[str, str, bool]],
+        widget_id: str,
+    ) -> ComposeResult:
+        option = OPTION_HELP[option_id]
+        with Container(id=cls._option_block_id(option_id), classes="option-block"):
+            yield cls._field_label(option.label)
+            yield cls._option_help(option_id)
+            yield SelectionList(*selections, id=widget_id)
+
+    @classmethod
     def _switch_field(
         cls, *, option_id: str, value: bool, widget_id: str
     ) -> ComposeResult:
@@ -182,16 +198,35 @@ class OptionsScreen(Screen[None]):
                     widget_id="timeout-sec",
                     placeholder="60",
                 )
-                yield from self._labeled_select(
-                    option_id="workload",
-                    options=[
-                        ("sleep", "sleep"),
-                        ("cpu", "cpu"),
-                        ("io", "io"),
-                        ("all", "all"),
+                yield from self._labeled_selection_list(
+                    option_id="workloads",
+                    selections=[
+                        ("sleep", "sleep", "sleep" in state.workloads),
+                        ("cpu", "cpu", "cpu" in state.workloads),
+                        ("io", "io", "io" in state.workloads),
                     ],
-                    value=state.workload,
-                    widget_id="workload",
+                    widget_id="workloads",
+                )
+                yield from self._labeled_selection_list(
+                    option_id="ordering-modes",
+                    selections=[
+                        (
+                            "key_hash",
+                            "key_hash",
+                            "key_hash" in state.ordering_modes,
+                        ),
+                        (
+                            "partition",
+                            "partition",
+                            "partition" in state.ordering_modes,
+                        ),
+                        (
+                            "unordered",
+                            "unordered",
+                            "unordered" in state.ordering_modes,
+                        ),
+                    ],
+                    widget_id="ordering-modes",
                 )
                 yield from self._labeled_input(
                     option_id="worker-sleep-ms",
@@ -355,6 +390,11 @@ class OptionsScreen(Screen[None]):
     def on_select_changed(self, _event: Select.Changed) -> None:
         self._refresh_preview()
 
+    def on_selection_list_selected_changed(
+        self, _event: SelectionList.SelectedChanged
+    ) -> None:
+        self._refresh_preview()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "run-button":
             self.app.push_screen(RunScreen(self._build_state()))
@@ -431,7 +471,13 @@ class OptionsScreen(Screen[None]):
                 self.query_one("#timeout-sec", Input).value, state.timeout_sec
             ),
             topic_prefix=self.query_one("#topic-prefix", Input).value,
-            workload=str(self.query_one("#workload", Select).value),
+            workloads=tuple(
+                self.query_one("#workloads", SelectionList).selected or state.workloads
+            ),
+            ordering_modes=tuple(
+                self.query_one("#ordering-modes", SelectionList).selected
+                or state.ordering_modes
+            ),
             log_level=str(self.query_one("#log-level", Select).value),
             skip_reset=self.query_one("#skip-reset", Switch).value,
             profiling_enabled=self.query_one("#profiling-enabled", Switch).value,
@@ -480,39 +526,36 @@ class ResultsSummaryModalScreen(ModalScreen[None]):
         self._winners = (
             summarize_workload_winners(output_path) if output_path is not None else {}
         )
+        self._visible_orderings = tuple(
+            ordering
+            for ordering in ("key_hash", "partition", "unordered")
+            if ordering in self._winners
+        )
         self._table_data = (
             load_results_table_data(output_path) if output_path is not None else None
         )
 
     def compose(self) -> ComposeResult:
         with Container(id="results-modal"):
-            with Container(id="results-modal-header"):
-                yield Static("Benchmark completed", id="results-modal-title")
-                yield Static(
-                    "Review the final benchmark summary below.",
-                    id="results-modal-subtitle",
-                )
-            with Horizontal(id="results-overview-row"):
-                yield Static(
-                    self._winner_card_text("sleep"),
-                    id="results-winner-sleep",
-                    classes="results-card",
-                )
-                yield Static(
-                    self._winner_card_text("cpu"),
-                    id="results-winner-cpu",
-                    classes="results-card",
-                )
-                yield Static(
-                    self._winner_card_text("io"),
-                    id="results-winner-io",
-                    classes="results-card",
-                )
-            yield Static(self._output_path_text(), id="results-output-path")
-            yield Static("Detailed report", id="results-detail-title")
-            yield DataTable(id="results-table")
-            with Container(id="results-modal-actions"):
-                yield Button("Close", id="results-modal-close", variant="primary")
+            with VerticalScroll(id="results-modal-scroll"):
+                with Container(id="results-modal-header"):
+                    yield Static("Benchmark completed", id="results-modal-title")
+                    yield Static(
+                        "Review the final benchmark summary below.",
+                        id="results-modal-subtitle",
+                    )
+                yield Static(self._overview_text(), id="results-overview-text")
+                yield Static(self._output_path_text(), id="results-output-path")
+                for ordering in self._visible_orderings:
+                    yield Static(
+                        self._winner_section_text(ordering),
+                        id="results-order-%s" % ordering,
+                        classes="results-order-section",
+                    )
+                yield Static("Detailed report", id="results-detail-title")
+                yield DataTable(id="results-table")
+                with Container(id="results-modal-actions"):
+                    yield Button("Close", id="results-modal-close", variant="primary")
 
     def on_mount(self) -> None:
         table = self.query_one("#results-table", DataTable)
@@ -526,24 +569,37 @@ class ResultsSummaryModalScreen(ModalScreen[None]):
         for row in self._table_data.rows:
             table.add_row(*row)
 
-    def _winner_card_text(self, workload: str) -> str:
-        winner = self._winners.get(workload)
-        if winner is None:
-            return "%s 1등\n—\n—\n—" % workload
-        return "%s 1등\n%s\n%s TPS\n%ss" % (
-            workload,
-            winner.run_type,
-            winner.throughput_tps,
-            winner.total_time_sec,
-        )
+    def _winner_section_text(self, ordering: str) -> str:
+        winners = self._winners.get(ordering, {})
+        lines = ["ORDER: %s" % ordering]
+        for workload in _WORKLOAD_NAMES:
+            winner = winners.get(workload)
+            if winner is None:
+                continue
+            lines.append(
+                "%s 1등 · %s · %s TPS · %ss"
+                % (
+                    workload,
+                    winner.run_type,
+                    winner.throughput_tps,
+                    winner.total_time_sec,
+                )
+            )
+        return "\n".join(lines)
 
     def _output_path_text(self) -> str:
         if self._overview is None:
             return "Results file unavailable"
-        return "Overview: %d runs | workloads: %s\nResults file: %s" % (
+        return "Results file: %s" % self._overview.output_path
+
+    def _overview_text(self) -> str:
+        if self._overview is None:
+            return "Overview unavailable"
+        return "Overview: %d runs | workloads: %s | best: %s (%s TPS)" % (
             self._overview.total_runs,
             ", ".join(self._overview.workloads) or "unknown",
-            self._overview.output_path,
+            self._overview.best_run_name,
+            self._overview.best_tps,
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -565,8 +621,13 @@ class RunScreen(Screen[None]):
         self._cancelled = False
         self._closed = False
         self._active_workloads = self._resolve_workloads()
+        self._active_orderings = self._resolve_orderings()
         self._active_phases = self._resolve_phases()
-        self._total_runs = len(self._active_workloads) * len(self._active_phases)
+        self._total_runs = (
+            len(self._active_workloads)
+            * len(self._active_orderings)
+            * len(self._active_phases)
+        )
         self._latest_output_path = state.json_output or None
         self._last_snapshot = BenchmarkProgressSnapshot(total_runs=self._total_runs)
 
@@ -577,6 +638,7 @@ class RunScreen(Screen[None]):
             with Horizontal(id="run-meta-row"):
                 yield Static("", id="phase-badge", classes="status-badge")
                 yield Static("", id="workload-badge", classes="status-badge")
+                yield Static("", id="ordering-badge", classes="status-badge")
                 yield Static("", id="progress-badge", classes="status-badge")
             with Horizontal(id="run-phase-row"):
                 yield Static("", id="phase-pill-baseline", classes="phase-pill")
@@ -690,23 +752,32 @@ class RunScreen(Screen[None]):
         table = self.query_one("#run-summary", DataTable)
         table.cursor_type = "none"
         table.add_column("Workload", key="workload")
+        if self._shows_ordering_column:
+            table.add_column("Ordering", key="ordering")
         for phase in self._active_phases:
             table.add_column(phase.title(), key=phase)
         for workload in self._active_workloads:
-            table.add_row(
-                workload,
-                *("--" for _ in self._active_phases),
-                key=workload,
-            )
+            for ordering in self._active_orderings:
+                row_values = [workload]
+                if self._shows_ordering_column:
+                    row_values.append(ordering)
+                row_values.extend("--" for _ in self._active_phases)
+                table.add_row(*row_values, key=self._row_key(workload, ordering))
 
     def _update_run_summary_table(self, snapshot: BenchmarkProgressSnapshot) -> None:
         table = self.query_one("#run-summary", DataTable)
         for workload in self._active_workloads:
-            for phase in self._active_phases:
-                value = self._format_tps_cell(
-                    snapshot.tps_by_workload.get(workload, {}).get(phase, "--")
-                )
-                table.update_cell(workload, phase, value, update_width=True)
+            for ordering in self._active_orderings:
+                row = snapshot.tps_by_workload_ordering.get(workload, {}).get(ordering)
+                if row is None or all(value == "--" for value in row.values()):
+                    if not self._shows_ordering_column:
+                        row = snapshot.tps_by_workload.get(workload, {})
+                    else:
+                        row = row or {}
+                row_key = self._row_key(workload, ordering)
+                for phase in self._active_phases:
+                    value = self._format_tps_cell(row.get(phase, "--"))
+                    table.update_cell(row_key, phase, value, update_width=True)
 
     def _build_results_summary(self) -> str:
         if self._latest_output_path is None:
@@ -721,11 +792,14 @@ class RunScreen(Screen[None]):
 
     def _mark_failed_run_cell(self) -> None:
         workload = self._last_snapshot.current_workload
+        ordering = self._last_snapshot.current_ordering
+        if ordering is None and len(self._active_orderings) == 1:
+            ordering = self._active_orderings[0]
         phase = self._last_running_phase()
-        if workload is None or phase is None:
+        if workload is None or ordering is None or phase is None:
             return
         self.query_one("#run-summary", DataTable).update_cell(
-            workload,
+            self._row_key(workload, ordering),
             phase,
             Text("FAILED", style="bright_red"),
             update_width=True,
@@ -757,6 +831,9 @@ class RunScreen(Screen[None]):
         )
         self.query_one("#workload-badge", Static).update(
             "WORKLOAD %s" % self._display_workload(snapshot)
+        )
+        self.query_one("#ordering-badge", Static).update(
+            "ORDERING %s" % self._display_ordering(snapshot)
         )
         self.query_one("#progress-badge", Static).update(
             "PROGRESS %d / %d"
@@ -804,6 +881,11 @@ class RunScreen(Screen[None]):
             return "—"
         return snapshot.current_workload.title()
 
+    def _display_ordering(self, snapshot: BenchmarkProgressSnapshot) -> str:
+        if snapshot.current_ordering is None:
+            return "—"
+        return snapshot.current_ordering
+
     def _display_workload_status(
         self, snapshot: BenchmarkProgressSnapshot, workload: str
     ) -> str:
@@ -828,9 +910,33 @@ class RunScreen(Screen[None]):
         return "%s (%s)" % (base_message, snapshot.current_workload)
 
     def _resolve_workloads(self) -> tuple[str, ...]:
-        if self._state.workload == "all":
-            return _WORKLOAD_NAMES
-        return (self._state.workload,)
+        selected = tuple(
+            workload
+            for workload in self._state.workloads
+            if workload in _WORKLOAD_NAMES
+        )
+        if selected:
+            return selected
+        return (_WORKLOAD_NAMES[0],)
+
+    def _resolve_orderings(self) -> tuple[str, ...]:
+        selected = tuple(
+            ordering
+            for ordering in self._state.ordering_modes
+            if ordering in _ORDERING_NAMES
+        )
+        if selected:
+            return selected
+        return (_ORDERING_NAMES[0],)
+
+    @property
+    def _shows_ordering_column(self) -> bool:
+        return len(self._active_orderings) > 1
+
+    def _row_key(self, workload: str, ordering: str) -> str:
+        if self._shows_ordering_column:
+            return "%s-%s" % (workload, ordering)
+        return workload
 
     def _resolve_phases(self) -> tuple[str, ...]:
         phases: list[str] = []
@@ -964,6 +1070,10 @@ class BenchmarkTuiApp(App[None]):
         padding: 1 2;
     }
 
+    #results-modal-scroll {
+        height: 1fr;
+    }
+
     #results-modal-header {
         height: auto;
         margin-bottom: 1;
@@ -979,19 +1089,11 @@ class BenchmarkTuiApp(App[None]):
         margin-bottom: 1;
     }
 
-    #results-overview-row {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    .results-card {
+    .results-order-section {
         border: round $surface-lighten-1;
         padding: 0 1;
-        margin-right: 1;
-        width: 1fr;
-        height: 5;
-        content-align: center middle;
-        text-align: center;
+        margin-bottom: 1;
+        height: auto;
     }
 
     #results-output-path {

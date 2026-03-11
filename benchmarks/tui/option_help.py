@@ -31,9 +31,13 @@ OPTION_HELP = {
         label="Timeout (sec)",
         description="Stop waiting after this many seconds if a run stalls.",
     ),
-    "workload": OptionHelp(
-        label="Workload",
-        description="Pick the worker behavior to benchmark: sleep, cpu, io, or all.",
+    "workloads": OptionHelp(
+        label="Workloads",
+        description="Choose one or more workload shapes to benchmark: sleep, cpu, io.",
+    ),
+    "ordering-modes": OptionHelp(
+        label="Ordering modes",
+        description="Choose one or more ordering modes: key_hash, partition, unordered.",
     ),
     "worker-sleep-ms": OptionHelp(
         label="Worker sleep (ms)",

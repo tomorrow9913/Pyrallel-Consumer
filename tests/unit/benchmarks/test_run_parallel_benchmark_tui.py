@@ -55,3 +55,36 @@ def test_script_path_execution_supports_help() -> None:
 
     assert result.returncode == 0
     assert "Run Pyrallel throughput benchmarks" in result.stdout
+
+
+def test_build_parser_accepts_comma_separated_workloads_and_order() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(
+        ["--workloads", "sleep,cpu", "--order", "key_hash,partition"]
+    )
+
+    assert args.workloads == ["sleep", "cpu"]
+    assert args.order == ["key_hash", "partition"]
+
+
+def test_build_parser_rejects_unknown_workload_token() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    try:
+        parser.parse_args(["--workloads", "sleep,wat"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected parser to reject unknown workload token")
+
+
+def test_build_parser_rejects_unknown_order_token() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    try:
+        parser.parse_args(["--order", "key_hash,wat"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected parser to reject unknown order token")

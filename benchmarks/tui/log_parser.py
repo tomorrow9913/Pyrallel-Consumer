@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 _PHASE_NAMES = ("baseline", "async", "process")
 _WORKLOAD_NAMES = ("sleep", "cpu", "io")
+_ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _TOPIC_PATTERN = re.compile(r"topic '([^']+)'")
 _JSON_OUTPUT_PATTERN = re.compile(r"JSON summary written to (.+)$")
 _FINAL_TPS_PATTERN = re.compile(r"Final TPS:\s*([0-9]+(?:\.[0-9]+)?)")
@@ -14,6 +15,16 @@ _FINAL_TPS_PATTERN = re.compile(r"Final TPS:\s*([0-9]+(?:\.[0-9]+)?)")
 def _empty_tps_table() -> dict[str, dict[str, str]]:
     return {
         workload: {phase: "--" for phase in _PHASE_NAMES}
+        for workload in _WORKLOAD_NAMES
+    }
+
+
+def _empty_ordering_tps_table() -> dict[str, dict[str, dict[str, str]]]:
+    return {
+        workload: {
+            ordering: {phase: "--" for phase in _PHASE_NAMES}
+            for ordering in _ORDERING_NAMES
+        }
         for workload in _WORKLOAD_NAMES
     }
 
@@ -28,11 +39,15 @@ class BenchmarkProgressSnapshot:
         default_factory=lambda: {workload: "pending" for workload in _WORKLOAD_NAMES}
     )
     current_workload: str | None = None
+    current_ordering: str | None = None
     output_path: str | None = None
     completed_runs: int = 0
     total_runs: int = 0
     progress_value: float = 0.0
     tps_by_workload: dict[str, dict[str, str]] = field(default_factory=_empty_tps_table)
+    tps_by_workload_ordering: dict[str, dict[str, dict[str, str]]] = field(
+        default_factory=_empty_ordering_tps_table
+    )
 
 
 class BenchmarkLogParser:
@@ -40,15 +55,23 @@ class BenchmarkLogParser:
         self,
         workload_mode: str,
         active_phases: tuple[str, ...] | None = None,
+        active_orderings: tuple[str, ...] | None = None,
+        active_workloads: tuple[str, ...] | None = None,
     ) -> None:
         self._workload_mode = workload_mode
         self._active_phases = active_phases or _PHASE_NAMES
-        self._started_runs: set[tuple[str, str]] = set()
-        self._completed_runs: set[tuple[str, str]] = set()
-        self._active_run: tuple[str, str] | None = None
-        self._started_run_order: deque[tuple[str, str]] = deque()
+        self._active_orderings = active_orderings or ("key_hash",)
+        self._active_workloads = active_workloads or self._resolve_active_workloads()
+        self._started_runs: set[tuple[str, str, str]] = set()
+        self._completed_runs: set[tuple[str, str, str]] = set()
+        self._active_run: tuple[str, str, str] | None = None
+        self._started_run_order: deque[tuple[str, str, str]] = deque()
         self.snapshot = BenchmarkProgressSnapshot(
-            total_runs=len(self._active_workloads()) * len(self._active_phases)
+            total_runs=(
+                len(self._active_workloads)
+                * len(self._active_orderings)
+                * len(self._active_phases)
+            )
         )
 
     def consume(self, line: str) -> BenchmarkProgressSnapshot:
@@ -65,24 +88,28 @@ class BenchmarkLogParser:
 
         if "Starting baseline consumer" in stripped and topic_name is not None:
             workload = self._extract_workload(topic_name)
+            ordering = self._extract_ordering(topic_name)
             self._mark_workload_running(workload)
+            self._mark_ordering_running(ordering)
             self._mark_phase_running("baseline")
-            self._mark_run_started(workload, "baseline")
+            self._mark_run_started(workload, ordering, "baseline")
             self.snapshot.status_message = "Running baseline"
             return self.snapshot
 
         if "Starting PyrallelConsumer test" in stripped and topic_name is not None:
             workload = self._extract_workload(topic_name)
+            ordering = self._extract_ordering(topic_name)
             self._mark_workload_running(workload)
+            self._mark_ordering_running(ordering)
             if topic_name.endswith("-async"):
                 self._mark_phase_completed("baseline")
                 self._mark_phase_running("async")
-                self._mark_run_started(workload, "async")
+                self._mark_run_started(workload, ordering, "async")
                 self.snapshot.status_message = "Running async benchmark"
             elif topic_name.endswith("-process"):
                 self._mark_phase_completed("async")
                 self._mark_phase_running("process")
-                self._mark_run_started(workload, "process")
+                self._mark_run_started(workload, ordering, "process")
                 self.snapshot.status_message = "Running process benchmark"
             return self.snapshot
 
@@ -108,26 +135,39 @@ class BenchmarkLogParser:
             return
         run_name = columns[0]
         run_type = columns[1] if len(columns) > 1 else ""
+        ordering_name = ""
         topic_name = columns[2] if len(columns) > 2 else ""
+        throughput = columns[4]
+        if len(columns) >= 8 and columns[2] in _ORDERING_NAMES:
+            ordering_name = columns[2]
+            topic_name = columns[3] if len(columns) > 3 else ""
+            throughput = columns[5]
         if not run_name:
+            return
+        if run_name == "Run":
             return
 
         workload = self._extract_workload(run_name)
         if workload is None and topic_name:
             workload = self._extract_workload(topic_name)
+        ordering = self._extract_ordering(ordering_name or run_name)
+        if ordering is None and topic_name:
+            ordering = self._extract_ordering(topic_name)
         phase = self._extract_phase(run_name)
         if phase is None and run_type:
             phase = self._extract_phase(run_type)
-        throughput = columns[4]
 
         if workload is not None:
             self.snapshot.current_workload = workload
-        if workload is None or phase is None:
+        if ordering is not None:
+            self.snapshot.current_ordering = ordering
+        if workload is None or ordering is None or phase is None:
             return
 
-        if self.snapshot.tps_by_workload[workload][phase] == "--":
-            self._mark_run_completed(workload, phase)
+        if self.snapshot.tps_by_workload_ordering[workload][ordering][phase] == "--":
+            self._mark_run_completed(workload, ordering, phase)
         self.snapshot.tps_by_workload[workload][phase] = throughput
+        self.snapshot.tps_by_workload_ordering[workload][ordering][phase] = throughput
         self._mark_phase_completed(phase)
 
         if phase == self._active_phases[-1]:
@@ -146,18 +186,25 @@ class BenchmarkLogParser:
     def _mark_phase_completed(self, phase: str) -> None:
         self.snapshot.phase_statuses[phase] = "completed"
 
-    def _mark_run_started(self, workload: str | None, phase: str) -> None:
-        if workload is None or phase not in self._active_phases:
+    def _mark_ordering_running(self, ordering: str | None) -> None:
+        if ordering is not None:
+            self.snapshot.current_ordering = ordering
+
+    def _mark_run_started(
+        self, workload: str | None, ordering: str | None, phase: str
+    ) -> None:
+        if workload is None or ordering is None or phase not in self._active_phases:
             return
-        key = (workload, phase)
+        self.snapshot.current_ordering = ordering
+        key = (workload, ordering, phase)
         if key not in self._started_runs:
             self._started_run_order.append(key)
         self._started_runs.add(key)
         self._active_run = key
         self._refresh_progress()
 
-    def _mark_run_completed(self, workload: str, phase: str) -> None:
-        key = (workload, phase)
+    def _mark_run_completed(self, workload: str, ordering: str, phase: str) -> None:
+        key = (workload, ordering, phase)
         self._started_runs.add(key)
         self._completed_runs.add(key)
         if self._active_run == key:
@@ -168,10 +215,13 @@ class BenchmarkLogParser:
         target_run = self._next_unfinished_run()
         if target_run is None:
             return
-        workload, phase = target_run
+        workload, ordering, phase = target_run
+        self.snapshot.current_workload = workload
+        self.snapshot.current_ordering = ordering
         self.snapshot.tps_by_workload[workload][phase] = throughput
+        self.snapshot.tps_by_workload_ordering[workload][ordering][phase] = throughput
         self._mark_phase_completed(phase)
-        self._mark_run_completed(workload, phase)
+        self._mark_run_completed(workload, ordering, phase)
         if phase == self._active_phases[-1]:
             self.snapshot.workload_statuses[workload] = "completed"
         self._active_run = self._next_unfinished_run()
@@ -184,7 +234,7 @@ class BenchmarkLogParser:
             float(self.snapshot.completed_runs) + (0.5 * active_runs),
         )
 
-    def _next_unfinished_run(self) -> tuple[str, str] | None:
+    def _next_unfinished_run(self) -> tuple[str, str, str] | None:
         while self._started_run_order:
             candidate = self._started_run_order[0]
             if candidate in self._completed_runs:
@@ -210,7 +260,20 @@ class BenchmarkLogParser:
                 return workload
         return None
 
-    def _active_workloads(self) -> tuple[str, ...]:
+    def _extract_ordering(self, value: str) -> str | None:
+        for ordering in self._active_orderings:
+            if (
+                f"-{ordering}-" in value
+                or value.startswith(f"{ordering}-")
+                or value.endswith(f"-{ordering}")
+                or value == ordering
+            ):
+                return ordering
+        if len(self._active_orderings) == 1:
+            return self._active_orderings[0]
+        return None
+
+    def _resolve_active_workloads(self) -> tuple[str, ...]:
         if self._workload_mode == "all":
             return _WORKLOAD_NAMES
         return (self._workload_mode,)

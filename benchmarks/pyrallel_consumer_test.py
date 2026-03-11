@@ -11,7 +11,7 @@ from confluent_kafka.cimpl import NewTopic
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import ExecutionMode, WorkItem
+from pyrallel_consumer.dto import ExecutionMode, OrderingMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
@@ -178,6 +178,7 @@ async def run_pyrallel_consumer_test(
     reset_topic: bool = False,
     async_worker_fn: Optional[Callable[[WorkItem], Awaitable[None]]] = None,
     process_worker_fn: Optional[Callable[[WorkItem], None]] = None,
+    ordering_mode: str = OrderingMode.KEY_HASH.value,
     ensure_topic_exists: bool = True,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
@@ -240,6 +241,7 @@ async def run_pyrallel_consumer_test(
     async_worker_impl = async_worker_fn or async_worker
 
     mode_value = ExecutionMode(execution_mode)
+    ordering_mode_value = OrderingMode(ordering_mode)
 
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
     execution_config.mode = mode_value
@@ -258,6 +260,7 @@ async def run_pyrallel_consumer_test(
     work_manager = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=execution_config.max_in_flight,
+        ordering_mode=ordering_mode_value,
         metrics_exporter=metrics_observer,
     )  # type: ignore[call-arg]
 
@@ -267,6 +270,7 @@ async def run_pyrallel_consumer_test(
         execution_engine=engine,
         work_manager=work_manager,
     )
+    broker_poller.ORDERING_MODE = ordering_mode_value
 
     print("Starting PyrallelConsumer test for topic '%s'." % effective_topic)
     if num_messages is not None:
@@ -275,70 +279,75 @@ async def run_pyrallel_consumer_test(
         print("Consuming indefinitely. Use Ctrl+C to stop.")
     print("Timeout: %ds" % timeout_sec)
 
-    await broker_poller.start()
-    assignment_timeout_sec = min(max(timeout_sec / 4, 1.0), 10.0)
-    await _wait_for_partition_assignment(
-        broker_poller,
-        topic_name=effective_topic,
-        timeout_sec=assignment_timeout_sec,
-    )
+    diagnostics_task: Optional[asyncio.Task[None]] = None
+    timed_out = False
+    run_completed = False
+    try:
+        await broker_poller.start()
+        assignment_timeout_sec = min(max(timeout_sec / 4, 1.0), 10.0)
+        await _wait_for_partition_assignment(
+            broker_poller,
+            topic_name=effective_topic,
+            timeout_sec=assignment_timeout_sec,
+        )
 
-    async def _print_diagnostics() -> None:
-        while not stop_event.is_set():
-            await asyncio.sleep(5)
-            if stop_event.is_set():
-                break
-            metrics = broker_poller.get_metrics()
-            in_flight = metrics.total_in_flight
-            paused = metrics.is_paused
-            partitions_info = []
-            for pm in metrics.partitions:
-                partitions_info.append(
-                    "%s-%d lag=%d gaps=%d queued=%d"
-                    % (
-                        pm.tp.topic,
-                        pm.tp.partition,
-                        pm.true_lag,
-                        pm.gap_count,
-                        pm.queued_count,
+        async def _print_diagnostics() -> None:
+            while not stop_event.is_set():
+                await asyncio.sleep(5)
+                if stop_event.is_set():
+                    break
+                metrics = broker_poller.get_metrics()
+                in_flight = metrics.total_in_flight
+                paused = metrics.is_paused
+                partitions_info = []
+                for pm in metrics.partitions:
+                    partitions_info.append(
+                        "%s-%d lag=%d gaps=%d queued=%d"
+                        % (
+                            pm.tp.topic,
+                            pm.tp.partition,
+                            pm.true_lag,
+                            pm.gap_count,
+                            pm.queued_count,
+                        )
                     )
+                partition_str = (
+                    ", ".join(partitions_info)
+                    if partitions_info
+                    else "no partitions assigned"
                 )
-            partition_str = (
-                ", ".join(partitions_info)
-                if partitions_info
-                else "no partitions assigned"
-            )
+                print(
+                    "[diag] processed=%d in_flight=%d paused=%s | %s"
+                    % (consumption_stats.processed, in_flight, paused, partition_str),
+                    flush=True,
+                )
+
+        diagnostics_task = asyncio.create_task(_print_diagnostics())
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            timed_out = True
             print(
-                "[diag] processed=%d in_flight=%d paused=%s | %s"
-                % (consumption_stats.processed, in_flight, paused, partition_str),
+                "\n*** Test timed out after %ds (processed %d / %s messages) ***"
+                % (
+                    timeout_sec,
+                    consumption_stats.processed,
+                    num_messages if num_messages else "∞",
+                ),
                 flush=True,
             )
-
-    diagnostics_task = asyncio.create_task(_print_diagnostics())
-
-    timed_out = False
-    try:
-        await asyncio.wait_for(stop_event.wait(), timeout=timeout_sec)
-    except asyncio.TimeoutError:
-        timed_out = True
-        print(
-            "\n*** Test timed out after %ds (processed %d / %s messages) ***"
-            % (
-                timeout_sec,
-                consumption_stats.processed,
-                num_messages if num_messages else "∞",
-            ),
-            flush=True,
-        )
-    except KeyboardInterrupt:
-        print("Consumer interrupted by user.")
+        except KeyboardInterrupt:
+            print("Consumer interrupted by user.")
+        run_completed = True
     finally:
         stop_event.set()
-        diagnostics_task.cancel()
-        try:
-            await diagnostics_task
-        except asyncio.CancelledError:
-            pass
+        if diagnostics_task is not None:
+            diagnostics_task.cancel()
+            try:
+                await diagnostics_task
+            except asyncio.CancelledError:
+                pass
 
         print("Stopping PyrallelConsumer...")
         await broker_poller.stop()
@@ -346,12 +355,13 @@ async def run_pyrallel_consumer_test(
         if stats:
             stats.stop()
 
-        processed, runtime, tps = consumption_stats.summary()
-        print("\n--- PyrallelConsumer Test Summary ---")
-        print("Result: %s" % ("TIMEOUT" if timed_out else "COMPLETED"))
-        print("Total messages processed: %d" % processed)
-        print("Total runtime: %.2f seconds" % runtime)
-        print("Final TPS: %.2f" % tps)
+        if run_completed:
+            processed, runtime, tps = consumption_stats.summary()
+            print("\n--- PyrallelConsumer Test Summary ---")
+            print("Result: %s" % ("TIMEOUT" if timed_out else "COMPLETED"))
+            print("Total messages processed: %d" % processed)
+            print("Total runtime: %.2f seconds" % runtime)
+            print("Final TPS: %.2f" % tps)
 
     summary = stats.summary() if stats else None
     return timed_out, consumption_stats, summary

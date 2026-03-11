@@ -3,6 +3,27 @@ from __future__ import annotations
 from benchmarks.tui.log_parser import BenchmarkLogParser
 
 
+def test_log_parser_tracks_ordering_combinations_in_summary_rows() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_orderings=("key_hash", "partition"),
+    )
+
+    parser.consume(
+        "sleep-key_hash-baseline | baseline | demo-sleep-key_hash-baseline | 100 | 10.00 | 1.000 | 1.000"
+    )
+    parser.consume(
+        "sleep-partition-pyrallel-async | pyrallel | demo-sleep-partition-async | 100 | 20.00 | 1.000 | 1.000"
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.total_runs == 18
+    assert snapshot.current_workload == "sleep"
+    assert snapshot.current_ordering == "partition"
+    assert snapshot.tps_by_workload_ordering["sleep"]["key_hash"]["baseline"] == "10.00"
+    assert snapshot.tps_by_workload_ordering["sleep"]["partition"]["async"] == "20.00"
+
+
 def test_log_parser_tracks_workload_phase_progress() -> None:
     parser = BenchmarkLogParser(workload_mode="all")
 
@@ -120,3 +141,80 @@ def test_log_parser_maps_baseline_result_row_in_all_workload_mode_using_topic_na
 
     snapshot = parser.snapshot
     assert snapshot.tps_by_workload["sleep"]["baseline"] == "1109.49"
+
+
+def test_log_parser_preserves_partial_workload_subset_in_total_runs() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_workloads=("sleep", "cpu"),
+    )
+
+    parser.consume("Starting baseline consumer for topic 'demo-sleep-baseline'.")
+
+    snapshot = parser.snapshot
+    assert snapshot.total_runs == 6
+    assert snapshot.progress_value == 0.5
+
+
+def test_log_parser_counts_ordering_modes_in_total_runs() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_orderings=("key_hash", "unordered"),
+    )
+
+    parser.consume(
+        "Starting baseline consumer for topic 'demo-sleep-unordered-baseline'."
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.total_runs == 18
+    assert snapshot.progress_value == 0.5
+    assert snapshot.completed_runs == 0
+
+
+def test_log_parser_tracks_ordering_aware_tps_rows_from_results_table() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_orderings=("key_hash", "unordered"),
+    )
+
+    parser.consume(
+        "sleep-unordered-baseline | baseline | unordered | topic-a | 100 | 10.00 | 1.000 | 1.000"
+    )
+    parser.consume(
+        "sleep-unordered-pyrallel-async | pyrallel | unordered | topic-b | 100 | 20.00 | 1.000 | 1.000"
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.completed_runs == 2
+    assert snapshot.total_runs == 18
+    assert (
+        snapshot.tps_by_workload_ordering["sleep"]["unordered"]["baseline"] == "10.00"
+    )
+    assert snapshot.tps_by_workload_ordering["sleep"]["unordered"]["async"] == "20.00"
+
+
+def test_log_parser_assigns_interleaved_final_tps_by_workload_ordering_start_order() -> (
+    None
+):
+    parser = BenchmarkLogParser(
+        workload_mode="sleep",
+        active_orderings=("key_hash", "unordered"),
+    )
+
+    parser.consume(
+        "Starting baseline consumer for topic 'demo-sleep-key_hash-baseline'."
+    )
+    parser.consume(
+        "Starting baseline consumer for topic 'demo-sleep-unordered-baseline'."
+    )
+    parser.consume("Final TPS: 1386.01")
+    parser.consume("Final TPS: 2500.50")
+
+    snapshot = parser.snapshot
+    assert (
+        snapshot.tps_by_workload_ordering["sleep"]["key_hash"]["baseline"] == "1386.01"
+    )
+    assert (
+        snapshot.tps_by_workload_ordering["sleep"]["unordered"]["baseline"] == "2500.50"
+    )

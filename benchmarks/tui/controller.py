@@ -23,11 +23,30 @@ class BenchmarkProcessController:
         self._on_progress = on_progress
         self._on_complete = on_complete
         self._parser = BenchmarkLogParser(
-            workload_mode=state.workload,
+            workload_mode=self._workload_mode(state),
             active_phases=self._active_phases(state),
+            active_orderings=state.ordering_modes,
+            active_workloads=self._active_workloads(state),
         )
         self._process: asyncio.subprocess.Process | None = None
         self._cancel_requested = False
+
+    @staticmethod
+    def _workload_mode(state: BenchmarkTuiState) -> str:
+        if len(state.workloads) > 1:
+            return "all"
+        return state.workloads[0]
+
+    @staticmethod
+    def _active_workloads(state: BenchmarkTuiState) -> tuple[str, ...]:
+        workloads = tuple(
+            workload
+            for workload in state.workloads
+            if workload in ("sleep", "cpu", "io")
+        )
+        if workloads:
+            return workloads
+        return ("sleep",)
 
     @staticmethod
     def _active_phases(state: BenchmarkTuiState) -> tuple[str, ...]:

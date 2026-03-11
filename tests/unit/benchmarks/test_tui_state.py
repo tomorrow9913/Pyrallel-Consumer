@@ -18,14 +18,18 @@ def test_tui_state_to_argv_uses_cli_defaults() -> None:
         "--num-partitions",
         "8",
     ]
-    assert "--workload" in argv
+    assert "--workloads" in argv
+    assert "sleep" in argv
+    assert "--order" in argv
+    assert "key_hash" in argv
     assert "--skip-reset" not in argv
     assert "--py-spy" not in argv
 
 
 def test_tui_state_to_argv_includes_advanced_flags() -> None:
     state = BenchmarkTuiState(
-        workload="all",
+        workloads=("sleep", "cpu"),
+        ordering_modes=("key_hash", "partition"),
         profiling_enabled=True,
         skip_reset=True,
         profile=True,
@@ -39,8 +43,10 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
 
     argv = state.to_argv()
 
-    assert "--workload" in argv
-    assert "all" in argv
+    assert "--workloads" in argv
+    assert "sleep,cpu" in argv
+    assert "--order" in argv
+    assert "key_hash,partition" in argv
     assert "--skip-reset" in argv
     assert "--profile" in argv
     assert "--profile-top-n" in argv

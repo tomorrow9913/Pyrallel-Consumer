@@ -151,6 +151,7 @@ def _profile_baseline(
         run_name="baseline-profile",
         run_type="baseline",
         workload="baseline",
+        ordering="key_hash",
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -188,6 +189,7 @@ async def _profile_pyrallel(
         run_name="%s-profile" % mode.value,
         run_type=mode.value,
         workload=mode.value,
+        ordering="key_hash",
         topic=topic_name,
         target_messages=num_messages,
     )

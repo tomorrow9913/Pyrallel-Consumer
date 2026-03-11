@@ -83,6 +83,15 @@ class BrokerPoller:
         self._is_paused = False
 
         self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+        self._idle_consume_timeout_seconds = 0.1
+
+    # ------------------------------------------------------------------
+    async def _get_consume_timeout_seconds(self) -> float:
+        total_in_flight = self._work_manager.get_total_in_flight_count()
+        total_queued = await self._get_total_queued_messages()
+        if total_in_flight > 0 or total_queued > 0:
+            return 0.0
+        return self._idle_consume_timeout_seconds
 
     # ------------------------------------------------------------------
     async def _publish_to_dlq(
@@ -190,10 +199,11 @@ class BrokerPoller:
             while self._running:
                 await self._check_backpressure()
 
+                consume_timeout = await self._get_consume_timeout_seconds()
                 messages: List[Message] = await asyncio.to_thread(
                     self.consumer.consume,
                     num_messages=self._batch_size,
-                    timeout=0.1,
+                    timeout=consume_timeout,
                 )
 
                 if messages:
@@ -265,8 +275,8 @@ class BrokerPoller:
                 if commits_to_make:
                     await self._commit_offsets(commits_to_make)
 
-                if not messages:
-                    await asyncio.sleep(0.1)
+                if not messages and consume_timeout > 0:
+                    await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
             logger.error("Consumer loop error: %s", exc, exc_info=True)
@@ -561,7 +571,7 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
+        work_manager_assignments: Dict[DtoTopicPartition, int] = {}
 
         for partition in partitions:
             tp_dto = DtoTopicPartition(partition.topic, partition.partition)
@@ -580,7 +590,7 @@ class BrokerPoller:
             tracker.last_fetched_offset = last_committed
             tracker.increment_epoch()
             self._offset_trackers[tp_dto] = tracker
-            work_manager_assignments[tp_dto] = tracker
+            work_manager_assignments[tp_dto] = partition.offset
 
         self._work_manager.on_assign(work_manager_assignments)
 

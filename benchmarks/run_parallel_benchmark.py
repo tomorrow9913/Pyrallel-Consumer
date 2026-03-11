@@ -27,9 +27,36 @@ from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
 from benchmarks.pyrallel_consumer_test import ExecutionMode, run_pyrallel_consumer_test
 from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import OrderingMode, WorkItem
 
 _YAPPI_WORKER_STARTED = False
+_WORKLOAD_CHOICES = ("sleep", "cpu", "io")
+_ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
+
+
+def _parse_csv_selection(
+    value: str, *, argument_name: str, choices: Sequence[str]
+) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if item not in choices:
+            choices_str = ", ".join(choices)
+            raise argparse.ArgumentTypeError(
+                "%s must contain only %s (got %r)" % (argument_name, choices_str, item)
+            )
+        if item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    if not items:
+        raise argparse.ArgumentTypeError(
+            "%s must contain at least one value" % argument_name
+        )
+    return items
 
 
 def _check_kafka_connection(bootstrap_servers: str) -> None:
@@ -53,6 +80,7 @@ def _run_baseline_round(
     group_id: str,
     worker_fn: Callable[[bytes], None],
     workload: str,
+    ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
     produce_messages(
@@ -67,6 +95,7 @@ def _run_baseline_round(
         run_name=run_name,
         run_type="baseline",
         workload=workload,
+        ordering=ordering,
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -318,6 +347,7 @@ async def _run_pyrparallel_round(
     async_worker_fn: Callable[[WorkItem], Awaitable[None]],
     process_worker_fn: Callable[[WorkItem], None],
     workload: str,
+    ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
     produce_messages(
@@ -332,6 +362,7 @@ async def _run_pyrparallel_round(
         run_name=run_name,
         run_type=mode.value,
         workload=workload,
+        ordering=ordering,
         topic=topic_name,
         target_messages=num_messages,
     )
@@ -346,6 +377,7 @@ async def _run_pyrparallel_round(
         timeout_sec=timeout_sec,
         async_worker_fn=async_worker_fn,
         process_worker_fn=process_worker_fn,
+        ordering_mode=ordering,
         ensure_topic_exists=ensure_topic_exists,
     )
     if timed_out:
@@ -358,11 +390,12 @@ async def _run_pyrparallel_round(
 
 
 def _print_table(results: List[BenchmarkResult]) -> None:
-    headers = ["Run", "Type", "Topic", "Messages", "TPS", "Avg ms", "P99 ms"]
+    headers = ["Run", "Type", "Order", "Topic", "Messages", "TPS", "Avg ms", "P99 ms"]
     rows = [
         [
             result.run_name,
             result.run_type,
+            result.ordering,
             result.topic,
             f"{result.messages_processed:,}",
             f"{result.throughput_tps:,.2f}",
@@ -561,10 +594,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also profile process workers (off by default; can emit yappi internal errors).",
     )
     parser.add_argument(
-        "--workload",
-        choices=["sleep", "cpu", "io", "all"],
-        default="sleep",
-        help="Workload type applied to all modes (use 'all' to run sleep, cpu, io sequentially)",
+        "--workloads",
+        type=lambda value: _parse_csv_selection(
+            value,
+            argument_name="--workloads",
+            choices=_WORKLOAD_CHOICES,
+        ),
+        default=["sleep"],
+        help="Comma-separated workloads to run (choices: sleep,cpu,io)",
+    )
+    parser.add_argument(
+        "--order",
+        type=lambda value: _parse_csv_selection(
+            value,
+            argument_name="--order",
+            choices=_ORDER_CHOICES,
+        ),
+        default=["key_hash"],
+        help="Comma-separated ordering modes to run (choices: key_hash,partition,unordered)",
     )
     parser.add_argument(
         "--worker-sleep-ms",
@@ -673,17 +720,17 @@ def run_benchmark(
 
     _check_kafka_connection(args.bootstrap_servers)
 
-    workloads = ["sleep", "cpu", "io"] if args.workload == "all" else [args.workload]
+    workloads = list(args.workloads)
+    orderings = list(args.order)
     profile_dir = Path(args.profile_dir)
 
     results: List[BenchmarkResult] = []
 
-    for workload in workloads:
-        suffix = f"-{workload}" if args.workload == "all" else ""
-        has_runs = not (args.skip_baseline and args.skip_async and args.skip_process)
-        if not has_runs:
-            raise RuntimeError("All benchmark runs are skipped; nothing to execute")
+    has_runs = not (args.skip_baseline and args.skip_async and args.skip_process)
+    if not has_runs:
+        raise RuntimeError("All benchmark runs are skipped; nothing to execute")
 
+    for workload in workloads:
         baseline_worker, async_worker_fn, process_worker_fn = _select_workers(
             workload=workload,
             sleep_ms=args.worker_sleep_ms,
@@ -691,56 +738,14 @@ def run_benchmark(
             io_sleep_ms=args.worker_io_sleep_ms,
         )
 
-        workload_prefix = f"{workload}-" if args.workload == "all" else ""
+        for ordering in orderings:
+            suffix = "-%s-%s" % (workload, ordering)
+            run_prefix = "%s-%s" % (workload, ordering)
 
-        if not args.skip_baseline:
-            topic_name = f"{args.topic_prefix}{suffix}-baseline"
-            run_name = f"{workload_prefix}baseline"
-            with _profile_session(
-                enabled=args.profile,
-                run_name=run_name,
-                output_dir=profile_dir,
-                clock=args.profile_clock,
-                profile_threads=args.profile_threads,
-                profile_greenlets=args.profile_greenlets,
-                top_n=args.profile_top_n,
-            ):
+            if not args.skip_baseline:
+                topic_name = f"{args.topic_prefix}{suffix}-baseline"
+                run_name = f"{run_prefix}-baseline"
                 group_id = f"{args.baseline_group}{suffix}"
-                if not args.skip_reset:
-                    _reset_run_targets(
-                        bootstrap_servers=args.bootstrap_servers,
-                        topic_name=topic_name,
-                        group_id=group_id,
-                        num_partitions=args.num_partitions,
-                    )
-                results.append(
-                    _run_baseline_round(
-                        run_name=run_name,
-                        topic_name=topic_name,
-                        num_messages=args.num_messages,
-                        bootstrap_servers=args.bootstrap_servers,
-                        num_partitions=args.num_partitions,
-                        num_keys=args.num_keys,
-                        group_id=group_id,
-                        worker_fn=baseline_worker,
-                        workload=workload,
-                        ensure_topic_exists=args.skip_reset,
-                    )
-                )
-
-        async def run_async_rounds() -> List[BenchmarkResult]:
-            async_results: List[BenchmarkResult] = []
-            if not args.skip_async:
-                topic_name = f"{args.topic_prefix}{suffix}-async"
-                run_name = f"{workload_prefix}pyrallel-async"
-                group_id = f"{args.async_group}{suffix}"
-                if not args.skip_reset:
-                    _reset_run_targets(
-                        bootstrap_servers=args.bootstrap_servers,
-                        topic_name=topic_name,
-                        group_id=group_id,
-                        num_partitions=args.num_partitions,
-                    )
                 with _profile_session(
                     enabled=args.profile,
                     run_name=run_name,
@@ -750,11 +755,95 @@ def run_benchmark(
                     profile_greenlets=args.profile_greenlets,
                     top_n=args.profile_top_n,
                 ):
+                    if not args.skip_reset:
+                        _reset_run_targets(
+                            bootstrap_servers=args.bootstrap_servers,
+                            topic_name=topic_name,
+                            group_id=group_id,
+                            num_partitions=args.num_partitions,
+                        )
+                    results.append(
+                        _run_baseline_round(
+                            run_name=run_name,
+                            topic_name=topic_name,
+                            num_messages=args.num_messages,
+                            bootstrap_servers=args.bootstrap_servers,
+                            num_partitions=args.num_partitions,
+                            num_keys=args.num_keys,
+                            group_id=group_id,
+                            worker_fn=baseline_worker,
+                            workload=workload,
+                            ordering=ordering,
+                            ensure_topic_exists=args.skip_reset,
+                        )
+                    )
+
+            async def run_async_rounds() -> List[BenchmarkResult]:
+                async_results: List[BenchmarkResult] = []
+                if not args.skip_async:
+                    topic_name = f"{args.topic_prefix}{suffix}-async"
+                    run_name = f"{run_prefix}-pyrallel-async"
+                    group_id = f"{args.async_group}{suffix}"
+                    if not args.skip_reset:
+                        _reset_run_targets(
+                            bootstrap_servers=args.bootstrap_servers,
+                            topic_name=topic_name,
+                            group_id=group_id,
+                            num_partitions=args.num_partitions,
+                        )
+                    with _profile_session(
+                        enabled=args.profile,
+                        run_name=run_name,
+                        output_dir=profile_dir,
+                        clock=args.profile_clock,
+                        profile_threads=args.profile_threads,
+                        profile_greenlets=args.profile_greenlets,
+                        top_n=args.profile_top_n,
+                    ):
+                        async_results.append(
+                            await _run_pyrparallel_round(
+                                topic_name=topic_name,
+                                run_name=run_name,
+                                mode=ExecutionMode.ASYNC,
+                                num_messages=args.num_messages,
+                                bootstrap_servers=args.bootstrap_servers,
+                                num_partitions=args.num_partitions,
+                                num_keys=args.num_keys,
+                                group_id=group_id,
+                                timeout_sec=args.timeout_sec,
+                                async_worker_fn=async_worker_fn,
+                                process_worker_fn=process_worker_fn,
+                                workload=workload,
+                                ordering=ordering,
+                                ensure_topic_exists=args.skip_reset,
+                            )
+                        )
+                if not args.skip_process:
+                    topic_name = f"{args.topic_prefix}{suffix}-process"
+                    run_name = f"{run_prefix}-pyrallel-process"
+                    group_id = f"{args.process_group}{suffix}"
+                    if not args.skip_reset:
+                        _reset_run_targets(
+                            bootstrap_servers=args.bootstrap_servers,
+                            topic_name=topic_name,
+                            group_id=group_id,
+                            num_partitions=args.num_partitions,
+                        )
+                    prof_process_worker = process_worker_fn
+                    if args.profile and args.profile_process_workers:
+                        prof_process_worker = _wrap_process_worker_for_profile(
+                            process_worker_fn,
+                            output_dir=profile_dir,
+                            run_name=run_name,
+                            clock=args.profile_clock,
+                            profile_threads=args.profile_threads,
+                            profile_greenlets=args.profile_greenlets,
+                        )
                     async_results.append(
                         await _run_pyrparallel_round(
                             topic_name=topic_name,
                             run_name=run_name,
-                            mode=ExecutionMode.ASYNC,
+                            mode=ExecutionMode.PROCESS,
                             num_messages=args.num_messages,
                             bootstrap_servers=args.bootstrap_servers,
                             num_partitions=args.num_partitions,
@@ -762,60 +851,22 @@ def run_benchmark(
                             group_id=group_id,
                             timeout_sec=args.timeout_sec,
                             async_worker_fn=async_worker_fn,
-                            process_worker_fn=process_worker_fn,
+                            process_worker_fn=prof_process_worker,
                             workload=workload,
+                            ordering=ordering,
                             ensure_topic_exists=args.skip_reset,
                         )
                     )
-            if not args.skip_process:
-                topic_name = f"{args.topic_prefix}{suffix}-process"
-                run_name = f"{workload_prefix}pyrallel-process"
-                group_id = f"{args.process_group}{suffix}"
-                if not args.skip_reset:
-                    _reset_run_targets(
-                        bootstrap_servers=args.bootstrap_servers,
-                        topic_name=topic_name,
-                        group_id=group_id,
-                        num_partitions=args.num_partitions,
-                    )
-                prof_process_worker = process_worker_fn
-                if args.profile and args.profile_process_workers:
-                    prof_process_worker = _wrap_process_worker_for_profile(
-                        process_worker_fn,
-                        output_dir=profile_dir,
-                        run_name=run_name,
-                        clock=args.profile_clock,
-                        profile_threads=args.profile_threads,
-                        profile_greenlets=args.profile_greenlets,
-                    )
-                # Skip profiling for process mode to avoid yappi instability.
-                async_results.append(
-                    await _run_pyrparallel_round(
-                        topic_name=topic_name,
-                        run_name=run_name,
-                        mode=ExecutionMode.PROCESS,
-                        num_messages=args.num_messages,
-                        bootstrap_servers=args.bootstrap_servers,
-                        num_partitions=args.num_partitions,
-                        num_keys=args.num_keys,
-                        group_id=group_id,
-                        timeout_sec=args.timeout_sec,
-                        async_worker_fn=async_worker_fn,
-                        process_worker_fn=prof_process_worker,
-                        workload=workload,
-                        ensure_topic_exists=args.skip_reset,
-                    )
-                )
-                if args.profile and args.profile_process_workers:
-                    _summarize_worker_profiles(
-                        run_name,
-                        profile_dir=profile_dir,
-                        top_n=args.profile_top_n,
-                        clock=args.profile_clock,
-                    )
-            return async_results
+                    if args.profile and args.profile_process_workers:
+                        _summarize_worker_profiles(
+                            run_name,
+                            profile_dir=profile_dir,
+                            top_n=args.profile_top_n,
+                            clock=args.profile_clock,
+                        )
+                return async_results
 
-        results.extend(asyncio.run(run_async_rounds()))
+            results.extend(asyncio.run(run_async_rounds()))
 
     _print_table(results)
     output_path = args.json_output

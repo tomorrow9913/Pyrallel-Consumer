@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class BenchmarkTuiState:
+    workloads: tuple[str, ...] = ("sleep",)
+    ordering_modes: tuple[str, ...] = ("key_hash",)
     bootstrap_servers: str = "localhost:9092"
     num_messages: int = 100_000
     num_keys: int = 100
@@ -28,7 +30,6 @@ class BenchmarkTuiState:
     profile_threads: bool = False
     profile_greenlets: bool = False
     profile_process_workers: bool = False
-    workload: str = "sleep"
     worker_sleep_ms: float = 0.5
     worker_cpu_iterations: int = 1000
     worker_io_sleep_ms: float = 0.5
@@ -62,8 +63,10 @@ class BenchmarkTuiState:
             str(self.timeout_sec),
             "--log-level",
             self.log_level,
-            "--workload",
-            self.workload,
+            "--workloads",
+            ",".join(self.workloads),
+            "--order",
+            ",".join(self.ordering_modes),
             "--worker-sleep-ms",
             str(self.worker_sleep_ms),
             "--worker-cpu-iterations",
