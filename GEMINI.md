@@ -876,3 +876,4 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - 문서 동기화: `README.md`, `README.ko.md`, `benchmarks/README.md`에서 구식 `--workload` / `all` 설명을 제거하고 현재 CLI(`--workloads`, `--order`, `--strict-completion-monitor`)와 TUI 진입 설명으로 갱신했습니다.
 - `prd.md`, `prd_dev.md`는 현재 `BaseExecutionEngine` 계약(`submit(work_item)`, `poll_completed_events`, `wait_for_completion`, `get_in_flight_count`)과 queue-aware 70% resume 규칙, `queue_max_messages` / `strict_completion_monitor_enabled` 설정을 반영하도록 갱신했습니다.
 - 검증: `pytest tests/unit/control_plane/test_broker_poller.py -k 'seventy_percent_resume_threshold' -q` 통과, `python -m py_compile pyrallel_consumer/control_plane/broker_poller.py tests/unit/control_plane/test_broker_poller.py` 통과.
+- Release prep (2026-03-12): bumped package version in `pyproject.toml` from `0.1.1` to prerelease `0.1.2a1` (requested release label `v0.1.2-a.1`, normalized to valid PyPI/PEP 440 version form for publishing).
