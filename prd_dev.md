@@ -213,6 +213,11 @@ class ExecutionEngine(ABC):
     - `on_partitions_assigned`: 파티션에 대한 새 `epoch`을 생성하고, 이전 세션에서 남긴 Metadata를 읽어 `OffsetTracker` 상태를 복원(Hydration)한 후 처리를 시작합니다.
     - `on_partitions_revoked`: 진행 중인 작업 제출을 멈추고, 현재까지 완료된 작업에 대해 마지막으로 동기 커밋(Final Graceful Commit)을 시도하여 상태를 최대한 보존합니다. 이때, Kafka의 리밸런스 타임아웃 제약으로 인해 "정확성(Correctness)보다 생존성(Liveness)"을 우선하여, 설정된 시간(`max_revoke_grace_ms`) 내에 커밋이 완료되지 않으면 일부 미완료 오프셋에 대한 커밋을 포기할 수 있습니다.
 
+#### 3.3.4.1. 리밸런스 상태 보존 정책
+- **`contiguous_only` (기본값)**: revoke/restart 시점에는 Kafka committed offset이 표현할 수 있는 contiguous HWM만 보존합니다. HWM 뒤의 sparse 완료 오프셋은 버려질 수 있으며, 이후 재처리로 이어질 수 있습니다. 구현 복잡도가 가장 낮고 fail-closed가 쉽습니다.
+- **`metadata_snapshot` (옵션)**: sparse 완료 오프셋을 Kafka commit metadata에 인코딩해 남기고, 다음 assignment에서 디코딩하여 `OffsetTracker(initial_completed_offsets=...)`로 복원합니다. 불필요한 재처리를 줄이는 대신 metadata 인코딩/디코딩, 크기 제한, fail-closed 처리까지 함께 설계해야 합니다.
+- **공통 불변 조건**: 두 전략 모두 실제 committed offset은 contiguous safe offset만 사용합니다. `metadata_snapshot`은 보조 상태를 추가로 전달할 뿐, at-least-once 보장을 exactly-once처럼 바꾸지 않습니다.
+
 #### 3.3.5. Backpressure (Pause/Resume)
 - **책임**: 시스템이 처리 능력을 초과하는 메시지를 받아들여 붕괴하는 것을 막는 안정성 장치입니다.
 - **제어 로직 (Hysteresis 적용)**:

@@ -197,6 +197,7 @@ async def test_poll_completed_events_does_not_mark_complete_for_shared_trackers(
         key=b"",
         payload=b"",
     )
+    work_manager._dispatch_timestamps[work_item_id] = 0.0
 
     event = CompletionEvent(
         id=work_item_id,
@@ -491,6 +492,8 @@ async def test_poll_completed_events(
             key=b"",
             payload=b"",
         )
+        work_manager._dispatch_timestamps[work_item_id_1] = 0.0
+        work_manager._dispatch_timestamps[work_item_id_2] = 0.0
 
         # Mock completed events from the execution engine
         event1 = CompletionEvent(
@@ -978,6 +981,35 @@ async def test_on_revoke_cleans_revoked_in_flight_state(
 
 
 @pytest.mark.asyncio
+async def test_on_revoke_does_not_decrement_for_queued_unsubmitted_items(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=1,
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 10, 1, b"key-1", b"payload-10"
+    )
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 11, 1, b"key-2", b"payload-11"
+    )
+
+    await work_manager.schedule()
+
+    assert work_manager._current_in_flight_count == 1
+    assert len(work_manager._in_flight_work_items) == 2
+
+    work_manager.on_revoke([mock_dto_topic_partition])
+
+    assert work_manager._current_in_flight_count == 0
+    assert work_manager._in_flight_work_items == {}
+
+
+@pytest.mark.asyncio
 async def test_poll_completed_events_cleans_stale_epoch_in_flight_state(
     mock_execution_engine, mock_dto_topic_partition
 ):
@@ -1066,3 +1098,65 @@ async def test_poll_completed_events_cleans_any_stale_epoch_for_tracked_work_ite
     assert submitted_item.id not in work_manager._dispatch_timestamps
     assert work_manager._current_in_flight_count == 0
     assert (mock_dto_topic_partition, b"key-A") not in work_manager._keys_in_flight
+
+
+@pytest.mark.asyncio
+async def test_stale_completion_after_reassign_does_not_touch_new_epoch_state(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+    )
+
+    old_tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    old_tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: old_tracker})
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 10, old_tracker.get_current_epoch(), b"key-A", b"v1"
+    )
+    await work_manager.schedule()
+    old_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+
+    work_manager.on_revoke([mock_dto_topic_partition])
+
+    new_tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    new_tracker.increment_epoch()
+    new_tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: new_tracker})
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 11, new_tracker.get_current_epoch(), b"key-A", b"v2"
+    )
+    await work_manager.schedule()
+    new_item = work_manager._execution_engine.submit.await_args_list[1].args[0]
+
+    stale_completion = CompletionEvent(
+        id=old_item.id,
+        tp=mock_dto_topic_partition,
+        offset=old_item.offset,
+        epoch=old_item.epoch,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [stale_completion]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [stale_completion]
+    assert old_item.id not in work_manager._in_flight_work_items
+    assert new_item.id in work_manager._in_flight_work_items
+    assert new_item.id in work_manager._dispatch_timestamps
+    assert work_manager._current_in_flight_count == 1
+    assert (mock_dto_topic_partition, b"key-A") in work_manager._keys_in_flight
+    assert new_tracker.last_committed_offset == -1

@@ -43,7 +43,7 @@ def _work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
         "epoch": item.epoch,
         "key": item.key,
         "payload": item.payload,
-        "requeue_attempts": 0,
+        "requeue_attempts": item.requeue_attempts,
     }
 
 
@@ -55,6 +55,7 @@ def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
         epoch=payload["epoch"],
         key=payload.get("key"),
         payload=payload.get("payload"),
+        requeue_attempts=payload.get("requeue_attempts", 0),
     )
 
 
@@ -471,7 +472,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
 
-        self._log_queue: Queue[logging.LogRecord] = Queue()
+        self._log_queue: Queue[logging.LogRecord] = Queue(
+            maxsize=config.process_config.queue_size
+        )
         main_handlers = tuple(logging.getLogger().handlers)
         self._log_listener = LogManager.create_queue_listener(
             self._log_queue, main_handlers

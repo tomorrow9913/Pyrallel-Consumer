@@ -200,6 +200,17 @@ consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 
 For detailed runnable patterns, see [`examples/`](./examples/).
 
+### Rebalance state preservation
+
+- Default: `contiguous_only`
+  - On rebalance/restart, only the safe contiguous HWM is preserved via the committed Kafka offset.
+  - Sparse completed offsets beyond the HWM may be replayed later; this is the simplest and safest at-least-once default.
+- Optional: `metadata_snapshot`
+  - Sparse completed offsets are encoded into Kafka commit metadata on revoke/commit and restored on the next assignment.
+  - This can reduce avoidable reprocessing, but failures must remain fail-closed back to `contiguous_only` semantics.
+
+Even with `metadata_snapshot`, downstream side effects should remain idempotent.
+
 ## 🧪 Run Benchmarks
 
 ```bash

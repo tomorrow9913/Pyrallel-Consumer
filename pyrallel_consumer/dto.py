@@ -86,6 +86,7 @@ class WorkItem:
         epoch (int): 처리 에포크(작업 항목이 속한 시점의 파티션 소유권 세대 번호)
         key (Any): 가상 파티셔닝을 위한 메시지 키
         payload (Any): 실제 메시지 페이로드
+        requeue_attempts (int): process worker 재큐 시도 횟수
     """
 
     id: str
@@ -94,6 +95,7 @@ class WorkItem:
     epoch: int
     key: Any  # Message key for virtual partitioning
     payload: Any  # The actual message payload
+    requeue_attempts: int = 0
 
 
 # --- Process Execution ---

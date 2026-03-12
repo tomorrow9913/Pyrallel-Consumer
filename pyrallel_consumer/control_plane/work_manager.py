@@ -150,7 +150,8 @@ class WorkManager:
             self._partitions_in_flight.discard(completed_item.tp)
 
         self._cleanup_empty_queue(completed_item.tp, completed_item.key)
-        self._current_in_flight_count = max(0, self._current_in_flight_count - 1)
+        if dispatch_time is not None:
+            self._current_in_flight_count = max(0, self._current_in_flight_count - 1)
         if reschedule:
             self._invalidate_blocking_cache()
         return True, dispatch_time

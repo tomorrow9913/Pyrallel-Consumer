@@ -3,9 +3,10 @@
 
 import asyncio
 import random
+from itertools import islice
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from confluent_kafka import Consumer, KafkaException, Message, Producer
+from confluent_kafka import OFFSET_INVALID, Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
@@ -32,6 +33,8 @@ logger = LogManager.get_logger(__name__)
 
 class BrokerPoller:
     """Polls Kafka, feeds WorkManager, coordinates commits."""
+
+    MAX_COMPLETED_OFFSETS_FOR_METADATA = 2048
 
     def __init__(
         self,
@@ -87,6 +90,43 @@ class BrokerPoller:
 
         self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
         self._idle_consume_timeout_seconds = 0.1
+
+    # ------------------------------------------------------------------
+    def _rebalance_state_strategy(self) -> str:
+        return str(
+            getattr(
+                self._kafka_config.parallel_consumer,
+                "rebalance_state_strategy",
+                "contiguous_only",
+            )
+        )
+
+    def _decode_assignment_completed_offsets(
+        self,
+        partition: KafkaTopicPartition,
+        last_committed: int,
+    ) -> set[int]:
+        if self._rebalance_state_strategy() != "metadata_snapshot":
+            return set()
+
+        raw_metadata = getattr(partition, "metadata", None)
+        if not isinstance(raw_metadata, str) or not raw_metadata:
+            return set()
+
+        decoded = self._metadata_encoder.decode_metadata(raw_metadata)
+        return {offset for offset in decoded if offset > last_committed}
+
+    def _encode_revoke_metadata(self, tracker: OffsetTracker, base_offset: int) -> str:
+        if self._rebalance_state_strategy() != "metadata_snapshot":
+            return ""
+        metadata = self._metadata_encoder.encode_metadata(
+            set(tracker.completed_offsets), base_offset
+        )
+        if isinstance(metadata, str):
+            return metadata
+        if isinstance(metadata, (bytes, bytearray)):
+            return bytes(metadata).decode("utf-8", errors="ignore")
+        return ""
 
     # ------------------------------------------------------------------
     async def _get_consume_timeout_seconds(self) -> float:
@@ -444,8 +484,10 @@ class BrokerPoller:
         offsets_to_commit = []
         for tp, safe_offset in commits_to_make:
             tracker = self._offset_trackers[tp]
+            base_offset = safe_offset + 1
+            metadata_offsets = self._get_commit_metadata_offsets(tracker, base_offset)
             metadata = self._metadata_encoder.encode_metadata(
-                tracker.completed_offsets, safe_offset + 1
+                metadata_offsets, base_offset
             )
             if isinstance(metadata, (bytes, bytearray)):
                 metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
@@ -490,6 +532,19 @@ class BrokerPoller:
                         max_attempts,
                         exc,
                     )
+
+    def _get_commit_metadata_offsets(
+        self, tracker: OffsetTracker, base_offset: int
+    ) -> set[int]:
+        if hasattr(tracker.completed_offsets, "irange"):
+            return set(
+                islice(
+                    tracker.completed_offsets.irange(minimum=base_offset),
+                    self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
+                )
+            )
+
+        return {offset for offset in tracker.completed_offsets if offset >= base_offset}
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
@@ -612,23 +667,58 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
+        committed_offsets: Dict[Tuple[str, int], int] = {}
+        try:
+            committed_partitions = consumer.committed(partitions)
+            for committed_tp in committed_partitions:
+                if committed_tp.offset is None:
+                    continue
+                committed_offsets[
+                    (committed_tp.topic, committed_tp.partition)
+                ] = committed_tp.offset
+        except KafkaException as exc:
+            logger.warning(
+                "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
+                exc,
+            )
+
         work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
 
         for partition in partitions:
             tp_dto = DtoTopicPartition(partition.topic, partition.partition)
-            tracker = OffsetTracker(
-                topic_partition=tp_dto,
-                starting_offset=partition.offset,
-                max_revoke_grace_ms=0,
-                initial_completed_offsets=set(),
+            committed_offset = committed_offsets.get(
+                (partition.topic, partition.partition)
+            )
+            tracker_starting_offset = (
+                committed_offset
+                if committed_offset is not None and committed_offset > OFFSET_INVALID
+                else partition.offset
             )
             last_committed = (
-                partition.offset - 1
-                if partition.offset and partition.offset > 0
-                else -1
+                committed_offset - 1
+                if committed_offset is not None and committed_offset >= 0
+                else (
+                    partition.offset - 1
+                    if partition.offset and partition.offset > 0
+                    else -1
+                )
+            )
+            initial_completed_offsets = self._decode_assignment_completed_offsets(
+                partition,
+                last_committed,
+            )
+            tracker = OffsetTracker(
+                topic_partition=tp_dto,
+                starting_offset=tracker_starting_offset,
+                max_revoke_grace_ms=0,
+                initial_completed_offsets=initial_completed_offsets,
             )
             tracker.last_committed_offset = last_committed
-            tracker.last_fetched_offset = last_committed
+            tracker.last_fetched_offset = max(
+                [last_committed, *initial_completed_offsets]
+                if initial_completed_offsets
+                else [last_committed]
+            )
             tracker.increment_epoch()
             self._offset_trackers[tp_dto] = tracker
             work_manager_assignments[tp_dto] = tracker
@@ -658,10 +748,12 @@ class BrokerPoller:
             tracker.advance_high_water_mark()
             safe_offset = tracker.last_committed_offset
             if safe_offset >= 0:
+                metadata = self._encode_revoke_metadata(tracker, safe_offset + 1)
                 tp_to_commit = KafkaTopicPartition(
                     tp_dto.topic,
                     tp_dto.partition,
                     safe_offset + 1,
+                    metadata=metadata,
                 )
                 try:
                     consumer.commit(offsets=[tp_to_commit], asynchronous=False)
