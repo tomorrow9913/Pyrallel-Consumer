@@ -20,7 +20,7 @@ def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None
 
     assert config.max_blocking_duration_ms == 2500
 
-    monkeypatch.delenv("PARALLEL_CONSUMER__MAX_BLOCKING_DURATION_MS", raising=False)
+    monkeypatch.delenv("PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS", raising=False)
 
 
 def test_parallel_consumer_config_can_disable_strict_completion_monitor(
