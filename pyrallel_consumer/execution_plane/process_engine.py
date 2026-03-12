@@ -31,7 +31,6 @@ SerializedCompletionEvent = dict[str, Any]
 SerializedRegistryEvent = dict[str, Any]
 
 _SENTINEL = None
-
 _logger = logging.getLogger(__name__)
 
 
@@ -241,12 +240,12 @@ def _worker_loop(
     recycle_limit = (
         max_tasks_per_child + sampled_jitter if max_tasks_per_child > 0 else None
     )
-
     while True:
         item = task_queue.get()
         if item is _SENTINEL:
             worker_logger.debug(
-                "ProcessWorker[%d] received sentinel, shutting down.", process_idx
+                "ProcessWorker[%d] received sentinel, shutting down.",
+                process_idx,
             )
             break
 
@@ -465,6 +464,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
         self._workers: List[Process] = []
+        self._worker_pid_by_index: dict[int, Optional[int]] = {}
         self._in_flight_count: int = 0
         self._in_flight_lock = threading.Lock()
 
@@ -500,6 +500,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             ),
         )
         worker.start()
+        self._worker_pid_by_index[idx] = worker.pid
         self._logger.debug("Started ProcessWorker[%d] (PID: %d)", idx, worker.pid)
         return worker
 
@@ -657,6 +658,51 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             elif kind == "done" and key is not None:
                 self._in_flight_registry.pop(key, None)
 
+    def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
+        drained_registry = 0
+        drained_completion = 0
+
+        registry_event_queue = getattr(self, "_registry_event_queue", None)
+        if registry_event_queue is not None:
+            while True:
+                try:
+                    event = registry_event_queue.get_nowait()
+                except queue.Empty:
+                    break
+                drained_registry += 1
+                kind = event.get("kind")
+                key = event.get("key")
+                if kind == "start" and key is not None:
+                    payload = dict(event.get("payload", {}))
+                    payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+                    self._in_flight_registry[key] = payload
+                elif kind == "timeout" and key in self._in_flight_registry:
+                    payload = dict(self._in_flight_registry.get(key, {}))
+                    payload["timed_out"] = True
+                    payload["timeout_error"] = event.get(
+                        "timeout_error", "task_timeout"
+                    )
+                    payload["attempt"] = event.get("attempt", 1)
+                    self._in_flight_registry[key] = payload
+                elif kind == "done" and key is not None:
+                    self._in_flight_registry.pop(key, None)
+
+        while True:
+            try:
+                raw_event = self._completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained_completion += 1
+            if isinstance(raw_event, (bytes, bytearray)):
+                event = _completion_event_from_dict(
+                    msgpack.unpackb(raw_event, raw=False)
+                )
+            else:
+                event = raw_event
+            self._prefetched_completion_events.append(event)
+
+        return drained_registry, drained_completion
+
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         self._drain_registry_events()
         min_offset = None
@@ -764,11 +810,63 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
         self._is_shutdown = True
 
-        _logger.debug("Initiating ProcessExecutionEngine shutdown.")
+        self._drain_registry_events()
+        prefetched_count = len(self._prefetched_completion_events)
+        in_flight_registry_size = len(self._in_flight_registry)
+        worker_count = len(self._workers)
+        _logger.debug(
+            "Initiating ProcessExecutionEngine shutdown. prefetched_completion_events=%d in_flight_registry=%d worker_count=%d",
+            prefetched_count,
+            in_flight_registry_size,
+            worker_count,
+        )
         self._batch_accumulator.close()
         # Send sentinel to all workers to signal shutdown
         for _ in self._workers:
             self._task_queue.put(_SENTINEL)
+
+        shutdown_drain_deadline = time.monotonic() + 1.0
+        total_registry_drained = 0
+        total_completion_drained = 0
+        while time.monotonic() < shutdown_drain_deadline:
+            drained_registry, drained_completion = self._drain_shutdown_ipc_once()
+            total_registry_drained += drained_registry
+            total_completion_drained += drained_completion
+            if (
+                drained_registry == 0
+                and drained_completion == 0
+                and not self._in_flight_registry
+            ):
+                break
+            await asyncio.sleep(0.01)
+        _logger.debug(
+            "ProcessExecutionEngine shutdown pre-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
+            total_registry_drained,
+            total_completion_drained,
+            len(self._in_flight_registry),
+        )
+        if self._in_flight_registry:
+            registry_summary = []
+            for (worker_idx, topic, partition, offset), payload in sorted(
+                self._in_flight_registry.items(),
+                key=lambda item: item[0],
+            ):
+                registry_summary.append(
+                    "%d(pid=%s):%s-%d@%d timed_out=%s attempts=%s"
+                    % (
+                        worker_idx,
+                        self._worker_pid_by_index.get(worker_idx),
+                        topic,
+                        partition,
+                        offset,
+                        payload.get("timed_out", False),
+                        payload.get("requeue_attempts", 0),
+                    )
+                )
+            _logger.warning(
+                "Residual in-flight registry after shutdown drain: %s",
+                "; ".join(registry_summary),
+            )
 
         # Wait for all workers to finish
         for worker in self._workers:

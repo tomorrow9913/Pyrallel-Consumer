@@ -1,6 +1,7 @@
 """Tests for ProcessExecutionEngine micro-batching."""
 
 import asyncio
+import queue
 import time
 from collections import deque
 from typing import Any, Dict, cast
@@ -345,6 +346,9 @@ class _FakeCloser:
     def put(self, item) -> None:
         self.items.append(item)
 
+    def get_nowait(self):
+        raise queue.Empty()
+
     def close(self) -> None:
         self.closed = True
 
@@ -355,6 +359,24 @@ class _FakeListener:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+class _FakeDrainQueue:
+    def __init__(self, items=None):
+        self._items = list(items or [])
+        self.closed = False
+        self.put_items = []
+
+    def get_nowait(self):
+        if not self._items:
+            raise queue.Empty()
+        return self._items.pop(0)
+
+    def put(self, item) -> None:
+        self.put_items.append(item)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class TestShutdownLifecycle:
@@ -388,12 +410,40 @@ class TestShutdownLifecycle:
         engine._log_listener = cast(Any, _FakeListener())
         engine._prefetched_completion_events = deque()
         engine._in_flight_registry = {}
+        engine._worker_pid_by_index = {}
         engine._in_flight_count = 0
         engine._in_flight_lock = __import__("threading").Lock()
         engine._logger = __import__("logging").getLogger(__name__)
         engine._is_shutdown = False
         setattr(engine, "_drain_registry_events", lambda: None)
         return engine
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_registry_events_before_join(self):
+        worker = _FakeShutdownWorker(pid=303, alive_states=[False])
+        engine = self._build_shutdown_engine(worker)
+        engine._registry_event_queue = _FakeDrainQueue(
+            [
+                {
+                    "kind": "done",
+                    "key": (0, "topic", 0, 42),
+                }
+            ]
+        )
+        engine._completion_queue = _FakeDrainQueue()
+        engine._in_flight_registry = {
+            (0, "topic", 0, 42): {
+                "offset": 42,
+                "topic": "topic",
+                "partition": 0,
+                "requeue_attempts": 0,
+            }
+        }
+
+        await engine.shutdown()
+
+        assert engine._in_flight_registry == {}
+        assert worker.join_calls == [0.05]
 
     @pytest.mark.asyncio
     async def test_shutdown_rejoins_after_terminate_before_considering_kill(self):
