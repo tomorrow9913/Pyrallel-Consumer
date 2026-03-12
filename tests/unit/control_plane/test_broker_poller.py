@@ -84,6 +84,20 @@ def broker_poller(mock_kafka_config, mock_execution_engine):
     return poller
 
 
+def test_broker_poller_uses_seventy_percent_resume_threshold(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 1000
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+
+    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
+
+
 @pytest.mark.asyncio
 async def test_on_assign_initializes_offset_trackers(broker_poller, mock_consumer):
     tps_to_assign = [

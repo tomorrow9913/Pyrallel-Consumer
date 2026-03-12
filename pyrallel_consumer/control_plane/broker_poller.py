@@ -81,7 +81,9 @@ class BrokerPoller:
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
-        self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = self.MAX_IN_FLIGHT_MESSAGES // 2
+        self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = max(
+            1, int(self.MAX_IN_FLIGHT_MESSAGES * 0.7)
+        )
         self._is_paused = False
 
         self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
