@@ -10,6 +10,7 @@ def test_parallel_consumer_config_defaults():
 
     assert config.blocking_warn_seconds == 5.0
     assert config.max_blocking_duration_ms == 0
+    assert config.strict_completion_monitor_enabled is True
 
 
 def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None:
@@ -20,6 +21,21 @@ def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None
     assert config.max_blocking_duration_ms == 2500
 
     monkeypatch.delenv("PARALLEL_CONSUMER__MAX_BLOCKING_DURATION_MS", raising=False)
+
+
+def test_parallel_consumer_config_can_disable_strict_completion_monitor(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED", "false")
+
+    config = ParallelConsumerConfig()
+
+    assert config.strict_completion_monitor_enabled is False
+
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED",
+        raising=False,
+    )
 
 
 def test_parallel_consumer_config_rejects_zero_batch_and_worker_pool_size() -> None:

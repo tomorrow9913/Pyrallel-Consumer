@@ -3,8 +3,9 @@ import contextvars
 import logging
 import random
 from asyncio import Semaphore, Task
+from collections import deque
 from collections.abc import Callable
-from typing import Any, List, Optional, Set
+from typing import Any, Deque, List, Optional, Set
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
@@ -26,6 +27,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._worker_fn = worker_fn
         self._semaphore = Semaphore(config.max_in_flight)
         self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
+        self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._in_flight_tasks: Set[Task] = set()
         self._shutdown_event = asyncio.Event()
 
@@ -145,10 +147,34 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """
         completed_events: List[CompletionEvent] = []
         while (
+            len(completed_events) < batch_limit and self._prefetched_completion_events
+        ):
+            completed_events.append(self._prefetched_completion_events.popleft())
+        while (
             len(completed_events) < batch_limit and not self._completion_queue.empty()
         ):
             completed_events.append(self._completion_queue.get_nowait())
         return completed_events
+
+    async def wait_for_completion(
+        self, timeout_seconds: Optional[float] = None
+    ) -> bool:
+        if self._prefetched_completion_events or not self._completion_queue.empty():
+            return True
+
+        try:
+            if timeout_seconds is None:
+                event = await self._completion_queue.get()
+            else:
+                event = await asyncio.wait_for(
+                    self._completion_queue.get(),
+                    timeout=timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            return False
+
+        self._prefetched_completion_events.append(event)
+        return True
 
     def get_in_flight_count(self) -> int:
         """

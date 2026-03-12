@@ -97,6 +97,7 @@ class ParallelConsumerConfig(BaseSettings):
     blocking_warn_seconds: float = 5.0
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
+    strict_completion_monitor_enabled: bool = True
     execution: ExecutionConfig = ExecutionConfig()
 
 

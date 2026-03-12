@@ -183,6 +183,89 @@ def test_results_modal_hides_unselected_workload_winner_cards(tmp_path: Path) ->
     assert "io 1등" not in modal._winner_section_text("key_hash")
 
 
+def test_results_modal_infers_default_ordering_from_legacy_results_json(
+    tmp_path: Path,
+) -> None:
+    results_path = tmp_path / "legacy-results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "options": {"workload": "all", "json_output": str(results_path)},
+                "results": [
+                    {
+                        "run_name": "baseline",
+                        "run_type": "baseline",
+                        "workload": "sleep",
+                        "topic": "demo-sleep-baseline",
+                        "messages_processed": 100,
+                        "total_time_sec": 2.5,
+                        "throughput_tps": 40.0,
+                        "avg_processing_ms": 1.25,
+                        "p99_processing_ms": 2.5,
+                    },
+                    {
+                        "run_name": "sleep-pyrallel-async",
+                        "run_type": "async",
+                        "workload": "sleep",
+                        "topic": "demo-sleep-async",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.5,
+                        "throughput_tps": 66.0,
+                        "avg_processing_ms": 1.0,
+                        "p99_processing_ms": 2.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    modal = ResultsSummaryModalScreen(
+        summary_text="unused", output_path=str(results_path)
+    )
+
+    assert modal._visible_orderings == ("key_hash",)
+    assert "ORDER: key_hash" in modal._winner_section_text("key_hash")
+    assert "sleep 1등" in modal._winner_section_text("key_hash")
+    assert "async" in modal._winner_section_text("key_hash")
+
+
+def test_results_modal_infers_process_label_from_legacy_pyrallel_run_name(
+    tmp_path: Path,
+) -> None:
+    results_path = tmp_path / "legacy-process-results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "options": {"workload": "all", "json_output": str(results_path)},
+                "results": [
+                    {
+                        "run_name": "cpu-key_hash-pyrallel-process",
+                        "run_type": "pyrallel",
+                        "workload": "cpu",
+                        "ordering": "key_hash",
+                        "topic": "demo-cpu-process",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.2,
+                        "throughput_tps": 80.0,
+                        "avg_processing_ms": 0.8,
+                        "p99_processing_ms": 1.2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    modal = ResultsSummaryModalScreen(
+        summary_text="unused", output_path=str(results_path)
+    )
+
+    assert "cpu 1등" in modal._winner_section_text("key_hash")
+    assert "process" in modal._winner_section_text("key_hash")
+    assert "pyrallel" not in modal._winner_section_text("key_hash")
+
+
 def test_results_modal_defaults_to_centered_layout() -> None:
     assert "align: center middle" in ResultsSummaryModalScreen.DEFAULT_CSS
 
@@ -289,6 +372,7 @@ async def test_run_screen_opens_results_modal_after_completion(
             "1.000",
             "2.000",
         ]
+        assert summary_table.size.height >= 8
     assert "ORDER: key_hash" in str(key_hash_winners.content)
     assert "sleep 1등" in str(key_hash_winners.content)
     assert "async" in str(key_hash_winners.content)

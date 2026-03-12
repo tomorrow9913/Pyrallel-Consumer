@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 
 from pyrallel_consumer.dto import CompletionEvent, WorkItem
 
@@ -38,6 +38,20 @@ class BaseExecutionEngine(ABC):
 
         Returns:
             List[CompletionEvent]: 완료된 이벤트 리스트
+        """
+
+    @abstractmethod
+    async def wait_for_completion(
+        self, timeout_seconds: Optional[float] = None
+    ) -> bool:
+        """
+        Waits until at least one completion event is available or the timeout expires.
+
+        Args:
+            timeout_seconds (Optional[float]): 최대 대기 시간(초). None이면 무기한 대기.
+
+        Returns:
+            bool: 완료 이벤트가 준비되면 True, timeout이면 False
         """
 
     @abstractmethod

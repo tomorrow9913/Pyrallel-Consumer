@@ -102,7 +102,7 @@ async def test_on_assign_initializes_offset_trackers(broker_poller, mock_consume
 
 
 @pytest.mark.asyncio
-async def test_on_assign_passes_independent_starting_offsets_to_work_manager(
+async def test_on_assign_passes_shared_trackers_to_work_manager(
     mock_kafka_config, mock_execution_engine, mock_consumer
 ):
     mock_work_manager = MagicMock()
@@ -126,14 +126,10 @@ async def test_on_assign_passes_independent_starting_offsets_to_work_manager(
     expected_tp_1 = DtoTopicPartition(topic="test-topic", partition=1)
 
     assert set(assignments) == {expected_tp_0, expected_tp_1}
-    assert assignments[expected_tp_0] == 100
-    assert assignments[expected_tp_1] == 200
-    assert (
-        assignments[expected_tp_0] is not broker_poller._offset_trackers[expected_tp_0]
-    )
-    assert (
-        assignments[expected_tp_1] is not broker_poller._offset_trackers[expected_tp_1]
-    )
+    assert assignments[expected_tp_0] is broker_poller._offset_trackers[expected_tp_0]
+    assert assignments[expected_tp_1] is broker_poller._offset_trackers[expected_tp_1]
+    assert assignments[expected_tp_0].get_current_epoch() == 1
+    assert assignments[expected_tp_1].get_current_epoch() == 1
     assert broker_poller._offset_trackers[expected_tp_0].last_committed_offset == 99
     assert broker_poller._offset_trackers[expected_tp_1].last_committed_offset == 199
 

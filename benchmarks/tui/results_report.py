@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _HEADERS = (
     ("Run", "run_name"),
     ("Type", "run_type"),
@@ -102,10 +103,8 @@ def load_results_table_data(output_path: str | Path) -> ResultsTableData | None:
 def summarize_workload_winners(
     output_path: str | Path,
 ) -> dict[str, dict[str, WorkloadWinner]]:
-    path = Path(output_path).expanduser()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    payload = _load_results_payload(output_path)
+    if payload is None:
         return {}
 
     results = payload.get("results")
@@ -117,10 +116,8 @@ def summarize_workload_winners(
         if not isinstance(result, dict):
             continue
         workload = str(result.get("workload", "")).strip()
-        ordering = str(result.get("ordering", "")).strip()
-        if not workload:
-            continue
-        if not ordering:
+        ordering = _resolve_ordering(result, payload)
+        if not workload or ordering is None:
             continue
         winner_key = (ordering, workload)
         current_best = winners.get(winner_key)
@@ -213,3 +210,46 @@ def _display_run_type(run_type: str, run_name: str) -> str:
         if "process" in lowered:
             return "process"
     return run_type
+
+
+def _load_results_payload(output_path: str | Path) -> dict[str, Any] | None:
+    path = Path(output_path).expanduser()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _resolve_ordering(result: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    explicit = str(result.get("ordering", "")).strip()
+    if explicit in _ORDERING_NAMES:
+        return explicit
+
+    for field in (str(result.get("run_name", "")), str(result.get("topic", ""))):
+        for ordering in _ORDERING_NAMES:
+            if (
+                f"-{ordering}-" in field
+                or field.startswith(f"{ordering}-")
+                or field.endswith(f"-{ordering}")
+                or field == ordering
+            ):
+                return ordering
+
+    options = payload.get("options")
+    if isinstance(options, dict):
+        for key in ("order", "ordering_modes"):
+            value = options.get(key)
+            if isinstance(value, str):
+                selected = [item.strip() for item in value.split(",") if item.strip()]
+            elif isinstance(value, list):
+                selected = [str(item).strip() for item in value if str(item).strip()]
+            else:
+                continue
+            for ordering in selected:
+                if ordering in _ORDERING_NAMES:
+                    return ordering
+
+    return "key_hash"

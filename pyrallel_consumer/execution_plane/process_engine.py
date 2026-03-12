@@ -4,13 +4,15 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import queue
 import random
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
-from multiprocessing import Manager, Process, Queue
-from typing import Any, List, Optional
+from multiprocessing import Process, Queue
+from typing import Any, Deque, List, Optional
 
 import msgpack
 
@@ -26,6 +28,7 @@ from pyrallel_consumer.logger import LogManager
 
 SerializedWorkItem = dict[str, Any]
 SerializedCompletionEvent = dict[str, Any]
+SerializedRegistryEvent = dict[str, Any]
 
 _SENTINEL = None
 
@@ -85,7 +88,7 @@ def _completion_event_from_dict(
     )
 
 
-def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
+def _decode_incoming_payloads(item: Any, max_bytes: int) -> list[SerializedWorkItem]:
     if isinstance(item, (bytes, bytearray)):
         if len(item) > max_bytes:
             raise ValueError("payload_too_large")
@@ -94,10 +97,30 @@ def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
         decoded = list(unpacker)
         if len(decoded) == 1 and isinstance(decoded[0], list):
             decoded = decoded[0]
-        return [_work_item_from_dict(entry) for entry in decoded]
+        return [dict(entry) for entry in decoded]
     if isinstance(item, list):
-        return item
-    return [item]
+        payloads: list[SerializedWorkItem] = []
+        for entry in item:
+            if isinstance(entry, WorkItem):
+                payload = _work_item_to_dict(entry)
+            else:
+                payload = dict(entry)
+            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+            payloads.append(payload)
+        return payloads
+    if isinstance(item, WorkItem):
+        payload = _work_item_to_dict(item)
+    else:
+        payload = dict(item)
+    payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+    return [payload]
+
+
+def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
+    return [
+        _work_item_from_dict(payload)
+        for payload in _decode_incoming_payloads(item, max_bytes)
+    ]
 
 
 class _BatchAccumulator:
@@ -110,7 +133,7 @@ class _BatchAccumulator:
 
     def __init__(
         self,
-        task_queue: Queue[Any],
+        task_queue: Queue,
         batch_size: int,
         max_batch_wait_ms: int,
     ):
@@ -192,13 +215,13 @@ def _calculate_backoff(
 
 
 def _worker_loop(
-    task_queue: Queue[Any],
-    completion_queue: Queue[Any],
+    task_queue: Queue,
+    completion_queue: Queue,
+    registry_event_queue: Queue,
     worker_fn: Callable[[WorkItem], Any],
     process_idx: int,
     execution_config: ExecutionConfig,
-    log_queue: Optional[Queue[Any]] = None,
-    in_flight_registry=None,
+    log_queue: Optional[Queue] = None,
 ):
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
@@ -228,7 +251,7 @@ def _worker_loop(
             break
 
         try:
-            work_items = _decode_incoming_item(
+            payloads = _decode_incoming_payloads(
                 item, execution_config.process_config.msgpack_max_bytes
             )
         except Exception as decode_exc:
@@ -255,18 +278,22 @@ def _worker_loop(
                 )
             continue
 
-        for idx, work_item in enumerate(work_items):
-            in_flight_key = None
-            if in_flight_registry is not None:
-                in_flight_key = (
-                    process_idx,
-                    work_item.tp.topic,
-                    work_item.tp.partition,
-                    work_item.offset,
-                )
-                payload = _work_item_to_dict(work_item)
-                payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-                in_flight_registry[in_flight_key] = payload
+        for idx, payload in enumerate(payloads):
+            work_item = _work_item_from_dict(payload)
+            in_flight_key = (
+                process_idx,
+                work_item.tp.topic,
+                work_item.tp.partition,
+                work_item.offset,
+            )
+            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+            registry_event_queue.put(
+                {
+                    "kind": "start",
+                    "key": in_flight_key,
+                    "payload": payload,
+                }
+            )
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
@@ -311,12 +338,14 @@ def _worker_loop(
                     fatal_timeout = True
                     status = CompletionStatus.FAILURE
                     error = str(e)
-                    if in_flight_registry is not None and in_flight_key is not None:
-                        payload = dict(in_flight_registry.get(in_flight_key, {}))
-                        payload["timed_out"] = True
-                        payload["timeout_error"] = error
-                        payload["attempt"] = attempt
-                        in_flight_registry[in_flight_key] = payload
+                    registry_event_queue.put(
+                        {
+                            "kind": "timeout",
+                            "key": in_flight_key,
+                            "attempt": attempt,
+                            "timeout_error": error,
+                        }
+                    )
                     worker_logger.error(
                         "Task offset=%d timed out after %.3fs in ProcessWorker[%d]: %s",
                         work_item.offset,
@@ -379,8 +408,7 @@ def _worker_loop(
                         put_exc,
                     )
                 finally:
-                    if in_flight_registry is not None and in_flight_key is not None:
-                        in_flight_registry.pop(in_flight_key, None)
+                    registry_event_queue.put({"kind": "done", "key": in_flight_key})
 
             # Check worker recycling after task completion
             if recycle_limit is not None:
@@ -393,14 +421,9 @@ def _worker_loop(
                         max_tasks_per_child,
                         sampled_jitter,
                     )
-                    remaining = work_items[idx + 1 :]
+                    remaining = payloads[idx + 1 :]
                     if remaining:
-                        remaining_payloads = [
-                            _work_item_to_dict(item) for item in remaining
-                        ]
-                        packed_remaining = msgpack.packb(
-                            remaining_payloads, use_bin_type=True
-                        )
+                        packed_remaining = msgpack.packb(remaining, use_bin_type=True)
                         task_queue.put(packed_remaining)
                     should_exit_after_batch = True
 
@@ -436,8 +459,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             maxsize=config.process_config.queue_size
         )
         self._completion_queue: Queue[Any] = Queue()
-        self._manager = Manager()
-        self._in_flight_registry = self._manager.dict()
+        self._registry_event_queue: Queue[Any] = Queue()
+        self._prefetched_completion_events: Deque[CompletionEvent] = deque()
+        self._in_flight_registry: dict[
+            tuple[int, str, int, int], SerializedWorkItem
+        ] = {}
         self._workers: List[Process] = []
         self._in_flight_count: int = 0
         self._in_flight_lock = threading.Lock()
@@ -466,11 +492,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             args=(
                 self._task_queue,
                 self._completion_queue,
+                self._registry_event_queue,
                 self._worker_fn,
                 idx,
                 self._config,
                 self._log_queue,
-                self._in_flight_registry,
             ),
         )
         worker.start()
@@ -485,7 +511,33 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker = self._start_worker(i)
             self._workers.append(worker)
 
+    def _join_worker_with_escalation(self, worker: Process) -> None:
+        timeout_sec = self._config.process_config.worker_join_timeout_ms / 1000.0
+        worker.join(timeout=timeout_sec)
+        if not worker.is_alive():
+            return
+
+        self._logger.warning(
+            "ProcessWorker[%s] did not shut down gracefully after %.3fs. Terminating.",
+            worker.pid,
+            timeout_sec,
+        )
+        worker.terminate()
+        worker.join(timeout=timeout_sec)
+        if not worker.is_alive():
+            return
+
+        kill = getattr(worker, "kill", None)
+        if callable(kill):
+            self._logger.warning(
+                "ProcessWorker[%s] still alive after terminate(). Killing.",
+                worker.pid,
+            )
+            kill()
+            worker.join(timeout=timeout_sec)
+
     def _ensure_workers_alive(self) -> None:
+        self._drain_registry_events()
         for idx, worker in enumerate(self._workers):
             if worker.is_alive():
                 continue
@@ -580,7 +632,33 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             new_worker = self._start_worker(idx)
             self._workers[idx] = new_worker
 
+    def _drain_registry_events(self) -> None:
+        registry_event_queue = getattr(self, "_registry_event_queue", None)
+        if registry_event_queue is None:
+            return
+        while True:
+            try:
+                event = registry_event_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            kind = event.get("kind")
+            key = event.get("key")
+            if kind == "start" and key is not None:
+                payload = dict(event.get("payload", {}))
+                payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+                self._in_flight_registry[key] = payload
+            elif kind == "timeout" and key in self._in_flight_registry:
+                payload = dict(self._in_flight_registry.get(key, {}))
+                payload["timed_out"] = True
+                payload["timeout_error"] = event.get("timeout_error", "task_timeout")
+                payload["attempt"] = event.get("attempt", 1)
+                self._in_flight_registry[key] = payload
+            elif kind == "done" and key is not None:
+                self._in_flight_registry.pop(key, None)
+
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        self._drain_registry_events()
         min_offset = None
         for (_w, topic, partition, _o), payload in self._in_flight_registry.items():
             if topic == tp.topic and partition == tp.partition:
@@ -594,6 +672,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
+        self._drain_registry_events()
         await asyncio.to_thread(self._batch_accumulator.add, work_item)
         with self._in_flight_lock:
             self._in_flight_count += 1
@@ -605,7 +684,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
         self._ensure_workers_alive()
+        self._drain_registry_events()
         completed_events: List[CompletionEvent] = []
+        while (
+            len(completed_events) < batch_limit and self._prefetched_completion_events
+        ):
+            completed_events.append(self._prefetched_completion_events.popleft())
+            with self._in_flight_lock:
+                self._in_flight_count -= 1
         while (
             len(completed_events) < batch_limit and not self._completion_queue.empty()
         ):
@@ -621,10 +707,43 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 completed_events.append(event)
                 with self._in_flight_lock:
                     self._in_flight_count -= 1
+            except queue.Empty:
+                break
             except Exception as e:
-                _logger.error("Error getting item from completion queue: %s", e)
+                _logger.error(
+                    "Error getting item from completion queue: %r", e, exc_info=True
+                )
                 break
         return completed_events
+
+    async def wait_for_completion(
+        self, timeout_seconds: Optional[float] = None
+    ) -> bool:
+        self._ensure_workers_alive()
+        self._drain_registry_events()
+
+        if self._prefetched_completion_events or not self._completion_queue.empty():
+            return True
+
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            return False
+
+        try:
+            raw_event = await asyncio.to_thread(
+                self._completion_queue.get,
+                True,
+                timeout_seconds,
+            )
+        except queue.Empty:
+            return False
+
+        if isinstance(raw_event, (bytes, bytearray)):
+            event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+        else:
+            event = raw_event
+
+        self._prefetched_completion_events.append(event)
+        return True
 
     def get_in_flight_count(self) -> int:
         """
@@ -653,15 +772,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         # Wait for all workers to finish
         for worker in self._workers:
-            worker.join(
-                timeout=self._config.process_config.worker_join_timeout_ms / 1000.0
-            )
-            if worker.is_alive():
-                _logger.warning(
-                    "ProcessWorker[%d] did not shut down gracefully. Terminating.",
-                    worker.pid,
-                )
-                worker.terminate()
+            self._join_worker_with_escalation(worker)
+
+        self._prefetched_completion_events.clear()
+        self._in_flight_registry.clear()
+        with self._in_flight_lock:
+            self._in_flight_count = 0
 
         _logger.debug("ProcessExecutionEngine shutdown complete.")
         self._log_listener.stop()
+        for queue_obj in (
+            self._task_queue,
+            self._completion_queue,
+            self._registry_event_queue,
+        ):
+            close = getattr(queue_obj, "close", None)
+            if callable(close):
+                close()

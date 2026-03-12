@@ -421,6 +421,9 @@ class WorkManager:
             # Update OffsetTracker based on the completion event
             if event.tp in self._offset_trackers:
                 offset_tracker = self._offset_trackers[event.tp]
+                current_epoch = offset_tracker.get_current_epoch()
+                if event.epoch != current_epoch:
+                    continue
                 if event.tp not in self._shared_offset_trackers:
                     offset_tracker.mark_complete(event.offset)
                     self._invalidate_blocking_cache()
@@ -445,9 +448,15 @@ class WorkManager:
                     dispatch_time = self._dispatch_timestamps.pop(event.id, None)
                     if dispatch_time is not None and self._metrics_exporter is not None:
                         duration = max(0.0, time.perf_counter() - dispatch_time)
-                        self._metrics_exporter.observe_completion(
-                            event.tp, event.status, duration
+                        completion_observer = getattr(
+                            self._metrics_exporter, "observe_work_completion", None
                         )
+                        if callable(completion_observer):
+                            completion_observer(event, completed_item, duration)
+                        else:
+                            self._metrics_exporter.observe_completion(
+                                event.tp, event.status, duration
+                            )
                     # After processing a completion, try to submit more tasks
                     await self.schedule()
             else:

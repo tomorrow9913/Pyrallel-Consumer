@@ -63,3 +63,40 @@ def test_ensure_workers_alive_does_not_requeue_timed_out_work(
     assert event.attempt == 1
     assert event.tp == TopicPartition("topic", 1)
     assert event.offset == 42
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_ignores_queue_empty_race(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._prefetched_completion_events = []
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._in_flight_count = 0
+    engine_any._in_flight_lock = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._ensure_workers_alive = Mock()
+
+    class _RacyQueue:
+        def empty(self) -> bool:
+            return False
+
+        def get_nowait(self):
+            raise queue.Empty()
+
+    engine_any._completion_queue = _RacyQueue()
+
+    error_messages: list[str] = []
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine._logger.error",
+        lambda message, *args, **kwargs: error_messages.append(
+            message % args if args else message
+        ),
+    )
+
+    completed = await engine.poll_completed_events()
+
+    assert completed == []
+    assert error_messages == []

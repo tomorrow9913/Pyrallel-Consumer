@@ -29,6 +29,7 @@ def _make_tracker_mock(tp):
     )
     mock.get_gaps.return_value = []
     mock.advance_high_water_mark.return_value = None
+    mock.get_current_epoch.return_value = 1
     return mock
 
 

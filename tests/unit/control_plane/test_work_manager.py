@@ -179,6 +179,7 @@ async def test_poll_completed_events_does_not_mark_complete_for_shared_trackers(
 ):
     shared_tracker = MagicMock(spec=OffsetTracker)
     shared_tracker.get_gaps.return_value = []
+    shared_tracker.get_current_epoch.return_value = 1
     work_manager.on_assign({mock_dto_topic_partition: shared_tracker})
 
     work_item_id = str(uuid.uuid4())
@@ -209,6 +210,64 @@ async def test_poll_completed_events_does_not_mark_complete_for_shared_trackers(
     shared_tracker.mark_complete.assert_not_called()
     assert work_manager._current_in_flight_count == 0
     assert work_item_id not in work_manager._in_flight_work_items
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_uses_work_completion_observer_hook(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    observed: list[tuple[CompletionEvent, WorkItem, float]] = []
+
+    class _Exporter:
+        def observe_work_completion(
+            self,
+            event: CompletionEvent,
+            work_item: WorkItem,
+            duration_seconds: float,
+        ) -> None:
+            observed.append((event, work_item, duration_seconds))
+
+        def observe_completion(self, *args, **kwargs) -> None:
+            raise AssertionError("observe_completion should not be called")
+
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        metrics_exporter=_Exporter(),
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    work_item_id = str(uuid.uuid4())
+    work_item = WorkItem(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=0,
+        key=b"",
+        payload=b"",
+    )
+    work_manager._current_in_flight_count = 1
+    work_manager._in_flight_work_items[work_item_id] = work_item
+    work_manager._dispatch_timestamps[work_item_id] = 0.0
+
+    event = CompletionEvent(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [event]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [event]
+    assert len(observed) == 1
+    observed_event, observed_item, observed_duration = observed[0]
+    assert observed_event == event
+    assert observed_item == work_item
+    assert observed_duration >= 0.0
 
 
 @pytest.mark.asyncio
@@ -397,6 +456,7 @@ async def test_poll_completed_events(
             )
         )
         MockOffsetTrackerClass.return_value = mock_tracker_instance
+        mock_tracker_instance.get_current_epoch.return_value = 1
 
         # Assign a topic-partition
         work_manager.on_assign([mock_dto_topic_partition])

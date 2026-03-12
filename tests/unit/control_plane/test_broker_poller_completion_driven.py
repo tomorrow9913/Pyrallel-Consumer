@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from confluent_kafka import Consumer
+from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
@@ -168,3 +169,249 @@ async def test_run_consumer_schedules_twice_when_messages_and_completions_share_
     assert broker_poller._work_manager.schedule.await_count == 2
     broker_poller._process_completed_events.assert_awaited_once_with([completion_event])
     assert broker_poller._work_manager.schedule.await_args_list == [call(), call()]
+
+
+@pytest.mark.asyncio
+async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock(
+        side_effect=[[completion_event], []]
+    )
+    broker_poller._work_manager.get_total_in_flight_count.side_effect = [1, 0]
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._process_completed_events = AsyncMock()
+    broker_poller._handle_blocking_timeouts = AsyncMock(return_value=[])
+    broker_poller._execution_engine = AsyncMock()
+
+    async def wait_for_completion(timeout_seconds=None):
+        broker_poller._running = False
+        return True
+
+    broker_poller._execution_engine.wait_for_completion.side_effect = (
+        wait_for_completion
+    )
+
+    broker_poller._running = True
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await broker_poller._run_completion_monitor()
+
+    broker_poller._execution_engine.wait_for_completion.assert_awaited_once()
+    broker_poller._process_completed_events.assert_awaited_once_with([completion_event])
+    broker_poller._work_manager.schedule.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_completion_monitor_submits_next_same_key_work_without_new_consume(
+    broker_poller, topic_partition
+):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._work_manager.on_assign({topic_partition: tracker})
+    broker_poller._work_manager._blocking_cache_ttl = 0
+    broker_poller._work_manager._blocking_cache_counter = 0
+    broker_poller._max_blocking_duration_ms = 0
+
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=0,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=1,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-1",
+    )
+    await broker_poller._work_manager.schedule()
+
+    assert broker_poller._execution_engine.submit.await_count == 1
+    first_item = broker_poller._execution_engine.submit.await_args_list[0].args[0]
+
+    broker_poller._execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id=first_item.id,
+            tp=topic_partition,
+            offset=first_item.offset,
+            epoch=tracker.get_current_epoch(),
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    async def wait_for_completion(timeout_seconds=None):
+        del timeout_seconds
+        broker_poller._running = False
+        return True
+
+    broker_poller._execution_engine.wait_for_completion.side_effect = (
+        wait_for_completion
+    )
+    broker_poller._running = True
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await broker_poller._run_completion_monitor()
+
+    assert broker_poller._execution_engine.submit.await_count == 2
+    second_item = broker_poller._execution_engine.submit.await_args_list[1].args[0]
+    assert second_item.offset == 1
+    assert second_item.key == b"key-A"
+
+
+@pytest.mark.asyncio
+async def test_start_skips_completion_monitor_task_when_disabled(
+    broker_poller,
+    mock_kafka_config,
+):
+    mock_kafka_config.parallel_consumer.strict_completion_monitor_enabled = False
+    created_coroutines: list[str] = []
+
+    def fake_create_task(coro):
+        created_coroutines.append(coro.cr_code.co_name)
+        coro.close()
+        return MagicMock()
+
+    with (
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Producer",
+            return_value=broker_poller.producer,
+        ),
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.AdminClient",
+            return_value=broker_poller.admin,
+        ),
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Consumer",
+            return_value=broker_poller.consumer,
+        ),
+        patch("asyncio.create_task", side_effect=fake_create_task),
+    ):
+        await broker_poller.start()
+
+    assert created_coroutines == ["_run_consumer"]
+    assert broker_poller._completion_monitor_task is None
+
+
+@pytest.mark.asyncio
+async def test_stale_completion_does_not_resubmit_next_same_key_work(
+    broker_poller, topic_partition, caplog
+):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._work_manager.on_assign({topic_partition: tracker})
+    broker_poller._work_manager._blocking_cache_ttl = 0
+    broker_poller._work_manager._blocking_cache_counter = 0
+
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=0,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=1,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-1",
+    )
+    await broker_poller._work_manager.schedule()
+
+    assert broker_poller._execution_engine.submit.await_count == 1
+    first_item = broker_poller._execution_engine.submit.await_args_list[0].args[0]
+
+    stale_completion = CompletionEvent(
+        id=first_item.id,
+        tp=topic_partition,
+        offset=first_item.offset,
+        epoch=tracker.get_current_epoch() - 1,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    broker_poller._execution_engine.poll_completed_events.return_value = [
+        stale_completion
+    ]
+
+    with caplog.at_level("WARNING"):
+        completed_events = await broker_poller._work_manager.poll_completed_events()
+        await broker_poller._process_completed_events(completed_events)
+
+    assert broker_poller._execution_engine.submit.await_count == 1
+    assert "Discarding zombie completion" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_assign_shared_tracker_allows_key_hash_backlog_to_resume(
+    broker_poller, topic_partition
+):
+    broker_poller._on_assign(
+        broker_poller.consumer,
+        [KafkaTopicPartition(topic_partition.topic, topic_partition.partition, 0)],
+    )
+    broker_poller.ORDERING_MODE = broker_poller._work_manager._ordering_mode
+    broker_poller._work_manager._blocking_cache_ttl = 0
+    broker_poller._work_manager._blocking_cache_counter = 0
+
+    tracker = broker_poller._offset_trackers[topic_partition]
+    shared_tracker = broker_poller._work_manager._offset_trackers[topic_partition]
+    assert shared_tracker is tracker
+    assert shared_tracker.get_current_epoch() == tracker.get_current_epoch() == 1
+
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=0,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=1,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-1",
+    )
+    await broker_poller._work_manager.schedule()
+
+    assert broker_poller._execution_engine.submit.await_count == 1
+    first_item = broker_poller._execution_engine.submit.await_args_list[0].args[0]
+
+    broker_poller._execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id=first_item.id,
+            tp=topic_partition,
+            offset=first_item.offset,
+            epoch=tracker.get_current_epoch(),
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    completed_events = await broker_poller._work_manager.poll_completed_events()
+    await broker_poller._process_completed_events(completed_events)
+    await broker_poller._work_manager.schedule()
+
+    assert broker_poller._execution_engine.submit.await_count == 2
+    second_item = broker_poller._execution_engine.submit.await_args_list[1].args[0]
+    assert second_item.offset == 1

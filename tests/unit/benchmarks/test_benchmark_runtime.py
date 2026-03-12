@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from benchmarks import (
     run_parallel_benchmark,
 )
 from benchmarks.stats import BenchmarkResult
+from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
 
 
 @pytest.fixture
@@ -50,6 +52,7 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "bootstrap_servers": "localhost:9092",
         "workloads": ["sleep"],
         "order": ["key_hash"],
+        "strict_completion_monitor": ["on"],
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
         "log_level": "WARNING",
@@ -183,6 +186,70 @@ def test_run_benchmark_expands_selected_workloads_and_orderings(
         ("sleep-partition-pyrallel-async", "sleep", "partition"),
         ("cpu-key_hash-pyrallel-async", "cpu", "key_hash"),
         ("cpu-partition-pyrallel-async", "cpu", "partition"),
+    ]
+
+
+def test_run_benchmark_expands_strict_completion_monitor_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    async_calls: list[tuple[str, bool, str]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        async_calls.append(
+            (
+                kwargs["run_name"],
+                kwargs["strict_completion_monitor_enabled"],
+                kwargs["topic_name"],
+            )
+        )
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(strict_completion_monitor=["on", "off"]),
+        raw_argv=["--strict-completion-monitor", "on,off"],
+    )
+
+    assert async_calls == [
+        (
+            "sleep-key_hash-pyrallel-async-strict-on",
+            True,
+            "demo-topic-sleep-key_hash-async-strict-on",
+        ),
+        (
+            "sleep-key_hash-pyrallel-async-strict-off",
+            False,
+            "demo-topic-sleep-key_hash-async-strict-off",
+        ),
     ]
 
 
@@ -441,3 +508,412 @@ async def test_wait_for_partition_assignment_raises_clear_error_for_topic() -> N
             topic_name="demo-topic",
             timeout_sec=0.0,
         )
+
+
+def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:
+    config = pyrallel_consumer_test.build_kafka_config(
+        strict_completion_monitor_enabled=False
+    )
+
+    assert config.parallel_consumer.strict_completion_monitor_enabled is False
+
+
+def test_ordering_validator_reports_key_hash_pass_summary() -> None:
+    validator = pyrallel_consumer_test.OrderingValidator(
+        ordering_mode="key_hash", topic_name="demo-topic"
+    )
+
+    validator.observe(
+        WorkItem(
+            id="item-1",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=0,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":0}',
+        )
+    )
+    validator.observe(
+        WorkItem(
+            id="item-2",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=1,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":1}',
+        )
+    )
+
+    assert validator.summary() == "Ordering validation PASS: key_hash keys=1 checks=2"
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_validates_key_hash_ordering_in_process_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured_exporter: Any = None
+    captured_process_worker: Callable[[WorkItem], None] | None = None
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            assert captured_process_worker is not None
+            process_worker = cast(Callable[[WorkItem], None], captured_process_worker)
+            for offset, sequence in ((0, 0), (1, 1)):
+                item = WorkItem(
+                    id=f"item-{offset}",
+                    tp=TopicPartition(topic="demo-topic", partition=0),
+                    offset=offset,
+                    epoch=0,
+                    key="key-0",
+                    payload=f'{{"key":"key-0","sequence":{sequence}}}'.encode(),
+                )
+                process_worker(item)  # pylint: disable=not-callable
+                captured_exporter.observe_work_completion(
+                    SimpleNamespace(status=CompletionStatus.SUCCESS),
+                    item,
+                    0.01,
+                )
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            return None
+
+    def _capture_work_manager(**kwargs):
+        nonlocal captured_exporter
+        captured_exporter = kwargs["metrics_exporter"]
+        return object()
+
+    def _capture_process_engine(**kwargs):
+        nonlocal captured_process_worker
+        captured_process_worker = kwargs["worker_fn"]
+        return _FakeEngine()
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "ProcessExecutionEngine", _capture_process_engine
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(pyrallel_consumer_test, "WorkManager", _capture_work_manager)
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    (
+        timed_out,
+        consumption_stats,
+        _summary,
+    ) = await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=2,
+        timeout_sec=5,
+        topic_name="demo-topic",
+        execution_mode="process",
+        ordering_mode="key_hash",
+        stats_tracker=None,
+    )
+
+    assert timed_out is False
+    assert consumption_stats.processed == 2
+    assert (
+        "Ordering validation PASS: key_hash keys=1 checks=2" in capsys.readouterr().out
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_uses_picklable_process_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_process_worker: Callable[[WorkItem], None] | None = None
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            return None
+
+    def _capture_process_engine(**kwargs):
+        nonlocal captured_process_worker
+        captured_process_worker = kwargs["worker_fn"]
+        return _FakeEngine()
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "ProcessExecutionEngine", _capture_process_engine
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "WorkManager", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=1,
+        timeout_sec=1,
+        topic_name="demo-topic",
+        execution_mode="process",
+        ordering_mode="unordered",
+        stats_tracker=None,
+        process_worker_fn=pyrallel_consumer_test._process_mode_worker,
+    )
+
+    assert captured_process_worker is pyrallel_consumer_test._process_mode_worker
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_raises_on_process_ordering_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_exporter: Any = None
+    captured_process_worker: Callable[[WorkItem], None] | None = None
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            assert captured_process_worker is not None
+            process_worker = cast(Callable[[WorkItem], None], captured_process_worker)
+            item_0 = WorkItem(
+                id="item-0",
+                tp=TopicPartition(topic="demo-topic", partition=0),
+                offset=0,
+                epoch=0,
+                key="key-0",
+                payload=b'{"key":"key-0","sequence":0}',
+            )
+            process_worker(item_0)  # pylint: disable=not-callable
+            captured_exporter.observe_completion(
+                TopicPartition(topic="demo-topic", partition=0),
+                CompletionStatus.SUCCESS,
+                0.01,
+            )
+            captured_exporter.observe_work_completion(
+                SimpleNamespace(status=CompletionStatus.SUCCESS),
+                item_0,
+                0.01,
+            )
+            item_1 = WorkItem(
+                id="item-1",
+                tp=TopicPartition(topic="demo-topic", partition=0),
+                offset=1,
+                epoch=0,
+                key="key-0",
+                payload=b'{"key":"key-0","sequence":3}',
+            )
+            process_worker(item_1)  # pylint: disable=not-callable
+            captured_exporter.observe_completion(
+                TopicPartition(topic="demo-topic", partition=0),
+                CompletionStatus.SUCCESS,
+                0.01,
+            )
+            captured_exporter.observe_work_completion(
+                SimpleNamespace(status=CompletionStatus.SUCCESS),
+                item_1,
+                0.01,
+            )
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            return None
+
+    def _capture_work_manager(**kwargs):
+        nonlocal captured_exporter
+        captured_exporter = kwargs["metrics_exporter"]
+        return object()
+
+    def _capture_process_engine(**kwargs):
+        nonlocal captured_process_worker
+        captured_process_worker = kwargs["worker_fn"]
+        return _FakeEngine()
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "ProcessExecutionEngine", _capture_process_engine
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(pyrallel_consumer_test, "WorkManager", _capture_work_manager)
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Ordering validation failed for key key-0 on demo-topic"
+    ):
+        await pyrallel_consumer_test.run_pyrallel_consumer_test(
+            num_messages=2,
+            timeout_sec=5,
+            topic_name="demo-topic",
+            execution_mode="process",
+            ordering_mode="key_hash",
+            stats_tracker=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_raises_clear_error_on_completion_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    captured_exporter: Any = None
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            events.append("engine.shutdown")
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            events.append("poller.start")
+            captured_exporter.observe_completion(
+                TopicPartition(topic="demo-topic", partition=0),
+                CompletionStatus.FAILURE,
+                0.01,
+            )
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            events.append("poller.stop")
+
+    def _capture_work_manager(**kwargs):
+        nonlocal captured_exporter
+        captured_exporter = kwargs["metrics_exporter"]
+        return object()
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "AsyncExecutionEngine", lambda **kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(pyrallel_consumer_test, "WorkManager", _capture_work_manager)
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Benchmark worker failure on demo-topic\\[0\\]: completion failed",
+    ):
+        await pyrallel_consumer_test.run_pyrallel_consumer_test(
+            num_messages=1,
+            timeout_sec=5,
+            topic_name="demo-topic",
+            execution_mode="async",
+            stats_tracker=None,
+        )
+
+    assert events == ["poller.start", "poller.stop", "engine.shutdown"]

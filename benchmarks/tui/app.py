@@ -620,6 +620,7 @@ class RunScreen(Screen[None]):
         self._run_task: asyncio.Task[None] | None = None
         self._cancelled = False
         self._closed = False
+        self._completed_successfully = False
         self._active_workloads = self._resolve_workloads()
         self._active_orderings = self._resolve_orderings()
         self._active_phases = self._resolve_phases()
@@ -678,6 +679,9 @@ class RunScreen(Screen[None]):
             await self.action_back()
 
     async def action_cancel(self) -> None:
+        if self._completed_successfully:
+            self._open_results_report()
+            return
         self._cancelled = True
         if self._controller is not None:
             await self._controller.cancel()
@@ -688,6 +692,9 @@ class RunScreen(Screen[None]):
             self.query_one("#run-status", Static).update("Benchmark cancelled")
 
     async def action_back(self) -> None:
+        if self._completed_successfully:
+            self.app.exit()
+            return
         if self._run_task is not None and not self._run_task.done():
             await self.action_cancel()
         self.app.pop_screen()
@@ -735,18 +742,30 @@ class RunScreen(Screen[None]):
         status = "Benchmark completed" if return_code == 0 else "Benchmark failed"
         self._set_loading(False)
         if return_code == 0:
+            self._completed_successfully = True
             self._force_completion_progress()
+            self._update_terminal_actions()
         self.query_one("#run-status", Static).update(
             "%s (exit=%d)" % (status, return_code)
         )
         if return_code == 0:
-            self.app.push_screen(
-                ResultsSummaryModalScreen(
-                    self._build_results_summary(), self._latest_output_path
-                )
-            )
+            self._open_results_report()
         else:
             self._mark_failed_run_cell()
+
+    def _open_results_report(self) -> None:
+        self.app.push_screen(
+            ResultsSummaryModalScreen(
+                self._build_results_summary(), self._latest_output_path
+            )
+        )
+
+    def _update_terminal_actions(self) -> None:
+        cancel_button = self.query_one("#cancel-button", Button)
+        cancel_button.label = "View report"
+        cancel_button.variant = "primary"
+        back_button = self.query_one("#back-button", Button)
+        back_button.label = "Exit"
 
     def _configure_run_summary_table(self) -> None:
         table = self.query_one("#run-summary", DataTable)
@@ -1108,7 +1127,7 @@ class BenchmarkTuiApp(App[None]):
 
     #results-table {
         border: round $accent;
-        height: 1fr;
+        height: 12;
         margin-bottom: 1;
     }
 

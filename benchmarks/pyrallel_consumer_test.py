@@ -11,7 +11,12 @@ from confluent_kafka.cimpl import NewTopic
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import ExecutionMode, OrderingMode, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionStatus,
+    ExecutionMode,
+    OrderingMode,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
@@ -106,6 +111,77 @@ def _decode_payload(payload_bytes: bytes) -> None:
         pass
 
 
+class OrderingValidator:
+    def __init__(self, *, ordering_mode: str, topic_name: str) -> None:
+        self._ordering_mode = OrderingMode(ordering_mode)
+        self._topic_name = topic_name
+        self._checks = 0
+        self._last_sequence_by_key: dict[str, int] = {}
+        self._last_offset_by_partition: dict[int, int] = {}
+
+    def observe(self, item: WorkItem) -> None:
+        if self._ordering_mode == OrderingMode.UNORDERED:
+            return
+
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            payload = self._decode_ordering_payload(item.payload)
+            key = str(payload["key"])
+            sequence = int(payload["sequence"])
+            expected_sequence = self._last_sequence_by_key.get(key, -1) + 1
+            if sequence != expected_sequence:
+                raise RuntimeError(
+                    "Ordering validation failed for key %s on %s: expected sequence %d but got %d"
+                    % (key, self._topic_name, expected_sequence, sequence)
+                )
+            self._last_sequence_by_key[key] = sequence
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            partition = item.tp.partition
+            expected_offset = (
+                self._last_offset_by_partition.get(partition, item.offset - 1) + 1
+            )
+            if item.offset != expected_offset:
+                raise RuntimeError(
+                    "Ordering validation failed for partition %d on %s: expected offset %d but got %d"
+                    % (partition, self._topic_name, expected_offset, item.offset)
+                )
+            self._last_offset_by_partition[partition] = item.offset
+
+        self._checks += 1
+
+    def summary(self) -> str:
+        if self._ordering_mode == OrderingMode.UNORDERED:
+            return "Ordering validation SKIP: unordered"
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            return "Ordering validation PASS: key_hash keys=%d checks=%d" % (
+                len(self._last_sequence_by_key),
+                self._checks,
+            )
+        return "Ordering validation PASS: partition partitions=%d checks=%d" % (
+            len(self._last_offset_by_partition),
+            self._checks,
+        )
+
+    def _decode_ordering_payload(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, (bytes, bytearray)):
+            raise RuntimeError(
+                "Ordering validation failed for %s: payload must be bytes"
+                % self._topic_name
+            )
+        try:
+            decoded = json.loads(bytes(payload).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "Ordering validation failed for %s: payload was not valid JSON"
+                % self._topic_name
+            ) from exc
+        if "key" not in decoded or "sequence" not in decoded:
+            raise RuntimeError(
+                "Ordering validation failed for %s: payload missing key/sequence"
+                % self._topic_name
+            )
+        return decoded
+
+
 def _process_mode_worker(item: WorkItem) -> None:
     payload_bytes = item.payload or b""
     _decode_payload(payload_bytes)
@@ -144,6 +220,7 @@ def build_kafka_config(
     *,
     bootstrap_servers: Optional[str] = None,
     consumer_group: Optional[str] = None,
+    strict_completion_monitor_enabled: bool = True,
 ) -> KafkaConfig:
     effective_conf = dict(conf)
     if bootstrap_servers:
@@ -161,6 +238,9 @@ def build_kafka_config(
 
     kafka_config.parallel_consumer.execution.max_in_flight = 2000
     kafka_config.parallel_consumer.execution.async_config.task_timeout_ms = 10000
+    kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
+        strict_completion_monitor_enabled
+    )
 
     return kafka_config
 
@@ -180,6 +260,7 @@ async def run_pyrallel_consumer_test(
     process_worker_fn: Optional[Callable[[WorkItem], None]] = None,
     ordering_mode: str = OrderingMode.KEY_HASH.value,
     ensure_topic_exists: bool = True,
+    strict_completion_monitor_enabled: bool = True,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -203,7 +284,10 @@ async def run_pyrallel_consumer_test(
     kafka_config = build_kafka_config(
         bootstrap_servers=bootstrap_servers,
         consumer_group=consumer_group,
+        strict_completion_monitor_enabled=strict_completion_monitor_enabled,
     )
+    mode_value = ExecutionMode(execution_mode)
+    ordering_mode_value = OrderingMode(ordering_mode)
     consumption_stats = ConsumptionStats(target=num_messages)
     stop_event = asyncio.Event()
     stats = stats_tracker
@@ -216,12 +300,30 @@ async def run_pyrallel_consumer_test(
             benchmark_stats: Optional[BenchmarkStats],
             cons_stats: ConsumptionStats,
             completion_event: asyncio.Event,
+            completion_ordering_validator: Optional[OrderingValidator] = None,
         ) -> None:
             self._stats = benchmark_stats
             self._consumption_stats = cons_stats
             self._stop_event = completion_event
+            self._failure_error: Optional[str] = None
+            self._completion_ordering_validator = completion_ordering_validator
+
+        @property
+        def failure_error(self) -> Optional[str]:
+            return self._failure_error
+
+        def report_worker_failure(self, error: str) -> None:
+            if self._failure_error is None:
+                self._failure_error = error
+            self._stop_event.set()
 
         def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            if status == CompletionStatus.FAILURE:
+                self.report_worker_failure(
+                    "Benchmark worker failure on %s[%d]: completion failed"
+                    % (tp.topic, tp.partition)
+                )
+                return
             self._consumption_stats.record()
             if self._stats:
                 self._stats.record(duration_seconds)
@@ -230,7 +332,45 @@ async def run_pyrallel_consumer_test(
             elif self._consumption_stats.reached_target():
                 self._stop_event.set()
 
-    metrics_observer = BenchmarkMetricsObserver(stats, consumption_stats, stop_event)
+        def observe_work_completion(
+            self,
+            event: Any,
+            work_item: WorkItem,
+            duration_seconds: float,
+        ) -> None:
+            if event.status == CompletionStatus.SUCCESS:
+                if self._completion_ordering_validator is not None:
+                    try:
+                        self._completion_ordering_validator.observe(work_item)
+                    except Exception as exc:
+                        self.report_worker_failure(str(exc))
+                        return
+            self.observe_completion(work_item.tp, event.status, duration_seconds)
+
+    ordering_validator: Optional[OrderingValidator] = None
+    if (
+        mode_value == ExecutionMode.ASYNC
+        and ordering_mode_value != OrderingMode.UNORDERED
+    ):
+        ordering_validator = OrderingValidator(
+            ordering_mode=ordering_mode_value.value,
+            topic_name=effective_topic,
+        )
+    process_completion_validator: Optional[OrderingValidator] = None
+    if (
+        mode_value == ExecutionMode.PROCESS
+        and ordering_mode_value != OrderingMode.UNORDERED
+    ):
+        process_completion_validator = OrderingValidator(
+            ordering_mode=ordering_mode_value.value,
+            topic_name=effective_topic,
+        )
+    metrics_observer = BenchmarkMetricsObserver(
+        stats,
+        consumption_stats,
+        stop_event,
+        completion_ordering_validator=process_completion_validator,
+    )
 
     async def async_worker(item: WorkItem) -> None:
         payload_bytes = item.payload or b""
@@ -240,11 +380,17 @@ async def run_pyrallel_consumer_test(
     process_worker = process_worker_fn or _process_mode_worker
     async_worker_impl = async_worker_fn or async_worker
 
-    mode_value = ExecutionMode(execution_mode)
-    ordering_mode_value = OrderingMode(ordering_mode)
-
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
     execution_config.mode = mode_value
+
+    async def validated_async_worker(item: WorkItem) -> None:
+        try:
+            if ordering_validator is not None:
+                ordering_validator.observe(item)
+            await async_worker_impl(item)
+        except Exception as exc:
+            metrics_observer.report_worker_failure(str(exc))
+            raise
 
     engine: BaseExecutionEngine
     if mode_value == ExecutionMode.PROCESS:
@@ -254,7 +400,7 @@ async def run_pyrallel_consumer_test(
         )
     else:
         engine = AsyncExecutionEngine(
-            config=execution_config, worker_fn=async_worker_impl
+            config=execution_config, worker_fn=validated_async_worker
         )
 
     work_manager = WorkManager(
@@ -355,6 +501,9 @@ async def run_pyrallel_consumer_test(
         if stats:
             stats.stop()
 
+        if metrics_observer.failure_error is not None:
+            raise RuntimeError(metrics_observer.failure_error)
+
         if run_completed:
             processed, runtime, tps = consumption_stats.summary()
             print("\n--- PyrallelConsumer Test Summary ---")
@@ -362,6 +511,10 @@ async def run_pyrallel_consumer_test(
             print("Total messages processed: %d" % processed)
             print("Total runtime: %.2f seconds" % runtime)
             print("Final TPS: %.2f" % tps)
+            if ordering_validator is not None:
+                print(ordering_validator.summary())
+            elif process_completion_validator is not None:
+                print(process_completion_validator.summary())
 
     summary = stats.summary() if stats else None
     return timed_out, consumption_stats, summary
