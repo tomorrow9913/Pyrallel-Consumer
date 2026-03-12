@@ -8,7 +8,12 @@ from collections.abc import Callable
 from typing import Any, Deque, List, Optional, Set
 
 from pyrallel_consumer.config import ExecutionConfig
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    TopicPartition,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
@@ -181,6 +186,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         현재 처리 중인 작업 항목의 수를 반환합니다.
         """
         return len(self._in_flight_tasks)
+
+    def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        return None
 
     async def shutdown(self) -> None:
         """

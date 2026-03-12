@@ -26,6 +26,11 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: Represents the current system load.
 - **Tip**: When this value reaches the `max_in_flight` setting, **Backpressure** activates, and Kafka consumption is `Paused`.
 
+### 1.5. Engine Capability Boundary
+- **Definition**: The control plane only depends on the shared execution-engine contract.
+- **Meaning**: Process-only safety data such as minimum in-flight offsets should be exposed as an optional engine capability, not by branching on a concrete engine class inside `BrokerPoller`.
+- **Tip**: When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
+
 ## 2. Tuning Guide
 
 ### 2.1. `max_in_flight_messages` (Control Plane)

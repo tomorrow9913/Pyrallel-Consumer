@@ -81,6 +81,10 @@ These options are implemented in the benchmark workers and directly control per-
 The Control Plane manages Kafka communication and offsets independently from execution mode.
 The Execution Plane runs user workers via `asyncio` tasks or multiprocessing.
 
+The control plane talks to execution engines through the shared `BaseExecutionEngine`
+contract. Process-specific commit clamping is exposed as an engine capability, so
+`BrokerPoller` does not need concrete `ProcessExecutionEngine` type checks to stay safe.
+
 ```mermaid
 graph TD
     subgraph "Ingress Layer (Kafka Client)"

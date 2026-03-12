@@ -413,3 +413,20 @@ class TestAsyncExecutionEngineRetries:
         assert elapsed >= min_expected
 
         await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_min_inflight_offset_returns_none_for_async_engine():
+    config = ExecutionConfig(
+        mode=ExecutionMode.ASYNC,
+        max_in_flight=1,
+        async_config=AsyncConfig(task_timeout_ms=500),
+    )
+    engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
+
+    assert (
+        engine.get_min_inflight_offset(TopicPartition(topic="test", partition=0))
+        is None
+    )
+
+    await engine.shutdown()

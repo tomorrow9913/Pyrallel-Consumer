@@ -85,6 +85,10 @@ consumer = PyrallelConsumer(config, worker, topic="demo")
 
 `Pyrallel Consumer`는 **Control Plane**, **Execution Plane**, **Worker Layer**로 명확하게 계층을 분리하여 설계되었습니다. `Control Plane`은 Kafka와의 통신 및 오프셋 관리를 담당하며, 어떤 `Execution Engine`이 사용되는지에 독립적으로 작동합니다. `Execution Plane`은 `Asyncio Task` 또는 `멀티프로세스`를 활용하여 사용자 정의 워커의 병렬 실행을 관리합니다.
 
+Control Plane은 공통 `BaseExecutionEngine` 계약만 의존합니다. Process 전용 커밋
+클램프 정보도 엔진 capability로 노출하므로, `BrokerPoller`가
+`ProcessExecutionEngine` 구체 타입을 직접 검사하지 않아도 안전성을 유지할 수 있습니다.
+
 ```mermaid
 graph TD
     subgraph "Ingress Layer (Kafka Client)"

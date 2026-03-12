@@ -10,7 +10,6 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
-from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 from ..config import KafkaConfig
 from ..dto import (
@@ -504,9 +503,8 @@ class BrokerPoller:
         return total
 
     def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
-        if not isinstance(self._execution_engine, ProcessExecutionEngine):
-            return None
-        return self._execution_engine.get_min_inflight_offset(tp)
+        min_inflight = self._execution_engine.get_min_inflight_offset(tp)
+        return min_inflight if isinstance(min_inflight, int) else None
 
     def _log_partition_diagnostics(self) -> None:
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
