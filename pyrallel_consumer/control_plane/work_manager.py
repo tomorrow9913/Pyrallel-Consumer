@@ -121,10 +121,39 @@ class WorkManager:
         if head_offset is not None:
             self._head_queue_keys_by_offset.pop((queue_key[0], head_offset), None)
 
+        if queue_key in self._runnable_queue_keys:
+            self._runnable_queue_keys = deque(
+                queued_key
+                for queued_key in self._runnable_queue_keys
+                if queued_key != queue_key
+            )
+
     def _activate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
         if queue_key not in self._active_runnable_queue_keys:
             self._runnable_queue_keys.append(queue_key)
             self._active_runnable_queue_keys.add(queue_key)
+
+    def _release_in_flight_item(
+        self,
+        work_item_id: str,
+        *,
+        reschedule: bool = False,
+    ) -> tuple[bool, Optional[float]]:
+        completed_item = self._in_flight_work_items.pop(work_item_id, None)
+        dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
+        if completed_item is None:
+            return False, dispatch_time
+
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            self._keys_in_flight.discard((completed_item.tp, completed_item.key))
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            self._partitions_in_flight.discard(completed_item.tp)
+
+        self._cleanup_empty_queue(completed_item.tp, completed_item.key)
+        self._current_in_flight_count = max(0, self._current_in_flight_count - 1)
+        if reschedule:
+            self._invalidate_blocking_cache()
+        return True, dispatch_time
 
     def _refresh_queue_head(
         self,
@@ -260,8 +289,7 @@ class WorkManager:
                 if item.tp in revoked_tp_set
             ]
             for work_id in stale_ids:
-                self._in_flight_work_items.pop(work_id, None)
-                self._dispatch_timestamps.pop(work_id, None)
+                self._release_in_flight_item(work_id)
             if self._ordering_mode == OrderingMode.KEY_HASH:
                 self._keys_in_flight = {
                     (tp_key, key)
@@ -361,17 +389,20 @@ class WorkManager:
                     self._deactivate_queue_key(selected_queue_key)
                     continue
 
-                item_to_submit = queue_to_dequeue_from.get_nowait()
-                if queue_to_dequeue_from.empty():
-                    self._cleanup_empty_queue(selected_tp, selected_key)
-                else:
-                    self._refresh_queue_head(
-                        selected_tp, selected_key, queue_to_dequeue_from
-                    )
+                item_to_submit = self._peek_queue(queue_to_dequeue_from)
 
             if item_to_submit:
                 try:
                     await self._execution_engine.submit(item_to_submit)
+                    if queue_to_dequeue_from is None:
+                        return
+                    queue_to_dequeue_from.get_nowait()
+                    if queue_to_dequeue_from.empty():
+                        self._cleanup_empty_queue(selected_tp, selected_key)
+                    else:
+                        self._refresh_queue_head(
+                            selected_tp, selected_key, queue_to_dequeue_from
+                        )
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
                     if self._ordering_mode == OrderingMode.KEY_HASH:
@@ -384,13 +415,7 @@ class WorkManager:
                     self._logger.exception(
                         "Error submitting work item %s", item_to_submit.id
                     )
-                    if queue_to_dequeue_from:
-                        if item_to_submit.tp not in self._virtual_partition_queues:
-                            self._virtual_partition_queues[item_to_submit.tp] = {}
-                        self._virtual_partition_queues[item_to_submit.tp][
-                            item_to_submit.key
-                        ] = queue_to_dequeue_from
-                        await queue_to_dequeue_from.put(item_to_submit)
+                    if queue_to_dequeue_from is not None:
                         self._refresh_queue_head(
                             item_to_submit.tp,
                             item_to_submit.key,
@@ -423,6 +448,9 @@ class WorkManager:
                 offset_tracker = self._offset_trackers[event.tp]
                 current_epoch = offset_tracker.get_current_epoch()
                 if event.epoch != current_epoch:
+                    completed_item = self._in_flight_work_items.get(event.id)
+                    if completed_item is not None and completed_item.tp == event.tp:
+                        self._release_in_flight_item(event.id, reschedule=True)
                     continue
                 if event.tp not in self._shared_offset_trackers:
                     offset_tracker.mark_complete(event.offset)
@@ -433,19 +461,7 @@ class WorkManager:
                     event.id in self._in_flight_work_items
                 ):  # Now CompletionEvent has 'id'
                     completed_item = self._in_flight_work_items[event.id]
-
-                    if self._ordering_mode == OrderingMode.KEY_HASH:
-                        self._keys_in_flight.discard(
-                            (completed_item.tp, completed_item.key)
-                        )
-                    elif self._ordering_mode == OrderingMode.PARTITION:
-                        self._partitions_in_flight.discard(completed_item.tp)
-
-                    self._cleanup_empty_queue(completed_item.tp, completed_item.key)
-
-                    del self._in_flight_work_items[event.id]
-                    self._current_in_flight_count -= 1
-                    dispatch_time = self._dispatch_timestamps.pop(event.id, None)
+                    _, dispatch_time = self._release_in_flight_item(event.id)
                     if dispatch_time is not None and self._metrics_exporter is not None:
                         duration = max(0.0, time.perf_counter() - dispatch_time)
                         completion_observer = getattr(

@@ -621,6 +621,7 @@ class RunScreen(Screen[None]):
         self._cancelled = False
         self._closed = False
         self._completed_successfully = False
+        self._last_error_line: str | None = None
         self._active_workloads = self._resolve_workloads()
         self._active_orderings = self._resolve_orderings()
         self._active_phases = self._resolve_phases()
@@ -705,6 +706,8 @@ class RunScreen(Screen[None]):
     def _append_log(self, line: str, is_error: bool) -> None:
         if self._closed:
             return
+        if is_error and line.strip():
+            self._last_error_line = line.strip()
         log = self.query_one("#run-log", Log)
         prefix = "[stderr] " if is_error else ""
         log.write_line("%s%s" % (prefix, line))
@@ -745,9 +748,10 @@ class RunScreen(Screen[None]):
             self._completed_successfully = True
             self._force_completion_progress()
             self._update_terminal_actions()
-        self.query_one("#run-status", Static).update(
-            "%s (exit=%d)" % (status, return_code)
-        )
+        status_text = "%s (exit=%d)" % (status, return_code)
+        if return_code != 0 and self._last_error_line is not None:
+            status_text = "%s: %s" % (status_text, self._last_error_line)
+        self.query_one("#run-status", Static).update(status_text)
         if return_code == 0:
             self._open_results_report()
         else:
@@ -762,7 +766,7 @@ class RunScreen(Screen[None]):
 
     def _update_terminal_actions(self) -> None:
         cancel_button = self.query_one("#cancel-button", Button)
-        cancel_button.label = "View report"
+        cancel_button.label = "Reopen report"
         cancel_button.variant = "primary"
         back_button = self.query_one("#back-button", Button)
         back_button.label = "Exit"
@@ -1032,6 +1036,20 @@ class BenchmarkTuiApp(App[None]):
         margin-left: 1;
     }
 
+    #run-status {
+        margin-bottom: 0;
+    }
+
+    #run-meta-row, #run-phase-row, #run-workload-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #run-output-path {
+        color: $text-muted;
+        margin-bottom: 0;
+    }
+
     #run-log {
         height: 20;
     }
@@ -1042,17 +1060,15 @@ class BenchmarkTuiApp(App[None]):
 
     #run-progress-row {
         height: auto;
+        margin-bottom: 0;
         align-vertical: middle;
-    }
-
-    #run-meta-row, #run-phase-row, #run-workload-row {
-        height: auto;
     }
 
     .status-badge, .phase-pill, .workload-pill {
         border: round $surface-lighten-1;
         padding: 0 1;
         margin-right: 1;
+        margin-bottom: 0;
         width: auto;
     }
 
@@ -1070,10 +1086,6 @@ class BenchmarkTuiApp(App[None]):
 
     .phase-pill.is-failed, .workload-pill.is-failed {
         color: $error;
-    }
-
-    #run-output-path {
-        color: $text-muted;
     }
 
     #run-progress {

@@ -662,11 +662,38 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
             "sleep", "async"
         )
         loading_indicator = run_screen.query_one("#run-loading", LoadingIndicator)
+        status = run_screen.query_one("#run-status", Static)
 
     assert isinstance(failed_cell, Text)
     assert failed_cell.plain == "FAILED"
     assert "red" in str(failed_cell.style)
     assert loading_indicator.display is False
+    assert str(status.content) == "Benchmark failed (exit=1)"
+
+
+@pytest.mark.asyncio
+async def test_run_screen_surfaces_last_error_line_in_failure_status(
+    monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FakeController
+    )
+    _FakeController.instances.clear()
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
+        await pilot.pause()
+
+        run_screen = app.screen
+        run_screen._append_log("RuntimeError: boom", is_error=True)
+        run_screen._on_complete(1)
+        await pilot.pause()
+
+        status = run_screen.query_one("#run-status", Static)
+
+    assert str(status.content) == "Benchmark failed (exit=1): RuntimeError: boom"
 
 
 @pytest.mark.asyncio
@@ -709,7 +736,7 @@ async def test_run_screen_exposes_report_and_exit_controls_after_success(
         report_button = run_screen.query_one("#cancel-button", Button)
         exit_button = run_screen.query_one("#back-button", Button)
 
-    assert str(report_button.label) == "View report"
+    assert str(report_button.label) == "Reopen report"
     assert str(exit_button.label) == "Exit"
 
 

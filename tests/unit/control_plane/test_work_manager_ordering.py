@@ -111,6 +111,25 @@ async def test_unordered_allows_same_key_concurrent(mock_engine, tp):
 
 
 @pytest.mark.asyncio
+async def test_unordered_prefers_lowest_head_offset_after_blocking_pick(
+    mock_engine, tp
+):
+    """UNORDERED: stale runnable entries must not outrank lower current head offsets."""
+    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED)
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+    tracker.get_gaps.return_value = [type("Gap", (), {"start": 0})()]
+    await wm.schedule()
+
+    submitted_offsets = [
+        call.args[0].offset for call in mock_engine.submit.await_args_list
+    ]
+    assert submitted_offsets == [0, 1, 2]
+
+
+@pytest.mark.asyncio
 async def test_default_ordering_mode_is_unordered(mock_engine):
     """WorkManager default ordering_mode should be UNORDERED for backward compat."""
     wm = WorkManager(execution_engine=mock_engine)
