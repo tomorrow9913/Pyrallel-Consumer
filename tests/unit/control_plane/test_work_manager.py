@@ -7,7 +7,12 @@ import pytest
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, OffsetRange
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    OffsetRange,
+    OrderingMode,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
@@ -118,6 +123,180 @@ async def test_on_assign_and_on_revoke(
 
 
 @pytest.mark.asyncio
+async def test_on_assign_uses_provided_starting_offsets(
+    work_manager, mock_dto_topic_partition, mock_dto_topic_partition_1
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        MockOffsetTrackerClass.return_value = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+
+        work_manager.on_assign(
+            {
+                mock_dto_topic_partition: 100,
+                mock_dto_topic_partition_1: 200,
+            }
+        )
+
+        MockOffsetTrackerClass.assert_any_call(
+            topic_partition=mock_dto_topic_partition,
+            starting_offset=100,
+            max_revoke_grace_ms=500,
+        )
+        MockOffsetTrackerClass.assert_any_call(
+            topic_partition=mock_dto_topic_partition_1,
+            starting_offset=200,
+            max_revoke_grace_ms=500,
+        )
+
+
+@pytest.mark.asyncio
+async def test_on_assign_uses_shared_offset_trackers_when_provided(
+    work_manager, mock_dto_topic_partition, mock_dto_topic_partition_1
+):
+    shared_tracker_0 = MagicMock(spec=OffsetTracker)
+    shared_tracker_1 = MagicMock(spec=OffsetTracker)
+
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        work_manager.on_assign(
+            {
+                mock_dto_topic_partition: shared_tracker_0,
+                mock_dto_topic_partition_1: shared_tracker_1,
+            }
+        )
+
+    MockOffsetTrackerClass.assert_not_called()
+    assert work_manager._offset_trackers[mock_dto_topic_partition] is shared_tracker_0
+    assert work_manager._offset_trackers[mock_dto_topic_partition_1] is shared_tracker_1
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_does_not_mark_complete_for_shared_trackers(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    shared_tracker = MagicMock(spec=OffsetTracker)
+    shared_tracker.get_gaps.return_value = []
+    shared_tracker.get_current_epoch.return_value = 1
+    work_manager.on_assign({mock_dto_topic_partition: shared_tracker})
+
+    work_item_id = str(uuid.uuid4())
+    work_manager._current_in_flight_count = 1
+    work_manager._in_flight_work_items[work_item_id] = WorkItem(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=1,
+        key=b"",
+        payload=b"",
+    )
+
+    event = CompletionEvent(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=1,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [event]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [event]
+    shared_tracker.mark_complete.assert_not_called()
+    assert work_manager._current_in_flight_count == 0
+    assert work_item_id not in work_manager._in_flight_work_items
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_uses_work_completion_observer_hook(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    observed: list[tuple[CompletionEvent, WorkItem, float]] = []
+
+    class _Exporter:
+        def observe_work_completion(
+            self,
+            event: CompletionEvent,
+            work_item: WorkItem,
+            duration_seconds: float,
+        ) -> None:
+            observed.append((event, work_item, duration_seconds))
+
+        def observe_completion(self, *args, **kwargs) -> None:
+            raise AssertionError("observe_completion should not be called")
+
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        metrics_exporter=_Exporter(),
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    work_item_id = str(uuid.uuid4())
+    work_item = WorkItem(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=0,
+        key=b"",
+        payload=b"",
+    )
+    work_manager._current_in_flight_count = 1
+    work_manager._in_flight_work_items[work_item_id] = work_item
+    work_manager._dispatch_timestamps[work_item_id] = 0.0
+
+    event = CompletionEvent(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [event]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [event]
+    assert len(observed) == 1
+    observed_event, observed_item, observed_duration = observed[0]
+    assert observed_event == event
+    assert observed_item == work_item
+    assert observed_duration >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_blocking_offsets_does_not_advance_shared_tracker_commit_state(
+    work_manager, mock_dto_topic_partition
+):
+    shared_tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    shared_tracker.update_last_fetched_offset(1)
+    shared_tracker.mark_complete(0)
+    shared_tracker.mark_complete(1)
+    work_manager.on_assign({mock_dto_topic_partition: shared_tracker})
+
+    blocking_offsets = work_manager.get_blocking_offsets()
+
+    assert blocking_offsets == {mock_dto_topic_partition: None}
+    assert shared_tracker.last_committed_offset == -1
+    assert list(shared_tracker.completed_offsets) == [0, 1]
+
+
+@pytest.mark.asyncio
 async def test_submit_message(
     work_manager, mock_dto_topic_partition, mock_execution_engine
 ):
@@ -183,6 +362,75 @@ async def test_submit_message(
 
 
 @pytest.mark.asyncio
+async def test_schedule_does_not_rescan_every_virtual_queue_head(
+    mock_dto_topic_partition, mock_execution_engine
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        max_in_flight_messages=1,
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    for offset in range(50):
+        await work_manager.submit_message(
+            mock_dto_topic_partition,
+            offset,
+            1,
+            b"key-%d" % offset,
+            b"payload",
+        )
+
+    with patch.object(
+        work_manager, "_peek_queue", wraps=work_manager._peek_queue
+    ) as peek:
+        await work_manager.schedule()
+
+    assert mock_execution_engine.submit.await_count == 1
+    assert peek.call_count <= 3
+
+
+@pytest.mark.asyncio
+async def test_schedule_keeps_assigned_partition_after_queue_drains(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        mock_tracker_instance.get_gaps.return_value = []
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 0, 1, b"message-key", b"payload-0"
+        )
+
+        await work_manager.schedule()
+
+        assert mock_dto_topic_partition in work_manager._virtual_partition_queues
+        assert work_manager._virtual_partition_queues[mock_dto_topic_partition] == {}
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 1, 1, b"message-key", b"payload-1"
+        )
+
+        assert (
+            work_manager._virtual_partition_queues[mock_dto_topic_partition][
+                b"message-key"
+            ].qsize()
+            == 1
+        )
+
+
+@pytest.mark.asyncio
 async def test_submit_message_unassigned_tp_raises_error(
     work_manager, mock_dto_topic_partition
 ):
@@ -213,6 +461,7 @@ async def test_poll_completed_events(
             )
         )
         MockOffsetTrackerClass.return_value = mock_tracker_instance
+        mock_tracker_instance.get_current_epoch.return_value = 1
 
         # Assign a topic-partition
         work_manager.on_assign([mock_dto_topic_partition])
@@ -589,4 +838,231 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
     await work_manager._completion_queue.put(event)
     await work_manager.poll_completed_events()
 
-    assert tp not in work_manager._virtual_partition_queues
+    assert tp in work_manager._virtual_partition_queues
+    assert work_manager._virtual_partition_queues[tp] == {}
+
+
+@pytest.mark.asyncio
+async def test_schedule_preserves_queue_order_after_submit_failure(
+    work_manager, mock_dto_topic_partition
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        mock_tracker_instance.get_gaps.return_value = []
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 10, 1, b"key", b"payload-10"
+        )
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 11, 1, b"key", b"payload-11"
+        )
+
+        work_manager._execution_engine.submit.side_effect = RuntimeError("boom")
+
+        await work_manager.schedule()
+
+        queue = work_manager._virtual_partition_queues[mock_dto_topic_partition][b"key"]
+        assert [item.offset for item in list(queue._queue)] == [10, 11]
+
+
+@pytest.mark.asyncio
+async def test_schedule_logs_submit_failures(
+    work_manager, mock_dto_topic_partition, caplog
+):
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        mock_tracker_instance = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=500,
+            )
+        )
+        mock_tracker_instance.get_gaps.return_value = []
+        MockOffsetTrackerClass.return_value = mock_tracker_instance
+
+        work_manager.on_assign([mock_dto_topic_partition])
+        work_manager._offset_trackers[mock_dto_topic_partition] = mock_tracker_instance
+        work_manager._execution_engine.submit.side_effect = RuntimeError("boom")
+
+        await work_manager.submit_message(
+            mock_dto_topic_partition, 10, 1, b"key", b"payload"
+        )
+
+        with caplog.at_level("ERROR"):
+            await work_manager.schedule()
+
+        assert "Error submitting work item" in caplog.text
+        queue = work_manager._virtual_partition_queues[mock_dto_topic_partition][b"key"]
+        assert queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_logs_unmanaged_partition(
+    work_manager, mock_dto_topic_partition, caplog
+):
+    work_manager._execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id="missing",
+            tp=mock_dto_topic_partition,
+            offset=10,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    with caplog.at_level("WARNING"):
+        completed_events = await work_manager.poll_completed_events()
+
+    assert len(completed_events) == 1
+    assert "Completion event for unmanaged TopicPartition" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_revoke_cleans_revoked_in_flight_state(
+    mock_execution_engine, mock_dto_topic_partition, mock_dto_topic_partition_1
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+    )
+    work_manager.on_assign([mock_dto_topic_partition, mock_dto_topic_partition_1])
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 10, 1, b"revoked-key", b"payload-10"
+    )
+    await work_manager.submit_message(
+        mock_dto_topic_partition_1, 20, 1, b"kept-key", b"payload-20"
+    )
+    await work_manager.schedule()
+
+    revoked_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+    kept_item = work_manager._execution_engine.submit.await_args_list[1].args[0]
+    assert work_manager._current_in_flight_count == 2
+    assert (mock_dto_topic_partition, b"revoked-key") in work_manager._keys_in_flight
+    assert (
+        mock_dto_topic_partition_1,
+        b"kept-key",
+    ) in work_manager._keys_in_flight
+
+    work_manager.on_revoke([mock_dto_topic_partition])
+
+    assert revoked_item.id not in work_manager._in_flight_work_items
+    assert revoked_item.id not in work_manager._dispatch_timestamps
+    assert kept_item.id in work_manager._in_flight_work_items
+    assert kept_item.id in work_manager._dispatch_timestamps
+    assert work_manager._current_in_flight_count == 1
+    assert (
+        mock_dto_topic_partition,
+        b"revoked-key",
+    ) not in work_manager._keys_in_flight
+    assert (
+        mock_dto_topic_partition_1,
+        b"kept-key",
+    ) in work_manager._keys_in_flight
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_cleans_stale_epoch_in_flight_state(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 10, tracker.get_current_epoch(), b"key-A", b"payload"
+    )
+    await work_manager.schedule()
+
+    submitted_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+    assert work_manager._current_in_flight_count == 1
+    assert (mock_dto_topic_partition, b"key-A") in work_manager._keys_in_flight
+
+    tracker.increment_epoch()
+
+    stale_completion = CompletionEvent(
+        id=submitted_item.id,
+        tp=mock_dto_topic_partition,
+        offset=submitted_item.offset,
+        epoch=submitted_item.epoch,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [stale_completion]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [stale_completion]
+    assert submitted_item.id not in work_manager._in_flight_work_items
+    assert submitted_item.id not in work_manager._dispatch_timestamps
+    assert work_manager._current_in_flight_count == 0
+    assert (mock_dto_topic_partition, b"key-A") not in work_manager._keys_in_flight
+    assert tracker.last_committed_offset == -1
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_cleans_any_stale_epoch_for_tracked_work_item(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 10, tracker.get_current_epoch(), b"key-A", b"payload"
+    )
+    await work_manager.schedule()
+
+    submitted_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+
+    stale_completion = CompletionEvent(
+        id=submitted_item.id,
+        tp=mock_dto_topic_partition,
+        offset=submitted_item.offset,
+        epoch=submitted_item.epoch - 1,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [stale_completion]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == [stale_completion]
+    assert submitted_item.id not in work_manager._in_flight_work_items
+    assert submitted_item.id not in work_manager._dispatch_timestamps
+    assert work_manager._current_in_flight_count == 0
+    assert (mock_dto_topic_partition, b"key-A") not in work_manager._keys_in_flight

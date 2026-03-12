@@ -8,6 +8,9 @@ This folder contains the benchmarking and profiling entrypoints for Pyrallel Con
 
 ## Quick start
 ```bash
+# Launch the Textual TUI (no CLI flags)
+uv run python -m benchmarks.run_parallel_benchmark
+
 # Standard benchmark (no profiling)
 uv run python -m benchmarks.run_parallel_benchmark --num-messages 100000 --num-partitions 8
 
@@ -19,16 +22,27 @@ uv run python -m benchmarks.run_parallel_benchmark \
   --profile-top-n 20
 
 # Use CPU-bound workload
-uv run python -m benchmarks.run_parallel_benchmark --profile --workload cpu --worker-cpu-iterations 2000
+uv run python -m benchmarks.run_parallel_benchmark \
+  --profile \
+  --workloads cpu \
+  --order key_hash \
+  --worker-cpu-iterations 2000
 
 # Use IO-bound workload (sleep-based wait)
-uv run python -m benchmarks.run_parallel_benchmark --profile --workload io --worker-io-sleep-ms 5
+uv run python -m benchmarks.run_parallel_benchmark \
+  --profile \
+  --workloads io \
+  --order key_hash \
+  --worker-io-sleep-ms 5
 ```
 
 ## Key options
+- No arguments: launches the Textual TUI so you can configure and start the benchmark interactively.
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.
-- Workload selection (applies to baseline/async/process uniformly):
-  - `--workload {sleep,cpu,io,all}` (default `sleep`; `all` runs sleep→cpu→io sequentially with suffixed topic/group names).
+- Workload / ordering selection:
+  - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
+  - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
+  - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
   - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).

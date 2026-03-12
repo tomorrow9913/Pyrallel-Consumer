@@ -69,9 +69,9 @@ These options are implemented in the benchmark workers and directly control per-
 
 | Workload | Setting | baseline TPS | async TPS | process TPS |
 | --- | --- | --- | --- | --- |
-| sleep | `--workload sleep --worker-sleep-ms 5` | 159.69 | 2206.35 | 910.04 |
-| cpu | `--workload cpu --worker-cpu-iterations 500` | 2598.79 | 1403.07 | 2072.26 |
-| io | `--workload io --worker-io-sleep-ms 5` | 159.89 | 2797.18 | 916.60 |
+| sleep | `--workloads sleep --order key_hash --worker-sleep-ms 5` | 159.69 | 2206.35 | 910.04 |
+| cpu | `--workloads cpu --order key_hash --worker-cpu-iterations 500` | 2598.79 | 1403.07 | 2072.26 |
+| io | `--workloads io --order key_hash --worker-io-sleep-ms 5` | 159.89 | 2797.18 | 916.60 |
 
 > Note: process mode benchmarks were run with profiling disabled for stability.
 
@@ -199,6 +199,9 @@ For detailed runnable patterns, see [`examples/`](./examples/).
 ## 🧪 Run Benchmarks
 
 ```bash
+uv run python -m benchmarks.run_parallel_benchmark
+
+# or pass flags directly for the existing CLI flow
 uv run python benchmarks/run_parallel_benchmark.py \
   --bootstrap-servers localhost:9092 \
   --num-messages 50000 \
@@ -207,7 +210,10 @@ uv run python benchmarks/run_parallel_benchmark.py \
 ```
 
 - JSON report is saved to `benchmarks/results/<UTC timestamp>.json`.
+- No flags: launches a Textual TUI so you can configure the benchmark interactively.
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
+- Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
+- Use `--strict-completion-monitor on,off` to compare the completion monitor modes in benchmark output.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
 
 ## 📖 Documentation

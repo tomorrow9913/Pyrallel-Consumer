@@ -15,6 +15,7 @@ class BenchmarkResult:
     run_type: str
     workload: str
     topic: str
+    ordering: str
     messages_processed: int
     total_time_sec: float
     throughput_tps: float
@@ -31,12 +32,14 @@ class BenchmarkStats:
         run_name: str,
         run_type: str,
         workload: str,
+        ordering: str,
         topic: str,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
         self.run_type = run_type
         self.workload = workload
+        self.ordering = ordering
         self.topic = topic
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
@@ -80,6 +83,7 @@ class BenchmarkStats:
             run_name=self.run_name,
             run_type=self.run_type,
             workload=self.workload,
+            ordering=self.ordering,
             topic=self.topic,
             messages_processed=self._processed,
             total_time_sec=total_time,

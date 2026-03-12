@@ -26,6 +26,10 @@ def create_topic_if_not_exists(
     """주어진 이름과 파티션 개수로 Kafka 토픽이 없으면 생성합니다."""
     admin_client = AdminClient({"bootstrap.servers": admin_conf["bootstrap.servers"]})
     try:
+        metadata = admin_client.list_topics(timeout=5)
+        if topic_name in metadata.topics:
+            return
+
         new_topics = [
             NewTopic(topic_name, num_partitions=num_partitions, replication_factor=1)
         ]
@@ -49,15 +53,19 @@ def produce_messages(
     num_partitions: int,
     topic_name: str,
     bootstrap_servers: str | None = None,
+    ensure_topic_exists: bool = True,
 ) -> None:
     """지정된 수의 메시지와 키를 사용하여 테스트 데이터를 생성하고 Kafka에 전송합니다."""
     producer_conf = dict(conf)
     if bootstrap_servers:
         producer_conf["bootstrap.servers"] = bootstrap_servers
     producer = Producer(producer_conf)
-    topic_conf = dict(conf)
-    topic_conf["bootstrap.servers"] = producer_conf["bootstrap.servers"]
-    create_topic_if_not_exists(topic_conf, topic_name, num_partitions=num_partitions)
+    if ensure_topic_exists:
+        topic_conf = dict(conf)
+        topic_conf["bootstrap.servers"] = producer_conf["bootstrap.servers"]
+        create_topic_if_not_exists(
+            topic_conf, topic_name, num_partitions=num_partitions
+        )
 
     print(f"Starting to produce {num_messages} messages with {num_keys} unique keys...")
     start_time = time.time()

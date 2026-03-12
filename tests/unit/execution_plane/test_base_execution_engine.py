@@ -15,6 +15,9 @@ class ConcreteExecutionEngine(BaseExecutionEngine):
     ) -> List[CompletionEvent]:
         return []
 
+    async def wait_for_completion(self, timeout_seconds=None) -> bool:
+        return False
+
     def get_in_flight_count(self) -> int:
         return 0
 
@@ -30,6 +33,9 @@ class IncompleteExecutionEngine(BaseExecutionEngine):
         self, batch_limit: int = 1000
     ) -> List[CompletionEvent]:
         return []
+
+    async def wait_for_completion(self, timeout_seconds=None) -> bool:
+        return False
 
     # get_in_flight_count and shutdown are intentionally not implemented
 

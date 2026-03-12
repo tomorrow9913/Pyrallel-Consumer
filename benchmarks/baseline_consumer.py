@@ -70,7 +70,7 @@ def consume_messages(
     consumer = Consumer(consumer_conf)
 
     consumer.subscribe([effective_topic])
-    print(f"Starting baseline consumer for topic '{topic}'.")
+    print(f"Starting baseline consumer for topic '{effective_topic}'.")
     print(
         f"Will process up to {num_messages_to_process} messages if specified, otherwise indefinitely."
     )

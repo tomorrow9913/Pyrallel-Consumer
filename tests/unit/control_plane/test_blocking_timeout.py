@@ -17,6 +17,9 @@ class _FakeEngine(BaseExecutionEngine):
     async def poll_completed_events(self, batch_limit: int = 1000):
         return []
 
+    async def wait_for_completion(self, timeout_seconds=None) -> bool:
+        return False
+
     def get_in_flight_count(self) -> int:
         return 0
 

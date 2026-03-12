@@ -131,19 +131,27 @@ class OffsetRange:
 
 ```python
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import Optional
 
 class ExecutionEngine(ABC):
     @abstractmethod
-    async def submit(self, record: Any, tp: TopicPartition, offset: int, epoch: int) -> None:
+    async def submit(self, work_item: WorkItem) -> None:
         ...
 
     @abstractmethod
-    async def poll_completion(self) -> AsyncIterator[CompletionEvent]:
+    async def poll_completed_events(
+        self, batch_limit: int = 1000
+    ) -> list[CompletionEvent]:
         ...
 
     @abstractmethod
-    def in_flight(self) -> int:
+    async def wait_for_completion(
+        self, timeout_seconds: Optional[float] = None
+    ) -> bool:
+        ...
+
+    @abstractmethod
+    def get_in_flight_count(self) -> int:
         # 참고용(metrics/debug) 카운터로만 사용해야 하며, Control Plane의 의사결정에 사용 금지
         ...
 
@@ -157,6 +165,7 @@ class ExecutionEngine(ABC):
 - **Completion 전달**: `asyncio.Queue`를 사용하여 작업 완료/실패 이벤트를 Control Plane으로 전달합니다.
 - **Worker 타입**: `async def`로 정의된 코루틴 함수여야 합니다.
 - **동시성 제어**: `asyncio.Semaphore`를 사용하여 `max_in_flight`를 제한합니다.
+- **Completion 대기**: `wait_for_completion()`으로 completion-driven broker monitor가 새 완료 이벤트를 기다릴 수 있어야 합니다.
 
 #### 3.2.3. `ProcessExecutionEngine`
 - **실행 방식**: `multiprocessing.Process`를 사용하여 별도의 프로세스에서 워커를 실행합니다.
@@ -167,6 +176,7 @@ class ExecutionEngine(ABC):
 - **에러 처리**: 워커 내부의 모든 예외는 `try/except`로 잡아 `CompletionStatus.FAILURE` 이벤트로 변환하여 전달합니다. 워커 프로세스의 비정상 종료(crash) 또한 감지하여 실패 이벤트로 처리합니다.
 - **워커 래퍼 (`worker_loop`)**: 프로세스 내에서 실행되며, task 큐를 감시하다 작업을 받아 사용자 워커를 실행하고, 그 결과를 completion 큐에 넣는 역할을 합니다.
 - **Shutdown**: `task_queue`에 Sentinel(`None`)을 넣어 워커 프로세스들의 정상 종료를 유도하고, `process.join()`으로 모든 자식 프로세스가 끝날 때까지 대기합니다.
+- **Completion 대기**: `wait_for_completion()`은 completion queue/prefetch buffer를 통해 broker monitor를 깨우는 데 사용됩니다.
 
 ### 3.3. Control Plane
 
@@ -208,7 +218,7 @@ class ExecutionEngine(ABC):
 - **제어 로직 (Hysteresis 적용)**:
     - **부하 지표 (`Load`)**: `in_flight_tasks + queued_tasks`
     - **Pause 조건**: `Load >= max_in_flight * 1.0` 일 때, `consumer.pause()`를 호출하여 더 이상 메시지를 가져오지 않습니다.
-    - **Resume 조건**: `Load <= Resume_Threshold * 0.7` 일 때, `consumer.resume()`을 호출하여 다시 메시지를 가져옵니다.
+    - **Resume 조건**: `Load <= max_in_flight * 0.7` 이고, `queue_max_messages`가 설정된 경우 내부 queued count도 resume threshold 이하여야 `consumer.resume()`을 호출합니다.
     - 임계값을 두 개로 나누어, Pause와 Resume이 짧은 주기로 반복(chattering)되는 것을 방지합니다.
 
 ## 4. 설정 (Configuration)
@@ -245,7 +255,9 @@ parallel_consumer:
   # 진단/로깅
   diag_log_every: 1000            # 완료 이벤트 N건마다 파티션 상태 로그
   blocking_warn_seconds: 5.0      # 블로킹 offset이 N초 이상 지속 시 WARN
+  queue_max_messages: 5000        # 내부 virtual queue 총 길이 상한 (0이면 비활성)
   blocking_cache_ttl: 100         # blocking offset 계산 캐시 주기
+  strict_completion_monitor_enabled: true
 
   commit:
     strategy: "on_complete" # "on_complete" | "periodic"

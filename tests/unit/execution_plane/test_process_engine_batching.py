@@ -2,7 +2,8 @@
 
 import asyncio
 import time
-from typing import Dict
+from collections import deque
+from typing import Any, Dict, cast
 
 import pytest
 
@@ -311,3 +312,115 @@ class TestRetryLogic:
             assert event.attempt == 1
         finally:
             await engine.shutdown()
+
+
+class _FakeShutdownWorker:
+    def __init__(self, pid: int, alive_states: list[bool]):
+        self.pid = pid
+        self._alive_states = list(alive_states)
+        self.join_calls: list[float] = []
+        self.terminate_calls = 0
+        self.kill_calls = 0
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout if timeout is not None else -1.0)
+
+    def is_alive(self) -> bool:
+        if self._alive_states:
+            return self._alive_states.pop(0)
+        return False
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+
+class _FakeCloser:
+    def __init__(self):
+        self.closed = False
+        self.items = []
+
+    def put(self, item) -> None:
+        self.items.append(item)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeListener:
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class TestShutdownLifecycle:
+    @staticmethod
+    def _build_shutdown_engine(worker: _FakeShutdownWorker) -> ProcessExecutionEngine:
+        engine = cast(
+            ProcessExecutionEngine,
+            ProcessExecutionEngine.__new__(ProcessExecutionEngine),
+        )
+        engine._config = ExecutionConfig(
+            mode="process",
+            max_in_flight=10,
+            max_retries=3,
+            retry_backoff_ms=10,
+            exponential_backoff=False,
+            max_retry_backoff_ms=10,
+            retry_jitter_ms=0,
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=8,
+                batch_size=1,
+                max_batch_wait_ms=10,
+                worker_join_timeout_ms=50,
+            ),
+        )
+        engine._workers = cast(list[Any], [worker])
+        engine._batch_accumulator = cast(Any, _FakeCloser())
+        engine._task_queue = cast(Any, _FakeCloser())
+        engine._completion_queue = cast(Any, _FakeCloser())
+        engine._registry_event_queue = cast(Any, _FakeCloser())
+        engine._log_listener = cast(Any, _FakeListener())
+        engine._prefetched_completion_events = deque()
+        engine._in_flight_registry = {}
+        engine._in_flight_count = 0
+        engine._in_flight_lock = __import__("threading").Lock()
+        engine._logger = __import__("logging").getLogger(__name__)
+        engine._is_shutdown = False
+        setattr(engine, "_drain_registry_events", lambda: None)
+        return engine
+
+    @pytest.mark.asyncio
+    async def test_shutdown_rejoins_after_terminate_before_considering_kill(self):
+        engine = self._build_shutdown_engine(
+            _FakeShutdownWorker(pid=101, alive_states=[True, False])
+        )
+
+        await engine.shutdown()
+
+        worker = engine._workers[0]
+        assert worker.terminate_calls == 1
+        assert worker.kill_calls == 0
+        assert worker.join_calls == [0.05, 0.05]
+        assert engine._log_listener.stopped is True
+
+    @pytest.mark.asyncio
+    async def test_shutdown_kills_worker_only_after_terminate_still_leaves_it_alive(
+        self
+    ):
+        engine = self._build_shutdown_engine(
+            _FakeShutdownWorker(pid=202, alive_states=[True, True, False])
+        )
+
+        await engine.shutdown()
+
+        worker = engine._workers[0]
+        assert worker.terminate_calls == 1
+        assert worker.kill_calls == 1
+        assert worker.join_calls == [0.05, 0.05, 0.05]
+        assert engine._log_listener.stopped is True

@@ -29,6 +29,7 @@ def _make_tracker_mock(tp):
     )
     mock.get_gaps.return_value = []
     mock.advance_high_water_mark.return_value = None
+    mock.get_current_epoch.return_value = 1
     return mock
 
 
@@ -107,6 +108,25 @@ async def test_unordered_allows_same_key_concurrent(mock_engine, tp):
     await wm.schedule()
 
     assert mock_engine.submit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unordered_prefers_lowest_head_offset_after_blocking_pick(
+    mock_engine, tp
+):
+    """UNORDERED: stale runnable entries must not outrank lower current head offsets."""
+    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED)
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+    tracker.get_gaps.return_value = [type("Gap", (), {"start": 0})()]
+    await wm.schedule()
+
+    submitted_offsets = [
+        call.args[0].offset for call in mock_engine.submit.await_args_list
+    ]
+    assert submitted_offsets == [0, 1, 2]
 
 
 @pytest.mark.asyncio

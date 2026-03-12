@@ -60,6 +60,8 @@ class BrokerPoller:
 
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._control_lock = asyncio.Lock()
+        self._completion_monitor_task: Optional[asyncio.Task[None]] = None
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
@@ -79,10 +81,21 @@ class BrokerPoller:
         )
 
         self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
-        self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = self.MAX_IN_FLIGHT_MESSAGES // 2
+        self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = max(
+            1, int(self.MAX_IN_FLIGHT_MESSAGES * 0.7)
+        )
         self._is_paused = False
 
         self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+        self._idle_consume_timeout_seconds = 0.1
+
+    # ------------------------------------------------------------------
+    async def _get_consume_timeout_seconds(self) -> float:
+        total_in_flight = self._work_manager.get_total_in_flight_count()
+        total_queued = await self._get_total_queued_messages()
+        if total_in_flight > 0 or total_queued > 0:
+            return 0.0
+        return self._idle_consume_timeout_seconds
 
     # ------------------------------------------------------------------
     async def _publish_to_dlq(
@@ -190,63 +203,59 @@ class BrokerPoller:
             while self._running:
                 await self._check_backpressure()
 
+                consume_timeout = await self._get_consume_timeout_seconds()
                 messages: List[Message] = await asyncio.to_thread(
                     self.consumer.consume,
                     num_messages=self._batch_size,
-                    timeout=0.1,
+                    timeout=consume_timeout,
                 )
 
-                if messages:
-                    for msg in messages:
-                        if msg.error():
-                            logger.warning(
-                                "Consumed message with error: %s", msg.error()
+                async with self._control_lock:
+                    if messages:
+                        for msg in messages:
+                            if msg.error():
+                                logger.warning(
+                                    "Consumed message with error: %s", msg.error()
+                                )
+                                continue
+
+                            topic = msg.topic()
+                            partition = msg.partition()
+                            if topic is None or partition is None:
+                                logger.warning(
+                                    "Received message with None topic or partition"
+                                )
+                                continue
+
+                            tp = DtoTopicPartition(topic=topic, partition=partition)
+                            offset_val = msg.offset()
+                            if offset_val is None:
+                                continue
+                            tracker = self._offset_trackers.get(tp)
+                            if tracker is None:
+                                logger.warning("Untracked partition %s - skipping", tp)
+                                continue
+
+                            cache_key = (tp, offset_val)
+                            self._message_cache[cache_key] = (msg.key(), msg.value())
+
+                            submit_key: Any
+                            if self.ORDERING_MODE == OrderingMode.PARTITION:
+                                submit_key = tp.partition
+                            else:
+                                submit_key = msg.key()
+
+                            await self._work_manager.submit_message(
+                                tp=tp,
+                                offset=offset_val,
+                                epoch=tracker.get_current_epoch(),
+                                key=submit_key,
+                                payload=msg.value(),
                             )
-                            continue
 
-                        topic = msg.topic()
-                        partition = msg.partition()
-                        if topic is None or partition is None:
-                            logger.warning(
-                                "Received message with None topic or partition"
-                            )
-                            continue
+                        await self._work_manager.schedule()
 
-                        tp = DtoTopicPartition(topic=topic, partition=partition)
-                        offset_val = msg.offset()
-                        if offset_val is None:
-                            continue
-                        tracker = self._offset_trackers.get(tp)
-                        if tracker is None:
-                            logger.warning("Untracked partition %s - skipping", tp)
-                            continue
-
-                        cache_key = (tp, offset_val)
-                        self._message_cache[cache_key] = (msg.key(), msg.value())
-
-                        submit_key: Any
-                        if self.ORDERING_MODE == OrderingMode.PARTITION:
-                            submit_key = tp.partition
-                        else:
-                            submit_key = msg.key()
-
-                        await self._work_manager.submit_message(
-                            tp=tp,
-                            offset=offset_val,
-                            epoch=tracker.get_current_epoch(),
-                            key=submit_key,
-                            payload=msg.value(),
-                        )
-                        tracker.update_last_fetched_offset(offset_val)
-
-                    await self._work_manager.schedule()
-
-                completed_events = await self._work_manager.poll_completed_events()
-                timeout_events = await self._handle_blocking_timeouts()
-                if timeout_events:
-                    completed_events.extend(timeout_events)
-                if completed_events:
-                    await self._process_completed_events(completed_events)
+                    await self._drain_completion_events_once()
 
                 commits_to_make: List[tuple[DtoTopicPartition, int]] = []
                 for tp, tracker in self._offset_trackers.items():
@@ -265,14 +274,58 @@ class BrokerPoller:
                 if commits_to_make:
                     await self._commit_offsets(commits_to_make)
 
-                if not messages:
-                    await asyncio.sleep(0.1)
+                if not messages and consume_timeout > 0:
+                    await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
+            self._running = False
+            if self._completion_monitor_task is not None:
+                self._completion_monitor_task.cancel()
+                await asyncio.gather(
+                    self._completion_monitor_task, return_exceptions=True
+                )
+                self._completion_monitor_task = None
             await self._cleanup()
             self._shutdown_event.set()
+
+    async def _drain_completion_events_once(self) -> bool:
+        completed_events = await self._work_manager.poll_completed_events()
+        timeout_events = await self._handle_blocking_timeouts()
+        if timeout_events:
+            completed_events.extend(timeout_events)
+        if not completed_events:
+            return False
+
+        await self._process_completed_events(completed_events)
+        await self._work_manager.schedule()
+        return True
+
+    async def _run_completion_monitor(self) -> None:
+        timeout_seconds = self._idle_consume_timeout_seconds
+        if self._max_blocking_duration_ms > 0:
+            timeout_seconds = min(
+                timeout_seconds,
+                self._max_blocking_duration_ms / 1000.0,
+            )
+
+        try:
+            while self._running:
+                if self._work_manager.get_total_in_flight_count() <= 0:
+                    await asyncio.sleep(timeout_seconds)
+                    continue
+
+                has_completion = await self._execution_engine.wait_for_completion(
+                    timeout_seconds=timeout_seconds,
+                )
+                if not has_completion and self._max_blocking_duration_ms <= 0:
+                    continue
+
+                async with self._control_lock:
+                    await self._drain_completion_events_once()
+        except asyncio.CancelledError:
+            raise
 
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
         if self._max_blocking_duration_ms <= 0:
@@ -561,11 +614,7 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        tp_dtos = [
-            DtoTopicPartition(topic=tp.topic, partition=tp.partition)
-            for tp in partitions
-        ]
-        self._work_manager.on_assign(tp_dtos)
+        work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
 
         for partition in partitions:
             tp_dto = DtoTopicPartition(partition.topic, partition.partition)
@@ -584,6 +633,9 @@ class BrokerPoller:
             tracker.last_fetched_offset = last_committed
             tracker.increment_epoch()
             self._offset_trackers[tp_dto] = tracker
+            work_manager_assignments[tp_dto] = tracker
+
+        self._work_manager.on_assign(work_manager_assignments)
 
     def _on_revoke(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
@@ -652,6 +704,14 @@ class BrokerPoller:
                 on_revoke=self._on_revoke,
             )
             self._running = True
+            if getattr(
+                self._kafka_config.parallel_consumer,
+                "strict_completion_monitor_enabled",
+                True,
+            ):
+                self._completion_monitor_task = asyncio.create_task(
+                    self._run_completion_monitor()
+                )
             asyncio.create_task(self._run_consumer())
             logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:

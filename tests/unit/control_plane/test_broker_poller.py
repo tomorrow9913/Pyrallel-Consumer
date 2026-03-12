@@ -84,6 +84,20 @@ def broker_poller(mock_kafka_config, mock_execution_engine):
     return poller
 
 
+def test_broker_poller_uses_seventy_percent_resume_threshold(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 1000
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+
+    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
+
+
 @pytest.mark.asyncio
 async def test_on_assign_initializes_offset_trackers(broker_poller, mock_consumer):
     tps_to_assign = [
@@ -99,6 +113,39 @@ async def test_on_assign_initializes_offset_trackers(broker_poller, mock_consume
         tracker = broker_poller._offset_trackers[tp]
         assert tracker.topic_partition == tp
         assert tracker.epoch == 1  # Epoch should be incremented
+
+
+@pytest.mark.asyncio
+async def test_on_assign_passes_shared_trackers_to_work_manager(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    tps_to_assign = [
+        KafkaTopicPartition("test-topic", 0, 100),
+        KafkaTopicPartition("test-topic", 1, 200),
+    ]
+
+    broker_poller._on_assign(mock_consumer, tps_to_assign)
+
+    mock_work_manager.on_assign.assert_called_once()
+    assignments = mock_work_manager.on_assign.call_args.args[0]
+    expected_tp_0 = DtoTopicPartition(topic="test-topic", partition=0)
+    expected_tp_1 = DtoTopicPartition(topic="test-topic", partition=1)
+
+    assert set(assignments) == {expected_tp_0, expected_tp_1}
+    assert assignments[expected_tp_0] is broker_poller._offset_trackers[expected_tp_0]
+    assert assignments[expected_tp_1] is broker_poller._offset_trackers[expected_tp_1]
+    assert assignments[expected_tp_0].get_current_epoch() == 1
+    assert assignments[expected_tp_1].get_current_epoch() == 1
+    assert broker_poller._offset_trackers[expected_tp_0].last_committed_offset == 99
+    assert broker_poller._offset_trackers[expected_tp_1].last_committed_offset == 199
 
 
 @pytest.mark.asyncio
@@ -137,6 +184,86 @@ async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
         # This requires a bit more advanced mocking if we want to assert on calls to specific instances.
         # For simplicity, we assume the deletion implies the tracker was handled.
         # A more robust test might check mock_offset_tracker_factory calls or global mocks.
+
+
+@pytest.mark.asyncio
+async def test_run_consumer_uses_non_blocking_consume_when_work_remains(
+    broker_poller, mock_consumer
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    broker_poller._offset_trackers[tp] = tracker
+
+    work_manager = MagicMock()
+    work_manager.poll_completed_events = AsyncMock(return_value=[])
+    work_manager.schedule = AsyncMock()
+    work_manager.get_total_in_flight_count.return_value = 1
+    work_manager.get_virtual_queue_sizes.return_value = {tp: {b"key": 1}}
+    broker_poller._work_manager = work_manager
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = MagicMock()
+    broker_poller._max_blocking_duration_ms = 0
+    broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
+    broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 50
+    broker_poller.QUEUE_MAX_MESSAGES = 0
+
+    consume_timeouts = []
+
+    def fake_consume(num_messages=1, timeout=0.1):
+        consume_timeouts.append(timeout)
+        broker_poller._running = False
+        return []
+
+    broker_poller.consumer.consume = MagicMock(side_effect=fake_consume)
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    broker_poller._running = True
+    with patch("asyncio.to_thread", side_effect=passthrough_to_thread):
+        await broker_poller._run_consumer()
+
+    assert consume_timeouts == [0.0]
+
+
+@pytest.mark.asyncio
+async def test_run_consumer_keeps_default_consume_timeout_when_idle(
+    broker_poller, mock_consumer
+):
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock(return_value=[])
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = MagicMock()
+    broker_poller._max_blocking_duration_ms = 0
+    broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
+    broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 50
+    broker_poller.QUEUE_MAX_MESSAGES = 0
+
+    consume_timeouts = []
+
+    def fake_consume(num_messages=1, timeout=0.1):
+        consume_timeouts.append(timeout)
+        broker_poller._running = False
+        return []
+
+    broker_poller.consumer.consume = MagicMock(side_effect=fake_consume)
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    broker_poller._running = True
+    with patch("asyncio.to_thread", side_effect=passthrough_to_thread):
+        await broker_poller._run_consumer()
+
+    assert consume_timeouts == [0.1]
 
 
 # =====================================================================
