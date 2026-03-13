@@ -10,6 +10,9 @@ _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _TOPIC_PATTERN = re.compile(r"topic '([^']+)'")
 _JSON_OUTPUT_PATTERN = re.compile(r"JSON summary written to (.+)$")
 _FINAL_TPS_PATTERN = re.compile(r"Final TPS:\s*([0-9]+(?:\.[0-9]+)?)")
+_STRICT_SUFFIX_PATTERN = re.compile(r"(?:^|-)strict-(on|off)(?:$|[.-])")
+
+RunIdentity = tuple[str, str, str, str]
 
 
 def _empty_tps_table() -> dict[str, dict[str, str]]:
@@ -62,10 +65,10 @@ class BenchmarkLogParser:
         self._active_phases = active_phases or _PHASE_NAMES
         self._active_orderings = active_orderings or ("key_hash",)
         self._active_workloads = active_workloads or self._resolve_active_workloads()
-        self._started_runs: set[tuple[str, str, str]] = set()
-        self._completed_runs: set[tuple[str, str, str]] = set()
-        self._active_run: tuple[str, str, str] | None = None
-        self._started_run_order: deque[tuple[str, str, str]] = deque()
+        self._started_runs: set[RunIdentity] = set()
+        self._completed_runs: set[RunIdentity] = set()
+        self._active_run: RunIdentity | None = None
+        self._started_run_order: deque[RunIdentity] = deque()
         self.snapshot = BenchmarkProgressSnapshot(
             total_runs=(
                 len(self._active_workloads)
@@ -89,27 +92,30 @@ class BenchmarkLogParser:
         if "Starting baseline consumer" in stripped and topic_name is not None:
             workload = self._extract_workload(topic_name)
             ordering = self._extract_ordering(topic_name)
+            strict_mode = self._extract_strict_mode(topic_name)
             self._mark_workload_running(workload)
             self._mark_ordering_running(ordering)
             self._mark_phase_running("baseline")
-            self._mark_run_started(workload, ordering, "baseline")
+            self._mark_run_started(workload, ordering, strict_mode, "baseline")
             self.snapshot.status_message = "Running baseline"
             return self.snapshot
 
         if "Starting PyrallelConsumer test" in stripped and topic_name is not None:
             workload = self._extract_workload(topic_name)
             ordering = self._extract_ordering(topic_name)
+            strict_mode = self._extract_strict_mode(topic_name)
             self._mark_workload_running(workload)
             self._mark_ordering_running(ordering)
-            if topic_name.endswith("-async"):
+            phase = self._extract_phase(topic_name)
+            if phase == "async":
                 self._mark_phase_completed("baseline")
                 self._mark_phase_running("async")
-                self._mark_run_started(workload, ordering, "async")
+                self._mark_run_started(workload, ordering, strict_mode, "async")
                 self.snapshot.status_message = "Running async benchmark"
-            elif topic_name.endswith("-process"):
+            elif phase == "process":
                 self._mark_phase_completed("async")
                 self._mark_phase_running("process")
-                self._mark_run_started(workload, ordering, "process")
+                self._mark_run_started(workload, ordering, strict_mode, "process")
                 self.snapshot.status_message = "Running process benchmark"
             return self.snapshot
 
@@ -153,9 +159,14 @@ class BenchmarkLogParser:
         ordering = self._extract_ordering(ordering_name or run_name)
         if ordering is None and topic_name:
             ordering = self._extract_ordering(topic_name)
+        strict_mode = self._extract_strict_mode(run_name)
+        if strict_mode == "" and topic_name:
+            strict_mode = self._extract_strict_mode(topic_name)
         phase = self._extract_phase(run_name)
         if phase is None and run_type:
             phase = self._extract_phase(run_type)
+        if phase is None and topic_name:
+            phase = self._extract_phase(topic_name)
 
         if workload is not None:
             self.snapshot.current_workload = workload
@@ -165,7 +176,7 @@ class BenchmarkLogParser:
             return
 
         if self.snapshot.tps_by_workload_ordering[workload][ordering][phase] == "--":
-            self._mark_run_completed(workload, ordering, phase)
+            self._mark_run_completed(workload, ordering, strict_mode, phase)
         self.snapshot.tps_by_workload[workload][phase] = throughput
         self.snapshot.tps_by_workload_ordering[workload][ordering][phase] = throughput
         self._mark_phase_completed(phase)
@@ -191,20 +202,26 @@ class BenchmarkLogParser:
             self.snapshot.current_ordering = ordering
 
     def _mark_run_started(
-        self, workload: str | None, ordering: str | None, phase: str
+        self,
+        workload: str | None,
+        ordering: str | None,
+        strict_mode: str,
+        phase: str,
     ) -> None:
         if workload is None or ordering is None or phase not in self._active_phases:
             return
         self.snapshot.current_ordering = ordering
-        key = (workload, ordering, phase)
+        key = (workload, ordering, strict_mode, phase)
         if key not in self._started_runs:
             self._started_run_order.append(key)
         self._started_runs.add(key)
         self._active_run = key
         self._refresh_progress()
 
-    def _mark_run_completed(self, workload: str, ordering: str, phase: str) -> None:
-        key = (workload, ordering, phase)
+    def _mark_run_completed(
+        self, workload: str, ordering: str, strict_mode: str, phase: str
+    ) -> None:
+        key = (workload, ordering, strict_mode, phase)
         self._started_runs.add(key)
         self._completed_runs.add(key)
         if self._active_run == key:
@@ -215,13 +232,13 @@ class BenchmarkLogParser:
         target_run = self._next_unfinished_run()
         if target_run is None:
             return
-        workload, ordering, phase = target_run
+        workload, ordering, strict_mode, phase = target_run
         self.snapshot.current_workload = workload
         self.snapshot.current_ordering = ordering
         self.snapshot.tps_by_workload[workload][phase] = throughput
         self.snapshot.tps_by_workload_ordering[workload][ordering][phase] = throughput
         self._mark_phase_completed(phase)
-        self._mark_run_completed(workload, ordering, phase)
+        self._mark_run_completed(workload, ordering, strict_mode, phase)
         if phase == self._active_phases[-1]:
             self.snapshot.workload_statuses[workload] = "completed"
         self._active_run = self._next_unfinished_run()
@@ -234,7 +251,7 @@ class BenchmarkLogParser:
             float(self.snapshot.completed_runs) + (0.5 * active_runs),
         )
 
-    def _next_unfinished_run(self) -> tuple[str, str, str] | None:
+    def _next_unfinished_run(self) -> RunIdentity | None:
         while self._started_run_order:
             candidate = self._started_run_order[0]
             if candidate in self._completed_runs:
@@ -244,13 +261,19 @@ class BenchmarkLogParser:
         return None
 
     def _extract_phase(self, value: str) -> str | None:
-        if value.endswith("-async") or value.endswith("async"):
+        if re.search(r"(?:^|-)async(?:$|-strict-)", value):
             return "async"
-        if value.endswith("-process") or value.endswith("process"):
+        if re.search(r"(?:^|-)process(?:$|-strict-)", value):
             return "process"
         if "baseline" in value:
             return "baseline"
         return None
+
+    def _extract_strict_mode(self, value: str) -> str:
+        strict_mode_match = _STRICT_SUFFIX_PATTERN.search(value)
+        if strict_mode_match is None:
+            return ""
+        return strict_mode_match.group(1)
 
     def _extract_workload(self, value: str) -> str | None:
         if self._workload_mode != "all":
