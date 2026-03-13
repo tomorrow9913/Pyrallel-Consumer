@@ -149,6 +149,90 @@ async def test_on_assign_passes_shared_trackers_to_work_manager(
 
 
 @pytest.mark.asyncio
+async def test_on_assign_hydrates_completed_offsets_from_metadata_snapshot(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    metadata = broker_poller._metadata_encoder.encode_metadata({103, 105}, 100)
+    assigned = [
+        KafkaTopicPartition("test-topic", 0, 100, metadata=metadata),
+    ]
+
+    broker_poller._on_assign(mock_consumer, assigned)
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = broker_poller._offset_trackers[tp]
+    assert set(tracker.completed_offsets) == {103, 105}
+    assert tracker.last_committed_offset == 99
+    assert tracker.last_fetched_offset == 105
+
+
+@pytest.mark.asyncio
+async def test_on_assign_uses_committed_partition_metadata_for_snapshot_hydration(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    assigned = [KafkaTopicPartition("test-topic", 0, 100)]
+    committed_metadata = broker_poller._metadata_encoder.encode_metadata(
+        {103, 105}, 100
+    )
+    mock_consumer.committed.return_value = [
+        KafkaTopicPartition("test-topic", 0, 100, metadata=committed_metadata)
+    ]
+
+    broker_poller._on_assign(mock_consumer, assigned)
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = broker_poller._offset_trackers[tp]
+    assert set(tracker.completed_offsets) == {103, 105}
+    assert tracker.last_committed_offset == 99
+    assert tracker.last_fetched_offset == 105
+
+
+@pytest.mark.asyncio
+async def test_on_assign_ignores_metadata_snapshot_in_contiguous_only_mode(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "contiguous_only"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    metadata = broker_poller._metadata_encoder.encode_metadata({103, 105}, 100)
+    assigned = [
+        KafkaTopicPartition("test-topic", 0, 100, metadata=metadata),
+    ]
+
+    broker_poller._on_assign(mock_consumer, assigned)
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = broker_poller._offset_trackers[tp]
+    assert set(tracker.completed_offsets) == set()
+    assert tracker.last_committed_offset == 99
+    assert tracker.last_fetched_offset == 99
+
+
+@pytest.mark.asyncio
 async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
     tps_assigned = [
         KafkaTopicPartition("test-topic", 0, 100),
@@ -184,6 +268,109 @@ async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
         # This requires a bit more advanced mocking if we want to assert on calls to specific instances.
         # For simplicity, we assume the deletion implies the tracker was handled.
         # A more robust test might check mock_offset_tracker_factory calls or global mocks.
+
+
+@pytest.mark.asyncio
+async def test_on_revoke_commits_metadata_snapshot_when_enabled(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+    broker_poller.consumer = mock_consumer
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    tracker.last_fetched_offset = 7
+    tracker.mark_complete(6)
+    tracker.mark_complete(7)
+    broker_poller._offset_trackers[tp] = tracker
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    offsets_arg = mock_consumer.commit.call_args.kwargs["offsets"]
+    assert len(offsets_arg) == 1
+    kafka_tp = offsets_arg[0]
+    assert kafka_tp.offset == 5
+    assert kafka_tp.metadata == broker_poller._metadata_encoder.encode_metadata(
+        {6, 7}, 5
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_revoke_metadata_snapshot_limits_offsets_encoded(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+    broker_poller.consumer = mock_consumer
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    for offset in range(0, 5000):
+        tracker.mark_complete(offset)
+    broker_poller._offset_trackers[tp] = tracker
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    offsets_arg = mock_consumer.commit.call_args.kwargs["offsets"]
+    kafka_tp = offsets_arg[0]
+    decoded_offsets = broker_poller._metadata_encoder.decode_metadata(kafka_tp.metadata)
+    assert len(decoded_offsets) <= broker_poller.MAX_COMPLETED_OFFSETS_FOR_METADATA
+    assert all(offset >= 5 for offset in decoded_offsets)
+
+
+@pytest.mark.asyncio
+async def test_on_revoke_omits_metadata_snapshot_in_contiguous_only_mode(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "contiguous_only"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+    broker_poller.consumer = mock_consumer
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    tracker.last_fetched_offset = 7
+    tracker.mark_complete(6)
+    tracker.mark_complete(7)
+    broker_poller._offset_trackers[tp] = tracker
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    offsets_arg = mock_consumer.commit.call_args.kwargs["offsets"]
+    assert len(offsets_arg) == 1
+    kafka_tp = offsets_arg[0]
+    assert kafka_tp.offset == 5
+    assert kafka_tp.metadata in (None, "")
 
 
 @pytest.mark.asyncio
@@ -364,7 +551,7 @@ async def test_commit_offsets_uses_topic_partition_with_metadata(broker_poller):
     broker_poller._offset_trackers[tp] = tracker
 
     expected_metadata = broker_poller._metadata_encoder.encode_metadata(  # type: ignore[attr-defined]
-        tracker.completed_offsets, 2
+        {offset for offset in tracker.completed_offsets if offset >= 2}, 2
     )
 
     broker_poller.consumer = MagicMock(spec=Consumer)

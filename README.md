@@ -9,6 +9,8 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
+> **Release policy:** current published versions are alpha/prerelease (`0.1.2a1`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+
 ## 🌟 Key Features
 
 - **High parallelism**: Process messages in parallel without being tightly limited by Kafka partition count.
@@ -80,6 +82,10 @@ These options are implemented in the benchmark workers and directly control per-
 `Pyrallel Consumer` is organized into three layers: **Control Plane**, **Execution Plane**, and **Worker Layer**.
 The Control Plane manages Kafka communication and offsets independently from execution mode.
 The Execution Plane runs user workers via `asyncio` tasks or multiprocessing.
+
+The control plane talks to execution engines through the shared `BaseExecutionEngine`
+contract. Process-specific commit clamping is exposed as an engine capability, so
+`BrokerPoller` does not need concrete `ProcessExecutionEngine` type checks to stay safe.
 
 ```mermaid
 graph TD
@@ -195,6 +201,17 @@ consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 ```
 
 For detailed runnable patterns, see [`examples/`](./examples/).
+
+### Rebalance state preservation
+
+- Default: `contiguous_only`
+  - On rebalance/restart, only the safe contiguous HWM is preserved via the committed Kafka offset.
+  - Sparse completed offsets beyond the HWM may be replayed later; this is the simplest and safest at-least-once default.
+- Optional: `metadata_snapshot`
+  - Sparse completed offsets are encoded into Kafka commit metadata on revoke/commit and restored on the next assignment.
+  - This can reduce avoidable reprocessing, but failures must remain fail-closed back to `contiguous_only` semantics.
+
+Even with `metadata_snapshot`, downstream side effects should remain idempotent.
 
 ## 🧪 Run Benchmarks
 

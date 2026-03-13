@@ -23,6 +23,29 @@ def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None
     monkeypatch.delenv("PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS", raising=False)
 
 
+def test_parallel_consumer_config_rebalance_state_strategy_defaults() -> None:
+    config = ParallelConsumerConfig()
+
+    assert config.rebalance_state_strategy == "contiguous_only"
+
+
+def test_parallel_consumer_config_rebalance_state_strategy_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PARALLEL_CONSUMER_REBALANCE_STATE_STRATEGY", "metadata_snapshot"
+    )
+
+    config = ParallelConsumerConfig()
+
+    assert config.rebalance_state_strategy == "metadata_snapshot"
+
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_REBALANCE_STATE_STRATEGY",
+        raising=False,
+    )
+
+
 def test_parallel_consumer_config_can_disable_strict_completion_monitor(
     monkeypatch: MonkeyPatch,
 ) -> None:

@@ -16,6 +16,8 @@
 
 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
+> **릴리즈 정책:** 현재 배포 버전은 alpha/prerelease(`0.1.2a1`)입니다. 버전/분류 정책이 alpha를 벗어나기 전까지는 `main` 브랜치를 안정화가 계속 진행 중인 hardening 브랜치로 보는 것이 맞습니다.
+
 ## 🌟 주요 특징
 
 -   **병렬성 극대화**: Kafka 파티션 수에 얽매이지 않는 유연한 메시지 병렬 처리.
@@ -84,6 +86,10 @@ consumer = PyrallelConsumer(config, worker, topic="demo")
 ## 🚀 아키텍처 개요
 
 `Pyrallel Consumer`는 **Control Plane**, **Execution Plane**, **Worker Layer**로 명확하게 계층을 분리하여 설계되었습니다. `Control Plane`은 Kafka와의 통신 및 오프셋 관리를 담당하며, 어떤 `Execution Engine`이 사용되는지에 독립적으로 작동합니다. `Execution Plane`은 `Asyncio Task` 또는 `멀티프로세스`를 활용하여 사용자 정의 워커의 병렬 실행을 관리합니다.
+
+Control Plane은 공통 `BaseExecutionEngine` 계약만 의존합니다. Process 전용 커밋
+클램프 정보도 엔진 capability로 노출하므로, `BrokerPoller`가
+`ProcessExecutionEngine` 구체 타입을 직접 검사하지 않아도 안전성을 유지할 수 있습니다.
 
 ```mermaid
 graph TD
@@ -317,6 +323,17 @@ asyncio.run(main())
 - 동시 처리량: `max_in_flight`, `worker_pool_size`를 함께 조정
 
 For detailed examples including async mode, process mode, configuration tuning, and graceful shutdown patterns, see the **[`examples/`](./examples/)** directory.
+
+### 리밸런스 상태 보존 정책
+
+- 기본값: `contiguous_only`
+  - 리밸런스/재시작 시에는 현재 안전한 contiguous HWM만 Kafka committed offset으로 남깁니다.
+  - HWM 뒤의 sparse 완료 오프셋은 이후 다시 처리될 수 있으며, 이것이 가장 단순하고 안전한 at-least-once 기본값입니다.
+- 옵션: `metadata_snapshot`
+  - revoke/commit 시 sparse 완료 오프셋을 Kafka commit metadata에 인코딩하고, 다음 assignment에서 복원합니다.
+  - 불필요한 재처리를 줄일 수 있지만, 실패 시에는 반드시 `contiguous_only` 수준으로 fail-closed 해야 합니다.
+
+`metadata_snapshot`을 사용하더라도 다운스트림 side effect는 여전히 멱등적으로 설계하는 것이 권장됩니다.
 
 ## 🧪 벤치마크 실행
 

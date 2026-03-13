@@ -26,6 +26,11 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 시스템 부하 상태를 나타냅니다.
 - **운영 팁**: 이 값이 `max_in_flight` 설정값에 도달하면 **Backpressure**가 동작하여 Kafka 소비를 일시 중지(`Pause`)합니다.
 
+### 1.5. Engine Capability Boundary (엔진 capability 경계)
+- **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
+- **의미**: 최소 in-flight offset 같은 Process 전용 안전 정보는 `BrokerPoller` 내부의 구체 클래스 분기 대신, 선택적 엔진 capability로 노출되어야 합니다.
+- **운영 팁**: 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
+
 ## 2. 튜닝 가이드
 
 ### 2.1. `max_in_flight_messages` (Control Plane)

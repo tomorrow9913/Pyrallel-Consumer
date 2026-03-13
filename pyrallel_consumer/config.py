@@ -98,6 +98,9 @@ class ParallelConsumerConfig(BaseSettings):
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     strict_completion_monitor_enabled: bool = True
+    rebalance_state_strategy: Literal[
+        "contiguous_only", "metadata_snapshot"
+    ] = "contiguous_only"
     execution: ExecutionConfig = ExecutionConfig()
 
 

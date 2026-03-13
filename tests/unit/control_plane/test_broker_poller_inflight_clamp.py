@@ -8,27 +8,30 @@ from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
-from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 
-class DummyProcessEngine(ProcessExecutionEngine):
-    def __init__(self):
-        self._in_flight_registry = {
-            ("test-topic", 0, 0): {"offset": 5, "topic": "test-topic", "partition": 0}
-        }
-
+class DummyExecutionEngine:
     def get_min_inflight_offset(self, tp: DtoTopicPartition):
         return 5 if tp.topic == "test-topic" and tp.partition == 0 else None
 
-    async def poll_completed_events(self, batch_limit: int = 1000):
+    async def poll_completed_events(self, _batch_limit: int = 1000):
         return []
+
+    async def wait_for_completion(self, _timeout_seconds=None) -> bool:
+        return False
+
+    async def submit(self, _work_item):
+        return None
+
+    def get_in_flight_count(self) -> int:
+        return 0
 
     async def shutdown(self):
         return None
 
 
 @pytest.mark.asyncio
-async def test_commit_clamped_by_inflight_registry(monkeypatch):
+async def test_commit_clamped_by_inflight_registry():
     kafka_config = KafkaConfig()
     kafka_config.parallel_consumer.poll_batch_size = 1
     kafka_config.parallel_consumer.worker_pool_size = 1
@@ -41,7 +44,7 @@ async def test_commit_clamped_by_inflight_registry(monkeypatch):
     consumer = MagicMock(spec=Consumer)
     consumer.assignment.return_value = [MagicMock(spec=Message)]
 
-    engine = DummyProcessEngine()
+    engine = DummyExecutionEngine()
     offset_tracker = MagicMock(spec=OffsetTracker)
     offset_tracker.last_committed_offset = 0
     offset_tracker.completed_offsets = [1, 2, 3, 4, 5, 6]

@@ -228,6 +228,12 @@ def on_completion(event):
 - **목적**: 파티션 소유권을 잃기 직전(`on_partitions_revoked`), "내가 여기까지는 확실히 처리했다"는 상태를 다음 소유자에게 최대한 정확하게 전달하는 것입니다.
 - **절차**: `WorkManager`를 정지시키고, `OffsetTracker`의 현재 상태를 스냅샷하여 `Metadata Encoder`를 통해 압축한 후, 동기 방식(`commit_sync`)으로 커밋합니다.
 
+#### 4.2.4.1. 리밸런스 상태 보존 정책: `contiguous_only` vs `metadata_snapshot`
+- **기본값 `contiguous_only`**: 리밸런스/재시작 직전에는 현재 연속 커밋 가능 HWM만 Kafka offset으로 남기고, 드문드문 완료된 sparse 오프셋은 버립니다. 구현/운영 복잡도가 가장 낮고, 최악의 경우 일부 메시지를 다시 처리하는 안전한 at-least-once 기본값입니다.
+- **옵션 `metadata_snapshot`**: revoke 시점에 HWM보다 앞선 sparse 완료 오프셋을 Kafka commit metadata에 함께 인코딩해 남기고, 다음 assignment에서 디코딩하여 `OffsetTracker(initial_completed_offsets=...)`로 복원합니다. 이 정책은 불필요한 재처리를 줄여주지만, commit metadata 인코딩/디코딩 실패 시에는 반드시 fail-closed로 동작하여 `contiguous_only` 수준의 안전성으로 되돌아가야 합니다.
+- **불변 조건**: 두 전략 모두 "안전한 contiguous commit만 실제 committed offset으로 사용한다"는 원칙은 바뀌지 않습니다. 차이는 sparse 완료 상태를 다음 소유자에게 추가로 전달하느냐뿐입니다.
+- **사용자 기대치**: `metadata_snapshot`을 사용하더라도 다운스트림 side effect는 여전히 idempotent하게 설계해야 합니다. 리밸런스 타임아웃, metadata 손상, 운영자 롤백 시에는 일부 메시지가 다시 처리될 수 있기 때문입니다.
+
 #### 4.2.5. Rebalancing 시 Final Graceful Commit 타임아웃: Correctness < Liveness
 
 **문제 진단: Rebalance 시 `Final Graceful Commit`의 현실적 제약**

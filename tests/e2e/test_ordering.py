@@ -300,7 +300,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
 
     assert result_tracker.get_processed_count() == num_messages
     assert poller.MAX_IN_FLIGHT_MESSAGES == max_in_flight
-    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == max_in_flight // 2
+    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == max(1, int(max_in_flight * 0.7))
 
 
 @pytest.mark.asyncio

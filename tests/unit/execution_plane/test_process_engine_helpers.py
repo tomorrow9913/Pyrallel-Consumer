@@ -58,3 +58,24 @@ def test_calculate_backoff_with_exponential_and_jitter(monkeypatch):
     )
 
     assert delay == pytest.approx((200 + 50) / 1000.0)
+
+
+def test_work_item_roundtrip_preserves_requeue_attempts():
+    import msgpack
+
+    payload = {
+        "id": "wi-1",
+        "topic": "demo",
+        "partition": 0,
+        "offset": 1,
+        "epoch": 0,
+        "key": b"k1",
+        "payload": b"p1",
+        "requeue_attempts": 3,
+    }
+
+    packed = msgpack.packb([payload], use_bin_type=True)
+    decoded = _decode_incoming_item(packed, max_bytes=1024)
+
+    assert decoded[0].requeue_attempts == 3
+    assert _work_item_to_dict(decoded[0])["requeue_attempts"] == 3
