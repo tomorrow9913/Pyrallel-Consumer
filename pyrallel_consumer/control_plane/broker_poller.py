@@ -125,9 +125,8 @@ class BrokerPoller:
     def _encode_revoke_metadata(self, tracker: OffsetTracker, base_offset: int) -> str:
         if self._rebalance_state_strategy() != "metadata_snapshot":
             return ""
-        metadata = self._metadata_encoder.encode_metadata(
-            set(tracker.completed_offsets), base_offset
-        )
+        metadata_offsets = self._get_commit_metadata_offsets(tracker, base_offset)
+        metadata = self._metadata_encoder.encode_metadata(metadata_offsets, base_offset)
         if isinstance(metadata, str):
             return metadata
         if isinstance(metadata, (bytes, bytearray)):

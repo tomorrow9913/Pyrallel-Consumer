@@ -307,6 +307,39 @@ async def test_on_revoke_commits_metadata_snapshot_when_enabled(
 
 
 @pytest.mark.asyncio
+async def test_on_revoke_metadata_snapshot_limits_offsets_encoded(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+    broker_poller.consumer = mock_consumer
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    for offset in range(0, 5000):
+        tracker.mark_complete(offset)
+    broker_poller._offset_trackers[tp] = tracker
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    offsets_arg = mock_consumer.commit.call_args.kwargs["offsets"]
+    kafka_tp = offsets_arg[0]
+    decoded_offsets = broker_poller._metadata_encoder.decode_metadata(kafka_tp.metadata)
+    assert len(decoded_offsets) <= broker_poller.MAX_COMPLETED_OFFSETS_FOR_METADATA
+    assert all(offset >= 5 for offset in decoded_offsets)
+
+
+@pytest.mark.asyncio
 async def test_on_revoke_omits_metadata_snapshot_in_contiguous_only_mode(
     mock_kafka_config, mock_execution_engine, mock_consumer
 ):
