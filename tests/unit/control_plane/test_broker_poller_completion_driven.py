@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -278,7 +279,8 @@ async def test_start_skips_completion_monitor_task_when_disabled(
     mock_kafka_config.parallel_consumer.strict_completion_monitor_enabled = False
     created_coroutines: list[str] = []
 
-    def fake_create_task(coro):
+    def fake_create_task(coro, *, name=None):
+        del name
         created_coroutines.append(coro.cr_code.co_name)
         coro.close()
         return MagicMock()
@@ -301,7 +303,77 @@ async def test_start_skips_completion_monitor_task_when_disabled(
         await broker_poller.start()
 
     assert created_coroutines == ["_run_consumer"]
+    assert broker_poller._consumer_task is not None
     assert broker_poller._completion_monitor_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_stores_consumer_task_handle(broker_poller):
+    created_tasks = []
+
+    def fake_create_task(coro, *, name=None):
+        task = MagicMock()
+        task.name = name
+        created_tasks.append((coro.cr_code.co_name, name, task))
+        coro.close()
+        return task
+
+    with (
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Producer",
+            return_value=broker_poller.producer,
+        ),
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.AdminClient",
+            return_value=broker_poller.admin,
+        ),
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Consumer",
+            return_value=broker_poller.consumer,
+        ),
+        patch("asyncio.create_task", side_effect=fake_create_task),
+    ):
+        await broker_poller.start()
+
+    assert broker_poller._consumer_task is created_tasks[-1][2]
+    assert created_tasks[-1][0] == "_run_consumer"
+
+
+@pytest.mark.asyncio
+async def test_stop_awaits_and_clears_consumer_task_handle(broker_poller):
+    async def fake_consumer_task():
+        await asyncio.sleep(0)
+        broker_poller._shutdown_event.set()
+
+    broker_poller._running = True
+    broker_poller._consumer_task_stop_timeout_seconds = 0.05
+    broker_poller._consumer_task = asyncio.create_task(fake_consumer_task())
+
+    await broker_poller.stop()
+
+    assert broker_poller._consumer_task is None
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_consumer_task_when_wait_times_out(broker_poller):
+    cancelled = asyncio.Event()
+
+    async def hanging_consumer_task():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            broker_poller._shutdown_event.set()
+            raise
+
+    broker_poller._running = True
+    broker_poller._consumer_task_stop_timeout_seconds = 0.01
+    broker_poller._consumer_task = asyncio.create_task(hanging_consumer_task())
+
+    await broker_poller.stop()
+
+    assert cancelled.is_set()
+    assert broker_poller._consumer_task is None
 
 
 @pytest.mark.asyncio

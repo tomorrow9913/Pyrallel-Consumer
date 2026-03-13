@@ -64,6 +64,8 @@ class BrokerPoller:
         self._shutdown_event = asyncio.Event()
         self._control_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
+        self._consumer_task: Optional[asyncio.Task[None]] = None
+        self._consumer_task_stop_timeout_seconds = 5.0
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
@@ -320,6 +322,7 @@ class BrokerPoller:
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
             self._running = False
+            self._consumer_task = None
             if self._completion_monitor_task is not None:
                 self._completion_monitor_task.cancel()
                 await asyncio.gather(
@@ -771,6 +774,9 @@ class BrokerPoller:
     # ------------------------------------------------------------------
     async def start(self) -> None:
         try:
+            if self._running:
+                return
+            self._shutdown_event = asyncio.Event()
             producer_conf = cast(
                 dict[str, str | int | float | bool],
                 self._kafka_config.get_producer_config(),
@@ -802,17 +808,31 @@ class BrokerPoller:
                 self._completion_monitor_task = asyncio.create_task(
                     self._run_completion_monitor()
                 )
-            asyncio.create_task(self._run_consumer())
+            self._consumer_task = asyncio.create_task(
+                self._run_consumer(),
+                name="broker-poller-loop",
+            )
             logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:
             logger.error("Failed to start BrokerPoller: %s", exc, exc_info=True)
             raise
 
     async def stop(self) -> None:
-        if not self._running:
+        if not self._running and self._consumer_task is None:
             return
         logger.debug("Shutdown signal received")
         self._running = False
+        if self._consumer_task is not None:
+            try:
+                await asyncio.wait_for(
+                    self._consumer_task,
+                    timeout=self._consumer_task_stop_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                self._consumer_task.cancel()
+                await asyncio.gather(self._consumer_task, return_exceptions=True)
+            finally:
+                self._consumer_task = None
         await self._shutdown_event.wait()
         logger.debug("BrokerPoller stopped")
 
