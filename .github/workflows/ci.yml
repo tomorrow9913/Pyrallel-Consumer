@@ -12,6 +12,7 @@ on:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,5 +28,23 @@ jobs:
           pip install .
           pip install pytest pytest-asyncio pytest-cov pytest-mock textual
       - name: Run unit tests
+        id: unit_tests
+        continue-on-error: true
         run: |
-          pytest tests/unit -q --maxfail=1
+          set +e
+          timeout --signal=TERM --kill-after=30s 15m \
+            python -X faulthandler -m pytest tests/unit -q --maxfail=1
+          exit_code=$?
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Dump processes after pytest
+        if: always()
+        run: |
+          ps -ef
+          pgrep -af python || true
+          pgrep -af pytest || true
+      - name: Fail if pytest failed or timed out
+        if: ${{ steps.unit_tests.outputs.exit_code != '0' }}
+        run: |
+          echo "pytest exited with code ${{ steps.unit_tests.outputs.exit_code }}"
+          exit 1
