@@ -894,3 +894,5 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - 회귀 테스트 `tests/unit/control_plane/test_work_manager.py::test_on_revoke_does_not_decrement_for_queued_unsubmitted_items` 추가.
 - Process execution logging hardening (2026-03-13): `ProcessExecutionEngine`가 프로세스 워커 로그용 `multiprocessing.Queue`를 이제 `process_config.queue_size`로 bounded 생성해 로그 폭주 시 무한 메모리 증가를 막습니다. 워커 로그 레벨은 기존 `INFO`를 유지했습니다.
 - 회귀 테스트 `tests/unit/execution_plane/test_process_execution_engine.py::test_process_execution_engine_bounds_log_queue_to_process_queue_size` 추가.
+- CI/release policy alignment prep (2026-03-13): repo에 `.github/workflows/`가 없음을 확인하고, 첫 GitHub Actions unit gate로 Python 3.12/3.13 matrix에서 `pytest tests/unit -q --maxfail=1`를 실행하는 `ci.yml` 초안을 추가했습니다. release policy는 현재 배포 버전/분류(`0.1.2a1`, Alpha)에 맞춰 README/README.ko에 `main`을 active hardening branch로 보는 문구를 추가했습니다.
+- 로컬 게이트 검증: `pytest tests/unit -q --maxfail=1` -> 277 passed.
