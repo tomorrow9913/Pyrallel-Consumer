@@ -106,12 +106,16 @@ class BrokerPoller:
     def _decode_assignment_completed_offsets(
         self,
         partition: KafkaTopicPartition,
+        committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
         if self._rebalance_state_strategy() != "metadata_snapshot":
             return set()
 
-        raw_metadata = getattr(partition, "metadata", None)
+        metadata_source = (
+            committed_partition if committed_partition is not None else partition
+        )
+        raw_metadata = getattr(metadata_source, "metadata", None)
         if not isinstance(raw_metadata, str) or not raw_metadata:
             return set()
 
@@ -670,7 +674,7 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        committed_offsets: Dict[Tuple[str, int], int] = {}
+        committed_offsets: Dict[Tuple[str, int], KafkaTopicPartition] = {}
         try:
             committed_partitions = consumer.committed(partitions)
             for committed_tp in committed_partitions:
@@ -678,7 +682,7 @@ class BrokerPoller:
                     continue
                 committed_offsets[
                     (committed_tp.topic, committed_tp.partition)
-                ] = committed_tp.offset
+                ] = committed_tp
         except KafkaException as exc:
             logger.warning(
                 "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
@@ -689,8 +693,11 @@ class BrokerPoller:
 
         for partition in partitions:
             tp_dto = DtoTopicPartition(partition.topic, partition.partition)
-            committed_offset = committed_offsets.get(
+            committed_partition = committed_offsets.get(
                 (partition.topic, partition.partition)
+            )
+            committed_offset = (
+                committed_partition.offset if committed_partition is not None else None
             )
             tracker_starting_offset = (
                 committed_offset
@@ -708,6 +715,7 @@ class BrokerPoller:
             )
             initial_completed_offsets = self._decode_assignment_completed_offsets(
                 partition,
+                committed_partition,
                 last_committed,
             )
             tracker = OffsetTracker(

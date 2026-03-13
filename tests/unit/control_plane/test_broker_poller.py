@@ -176,6 +176,36 @@ async def test_on_assign_hydrates_completed_offsets_from_metadata_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_on_assign_uses_committed_partition_metadata_for_snapshot_hydration(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    assigned = [KafkaTopicPartition("test-topic", 0, 100)]
+    committed_metadata = broker_poller._metadata_encoder.encode_metadata(
+        {103, 105}, 100
+    )
+    mock_consumer.committed.return_value = [
+        KafkaTopicPartition("test-topic", 0, 100, metadata=committed_metadata)
+    ]
+
+    broker_poller._on_assign(mock_consumer, assigned)
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = broker_poller._offset_trackers[tp]
+    assert set(tracker.completed_offsets) == {103, 105}
+    assert tracker.last_committed_offset == 99
+    assert tracker.last_fetched_offset == 105
+
+
+@pytest.mark.asyncio
 async def test_on_assign_ignores_metadata_snapshot_in_contiguous_only_mode(
     mock_kafka_config, mock_execution_engine, mock_consumer
 ):
