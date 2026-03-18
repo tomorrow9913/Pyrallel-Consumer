@@ -405,6 +405,13 @@ async def test_stop_uses_stable_consumer_task_reference_when_timeout_races_with_
 
 
 @pytest.mark.asyncio
+async def test_wait_closed_returns_immediately_when_not_running_and_no_task(
+    broker_poller,
+):
+    await broker_poller.wait_closed()
+
+
+@pytest.mark.asyncio
 async def test_stale_completion_does_not_resubmit_next_same_key_work(
     broker_poller, topic_partition, caplog
 ):

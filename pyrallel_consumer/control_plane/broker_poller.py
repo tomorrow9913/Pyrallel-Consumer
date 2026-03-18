@@ -877,6 +877,10 @@ class BrokerPoller:
         logger.debug("BrokerPoller stopped")
 
     async def wait_closed(self) -> None:
+        if not self._running and self._consumer_task is None:
+            if self._shutdown_event.is_set():
+                self._raise_if_failed()
+            return
         await self._shutdown_event.wait()
         self._raise_if_failed()
 
