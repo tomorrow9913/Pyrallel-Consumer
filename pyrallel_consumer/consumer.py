@@ -51,6 +51,7 @@ class PyrallelConsumer:
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
             ordering_mode=OrderingMode.KEY_HASH,
+            max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
         )
 
         # 3. Create Broker Poller (The main loop)
@@ -72,8 +73,18 @@ class PyrallelConsumer:
         """
         Stop the consumer gracefully.
         """
-        await self._poller.stop()
+        poller_error: Exception | None = None
+        try:
+            await self._poller.stop()
+        except Exception as exc:  # pragma: no cover - guarded by facade tests
+            poller_error = exc
         await self._execution_engine.shutdown()
+        if poller_error is not None:
+            raise poller_error
+
+    async def wait_closed(self) -> None:
+        """Wait for the broker poller to finish and surface fatal loop failures."""
+        await self.stop()
 
     def get_metrics(self) -> SystemMetrics:
         """

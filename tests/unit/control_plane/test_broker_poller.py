@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -96,6 +97,26 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
     )
 
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
+
+
+@pytest.mark.asyncio
+async def test_on_assign_uses_configured_max_revoke_grace_ms(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.execution.max_revoke_grace_ms = 1234
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+
+    tps_to_assign = [KafkaTopicPartition("test-topic", 0, 100)]
+    broker_poller._on_assign(mock_consumer, tps_to_assign)
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    assert broker_poller._offset_trackers[tp].max_revoke_grace_ms == 1234
 
 
 @pytest.mark.asyncio
@@ -692,3 +713,26 @@ class TestRunConsumerCommitExceptionDefense:
         assert commit_calls == 2
         # After successful retry, advance_high_water_mark should have been called
         assert tracker.last_committed_offset == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_reraises_terminal_consumer_loop_error(broker_poller, mock_consumer):
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = None
+    broker_poller._running = True
+    broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
+    broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 70
+    broker_poller.QUEUE_MAX_MESSAGES = 0
+    mock_consumer.consume.side_effect = RuntimeError("boom")
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("asyncio.to_thread", new=passthrough_to_thread):
+        broker_poller._consumer_task = asyncio.create_task(
+            broker_poller._run_consumer()
+        )
+        await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await broker_poller.stop()

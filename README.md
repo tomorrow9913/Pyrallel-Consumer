@@ -21,17 +21,12 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 
 ## 📈 Observability
 
-You can expose Prometheus metrics via `KafkaConfig.metrics`.
-Metrics are disabled by default (`enabled=False`).
+A `PrometheusMetricsExporter` helper exists for Prometheus integration, but the
+current `PyrallelConsumer` facade does **not** auto-start or auto-wire that
+exporter from `KafkaConfig.metrics` yet.
 
-```python
-from pyrallel_consumer.config import KafkaConfig
-
-config = KafkaConfig()
-config.metrics.enabled = True
-config.metrics.port = 9095
-consumer = PyrallelConsumer(config, worker, topic="demo")
-```
+Treat `KafkaConfig.metrics` as configuration for manual or advanced wiring
+rather than a one-line facade toggle.
 
 ### Core Metrics
 
@@ -122,8 +117,8 @@ graph TD
 
 ```bash
 pip install uv
-uv pip install -r requirements.txt
-uv pip install -r dev-requirements.txt  # optional
+uv sync
+uv sync --group dev  # optional
 ```
 
 ### Package Build / Distribution
@@ -146,7 +141,7 @@ python -m build
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
-EXECUTION_MODE=async # or process
+PARALLEL_CONSUMER_EXECUTION__MODE=async  # or process
 ```
 
 ## 🔁 Retry & DLQ
@@ -182,17 +177,15 @@ DLQ headers include:
 
 ```python
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 config = KafkaConfig()
 config.dlq_enabled = True
 config.DLQ_TOPIC_SUFFIX = ".failed"
-
-exec_conf = ExecutionConfig()
-exec_conf.mode = ExecutionMode.ASYNC
-exec_conf.max_retries = 5
-exec_conf.retry_backoff_ms = 2000
+config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+config.parallel_consumer.execution.max_retries = 5
+config.parallel_consumer.execution.retry_backoff_ms = 2000
 
 async def worker(item: WorkItem):
     ...
@@ -250,11 +243,11 @@ Included stack (via `docker-compose.yml`):
 
 Usage:
 
-1) Enable metrics in app:
-```python
-config.metrics.enabled = True
-config.metrics.port = 9091
-```
+1) Current facade note:
+- `config.metrics.enabled = True` by itself does **not** auto-expose `/metrics`
+  through `PyrallelConsumer` yet.
+- Use this stack only after wiring `PrometheusMetricsExporter` manually in a
+  custom integration, or when working through lower-level components.
 
 2) Start stack:
 ```bash
@@ -263,7 +256,7 @@ docker compose up -d
 
 3) Verify:
 - Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (default `admin` / `admin`)
+- Grafana: http://localhost:3000 (`GF_SECURITY_ADMIN_PASSWORD` from `.env`)
 
 4) Add Grafana datasource:
 - Type: Prometheus

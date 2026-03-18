@@ -19,10 +19,18 @@ class _DummyEngine:
 
 
 class _DummyWorkManager:
-    def __init__(self, *, execution_engine, max_in_flight_messages, ordering_mode=None):
+    def __init__(
+        self,
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+    ):
         self.execution_engine = execution_engine
         self.max_in_flight_messages = max_in_flight_messages
         self.ordering_mode = ordering_mode
+        self.max_revoke_grace_ms = max_revoke_grace_ms
 
 
 class _DummyPoller:
@@ -45,6 +53,12 @@ class _DummyPoller:
         return self.metrics
 
 
+class _FailingStopPoller(_DummyPoller):
+    async def stop(self):
+        self.stopped = True
+        raise RuntimeError("poller failed")
+
+
 @pytest.mark.asyncio
 async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     dummy_engine = _DummyEngine()
@@ -55,13 +69,18 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     dummy_work_manager = None
 
     def _create_work_manager(
-        *, execution_engine, max_in_flight_messages, ordering_mode=None
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
             execution_engine=execution_engine,
             max_in_flight_messages=max_in_flight_messages,
             ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
         )
         return dummy_work_manager
 
@@ -95,6 +114,10 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
         == consumer.config.parallel_consumer.execution.max_in_flight_messages
     )
     assert dummy_work_manager.ordering_mode == OrderingMode.KEY_HASH
+    assert (
+        dummy_work_manager.max_revoke_grace_ms
+        == consumer.config.parallel_consumer.execution.max_revoke_grace_ms
+    )
 
     await consumer.start()
     await consumer.stop()
@@ -104,6 +127,60 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     assert dummy_poller.stopped is True
     assert dummy_engine.shutdown_called is True
     assert dummy_poller.metrics.source == "dummy"
+
+
+@pytest.mark.asyncio
+async def test_pyrallel_consumer_stop_still_shuts_down_engine_on_poller_failure(
+    monkeypatch: MonkeyPatch,
+):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_work_manager = None
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+    ):
+        nonlocal dummy_work_manager
+        dummy_work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+        )
+        return dummy_work_manager
+
+    dummy_poller = None
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        nonlocal dummy_poller
+        dummy_poller = _FailingStopPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+        return dummy_poller
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    config = cast(KafkaConfig, cast(object, SimpleNamespace(parallel_consumer=None)))
+    consumer = PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    with pytest.raises(RuntimeError, match="poller failed"):
+        await consumer.stop()
+
+    assert dummy_engine.shutdown_called is True
 
 
 @pytest.mark.asyncio

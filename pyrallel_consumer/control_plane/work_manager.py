@@ -41,6 +41,7 @@ class WorkManager:
         metrics_exporter: Optional[MetricsExporter] = None,
         ordering_mode: OrderingMode = OrderingMode.UNORDERED,
         blocking_cache_ttl: int = 100,
+        max_revoke_grace_ms: int = 500,
     ):
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
@@ -58,6 +59,7 @@ class WorkManager:
         self._rebalancing = False  # New flag to indicate rebalancing state
         self._metrics_exporter = metrics_exporter
         self._ordering_mode = ordering_mode
+        self._max_revoke_grace_ms = max_revoke_grace_ms
         self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
         self._partitions_in_flight: set[DtoTopicPartition] = set()
         self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
@@ -255,7 +257,7 @@ class WorkManager:
                 self._offset_trackers[tp] = OffsetTracker(
                     topic_partition=tp,
                     starting_offset=tracker_or_offset,
-                    max_revoke_grace_ms=500,
+                    max_revoke_grace_ms=self._max_revoke_grace_ms,
                 )
                 self._shared_offset_trackers.discard(tp)
             else:

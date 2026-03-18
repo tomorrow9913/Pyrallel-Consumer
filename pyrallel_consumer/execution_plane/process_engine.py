@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import logging.handlers
 import os
+import pickle
 import queue
 import random
 import signal
@@ -453,6 +455,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     """
 
     def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+        if inspect.iscoroutinefunction(worker_fn) or inspect.iscoroutinefunction(
+            getattr(worker_fn, "__call__", None)
+        ):
+            raise TypeError(
+                "Process execution mode requires a synchronous picklable worker"
+            )
+        if getattr(config.process_config, "require_picklable_worker", False):
+            try:
+                pickle.dumps(worker_fn)
+            except Exception as exc:
+                raise TypeError(
+                    "Process execution mode requires a synchronous picklable worker"
+                ) from exc
+
         self._config = config
         self._worker_fn = worker_fn
         self._task_queue: Queue[Optional[WorkItem]] = Queue(

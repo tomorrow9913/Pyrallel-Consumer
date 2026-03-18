@@ -21,6 +21,14 @@ class _DeadWorker:
         return False
 
 
+async def _async_worker(_item) -> None:
+    return None
+
+
+def _sync_worker(_item) -> None:
+    return None
+
+
 def test_ensure_workers_alive_does_not_requeue_timed_out_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -94,11 +102,25 @@ def test_process_execution_engine_bounds_log_queue_to_process_queue_size(
         process_config=ProcessConfig(process_count=1, queue_size=7),
     )
 
-    engine = ProcessExecutionEngine(config=config, worker_fn=lambda item: None)
+    engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
 
     assert cast(Any, engine._log_queue)._maxsize == 7
     assert created["queue"] is engine._log_queue
     assert created["started"] is True
+
+
+def test_process_execution_engine_rejects_async_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(process_count=1, queue_size=7),
+    )
+
+    with pytest.raises(TypeError, match="synchronous picklable worker"):
+        ProcessExecutionEngine(config=config, worker_fn=_async_worker)
 
 
 def test_ensure_workers_alive_stops_requeueing_after_max_retries(

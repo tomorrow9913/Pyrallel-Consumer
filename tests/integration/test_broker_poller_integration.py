@@ -467,6 +467,26 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
 
 
 @pytest.mark.asyncio
+async def test_stop_surfaces_consumer_loop_failure(
+    broker_poller,
+    mock_consumer,
+):
+    mock_consumer.consume.side_effect = RuntimeError("boom")
+
+    broker_poller._running = True
+    broker_poller._consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    start_time = asyncio.get_event_loop().time()
+    while not broker_poller._shutdown_event.is_set():
+        if asyncio.get_event_loop().time() - start_time > 2:
+            raise AssertionError("Timeout waiting for consumer loop failure")
+        await asyncio.sleep(0.01)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await broker_poller.stop()
+
+
+@pytest.mark.asyncio
 async def test_dlq_disabled_failure_commits_normally(
     broker_poller,
     mock_consumer,

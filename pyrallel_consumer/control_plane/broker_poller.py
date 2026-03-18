@@ -66,6 +66,7 @@ class BrokerPoller:
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
         self._consumer_task_stop_timeout_seconds = 5.0
+        self._fatal_error: Optional[Exception] = None
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
@@ -73,6 +74,7 @@ class BrokerPoller:
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
             blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
+            max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
         )
 
         self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
@@ -322,6 +324,7 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
+            self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
             self._running = False
@@ -664,6 +667,14 @@ class BrokerPoller:
         if self.consumer:
             self.consumer.close()
 
+    def _raise_if_failed(self) -> None:
+        if self._fatal_error is None:
+            return
+
+        error = self._fatal_error
+        self._fatal_error = None
+        raise RuntimeError(str(error)) from error
+
     # ------------------------------------------------------------------
     def _on_assign(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
@@ -720,7 +731,7 @@ class BrokerPoller:
             tracker = OffsetTracker(
                 topic_partition=tp_dto,
                 starting_offset=tracker_starting_offset,
-                max_revoke_grace_ms=0,
+                max_revoke_grace_ms=self._kafka_config.parallel_consumer.execution.max_revoke_grace_ms,
                 initial_completed_offsets=initial_completed_offsets,
             )
             tracker.last_committed_offset = last_committed
@@ -784,6 +795,7 @@ class BrokerPoller:
             if self._running:
                 return
             self._shutdown_event = asyncio.Event()
+            self._fatal_error = None
             producer_conf = cast(
                 dict[str, str | int | float | bool],
                 self._kafka_config.get_producer_config(),
@@ -826,6 +838,8 @@ class BrokerPoller:
 
     async def stop(self) -> None:
         if not self._running and self._consumer_task is None:
+            if self._shutdown_event.is_set():
+                self._raise_if_failed()
             return
         logger.debug("Shutdown signal received")
         self._running = False
@@ -841,6 +855,7 @@ class BrokerPoller:
             finally:
                 self._consumer_task = None
         await self._shutdown_event.wait()
+        self._raise_if_failed()
         logger.debug("BrokerPoller stopped")
 
     # ------------------------------------------------------------------

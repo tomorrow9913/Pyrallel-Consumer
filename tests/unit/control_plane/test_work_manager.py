@@ -66,6 +66,35 @@ async def test_work_manager_initialization(work_manager):
 
 
 @pytest.mark.asyncio
+async def test_on_assign_uses_configured_max_revoke_grace_ms(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        max_revoke_grace_ms=321,
+    )
+
+    with patch(
+        "pyrallel_consumer.control_plane.work_manager.OffsetTracker"
+    ) as MockOffsetTrackerClass:
+        MockOffsetTrackerClass.return_value = MagicMock(
+            spec=OffsetTracker(
+                topic_partition=mock_dto_topic_partition,
+                starting_offset=0,
+                max_revoke_grace_ms=321,
+            )
+        )
+
+        work_manager.on_assign([mock_dto_topic_partition])
+
+        MockOffsetTrackerClass.assert_called_once_with(
+            topic_partition=mock_dto_topic_partition,
+            starting_offset=0,
+            max_revoke_grace_ms=321,
+        )
+
+
+@pytest.mark.asyncio
 async def test_on_assign_and_on_revoke(
     work_manager, mock_dto_topic_partition, mock_dto_topic_partition_1
 ):

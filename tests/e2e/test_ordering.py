@@ -31,6 +31,19 @@ E2E_CONF = {
 }
 
 
+def _require_kafka() -> None:
+    admin = AdminClient(
+        {
+            "bootstrap.servers": E2E_CONF["bootstrap.servers"],
+            "socket.timeout.ms": 1000,
+        }
+    )
+    try:
+        admin.list_topics(timeout=3)
+    except Exception as exc:
+        pytest.skip(f"Kafka broker not available for e2e tests: {exc}")
+
+
 # --- Result Verification Helper ---
 class ResultTracker:
     """처리된 메시지의 순서를 키별/파티션별로 기록하고 검증하는 헬퍼 클래스."""
@@ -83,6 +96,7 @@ def kafka_admin_client():
 @pytest.fixture(autouse=True)
 def create_e2e_topic(kafka_admin_client: AdminClient):
     """각 테스트 전에 토픽을 삭제/재생성하여 격리합니다."""
+    _require_kafka()
     topic_name = E2E_TOPIC
 
     try:
