@@ -72,7 +72,7 @@ class BaseExecutionEngine(ABC):
         can expose that detail. Engines that do not track it return None.
 
         Args:
-            tp (TopicPartition): 조회할 토픽/파티션
+            _tp (TopicPartition): 조회할 토픽/파티션
 
         Returns:
             Optional[int]: 최소 in-flight offset 또는 None

@@ -41,6 +41,7 @@ class _DummyPoller:
         self.work_manager = work_manager
         self.started = False
         self.stopped = False
+        self.wait_closed_called = False
         self.metrics = SimpleNamespace(source="dummy")
 
     async def start(self):
@@ -48,6 +49,9 @@ class _DummyPoller:
 
     async def stop(self):
         self.stopped = True
+
+    async def wait_closed(self):
+        self.wait_closed_called = True
 
     def get_metrics(self):
         return self.metrics
@@ -231,6 +235,60 @@ async def test_pyrallel_consumer_stop_still_shuts_down_engine_on_poller_failure(
         await consumer.stop()
 
     assert dummy_engine.shutdown_called is True
+
+
+@pytest.mark.asyncio
+async def test_pyrallel_consumer_wait_closed_is_passive(monkeypatch: MonkeyPatch):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_work_manager = None
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+    ):
+        nonlocal dummy_work_manager
+        dummy_work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+        )
+        return dummy_work_manager
+
+    dummy_poller = None
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        nonlocal dummy_poller
+        dummy_poller = _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+        return dummy_poller
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    config = KafkaConfig()
+    consumer = PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    await consumer.wait_closed()
+
+    dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
+    assert dummy_poller.wait_closed_called is True
+    assert dummy_poller.stopped is False
+    assert dummy_engine.shutdown_called is False
 
 
 @pytest.mark.asyncio

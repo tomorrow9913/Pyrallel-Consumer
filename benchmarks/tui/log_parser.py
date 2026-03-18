@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
 _PHASE_NAMES = ("baseline", "async", "process")
@@ -69,13 +69,15 @@ class BenchmarkLogParser:
         self._completed_runs: set[RunIdentity] = set()
         self._active_run: RunIdentity | None = None
         self._started_run_order: deque[RunIdentity] = deque()
-        self.snapshot = BenchmarkProgressSnapshot(
-            total_runs=(
-                len(self._active_workloads)
-                * len(self._active_orderings)
-                * len(self._active_phases)
-            )
+        self._base_total_runs = (
+            len(self._active_workloads)
+            * len(self._active_orderings)
+            * len(self._active_phases)
         )
+        self._strict_variants_by_base: dict[
+            tuple[str, str, str], set[str]
+        ] = defaultdict(set)
+        self.snapshot = BenchmarkProgressSnapshot(total_runs=self._base_total_runs)
 
     def consume(self, line: str) -> BenchmarkProgressSnapshot:
         stripped = line.strip()
@@ -175,8 +177,7 @@ class BenchmarkLogParser:
         if workload is None or ordering is None or phase is None:
             return
 
-        if self.snapshot.tps_by_workload_ordering[workload][ordering][phase] == "--":
-            self._mark_run_completed(workload, ordering, strict_mode, phase)
+        self._mark_run_completed(workload, ordering, strict_mode, phase)
         self.snapshot.tps_by_workload[workload][phase] = throughput
         self.snapshot.tps_by_workload_ordering[workload][ordering][phase] = throughput
         self._mark_phase_completed(phase)
@@ -211,6 +212,7 @@ class BenchmarkLogParser:
         if workload is None or ordering is None or phase not in self._active_phases:
             return
         self.snapshot.current_ordering = ordering
+        self._record_run_variant(workload, ordering, strict_mode, phase)
         key = (workload, ordering, strict_mode, phase)
         if key not in self._started_runs:
             self._started_run_order.append(key)
@@ -221,12 +223,25 @@ class BenchmarkLogParser:
     def _mark_run_completed(
         self, workload: str, ordering: str, strict_mode: str, phase: str
     ) -> None:
+        self._record_run_variant(workload, ordering, strict_mode, phase)
         key = (workload, ordering, strict_mode, phase)
         self._started_runs.add(key)
         self._completed_runs.add(key)
         if self._active_run == key:
             self._active_run = None
         self._refresh_progress()
+
+    def _record_run_variant(
+        self, workload: str, ordering: str, strict_mode: str, phase: str
+    ) -> None:
+        if strict_mode:
+            self._strict_variants_by_base[(workload, ordering, phase)].add(strict_mode)
+
+        extra_variant_runs = sum(
+            max(0, len(variants) - 1)
+            for variants in self._strict_variants_by_base.values()
+        )
+        self.snapshot.total_runs = self._base_total_runs + extra_variant_runs
 
     def _consume_final_tps(self, throughput: str) -> None:
         target_run = self._next_unfinished_run()

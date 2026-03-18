@@ -86,7 +86,7 @@ class PyrallelConsumer:
 
     async def wait_closed(self) -> None:
         """Wait for the broker poller to finish and surface fatal loop failures."""
-        await self.stop()
+        await self._poller.wait_closed()
 
     def get_metrics(self) -> SystemMetrics:
         """

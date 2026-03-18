@@ -239,6 +239,7 @@ def test_log_parser_tracks_strict_mode_variants_as_distinct_runs() -> None:
         ("sleep", "key_hash", "on", "async"),
         ("sleep", "key_hash", "off", "async"),
     }
+    assert parser.snapshot.total_runs == 4
     assert parser._started_run_order == deque()
 
 
@@ -270,3 +271,17 @@ def test_log_parser_detects_strict_suffix_phases_from_topic_names() -> None:
     assert parser.snapshot.completed_runs == 2
     assert parser.snapshot.tps_by_workload["sleep"]["async"] == "1386.01"
     assert parser.snapshot.tps_by_workload["sleep"]["process"] == "2500.50"
+
+
+def test_log_parser_counts_strict_result_rows_as_distinct_completed_runs() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume(
+        "sleep-key_hash-async-strict-on | pyrallel | strict-on | topic-a | 100 | 10.00 | 1.000 | 1.000"
+    )
+    parser.consume(
+        "sleep-key_hash-async-strict-off | pyrallel | strict-off | topic-b | 100 | 20.00 | 1.000 | 1.000"
+    )
+
+    assert parser.snapshot.completed_runs == 2
+    assert parser.snapshot.total_runs == 4

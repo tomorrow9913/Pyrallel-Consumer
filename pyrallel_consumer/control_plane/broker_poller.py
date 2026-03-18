@@ -132,10 +132,9 @@ class BrokerPoller:
         if self._rebalance_state_strategy() != "metadata_snapshot":
             return set()
 
-        metadata_source = (
-            committed_partition if committed_partition is not None else partition
-        )
-        raw_metadata = getattr(metadata_source, "metadata", None)
+        raw_metadata = getattr(committed_partition, "metadata", None)
+        if not isinstance(raw_metadata, str) or not raw_metadata:
+            raw_metadata = getattr(partition, "metadata", None)
         if not isinstance(raw_metadata, str) or not raw_metadata:
             return set()
 
@@ -691,7 +690,7 @@ class BrokerPoller:
 
         error = self._fatal_error
         self._fatal_error = None
-        raise RuntimeError(str(error)) from error
+        raise error
 
     # ------------------------------------------------------------------
     def _on_assign(
@@ -862,19 +861,24 @@ class BrokerPoller:
         logger.debug("Shutdown signal received")
         self._running = False
         if self._consumer_task is not None:
+            consumer_task = self._consumer_task
             try:
                 await asyncio.wait_for(
-                    self._consumer_task,
+                    consumer_task,
                     timeout=self._consumer_task_stop_timeout_seconds,
                 )
             except asyncio.TimeoutError:
-                self._consumer_task.cancel()
-                await asyncio.gather(self._consumer_task, return_exceptions=True)
+                consumer_task.cancel()
+                await asyncio.gather(consumer_task, return_exceptions=True)
             finally:
                 self._consumer_task = None
         await self._shutdown_event.wait()
         self._raise_if_failed()
         logger.debug("BrokerPoller stopped")
+
+    async def wait_closed(self) -> None:
+        await self._shutdown_event.wait()
+        self._raise_if_failed()
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:

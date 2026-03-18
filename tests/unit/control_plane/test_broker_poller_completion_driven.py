@@ -377,6 +377,34 @@ async def test_stop_cancels_consumer_task_when_wait_times_out(broker_poller):
 
 
 @pytest.mark.asyncio
+async def test_stop_uses_stable_consumer_task_reference_when_timeout_races_with_cleanup(
+    broker_poller,
+):
+    cancelled = asyncio.Event()
+
+    async def hanging_consumer_task():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            broker_poller._shutdown_event.set()
+            raise
+
+    async def fake_wait_for(task, timeout):
+        broker_poller._consumer_task = None
+        broker_poller._shutdown_event.set()
+        raise asyncio.TimeoutError
+
+    broker_poller._running = True
+    broker_poller._consumer_task = asyncio.create_task(hanging_consumer_task())
+
+    with patch("asyncio.wait_for", side_effect=fake_wait_for):
+        await broker_poller.stop()
+
+    assert cancelled.is_set() or broker_poller._shutdown_event.is_set()
+
+
+@pytest.mark.asyncio
 async def test_stale_completion_does_not_resubmit_next_same_key_work(
     broker_poller, topic_partition, caplog
 ):
