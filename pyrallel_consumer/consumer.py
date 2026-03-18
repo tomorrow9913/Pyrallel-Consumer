@@ -3,7 +3,7 @@ from typing import Any, Awaitable, Callable, Union
 from pyrallel_consumer.config import KafkaConfig, ParallelConsumerConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import OrderingMode, SystemMetrics, WorkItem
+from pyrallel_consumer.dto import SystemMetrics, WorkItem
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 
 
@@ -47,10 +47,12 @@ class PyrallelConsumer:
         self._execution_engine = create_execution_engine(execution_config, worker)
 
         # 2. Create Work Manager
+        ordering_mode = parallel_config.ordering_mode
+
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
-            ordering_mode=OrderingMode.KEY_HASH,
+            ordering_mode=ordering_mode,
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
         )
 

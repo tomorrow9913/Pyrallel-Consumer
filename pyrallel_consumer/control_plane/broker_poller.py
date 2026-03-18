@@ -54,7 +54,25 @@ class BrokerPoller:
         self._queue_resume_threshold = (
             int(self.QUEUE_MAX_MESSAGES * 0.7) if self.QUEUE_MAX_MESSAGES else 0
         )
-        self.ORDERING_MODE = OrderingMode.KEY_HASH
+        config_ordering_mode = getattr(pc_conf, "ordering_mode", OrderingMode.KEY_HASH)
+        if isinstance(config_ordering_mode, str):
+            config_ordering_mode = OrderingMode(config_ordering_mode)
+        if not isinstance(config_ordering_mode, OrderingMode):
+            config_ordering_mode = OrderingMode.KEY_HASH
+        get_ordering_mode = getattr(work_manager, "get_ordering_mode", None)
+        injected_ordering_mode = (
+            get_ordering_mode() if callable(get_ordering_mode) else None
+        )
+        if isinstance(injected_ordering_mode, OrderingMode):
+            self.ORDERING_MODE = injected_ordering_mode
+            if injected_ordering_mode != config_ordering_mode:
+                logger.warning(
+                    "Injected WorkManager ordering_mode %s overrides config ordering_mode %s",
+                    injected_ordering_mode.value,
+                    config_ordering_mode.value,
+                )
+        else:
+            self.ORDERING_MODE = config_ordering_mode
 
         self.producer: Optional[Producer] = None
         self.consumer: Optional[Consumer] = None

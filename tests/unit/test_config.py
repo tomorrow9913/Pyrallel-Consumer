@@ -3,6 +3,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from pydantic import ValidationError
 
 from pyrallel_consumer.config import ParallelConsumerConfig
+from pyrallel_consumer.dto import OrderingMode
 
 
 def test_parallel_consumer_config_defaults():
@@ -10,6 +11,7 @@ def test_parallel_consumer_config_defaults():
 
     assert config.blocking_warn_seconds == 5.0
     assert config.max_blocking_duration_ms == 0
+    assert config.ordering_mode == OrderingMode.KEY_HASH
     assert config.strict_completion_monitor_enabled is True
 
 
@@ -42,6 +44,21 @@ def test_parallel_consumer_config_rebalance_state_strategy_env_override(
 
     monkeypatch.delenv(
         "PARALLEL_CONSUMER_REBALANCE_STATE_STRATEGY",
+        raising=False,
+    )
+
+
+def test_parallel_consumer_config_ordering_mode_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_ORDERING_MODE", "partition")
+
+    config = ParallelConsumerConfig()
+
+    assert config.ordering_mode == OrderingMode.PARTITION
+
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_ORDERING_MODE",
         raising=False,
     )
 

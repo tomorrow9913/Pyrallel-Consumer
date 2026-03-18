@@ -11,6 +11,7 @@ from pyrallel_consumer.dto import CompletionStatus, ExecutionMode, TopicPartitio
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
+    _completion_event_to_dict,
 )
 
 
@@ -161,6 +162,121 @@ def test_ensure_workers_alive_stops_requeueing_after_max_retries(
     assert event.status == CompletionStatus.FAILURE
     assert event.error == "worker_died_max_retries"
     assert event.attempt == 3
+
+
+def test_drain_registry_events_applies_start_and_timeout_sequence() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+
+    key = (0, "topic", 1, 42)
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": key,
+            "payload": {
+                "id": "work-42",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+            },
+        }
+    )
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "timeout",
+            "key": key,
+            "attempt": 2,
+            "timeout_error": "task timed out",
+        }
+    )
+
+    engine._drain_registry_events()
+
+    assert engine_any._in_flight_registry == {
+        key: {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "requeue_attempts": 0,
+            "timed_out": True,
+            "timeout_error": "task timed out",
+            "attempt": 2,
+        }
+    }
+
+
+def test_drain_shutdown_ipc_once_reuses_registry_event_rules_and_prefetches_completion():
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {}
+    engine_any._prefetched_completion_events = []
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+
+    key = (0, "topic", 1, 42)
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": key,
+            "payload": {
+                "id": "work-42",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+            },
+        }
+    )
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "timeout",
+            "key": key,
+            "attempt": 3,
+            "timeout_error": "task timed out",
+        }
+    )
+
+    packed_event = msgpack.packb(
+        _completion_event_to_dict(
+            _completion_event_from_dict(
+                {
+                    "id": "work-42",
+                    "topic": "topic",
+                    "partition": 1,
+                    "offset": 42,
+                    "epoch": 7,
+                    "status": "failure",
+                    "error": "task timed out",
+                    "attempt": 3,
+                }
+            )
+        ),
+        use_bin_type=True,
+    )
+    engine_any._completion_queue.put(packed_event)
+
+    drained_registry, drained_completion = engine._drain_shutdown_ipc_once()
+
+    assert drained_registry == 2
+    assert drained_completion == 1
+    assert engine_any._in_flight_registry == {
+        key: {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "requeue_attempts": 0,
+            "timed_out": True,
+            "timeout_error": "task timed out",
+            "attempt": 3,
+        }
+    }
+    assert len(engine_any._prefetched_completion_events) == 1
+    prefetched = engine_any._prefetched_completion_events[0]
+    assert prefetched.status == CompletionStatus.FAILURE
+    assert prefetched.offset == 42
 
 
 @pytest.mark.asyncio

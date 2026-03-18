@@ -130,6 +130,56 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_pyrallel_consumer_uses_configured_ordering_mode(
+    monkeypatch: MonkeyPatch,
+):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_work_manager = None
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+    ):
+        nonlocal dummy_work_manager
+        dummy_work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+        )
+        return dummy_work_manager
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        return _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    config = KafkaConfig()
+    config.parallel_consumer.ordering_mode = OrderingMode.PARTITION
+
+    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    assert dummy_work_manager is not None
+    assert dummy_work_manager.ordering_mode == OrderingMode.PARTITION
+
+
+@pytest.mark.asyncio
 async def test_pyrallel_consumer_stop_still_shuts_down_engine_on_poller_failure(
     monkeypatch: MonkeyPatch,
 ):

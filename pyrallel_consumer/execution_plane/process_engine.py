@@ -652,6 +652,26 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             new_worker = self._start_worker(idx)
             self._workers[idx] = new_worker
 
+    def _apply_registry_event(self, event: dict[str, Any]) -> None:
+        kind = event.get("kind")
+        key = event.get("key")
+        if kind == "start" and key is not None:
+            payload = dict(event.get("payload", {}))
+            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+            self._in_flight_registry[key] = payload
+            return
+
+        if kind == "timeout" and key in self._in_flight_registry:
+            payload = dict(self._in_flight_registry.get(key, {}))
+            payload["timed_out"] = True
+            payload["timeout_error"] = event.get("timeout_error", "task_timeout")
+            payload["attempt"] = event.get("attempt", 1)
+            self._in_flight_registry[key] = payload
+            return
+
+        if kind == "done" and key is not None:
+            self._in_flight_registry.pop(key, None)
+
     def _drain_registry_events(self) -> None:
         registry_event_queue = getattr(self, "_registry_event_queue", None)
         if registry_event_queue is None:
@@ -662,20 +682,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             except queue.Empty:
                 return
 
-            kind = event.get("kind")
-            key = event.get("key")
-            if kind == "start" and key is not None:
-                payload = dict(event.get("payload", {}))
-                payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-                self._in_flight_registry[key] = payload
-            elif kind == "timeout" and key in self._in_flight_registry:
-                payload = dict(self._in_flight_registry.get(key, {}))
-                payload["timed_out"] = True
-                payload["timeout_error"] = event.get("timeout_error", "task_timeout")
-                payload["attempt"] = event.get("attempt", 1)
-                self._in_flight_registry[key] = payload
-            elif kind == "done" and key is not None:
-                self._in_flight_registry.pop(key, None)
+            self._apply_registry_event(event)
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
         drained_registry = 0
@@ -689,22 +696,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 except queue.Empty:
                     break
                 drained_registry += 1
-                kind = event.get("kind")
-                key = event.get("key")
-                if kind == "start" and key is not None:
-                    payload = dict(event.get("payload", {}))
-                    payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-                    self._in_flight_registry[key] = payload
-                elif kind == "timeout" and key in self._in_flight_registry:
-                    payload = dict(self._in_flight_registry.get(key, {}))
-                    payload["timed_out"] = True
-                    payload["timeout_error"] = event.get(
-                        "timeout_error", "task_timeout"
-                    )
-                    payload["attempt"] = event.get("attempt", 1)
-                    self._in_flight_registry[key] = payload
-                elif kind == "done" and key is not None:
-                    self._in_flight_registry.pop(key, None)
+                self._apply_registry_event(event)
 
         while True:
             try:

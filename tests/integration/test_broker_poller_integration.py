@@ -166,9 +166,9 @@ def broker_poller(
         execution_engine=mock_execution_engine,
         work_manager=mock_work_manager,
     )
-    poller.producer = AsyncMock()
+    poller.producer = MagicMock()
     poller.consumer = mock_consumer
-    poller.admin = AsyncMock()
+    poller.admin = MagicMock()
     return poller
 
 
@@ -615,9 +615,12 @@ async def test_dlq_publish_retry_on_failure(
 
     original_publish_to_dlq = broker_poller._publish_to_dlq
 
+    async def _fake_sleep(*args, **kwargs):
+        return None
+
     async def mock_publish_to_dlq(*args, **kwargs):
-        with mocker.patch("asyncio.sleep", new_callable=AsyncMock):
-            return await original_publish_to_dlq(*args, **kwargs)
+        mocker.patch("asyncio.sleep", side_effect=_fake_sleep)
+        return await original_publish_to_dlq(*args, **kwargs)
 
     broker_poller._publish_to_dlq = mock_publish_to_dlq
 

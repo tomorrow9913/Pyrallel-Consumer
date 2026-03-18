@@ -239,6 +239,7 @@ from pyrallel_consumer.dto import ExecutionMode, WorkItem
 config = KafkaConfig()
 config.dlq_enabled = True
 config.DLQ_TOPIC_SUFFIX = ".failed"
+config.parallel_consumer.ordering_mode = "key_hash"  # 또는 "partition" / "unordered"
 config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
 config.parallel_consumer.execution.max_retries = 5
 config.parallel_consumer.execution.retry_backoff_ms = 2000
@@ -248,6 +249,15 @@ async def worker(item: WorkItem):
 
 consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 ```
+
+정렬 모드:
+- `key_hash` (기본값): 동일 key 내 순서를 보장하면서 key 간 병렬성을 허용
+- `partition`: Kafka 파티션 단위 순서를 보장
+- `unordered`: 순서 보장 없이 처리량을 최우선
+
+process 모드 튜닝은 `worker_pool_size`보다
+`config.parallel_consumer.execution.process_config.process_count`를 기준으로
+조정하는 편이 맞습니다.
 
 ### 🏁 빠른 시작 (선택) — DLQ 설정 포함 예제
 

@@ -4,7 +4,7 @@ from typing import ClassVar, Literal, cast
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode
+from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
 
 
 class AsyncConfig(BaseSettings):
@@ -92,6 +92,7 @@ class ParallelConsumerConfig(BaseSettings):
 
     poll_batch_size: int = Field(default=1000, gt=0)
     worker_pool_size: int = Field(default=8, gt=0)
+    ordering_mode: OrderingMode = OrderingMode.KEY_HASH
     queue_max_messages: int = 5000
     diag_log_every: int = 1000
     blocking_warn_seconds: float = 5.0
@@ -102,6 +103,18 @@ class ParallelConsumerConfig(BaseSettings):
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
     execution: ExecutionConfig = ExecutionConfig()
+
+    @field_validator("ordering_mode", mode="before")
+    @classmethod
+    def _normalize_ordering_mode(cls, v: object) -> OrderingMode:
+        if isinstance(v, OrderingMode):
+            return v
+        if isinstance(v, str):
+            cleaned = v.split("#", 1)[0].strip()
+            return OrderingMode(cleaned)
+        raise TypeError(
+            f"ordering_mode must be str or OrderingMode, got {type(v).__name__}"
+        )
 
 
 class KafkaConfig(BaseSettings):

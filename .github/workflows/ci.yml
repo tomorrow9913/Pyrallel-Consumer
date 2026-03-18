@@ -92,7 +92,17 @@ jobs:
             faulthandler.enable(all_threads=True)
             faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
             try:
-                raise SystemExit(pytest.main(["tests/integration", "-q", "--maxfail=1"]))
+                raise SystemExit(
+                    pytest.main(
+                        [
+                            "tests/integration",
+                            "-q",
+                            "--maxfail=1",
+                            "-W",
+                            "error::RuntimeWarning",
+                        ]
+                    )
+                )
             finally:
                 faulthandler.cancel_dump_traceback_later()
             PY

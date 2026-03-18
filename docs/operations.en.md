@@ -64,31 +64,31 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
     - Type: Stat
-    - Query: `sum(pyrallel_system_in_flight)`
+    - Query: `consumer_in_flight_count`
     - Threshold: Yellow if > 80% of `max_in_flight`, Red if > 100%
 - **Consumer Status**:
     - Type: State Timeline / Status History
-    - Query: `pyrallel_system_paused` (0=Running, 1=Paused)
+    - Query: `consumer_backpressure_active` (0=Running, 1=Paused)
     - Color: 0=Green, 1=Red
 
 ### 4.2. Performance (Row)
 - **True Lag by Partition**:
     - Type: Time Series (Stacked)
-    - Query: `pyrallel_partition_true_lag`
+    - Query: `consumer_parallel_lag`
     - Insight: If Lag spikes for a specific partition, check for Key Skew.
 - **Blocking Duration**:
     - Type: Time Series
-    - Query: `max(pyrallel_partition_blocking_duration_sec)`
+    - Query: `max(consumer_oldest_task_duration_seconds)`
     - Insight: If this value keeps increasing, it's highly likely a "Poison Pill" message that never finishes processing.
 
 ### 4.3. Internal State (Row)
 - **Gap Count**:
     - Type: Time Series
-    - Query: `sum(pyrallel_partition_gap_count)`
+    - Query: `sum(consumer_gap_count)`
     - Insight: Spikes after rebalancing are normal, but high steady-state values indicate severe `OutOfOrder` processing.
 - **Queued Messages**:
     - Type: Bar Gauge
-    - Query: `pyrallel_partition_queued_count`
+    - Query: `consumer_internal_queue_depth`
     - Insight: Checks the backlog status of virtual partition queues.
 
 ---

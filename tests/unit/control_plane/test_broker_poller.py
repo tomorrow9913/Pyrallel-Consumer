@@ -99,6 +99,25 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
 
 
+def test_broker_poller_syncs_ordering_mode_from_injected_work_manager(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.ordering_mode = "key_hash"
+    injected_work_manager = MagicMock()
+    injected_work_manager.get_ordering_mode.return_value = __import__(
+        "pyrallel_consumer.dto", fromlist=["OrderingMode"]
+    ).OrderingMode.PARTITION
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=injected_work_manager,
+    )
+
+    assert poller.ORDERING_MODE == injected_work_manager.get_ordering_mode.return_value
+
+
 @pytest.mark.asyncio
 async def test_on_assign_uses_configured_max_revoke_grace_ms(
     mock_kafka_config, mock_execution_engine, mock_consumer

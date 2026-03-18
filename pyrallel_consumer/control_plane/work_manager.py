@@ -73,6 +73,9 @@ class WorkManager:
             tuple[DtoTopicPartition, int], tuple[DtoTopicPartition, Any]
         ] = {}
 
+    def get_ordering_mode(self) -> OrderingMode:
+        return self._ordering_mode
+
     async def force_fail(
         self,
         tp: DtoTopicPartition,

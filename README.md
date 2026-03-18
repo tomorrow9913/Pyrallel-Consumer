@@ -183,6 +183,7 @@ from pyrallel_consumer.dto import ExecutionMode, WorkItem
 config = KafkaConfig()
 config.dlq_enabled = True
 config.DLQ_TOPIC_SUFFIX = ".failed"
+config.parallel_consumer.ordering_mode = "key_hash"  # or "partition" / "unordered"
 config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
 config.parallel_consumer.execution.max_retries = 5
 config.parallel_consumer.execution.retry_backoff_ms = 2000
@@ -192,6 +193,14 @@ async def worker(item: WorkItem):
 
 consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 ```
+
+Ordering modes:
+- `key_hash` (default): preserve order per message key while allowing parallelism across keys
+- `partition`: preserve order per Kafka partition
+- `unordered`: maximize throughput without ordering guarantees
+
+For process mode tuning, use `config.parallel_consumer.execution.process_config.process_count`
+rather than `worker_pool_size`.
 
 For detailed runnable patterns, see [`examples/`](./examples/).
 
