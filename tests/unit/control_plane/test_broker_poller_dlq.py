@@ -820,3 +820,67 @@ async def test_publish_to_dlq_invalid_suffix_raises(broker_poller_with_dlq):
             error="err",
             attempt=1,
         )
+
+
+def test_cache_message_for_dlq_respects_mode_and_byte_budget(
+    broker_poller_with_dlq, broker_poller_no_dlq
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+
+    broker_poller_no_dlq._cache_message_for_dlq(tp, 1, b"k", b"value")
+    assert broker_poller_no_dlq._message_cache == {}
+
+    broker_poller_with_dlq._kafka_config.dlq_payload_mode = DLQPayloadMode.METADATA_ONLY
+    broker_poller_with_dlq._cache_message_for_dlq(tp, 1, b"k", b"value")
+    assert broker_poller_with_dlq._message_cache == {}
+
+    broker_poller_with_dlq._kafka_config.dlq_payload_mode = DLQPayloadMode.FULL
+    broker_poller_with_dlq._message_cache_max_bytes = 10
+    broker_poller_with_dlq._cache_message_for_dlq(tp, 1, b"k1", b"1234")
+    broker_poller_with_dlq._cache_message_for_dlq(tp, 2, b"k2", b"5678")
+
+    assert (tp, 1) not in broker_poller_with_dlq._message_cache
+    assert broker_poller_with_dlq._message_cache[(tp, 2)] == (b"k2", b"5678")
+    assert broker_poller_with_dlq._message_cache_size_bytes == 6
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_falls_back_to_metadata_only_when_cache_missing(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    offset = 100
+
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=99,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 99
+    tracker.increment_epoch()
+    broker_poller_with_dlq._offset_trackers[tp] = tracker
+    broker_poller_with_dlq._publish_to_dlq = AsyncMock(return_value=True)
+
+    event = CompletionEvent(
+        id="test-id",
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.FAILURE,
+        error="Test error",
+        attempt=3,
+    )
+
+    await broker_poller_with_dlq._process_completed_events([event])
+
+    broker_poller_with_dlq._publish_to_dlq.assert_called_once_with(
+        tp=tp,
+        offset=offset,
+        epoch=tracker.get_current_epoch(),
+        key=None,
+        value=None,
+        error="Test error",
+        attempt=3,
+    )
+    assert offset in tracker.completed_offsets

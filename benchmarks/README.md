@@ -36,6 +36,12 @@ uv run python -m benchmarks.run_parallel_benchmark \
   --worker-io-sleep-ms 5
 ```
 
+For benchmark development or local benchmark test runs, install the dev tooling set:
+
+```bash
+uv sync --group dev
+```
+
 ## Key options
 - No arguments: launches the Textual TUI so you can configure and start the benchmark interactively.
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.

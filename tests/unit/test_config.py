@@ -10,6 +10,7 @@ def test_parallel_consumer_config_defaults():
     config = ParallelConsumerConfig()
 
     assert config.blocking_warn_seconds == 5.0
+    assert config.message_cache_max_bytes == 64 * 1024 * 1024
     assert config.max_blocking_duration_ms == 0
     assert config.ordering_mode == OrderingMode.KEY_HASH
     assert config.strict_completion_monitor_enabled is True

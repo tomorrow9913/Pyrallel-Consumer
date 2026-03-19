@@ -52,7 +52,9 @@ class WorkManager:
         self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
         # Track work items by their unique ID
         self._in_flight_work_items: Dict[str, WorkItem] = {}
+        self._work_item_ids_by_tp_offset: Dict[tuple[DtoTopicPartition, int], str] = {}
         self._dispatch_timestamps: Dict[str, float] = {}
+        self._total_queued_messages = 0
 
         self._max_in_flight_messages = max_in_flight_messages
         self._current_in_flight_count = 0
@@ -84,11 +86,13 @@ class WorkManager:
         error: str,
         attempt: int,
     ) -> bool:
-        work_id: Optional[str] = None
-        for candidate_id, item in self._in_flight_work_items.items():
-            if item.tp == tp and item.offset == offset:
-                work_id = candidate_id
-                break
+        work_id = self._work_item_ids_by_tp_offset.get((tp, offset))
+        if work_id is None:
+            for candidate_id, work_item in self._in_flight_work_items.items():
+                if work_item.tp == tp and work_item.offset == offset:
+                    work_id = candidate_id
+                    self._work_item_ids_by_tp_offset[(tp, offset)] = candidate_id
+                    break
 
         if work_id is None:
             return False
@@ -148,6 +152,9 @@ class WorkManager:
         dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
         if completed_item is None:
             return False, dispatch_time
+        self._work_item_ids_by_tp_offset.pop(
+            (completed_item.tp, completed_item.offset), None
+        )
 
         if self._ordering_mode == OrderingMode.KEY_HASH:
             self._keys_in_flight.discard((completed_item.tp, completed_item.key))
@@ -282,6 +289,10 @@ class WorkManager:
             None
         """
         for tp in revoked_tps:
+            for queue in self._virtual_partition_queues.get(tp, {}).values():
+                self._total_queued_messages = max(
+                    0, self._total_queued_messages - queue.qsize()
+                )
             for key in list(self._virtual_partition_queues.get(tp, {}).keys()):
                 self._deactivate_queue_key((tp, key))
             self._offset_trackers.pop(tp, None)
@@ -342,9 +353,11 @@ class WorkManager:
             id=work_item_id, tp=tp, offset=offset, epoch=epoch, key=key, payload=payload
         )
         await virtual_partition_queue.put(work_item)
+        self._total_queued_messages += 1
         if was_empty:
             self._refresh_queue_head(tp, key, virtual_partition_queue)
         self._in_flight_work_items[work_item_id] = work_item  # Track all work items
+        self._work_item_ids_by_tp_offset[(tp, offset)] = work_item_id
 
         # Keep WorkManager's OffsetTracker in sync so that get_blocking_offsets()
         # can compute gaps correctly and guide the scheduling policy.
@@ -403,6 +416,9 @@ class WorkManager:
                     if queue_to_dequeue_from is None:
                         return
                     queue_to_dequeue_from.get_nowait()
+                    self._total_queued_messages = max(
+                        0, self._total_queued_messages - 1
+                    )
                     if queue_to_dequeue_from.empty():
                         self._cleanup_empty_queue(selected_tp, selected_key)
                     else:
@@ -524,6 +540,9 @@ class WorkManager:
             int: 현재 인플라이트 메시지 총 수
         """
         return self._current_in_flight_count  # Updated to use WorkManager's count
+
+    def get_total_queued_messages(self) -> int:
+        return self._total_queued_messages
 
     def _invalidate_blocking_cache(self) -> None:
         self._blocking_cache_counter = 0

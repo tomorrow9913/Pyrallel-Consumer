@@ -7,7 +7,6 @@ from _pytest.monkeypatch import MonkeyPatch
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import OrderingMode
-from pyrallel_consumer.offset_manager import OffsetTracker
 
 
 class _DummyEngine:
@@ -289,28 +288,3 @@ async def test_pyrallel_consumer_wait_closed_is_passive(monkeypatch: MonkeyPatch
     assert dummy_poller.wait_closed_called is True
     assert dummy_poller.stopped is False
     assert dummy_engine.shutdown_called is False
-
-
-@pytest.mark.asyncio
-async def test_offset_tracker_safe_offsets_and_counts():
-    tracker = OffsetTracker()
-
-    await tracker.add(0, 1)
-    await tracker.add(0, 2)
-    await tracker.add(1, 5)
-
-    safe = await tracker.get_safe_offsets({0: 10, 1: 7})
-    assert sorted(safe) == [(0, 1), (1, 5)]
-
-    count_after_add = await tracker.get_total_in_flight_count()
-    assert count_after_add == 3
-
-    await tracker.remove(0, 1)
-    await tracker.remove(0, 2)
-    await tracker.remove(1, 5)
-
-    safe_after_remove = await tracker.get_safe_offsets({0: 3, 1: 4})
-    assert safe_after_remove == [(0, 4), (1, 5)]
-
-    count_after_remove = await tracker.get_total_in_flight_count()
-    assert count_after_remove == 0

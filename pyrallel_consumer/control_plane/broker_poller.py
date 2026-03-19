@@ -3,6 +3,7 @@
 
 import asyncio
 import random
+from collections import OrderedDict
 from itertools import islice
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
@@ -51,6 +52,14 @@ class BrokerPoller:
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
         self._worker_pool_size = getattr(pc_conf, "worker_pool_size", 0) or 0
         self.QUEUE_MAX_MESSAGES = int(getattr(pc_conf, "queue_max_messages", 0) or 0)
+        raw_message_cache_max_bytes = getattr(
+            pc_conf, "message_cache_max_bytes", 64 * 1024 * 1024
+        )
+        self._message_cache_max_bytes = (
+            raw_message_cache_max_bytes
+            if isinstance(raw_message_cache_max_bytes, int)
+            else 64 * 1024 * 1024
+        )
         self._queue_resume_threshold = (
             int(self.QUEUE_MAX_MESSAGES * 0.7) if self.QUEUE_MAX_MESSAGES else 0
         )
@@ -110,7 +119,10 @@ class BrokerPoller:
         )
         self._is_paused = False
 
-        self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+        self._message_cache: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
+        ) = OrderedDict()
+        self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
 
     # ------------------------------------------------------------------
@@ -159,6 +171,101 @@ class BrokerPoller:
         if total_in_flight > 0 or total_queued > 0:
             return 0.0
         return self._idle_consume_timeout_seconds
+
+    def _should_cache_message_payloads(self) -> bool:
+        dlq_enabled = bool(getattr(self._kafka_config, "dlq_enabled", False))
+        payload_mode = getattr(
+            self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
+        )
+        return bool(
+            dlq_enabled
+            and payload_mode == DLQPayloadMode.FULL
+            and self._message_cache_max_bytes != 0
+        )
+
+    @staticmethod
+    def _estimate_cached_payload_bytes(payload: Any) -> int:
+        if payload is None:
+            return 0
+        if isinstance(payload, memoryview):
+            return len(payload)
+        if isinstance(payload, (bytes, bytearray)):
+            return len(payload)
+        if isinstance(payload, str):
+            return len(payload.encode("utf-8"))
+        return 0
+
+    def _get_cached_message_size(self, key: Any, value: Any) -> int:
+        return self._estimate_cached_payload_bytes(
+            key
+        ) + self._estimate_cached_payload_bytes(value)
+
+    def _pop_cached_message(
+        self, cache_key: Tuple[DtoTopicPartition, int]
+    ) -> Optional[Tuple[Any, Any]]:
+        cached_message = self._message_cache.pop(cache_key, None)
+        if cached_message is None:
+            return None
+
+        self._message_cache_size_bytes = max(
+            0,
+            self._message_cache_size_bytes
+            - self._get_cached_message_size(*cached_message),
+        )
+        return cached_message
+
+    def _cache_message_for_dlq(
+        self, tp: DtoTopicPartition, offset: int, key: Any, value: Any
+    ) -> None:
+        cache_key = (tp, offset)
+        if not self._should_cache_message_payloads():
+            self._pop_cached_message(cache_key)
+            return
+
+        self._pop_cached_message(cache_key)
+        entry_size = self._get_cached_message_size(key, value)
+
+        if (
+            self._message_cache_max_bytes > 0
+            and entry_size > self._message_cache_max_bytes
+        ):
+            logger.warning(
+                "Skipping raw DLQ cache for %s@%d because payload size %d exceeds cache budget %d",
+                tp,
+                offset,
+                entry_size,
+                self._message_cache_max_bytes,
+            )
+            return
+
+        while (
+            self._message_cache
+            and self._message_cache_max_bytes > 0
+            and self._message_cache_size_bytes + entry_size
+            > self._message_cache_max_bytes
+        ):
+            evicted_key, evicted_value = self._message_cache.popitem(last=False)
+            self._message_cache_size_bytes = max(
+                0,
+                self._message_cache_size_bytes
+                - self._get_cached_message_size(*evicted_value),
+            )
+            logger.warning(
+                "Evicted raw DLQ cache entry for %s@%d to stay within %d bytes",
+                evicted_key[0],
+                evicted_key[1],
+                self._message_cache_max_bytes,
+            )
+
+        self._message_cache[cache_key] = (key, value)
+        self._message_cache_size_bytes += entry_size
+
+    def _drop_cached_partition_messages(self, tp: DtoTopicPartition) -> None:
+        cache_keys_to_remove = [
+            cache_key for cache_key in self._message_cache if cache_key[0] == tp
+        ]
+        for cache_key in cache_keys_to_remove:
+            self._pop_cached_message(cache_key)
 
     # ------------------------------------------------------------------
     async def _publish_to_dlq(
@@ -299,8 +406,12 @@ class BrokerPoller:
                                 logger.warning("Untracked partition %s - skipping", tp)
                                 continue
 
-                            cache_key = (tp, offset_val)
-                            self._message_cache[cache_key] = (msg.key(), msg.value())
+                            self._cache_message_for_dlq(
+                                tp=tp,
+                                offset=offset_val,
+                                key=msg.key(),
+                                value=msg.value(),
+                            )
 
                             submit_key: Any
                             if self.ORDERING_MODE == OrderingMode.PARTITION:
@@ -459,15 +570,15 @@ class BrokerPoller:
                 ):
                     cache_key = (event.tp, event.offset)
                     cached_msg = self._message_cache.get(cache_key)
-                    if cached_msg is None:
+                    if cached_msg is None and self._should_cache_message_payloads():
                         logger.warning(
-                            "No cached message for %s@%d, skipping DLQ publish and commit",
+                            "No cached raw payload for %s@%d, falling back to metadata-only DLQ publish",
                             event.tp,
                             event.offset,
                         )
-                        continue
-
-                    msg_key, msg_value = cached_msg
+                    msg_key, msg_value = (
+                        cached_msg if cached_msg is not None else (None, None)
+                    )
                     error_text = event.error or "Unknown error"
                     dlq_success = await self._publish_to_dlq(
                         tp=event.tp,
@@ -489,7 +600,7 @@ class BrokerPoller:
 
             tracker.mark_complete(event.offset)
             cache_key_to_remove = (event.tp, event.offset)
-            self._message_cache.pop(cache_key_to_remove, None)
+            self._pop_cached_message(cache_key_to_remove)
 
         self._diag_events_since_log += len(completed_events)
         if self._diag_events_since_log >= self._diag_log_every:
@@ -577,6 +688,14 @@ class BrokerPoller:
         return hash(cast(bytes, msg.key() or b"")) % self._worker_pool_size
 
     async def _get_total_queued_messages(self) -> int:
+        get_total_queued_messages = getattr(
+            self._work_manager, "get_total_queued_messages", None
+        )
+        if callable(get_total_queued_messages):
+            total = get_total_queued_messages()
+            if isinstance(total, int):
+                return total
+
         total = 0
         for queue_map in self._work_manager.get_virtual_queue_sizes().values():
             for size in queue_map.values():
@@ -683,6 +802,8 @@ class BrokerPoller:
             await asyncio.to_thread(self.producer.flush, timeout=5)
         if self.consumer:
             self.consumer.close()
+        self._message_cache.clear()
+        self._message_cache_size_bytes = 0
 
     def _raise_if_failed(self) -> None:
         if self._fatal_error is None:
@@ -779,6 +900,7 @@ class BrokerPoller:
 
         for tp_kafka in partitions:
             tp_dto = DtoTopicPartition(tp_kafka.topic, tp_kafka.partition)
+            self._drop_cached_partition_messages(tp_dto)
             tracker = self._offset_trackers.get(tp_dto)
             if tracker is None:
                 continue

@@ -94,6 +94,7 @@ class ParallelConsumerConfig(BaseSettings):
     worker_pool_size: int = Field(default=8, gt=0)
     ordering_mode: OrderingMode = OrderingMode.KEY_HASH
     queue_max_messages: int = 5000
+    message_cache_max_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
     diag_log_every: int = 1000
     blocking_warn_seconds: float = 5.0
     max_blocking_duration_ms: int = 0

@@ -42,7 +42,16 @@ jobs:
             faulthandler.enable(all_threads=True)
             faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
             try:
-                raise SystemExit(pytest.main(["tests/unit", "-q", "--maxfail=1"]))
+                raise SystemExit(
+                    pytest.main(
+                        [
+                            "tests/unit",
+                            "-q",
+                            "--maxfail=1",
+                            "--ignore=tests/unit/benchmarks",
+                        ]
+                    )
+                )
             finally:
                 faulthandler.cancel_dump_traceback_later()
             PY
@@ -120,7 +129,6 @@ jobs:
         run: |
           echo "pytest exited with code ${{ steps.integration_tests.outputs.exit_code }}"
           exit 1
-
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 10

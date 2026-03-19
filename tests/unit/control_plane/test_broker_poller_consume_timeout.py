@@ -64,9 +64,7 @@ async def test_get_consume_timeout_returns_zero_with_in_flight_work(broker_polle
 @pytest.mark.asyncio
 async def test_get_consume_timeout_returns_zero_with_queued_work(broker_poller):
     broker_poller._work_manager.get_total_in_flight_count.return_value = 0
-    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {
-        "tp-0": {"key-a": 2}
-    }
+    broker_poller._work_manager.get_total_queued_messages.return_value = 2
 
     timeout = await broker_poller._get_consume_timeout_seconds()
 

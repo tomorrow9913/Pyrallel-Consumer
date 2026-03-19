@@ -63,6 +63,7 @@ async def test_work_manager_initialization(work_manager):
     assert isinstance(work_manager._completion_queue, asyncio.Queue)
     assert work_manager._in_flight_work_items == {}
     assert work_manager._current_in_flight_count == 0
+    assert work_manager.get_total_queued_messages() == 0
 
 
 @pytest.mark.asyncio
@@ -380,6 +381,7 @@ async def test_submit_message(
         assert (
             work_manager._current_in_flight_count == 0
         )  # No messages are in-flight yet
+        assert work_manager.get_total_queued_messages() == 1
 
         # Now, explicitly trigger the submission process
         await work_manager.schedule()
@@ -389,6 +391,48 @@ async def test_submit_message(
         submitted_work_item = mock_execution_engine.submit.call_args[0][0]
         assert submitted_work_item.id == queued_work_item.id
         assert work_manager._current_in_flight_count == 1
+        assert work_manager.get_total_queued_messages() == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_message_tracks_tp_offset_index(
+    work_manager, mock_dto_topic_partition
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 7, 1, b"message-key", b"payload"
+    )
+
+    work_item = next(iter(work_manager._in_flight_work_items.values()))
+    assert (
+        work_manager._work_item_ids_by_tp_offset[(mock_dto_topic_partition, 7)]
+        == work_item.id
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_fail_uses_tp_offset_index(work_manager, mock_dto_topic_partition):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 11, 1, b"message-key", b"payload"
+    )
+    work_item = next(iter(work_manager._in_flight_work_items.values()))
+
+    result = await work_manager.force_fail(
+        tp=mock_dto_topic_partition,
+        offset=11,
+        epoch=1,
+        error="forced",
+        attempt=3,
+    )
+
+    assert result is True
+    event = await work_manager._completion_queue.get()
+    assert event.id == work_item.id
+    assert event.offset == 11
+    assert event.error == "forced"
 
 
 @pytest.mark.asyncio
@@ -855,6 +899,7 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
 
     queue = work_manager._virtual_partition_queues[tp]["k1"]
     work_item: WorkItem = await queue.get()
+    work_manager._total_queued_messages = 0
     work_manager._current_in_flight_count = 1
 
     event = CompletionEvent(
@@ -872,6 +917,7 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
 
     assert tp in work_manager._virtual_partition_queues
     assert work_manager._virtual_partition_queues[tp] == {}
+    assert work_manager.get_total_queued_messages() == 0
 
 
 @pytest.mark.asyncio
@@ -1031,11 +1077,13 @@ async def test_on_revoke_does_not_decrement_for_queued_unsubmitted_items(
 
     assert work_manager._current_in_flight_count == 1
     assert len(work_manager._in_flight_work_items) == 2
+    assert work_manager.get_total_queued_messages() == 1
 
     work_manager.on_revoke([mock_dto_topic_partition])
 
     assert work_manager._current_in_flight_count == 0
     assert work_manager._in_flight_work_items == {}
+    assert work_manager.get_total_queued_messages() == 0
 
 
 @pytest.mark.asyncio

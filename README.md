@@ -134,6 +134,10 @@ python -m build
 
 - Grafana admin password is expected via `GF_SECURITY_ADMIN_PASSWORD` in `.env`.
 - For DLQ payload minimization, set `KAFKA_DLQ_PAYLOAD_MODE=metadata_only`.
+- Raw DLQ payload caching is bounded by `PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES`
+  (default `67108864`, about 64 MiB). When the cache budget is exhausted, the
+  oldest raw payloads are evicted and DLQ publishing falls back to metadata-only
+  payloads instead of holding unbounded memory.
 - License: Apache-2.0
 
 ### Env-based Config (`pydantic-settings`)
@@ -164,6 +168,8 @@ Pyrallel Consumer supports automatic retries and DLQ publishing.
 | --- | --- | --- |
 | `KAFKA_DLQ_ENABLED` | `true` | Enable DLQ publish |
 | `KAFKA_DLQ_TOPIC_SUFFIX` | `.dlq` | DLQ topic suffix |
+| `KAFKA_DLQ_PAYLOAD_MODE` | `full` | `full` preserves original key/value, `metadata_only` publishes headers only |
+| `PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES` | `67108864` | Max bytes reserved for raw DLQ payload cache before oldest entries are evicted |
 
 DLQ headers include:
 - `x-error-reason`
@@ -172,6 +178,11 @@ DLQ headers include:
 - `partition`
 - `offset`
 - `epoch`
+
+When `KAFKA_DLQ_PAYLOAD_MODE=full`, the control plane keeps a bounded raw
+message cache only for final DLQ publishing. If an entry is evicted before the
+failure reaches DLQ, Pyrallel Consumer degrades to metadata-only DLQ publish
+instead of retaining the offset indefinitely.
 
 ## 💡 Usage
 
