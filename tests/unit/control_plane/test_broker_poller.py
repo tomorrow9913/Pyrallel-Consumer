@@ -802,3 +802,75 @@ async def test_stop_reraises_terminal_consumer_loop_error(broker_poller, mock_co
 
         with pytest.raises(RuntimeError, match="boom"):
             await broker_poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_skips_completion_monitor_when_disabled(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.strict_completion_monitor_enabled = False
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+
+    created_tasks = []
+
+    def fake_create_task(coro, name=None):
+        coro.close()
+        task = MagicMock()
+        task.get_name.return_value = name
+        created_tasks.append((name, task))
+        return task
+
+    with patch(
+        "pyrallel_consumer.control_plane.broker_poller.Producer",
+        return_value=MagicMock(),
+    ) as mock_producer, patch(
+        "pyrallel_consumer.control_plane.broker_poller.AdminClient",
+        return_value=MagicMock(),
+    ) as mock_admin, patch(
+        "pyrallel_consumer.control_plane.broker_poller.Consumer",
+        return_value=MagicMock(),
+    ) as mock_consumer_ctor, patch("asyncio.create_task", side_effect=fake_create_task):
+        await broker_poller.start()
+
+    assert broker_poller._running is True
+    assert broker_poller._completion_monitor_task is None
+    assert broker_poller._consumer_task is created_tasks[0][1]
+    assert created_tasks == [("broker-poller-loop", created_tasks[0][1])]
+    mock_producer.assert_called_once()
+    mock_admin.assert_called_once()
+    mock_consumer_ctor.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_consumer_task_after_timeout(broker_poller):
+    timed_out_task = MagicMock()
+    timed_out_task.cancel = MagicMock()
+    broker_poller._running = True
+    broker_poller._consumer_task = timed_out_task
+    broker_poller._shutdown_event.set()
+
+    with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError), patch(
+        "asyncio.gather", new=AsyncMock()
+    ) as gather_mock:
+        await broker_poller.stop()
+
+    timed_out_task.cancel.assert_called_once_with()
+    gather_mock.assert_awaited_once_with(timed_out_task, return_exceptions=True)
+    assert broker_poller._consumer_task is None
+
+
+@pytest.mark.asyncio
+async def test_wait_closed_reraises_terminal_error_when_shutdown_is_complete(
+    broker_poller,
+):
+    broker_poller._running = False
+    broker_poller._consumer_task = None
+    broker_poller._shutdown_event.set()
+    broker_poller._fatal_error = RuntimeError("closed-boom")
+
+    with pytest.raises(RuntimeError, match="closed-boom"):
+        await broker_poller.wait_closed()

@@ -7,7 +7,7 @@ import random
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from confluent_kafka import OFFSET_INVALID, Consumer, KafkaException, Message, Producer
+from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
@@ -26,6 +26,7 @@ from ..logger import LogManager
 from ..utils.validation import validate_topic_name
 from .broker_completion_support import BrokerCompletionSupport
 from .broker_dispatch_support import BrokerDispatchSupport
+from .broker_rebalance_support import BrokerRebalanceSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -99,6 +100,10 @@ class BrokerPoller:
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
+        self._rebalance_support = BrokerRebalanceSupport(
+            metadata_encoder=self._metadata_encoder,
+            tracker_factory=OffsetTracker,
+        )
         self._commit_planner = BrokerCommitPlanner(
             metadata_encoder=self._metadata_encoder,
             max_completed_offsets=self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
@@ -670,66 +675,14 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        committed_offsets: Dict[Tuple[str, int], KafkaTopicPartition] = {}
-        try:
-            committed_partitions = consumer.committed(partitions)
-            for committed_tp in committed_partitions:
-                if committed_tp.offset is None:
-                    continue
-                committed_offsets[
-                    (committed_tp.topic, committed_tp.partition)
-                ] = committed_tp
-        except KafkaException as exc:
-            logger.warning(
-                "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
-                exc,
-            )
-
-        work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
-
-        for partition in partitions:
-            tp_dto = DtoTopicPartition(partition.topic, partition.partition)
-            committed_partition = committed_offsets.get(
-                (partition.topic, partition.partition)
-            )
-            committed_offset = (
-                committed_partition.offset if committed_partition is not None else None
-            )
-            tracker_starting_offset = (
-                committed_offset
-                if committed_offset is not None and committed_offset > OFFSET_INVALID
-                else partition.offset
-            )
-            last_committed = (
-                committed_offset - 1
-                if committed_offset is not None and committed_offset >= 0
-                else (
-                    partition.offset - 1
-                    if partition.offset and partition.offset > 0
-                    else -1
-                )
-            )
-            initial_completed_offsets = self._decode_assignment_completed_offsets(
-                partition,
-                committed_partition,
-                last_committed,
-            )
-            tracker = OffsetTracker(
-                topic_partition=tp_dto,
-                starting_offset=tracker_starting_offset,
-                max_revoke_grace_ms=self._kafka_config.parallel_consumer.execution.max_revoke_grace_ms,
-                initial_completed_offsets=initial_completed_offsets,
-            )
-            tracker.last_committed_offset = last_committed
-            tracker.last_fetched_offset = max(
-                [last_committed, *initial_completed_offsets]
-                if initial_completed_offsets
-                else [last_committed]
-            )
-            tracker.increment_epoch()
-            self._offset_trackers[tp_dto] = tracker
-            work_manager_assignments[tp_dto] = tracker
-
+        work_manager_assignments = self._rebalance_support.build_assignments(
+            consumer=consumer,
+            partitions=partitions,
+            strategy=self._rebalance_state_strategy(),
+            max_revoke_grace_ms=self._kafka_config.parallel_consumer.execution.max_revoke_grace_ms,
+            logger=logger,
+        )
+        self._offset_trackers.update(work_manager_assignments)
         self._work_manager.on_assign(work_manager_assignments)
 
     def _on_revoke(
@@ -740,41 +693,15 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}" for tp in partitions),
         )
 
-        tp_dtos = [
-            DtoTopicPartition(topic=tp.topic, partition=tp.partition)
-            for tp in partitions
-        ]
-        self._work_manager.on_revoke(tp_dtos)
-
-        for tp_kafka in partitions:
-            tp_dto = DtoTopicPartition(tp_kafka.topic, tp_kafka.partition)
-            self._drop_cached_partition_messages(tp_dto)
-            tracker = self._offset_trackers.get(tp_dto)
-            if tracker is None:
-                continue
-
-            tracker.advance_high_water_mark()
-            safe_offset = tracker.last_committed_offset
-            if safe_offset >= 0:
-                metadata = self._encode_revoke_metadata(tracker, safe_offset + 1)
-                tp_to_commit = KafkaTopicPartition(
-                    tp_dto.topic,
-                    tp_dto.partition,
-                    safe_offset + 1,
-                    metadata=metadata,
-                )
-                try:
-                    consumer.commit(offsets=[tp_to_commit], asynchronous=False)
-                except KafkaException as exc:
-                    logger.warning(
-                        "Revoke commit failed for %s-%d at offset %d: %s",
-                        tp_dto.topic,
-                        tp_dto.partition,
-                        safe_offset + 1,
-                        exc,
-                    )
-
-            del self._offset_trackers[tp_dto]
+        self._rebalance_support.handle_revoke(
+            consumer=consumer,
+            partitions=partitions,
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            drop_cached_partition_messages=self._drop_cached_partition_messages,
+            strategy=self._rebalance_state_strategy(),
+            logger=logger,
+        )
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
