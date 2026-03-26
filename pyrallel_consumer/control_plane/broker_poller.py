@@ -25,6 +25,7 @@ from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
 from .broker_completion_support import BrokerCompletionSupport
+from .broker_dispatch_support import BrokerDispatchSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -347,86 +348,14 @@ class BrokerPoller:
 
                 async with self._control_lock:
                     if messages:
-                        grouped_messages: Dict[
-                            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
-                        ] = {}
-                        for msg in messages:
-                            if msg.error():
-                                logger.warning(
-                                    "Consumed message with error: %s", msg.error()
-                                )
-                                continue
-
-                            topic = msg.topic()
-                            partition = msg.partition()
-                            if topic is None or partition is None:
-                                logger.warning(
-                                    "Received message with None topic or partition"
-                                )
-                                continue
-
-                            tp = DtoTopicPartition(topic=topic, partition=partition)
-                            offset_val = msg.offset()
-                            if offset_val is None:
-                                continue
-                            tracker = self._offset_trackers.get(tp)
-                            if tracker is None:
-                                logger.warning("Untracked partition %s - skipping", tp)
-                                continue
-
-                            self._cache_message_for_dlq(
-                                tp=tp,
-                                offset=offset_val,
-                                key=msg.key(),
-                                value=msg.value(),
-                            )
-
-                            submit_key: Any
-                            if self.ORDERING_MODE == OrderingMode.PARTITION:
-                                submit_key = tp.partition
-                            else:
-                                submit_key = msg.key()
-
-                            if self.ORDERING_MODE == OrderingMode.UNORDERED:
-                                await self._work_manager.submit_message(
-                                    tp=tp,
-                                    offset=offset_val,
-                                    epoch=tracker.get_current_epoch(),
-                                    key=submit_key,
-                                    payload=msg.value(),
-                                )
-                            else:
-                                grouped_messages.setdefault(
-                                    (tp, submit_key), []
-                                ).append(
-                                    (
-                                        offset_val,
-                                        tracker.get_current_epoch(),
-                                        msg.value(),
-                                    )
-                                )
-
-                        if grouped_messages:
-                            await self._submit_grouped_messages(grouped_messages)
-
+                        await self._make_dispatch_support().dispatch_messages(messages)
                         await self._work_manager.schedule()
 
                     await self._drain_completion_events_once()
 
-                commits_to_make: List[tuple[DtoTopicPartition, int]] = []
-                for tp, tracker in self._offset_trackers.items():
-                    potential_hwm = tracker.last_committed_offset
-                    for offset in tracker.completed_offsets:
-                        if offset == potential_hwm + 1:
-                            potential_hwm = offset
-                        else:
-                            break
-                    min_inflight = self._get_min_inflight_offset(tp)
-                    if min_inflight is not None and min_inflight <= potential_hwm:
-                        potential_hwm = min_inflight - 1
-                    if potential_hwm > tracker.last_committed_offset:
-                        commits_to_make.append((tp, potential_hwm))
-
+                commits_to_make = (
+                    self._make_dispatch_support().build_commit_candidates()
+                )
                 if commits_to_make:
                     await self._commit_offsets(commits_to_make)
 
@@ -720,6 +649,17 @@ class BrokerPoller:
                     key=key,
                     payload=payload,
                 )
+
+    def _make_dispatch_support(self) -> BrokerDispatchSupport:
+        return BrokerDispatchSupport(
+            ordering_mode=self.ORDERING_MODE,
+            offset_trackers=self._offset_trackers,
+            cache_message_for_dlq=self._cache_message_for_dlq,
+            submit_message=self._work_manager.submit_message,
+            submit_grouped_messages=self._submit_grouped_messages,
+            get_min_inflight_offset=self._get_min_inflight_offset,
+            logger=logger,
+        )
 
     # ------------------------------------------------------------------
     def _on_assign(
