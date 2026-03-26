@@ -16,7 +16,6 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from ..config import KafkaConfig
 from ..dto import (
     CompletionEvent,
-    CompletionStatus,
     DLQPayloadMode,
     OrderingMode,
     PartitionMetrics,
@@ -25,6 +24,7 @@ from ..dto import (
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
+from .broker_completion_support import BrokerCompletionSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -485,106 +485,36 @@ class BrokerPoller:
         except asyncio.CancelledError:
             raise
 
+    def _make_completion_support(self) -> BrokerCompletionSupport:
+        async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
+            return await self._publish_to_dlq(**kwargs)
+
+        return BrokerCompletionSupport(
+            kafka_config=self._kafka_config,
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            message_cache=self._message_cache,
+            should_cache_message_payloads=self._should_cache_message_payloads,
+            pop_cached_message=self._pop_cached_message,
+            publish_to_dlq=_publish_to_dlq_proxy,
+            logger=logger,
+        )
+
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
-        if self._max_blocking_duration_ms <= 0:
-            return []
-
-        threshold_sec = self._max_blocking_duration_ms / 1000.0
-        forced = False
-        execution_config = self._kafka_config.parallel_consumer.execution
-
-        for tp, tracker in self._offset_trackers.items():
-            durations = tracker.get_blocking_offset_durations()
-            if not durations:
-                continue
-
-            for offset, duration in durations.items():
-                if duration < threshold_sec:
-                    continue
-
-                error_text = "Blocking offset %d exceeded %.3fs" % (offset, duration)
-                success = await self._work_manager.force_fail(
-                    tp=tp,
-                    offset=offset,
-                    epoch=tracker.get_current_epoch(),
-                    error=error_text,
-                    attempt=execution_config.max_retries,
-                )
-                if success:
-                    forced = True
-
-        if not forced:
-            return []
-
-        return await self._work_manager.poll_completed_events()
+        return await self._make_completion_support().handle_blocking_timeouts(
+            max_blocking_duration_ms=self._max_blocking_duration_ms
+        )
 
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
-        for event in completed_events:
-            tracker = self._offset_trackers.get(event.tp)
-            if tracker is None:
-                logger.warning("Completion for untracked partition %s", event.tp)
-                continue
-            if event.epoch != tracker.get_current_epoch():
-                logger.warning(
-                    "Discarding zombie completion for %s@%d (epoch %d vs %d)",
-                    event.tp,
-                    event.offset,
-                    event.epoch,
-                    tracker.get_current_epoch(),
-                )
-                continue
+        processed_count = (
+            await self._make_completion_support().process_completed_events(
+                completed_events
+            )
+        )
 
-            dlq_success: bool = True
-
-            if event.status == CompletionStatus.FAILURE:
-                logger.error(
-                    "Message processing failed for %s@%d: %s",
-                    event.tp,
-                    event.offset,
-                    event.error,
-                )
-
-                max_retries = self._kafka_config.parallel_consumer.execution.max_retries
-                if (
-                    self._kafka_config.dlq_enabled and event.attempt >= max_retries  # type: ignore[attr-defined]
-                ):
-                    cache_key = (event.tp, event.offset)
-                    cached_msg = self._message_cache.get(cache_key)
-                    if cached_msg is None and self._should_cache_message_payloads():
-                        logger.warning(
-                            "No cached raw payload for %s@%d, falling back to metadata-only DLQ publish",
-                            event.tp,
-                            event.offset,
-                        )
-                    msg_key, msg_value = (
-                        cached_msg if cached_msg is not None else (None, None)
-                    )
-                    error_text = event.error or "Unknown error"
-                    dlq_success = await self._publish_to_dlq(
-                        tp=event.tp,
-                        offset=event.offset,
-                        epoch=event.epoch,
-                        key=msg_key,
-                        value=msg_value,
-                        error=error_text,
-                        attempt=event.attempt,  # type: ignore[attr-defined]
-                    )
-
-                if not dlq_success:
-                    logger.error(
-                        "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
-                        event.tp,
-                        event.offset,
-                    )
-                    continue
-
-            tracker.mark_complete(event.offset)
-            cache_key_to_remove = (event.tp, event.offset)
-            self._pop_cached_message(cache_key_to_remove)
-
-        self._diag_events_since_log += len(completed_events)
+        self._diag_events_since_log += processed_count
         if self._diag_events_since_log >= self._diag_log_every:
             self._log_partition_diagnostics()
             self._diag_events_since_log = 0

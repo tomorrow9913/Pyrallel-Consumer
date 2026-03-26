@@ -257,6 +257,58 @@ async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
 
 
 @pytest.mark.asyncio
+async def test_completion_monitor_noops_when_wait_for_completion_times_out(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock()
+    broker_poller._work_manager.get_total_in_flight_count.side_effect = [1, 0]
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._process_completed_events = AsyncMock()
+    broker_poller._handle_blocking_timeouts = AsyncMock(return_value=[])
+    broker_poller._execution_engine = AsyncMock()
+
+    async def wait_for_completion(timeout_seconds=None):
+        del timeout_seconds
+        broker_poller._running = False
+        return False
+
+    broker_poller._execution_engine.wait_for_completion.side_effect = (
+        wait_for_completion
+    )
+
+    broker_poller._running = True
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await broker_poller._run_completion_monitor()
+
+    broker_poller._work_manager.poll_completed_events.assert_not_called()
+    broker_poller._process_completed_events.assert_not_called()
+    broker_poller._work_manager.schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_completion_events_once_processes_blocking_timeout_events(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock(return_value=[])
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._handle_blocking_timeouts = AsyncMock(return_value=[completion_event])
+    broker_poller._process_completed_events = AsyncMock()
+    broker_poller._max_blocking_duration_ms = 1
+
+    has_completion = await broker_poller._drain_completion_events_once()
+
+    assert has_completion is True
+    broker_poller._process_completed_events.assert_awaited_once_with([completion_event])
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_submits_next_same_key_work_without_new_consume(
     broker_poller, topic_partition
 ):
