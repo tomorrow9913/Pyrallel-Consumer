@@ -14,19 +14,14 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import (
-    CompletionEvent,
-    DLQPayloadMode,
-    OrderingMode,
-    PartitionMetrics,
-    SystemMetrics,
-)
+from ..dto import CompletionEvent, DLQPayloadMode, OrderingMode, SystemMetrics
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
 from .broker_completion_support import BrokerCompletionSupport
 from .broker_dispatch_support import BrokerDispatchSupport
 from .broker_rebalance_support import BrokerRebalanceSupport
+from .broker_runtime_support import BrokerRuntimeSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -525,90 +520,16 @@ class BrokerPoller:
         return min_inflight if isinstance(min_inflight, int) else None
 
     def _log_partition_diagnostics(self) -> None:
-        queue_sizes = self._work_manager.get_virtual_queue_sizes()
-        gaps = self._work_manager.get_gaps()
-        blocking = self._work_manager.get_blocking_offsets()
-        parts: list[str] = []
-        for tp, tracker in self._offset_trackers.items():
-            safe_topic = validate_topic_name(tp.topic)
-            queued = sum(queue_sizes.get(tp, {}).values())
-            gap_count = len(gaps.get(tp, []))
-            blocking_offset = blocking.get(tp)
-            blocking_age = None
-            if blocking_offset is not None:
-                durations = tracker.get_blocking_offset_durations()
-                blocking_age = durations.get(blocking_offset.start)
-            age_str = (
-                "%.2fs" % blocking_age
-                if isinstance(blocking_age, (int, float))
-                else "n/a"
-            )
-            parts.append(
-                "%s-%d queued=%d gaps=%d blocking=%s age=%s"
-                % (
-                    safe_topic,
-                    tp.partition,
-                    queued,
-                    gap_count,
-                    blocking_offset.start if blocking_offset else "none",
-                    age_str,
-                )
-            )
-            if (
-                blocking_offset is not None
-                and isinstance(blocking_age, (int, float))
-                and blocking_age >= self._blocking_warn_seconds
-            ):
-                logger.warning(
-                    "Prolonged blocking offset %s@%d age=%.2fs gaps=%d queued=%d",
-                    tp,
-                    blocking_offset.start,
-                    blocking_age,
-                    gap_count,
-                    queued,
-                )
-        logger.debug("Partition diag: %s", "; ".join(parts))
+        self._make_runtime_support().log_partition_diagnostics()
 
     async def _check_backpressure(self) -> None:
         if self.consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
-        total_in_flight = self._work_manager.get_total_in_flight_count()
         total_queued = await self._get_total_queued_messages()
-        current_load = total_in_flight + total_queued
-
-        partitions = self.consumer.assignment()
-        if not partitions:
-            return
-
-        queue_full = (
-            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        self._is_paused = self._make_runtime_support().check_backpressure(
+            total_queued=total_queued
         )
-
-        if not self._is_paused and (
-            current_load > self.MAX_IN_FLIGHT_MESSAGES or queue_full
-        ):
-            logger.warning(
-                "Backpressure: pausing consumer (load=%d limit=%d)",
-                current_load,
-                self.MAX_IN_FLIGHT_MESSAGES,
-            )
-            self.consumer.pause(partitions)
-            self._is_paused = True
-        elif self._is_paused and (
-            current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME
-            and (
-                self._queue_resume_threshold == 0
-                or total_queued <= self._queue_resume_threshold
-            )
-        ):
-            logger.debug(
-                "Backpressure released: resuming consumer (load=%d resume=%d)",
-                current_load,
-                self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
-            )
-            self.consumer.resume(partitions)
-            self._is_paused = False
 
     # ------------------------------------------------------------------
     def _delivery_report(self, err: Optional[KafkaException], msg: Message) -> None:
@@ -783,35 +704,18 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:
-        partition_metrics_list: List[PartitionMetrics] = []
-        queue_sizes = self._work_manager.get_virtual_queue_sizes()
+        return self._make_runtime_support().build_system_metrics()
 
-        for tp, tracker in self._offset_trackers.items():
-            true_lag = max(
-                0, tracker.last_fetched_offset - tracker.last_committed_offset
-            )
-            gaps = tracker.get_gaps()
-            gap_count = len(gaps)
-            blocking_offset = gaps[0].start if gaps else None
-            durations = tracker.get_blocking_offset_durations()
-            blocking_duration = (
-                durations.get(blocking_offset) if blocking_offset else None
-            )
-            queued_count = sum(queue_sizes.get(tp, {}).values())
-
-            partition_metrics_list.append(
-                PartitionMetrics(
-                    tp=tp,
-                    true_lag=true_lag,
-                    gap_count=gap_count,
-                    blocking_offset=blocking_offset,
-                    blocking_duration_sec=blocking_duration,
-                    queued_count=queued_count,
-                )
-            )
-
-        return SystemMetrics(
-            total_in_flight=self._work_manager.get_total_in_flight_count(),
+    def _make_runtime_support(self) -> BrokerRuntimeSupport:
+        return BrokerRuntimeSupport(
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            consumer=self.consumer,
+            max_in_flight_messages=self.MAX_IN_FLIGHT_MESSAGES,
+            min_in_flight_messages_to_resume=self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
+            queue_max_messages=self.QUEUE_MAX_MESSAGES,
+            queue_resume_threshold=self._queue_resume_threshold,
             is_paused=self._is_paused,
-            partitions=partition_metrics_list,
+            blocking_warn_seconds=self._blocking_warn_seconds,
+            logger=logger,
         )
