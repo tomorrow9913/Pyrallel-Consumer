@@ -2,10 +2,10 @@ import asyncio
 import logging
 import time
 import uuid
-from collections import deque
 from typing import Any, Dict, List, Mapping, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
@@ -47,9 +47,8 @@ class WorkManager:
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
-        self._virtual_partition_queues: Dict[
-            DtoTopicPartition, Dict[Any, asyncio.Queue[WorkItem]]
-        ] = {}
+        self._queue_topology = WorkQueueTopology()
+        self._virtual_partition_queues = self._queue_topology.virtual_partition_queues
         self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
         # Track work items by their unique ID
         self._in_flight_work_items: Dict[str, WorkItem] = {}
@@ -69,12 +68,12 @@ class WorkManager:
         self._blocking_cache_ttl = blocking_cache_ttl
         self._blocking_cache_counter = 0
         self._shared_offset_trackers: set[DtoTopicPartition] = set()
-        self._runnable_queue_keys: deque[tuple[DtoTopicPartition, Any]] = deque()
-        self._active_runnable_queue_keys: set[tuple[DtoTopicPartition, Any]] = set()
-        self._head_offsets: Dict[tuple[DtoTopicPartition, Any], int] = {}
-        self._head_queue_keys_by_offset: Dict[
-            tuple[DtoTopicPartition, int], tuple[DtoTopicPartition, Any]
-        ] = {}
+        self._runnable_queue_keys = self._queue_topology.runnable_queue_keys
+        self._active_runnable_queue_keys = (
+            self._queue_topology.active_runnable_queue_keys
+        )
+        self._head_offsets = self._queue_topology.head_offsets
+        self._head_queue_keys_by_offset = self._queue_topology.head_queue_keys_by_offset
 
     def get_ordering_mode(self) -> OrderingMode:
         return self._ordering_mode
@@ -112,69 +111,24 @@ class WorkManager:
 
     @staticmethod
     def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
-        internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
-        return internal[0]
+        return WorkQueueTopology.peek_queue(queue)
 
     def _cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
-        queues = self._virtual_partition_queues.get(tp)
-        if not queues:
-            return
-
-        queue = queues.get(key)
-        if queue and queue.empty():
-            self._deactivate_queue_key((tp, key))
-            queues.pop(key, None)
+        self._queue_topology.cleanup_empty_queue(tp, key)
 
     def _deactivate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
-        self._active_runnable_queue_keys.discard(queue_key)
-        head_offset = self._head_offsets.pop(queue_key, None)
-        if head_offset is not None:
-            self._head_queue_keys_by_offset.pop((queue_key[0], head_offset), None)
-
-        if queue_key in self._runnable_queue_keys:
-            self._runnable_queue_keys = deque(
-                queued_key
-                for queued_key in self._runnable_queue_keys
-                if queued_key != queue_key
-            )
+        self._queue_topology.deactivate_queue_key(queue_key)
+        self._runnable_queue_keys = self._queue_topology.runnable_queue_keys
 
     def _activate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
-        if queue_key not in self._active_runnable_queue_keys:
-            self._runnable_queue_keys.append(queue_key)
-            self._active_runnable_queue_keys.add(queue_key)
+        self._queue_topology.activate_queue_key(queue_key)
 
     @staticmethod
     def _enqueue_work_items(
         queue: asyncio.Queue[WorkItem],
         work_items: list[WorkItem],
     ) -> None:
-        if not work_items:
-            return
-        if len(work_items) == 1:
-            queue.put_nowait(work_items[0])
-            return
-
-        internal_queue = getattr(queue, "_queue", None)
-        unfinished_tasks = getattr(queue, "_unfinished_tasks", None)
-        finished = getattr(queue, "_finished", None)
-        wakeup_next = getattr(queue, "_wakeup_next", None)
-        getters = getattr(queue, "_getters", None)
-        if (
-            internal_queue is None
-            or unfinished_tasks is None
-            or finished is None
-            or getters is None
-            or not callable(wakeup_next)
-            or getattr(queue, "_is_shutdown", False)
-        ):
-            for work_item in work_items:
-                queue.put_nowait(work_item)
-            return
-
-        internal_queue.extend(work_items)
-        queue._unfinished_tasks += len(work_items)  # type: ignore[attr-defined]
-        finished.clear()
-        wakeup_next(getters)
+        WorkQueueTopology.enqueue_work_items(queue, work_items)
 
     def _release_in_flight_item(
         self,
@@ -208,15 +162,7 @@ class WorkManager:
         key: Any,
         queue: asyncio.Queue[WorkItem],
     ) -> None:
-        queue_key = (tp, key)
-        self._deactivate_queue_key(queue_key)
-        if queue.empty():
-            return
-
-        head_offset = self._peek_queue(queue).offset
-        self._head_offsets[queue_key] = head_offset
-        self._head_queue_keys_by_offset[(tp, head_offset)] = queue_key
-        self._activate_queue_key(queue_key)
+        self._queue_topology.refresh_queue_head(tp, key, queue)
 
     def _is_queue_eligible(self, queue_key: tuple[DtoTopicPartition, Any]) -> bool:
         tp, key = queue_key
@@ -229,51 +175,16 @@ class WorkManager:
     def _pick_blocking_queue_key(
         self, blocking_offsets: Dict[DtoTopicPartition, Optional[OffsetRange]]
     ) -> Optional[tuple[DtoTopicPartition, Any]]:
-        best_queue_key: Optional[tuple[DtoTopicPartition, Any]] = None
-        best_offset: Optional[int] = None
-
-        for tp, gap in blocking_offsets.items():
-            if gap is None:
-                continue
-            queue_key = self._head_queue_keys_by_offset.get((tp, gap.start))
-            if queue_key is None:
-                continue
-            if queue_key not in self._active_runnable_queue_keys:
-                continue
-            if not self._is_queue_eligible(queue_key):
-                continue
-            if best_offset is None or gap.start < best_offset:
-                best_queue_key = queue_key
-                best_offset = gap.start
-
-        if best_queue_key is not None:
-            self._active_runnable_queue_keys.discard(best_queue_key)
-        return best_queue_key
+        return self._queue_topology.pick_blocking_queue_key(
+            blocking_offsets, self._is_queue_eligible
+        )
 
     def _pick_next_runnable_queue_key(
         self,
     ) -> Optional[tuple[DtoTopicPartition, Any]]:
-        attempts = len(self._runnable_queue_keys)
-        for _ in range(attempts):
-            queue_key = self._runnable_queue_keys.popleft()
-
-            if queue_key not in self._active_runnable_queue_keys:
-                continue
-
-            tp, key = queue_key
-            queue = self._virtual_partition_queues.get(tp, {}).get(key)
-            if queue is None or queue.empty():
-                self._deactivate_queue_key(queue_key)
-                continue
-
-            if not self._is_queue_eligible(queue_key):
-                self._runnable_queue_keys.append(queue_key)
-                continue
-
-            self._active_runnable_queue_keys.discard(queue_key)
-            return queue_key
-
-        return None
+        return self._queue_topology.pick_next_runnable_queue_key(
+            self._is_queue_eligible
+        )
 
     def on_assign(
         self,
@@ -307,7 +218,7 @@ class WorkManager:
             else:
                 self._offset_trackers[tp] = tracker_or_offset
                 self._shared_offset_trackers.add(tp)
-            self._virtual_partition_queues[tp] = {}
+            self._queue_topology.assign(tp)
         self._rebalancing = False  # Rebalancing ends when partitions are assigned
         self._invalidate_blocking_cache()
 
@@ -323,15 +234,13 @@ class WorkManager:
             None
         """
         for tp in revoked_tps:
-            for queue in self._virtual_partition_queues.get(tp, {}).values():
-                self._total_queued_messages = max(
-                    0, self._total_queued_messages - queue.qsize()
-                )
-            for key in list(self._virtual_partition_queues.get(tp, {}).keys()):
-                self._deactivate_queue_key((tp, key))
+            removed_count = self._queue_topology.revoke(tp)
+            self._runnable_queue_keys = self._queue_topology.runnable_queue_keys
+            self._total_queued_messages = max(
+                0, self._total_queued_messages - removed_count
+            )
             self._offset_trackers.pop(tp, None)
             self._shared_offset_trackers.discard(tp)
-            self._virtual_partition_queues.pop(tp, None)
         if revoked_tps:
             revoked_tp_set = set(revoked_tps)
             stale_ids = [
@@ -380,13 +289,6 @@ class WorkManager:
                     "TopicPartition %s is not assigned to WorkManager." % tp
                 )
 
-            if key not in self._virtual_partition_queues[tp]:
-                self._virtual_partition_queues[tp][key] = asyncio.Queue()
-                if self._logger.isEnabledFor(logging.DEBUG):
-                    self._logger.debug("Created virtual queue for %s key=%s", tp, key)
-
-            virtual_partition_queue = self._virtual_partition_queues[tp][key]
-            was_empty = virtual_partition_queue.empty()
             work_items: list[WorkItem] = []
 
             for offset, epoch, payload in messages:
@@ -406,10 +308,8 @@ class WorkManager:
                 if previous_max is None or offset > previous_max:
                     max_offsets_by_tp[tp] = offset
 
-            self._enqueue_work_items(virtual_partition_queue, work_items)
+            self._queue_topology.enqueue_batch(tp, key, work_items)
             self._total_queued_messages += len(work_items)
-            if was_empty and not virtual_partition_queue.empty():
-                self._refresh_queue_head(tp, key, virtual_partition_queue)
 
         if max_offsets_by_tp:
             for tp, max_offset in max_offsets_by_tp.items():
@@ -463,18 +363,14 @@ class WorkManager:
             if item_to_submit:
                 try:
                     await self._execution_engine.submit(item_to_submit)
-                    if queue_to_dequeue_from is None:
+                    dequeued_item = self._queue_topology.dequeue_submitted_item(
+                        selected_tp, selected_key
+                    )
+                    if dequeued_item is None:
                         return
-                    queue_to_dequeue_from.get_nowait()
                     self._total_queued_messages = max(
                         0, self._total_queued_messages - 1
                     )
-                    if queue_to_dequeue_from.empty():
-                        self._cleanup_empty_queue(selected_tp, selected_key)
-                    else:
-                        self._refresh_queue_head(
-                            selected_tp, selected_key, queue_to_dequeue_from
-                        )
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
                     if self._ordering_mode == OrderingMode.KEY_HASH:
@@ -633,9 +529,4 @@ class WorkManager:
         Returns:
             Dict[DtoTopicPartition, Dict[Any, int]]: 가상 파티션 큐의 현재 크기
         """
-        queue_sizes: Dict[DtoTopicPartition, Dict[Any, int]] = {}
-        for tp, virtual_partition_queues in self._virtual_partition_queues.items():
-            queue_sizes[tp] = {}
-            for key, queue in virtual_partition_queues.items():
-                queue_sizes[tp][key] = queue.qsize()
-        return queue_sizes
+        return self._queue_topology.get_virtual_queue_sizes()
