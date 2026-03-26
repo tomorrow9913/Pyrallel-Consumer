@@ -728,6 +728,27 @@ def launch_tui() -> None:
     BenchmarkTuiApp().run()
 
 
+def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
+    if args.skip_process:
+        return
+    if "sleep" not in args.workloads:
+        return
+    if "partition" not in args.order:
+        return
+    if args.worker_sleep_ms > 0.5:
+        return
+    if args.process_batch_size is not None:
+        return
+    if args.process_max_batch_wait_ms is not None:
+        return
+
+    print(
+        "[warning] Tiny process partition benchmark detected; default batching can dominate throughput. "
+        "Compare with --process-batch-size 1 --process-max-batch-wait-ms 0.",
+        flush=True,
+    )
+
+
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
@@ -753,6 +774,8 @@ def run_benchmark(
     orderings = list(args.order)
     strict_monitor_modes = list(args.strict_completion_monitor)
     profile_dir = Path(args.profile_dir)
+
+    _warn_on_tiny_partition_process_defaults(args)
 
     results: List[BenchmarkResult] = []
 
