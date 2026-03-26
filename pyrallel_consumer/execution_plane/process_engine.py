@@ -22,6 +22,7 @@ from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
+    ProcessBatchMetrics,
     TopicPartition,
     WorkItem,
 )
@@ -147,6 +148,12 @@ class _BatchAccumulator:
         self._lock = threading.Lock()
         self._flush_timer: Optional[threading.Timer] = None
         self._closed = False
+        self._size_flush_count = 0
+        self._timer_flush_count = 0
+        self._close_flush_count = 0
+        self._total_flushed_items = 0
+        self._last_flush_size = 0
+        self._last_flush_wait_seconds = 0.0
 
     def add(self, work_item: WorkItem) -> None:
         with self._lock:
@@ -174,12 +181,26 @@ class _BatchAccumulator:
     def _flush_locked(self, *, reason: str = "manual") -> None:
         if not self._buffer:
             return
+        wait_seconds = (
+            max(0.0, time.monotonic() - self._first_item_time)
+            if self._first_item_time is not None
+            else 0.0
+        )
         batch = list(self._buffer)
         self._buffer.clear()
         self._first_item_time = None
         if self._flush_timer is not None:
             self._flush_timer.cancel()
             self._flush_timer = None
+        if reason == "size":
+            self._size_flush_count += 1
+        elif reason == "timer":
+            self._timer_flush_count += 1
+        elif reason == "close":
+            self._close_flush_count += 1
+        self._total_flushed_items += len(batch)
+        self._last_flush_size = len(batch)
+        self._last_flush_wait_seconds = wait_seconds
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug("Batch flush (%s): size=%d", reason, len(batch))
         payload = [_work_item_to_dict(item) for item in batch]
@@ -194,6 +215,24 @@ class _BatchAccumulator:
                 self._flush_timer = None
             if self._buffer:
                 self._flush_locked(reason="close")
+
+    def snapshot(self) -> ProcessBatchMetrics:
+        with self._lock:
+            buffered_age_seconds = (
+                max(0.0, time.monotonic() - self._first_item_time)
+                if self._first_item_time is not None
+                else 0.0
+            )
+            return ProcessBatchMetrics(
+                size_flush_count=self._size_flush_count,
+                timer_flush_count=self._timer_flush_count,
+                close_flush_count=self._close_flush_count,
+                total_flushed_items=self._total_flushed_items,
+                last_flush_size=self._last_flush_size,
+                last_flush_wait_seconds=self._last_flush_wait_seconds,
+                buffered_items=len(self._buffer),
+                buffered_age_seconds=buffered_age_seconds,
+            )
 
 
 def _calculate_backoff(
@@ -736,6 +775,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     if min_offset is None or off < min_offset:
                         min_offset = off
         return min_offset
+
+    def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
+        return self._batch_accumulator.snapshot()
 
     async def submit(self, work_item: WorkItem) -> None:
         """

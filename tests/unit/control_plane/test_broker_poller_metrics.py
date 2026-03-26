@@ -6,7 +6,7 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import OffsetRange, SystemMetrics
+from pyrallel_consumer.dto import OffsetRange, ProcessBatchMetrics, SystemMetrics
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
@@ -79,6 +79,7 @@ class TestBrokerPollerMetrics:
         assert metrics.total_in_flight == 0
         assert metrics.is_paused is False
         assert len(metrics.partitions) == 0
+        assert metrics.process_batch_metrics is None
 
     @pytest.mark.asyncio
     async def test_get_metrics_with_in_flight_messages(
@@ -190,3 +191,24 @@ class TestBrokerPollerMetrics:
         assert p_metrics_tp2.blocking_offset is None
         assert p_metrics_tp2.blocking_duration_sec is None
         assert p_metrics_tp2.queued_count == 3
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_includes_process_batch_metrics_from_engine(
+        self, broker_poller_with_mocks, mock_execution_engine
+    ):
+        mock_execution_engine.get_runtime_metrics.return_value = ProcessBatchMetrics(
+            size_flush_count=3,
+            timer_flush_count=2,
+            close_flush_count=1,
+            total_flushed_items=12,
+            last_flush_size=4,
+            last_flush_wait_seconds=0.05,
+            buffered_items=1,
+            buffered_age_seconds=0.2,
+        )
+
+        metrics = broker_poller_with_mocks.get_metrics()
+
+        assert metrics.process_batch_metrics is not None
+        assert metrics.process_batch_metrics.size_flush_count == 3
+        assert metrics.process_batch_metrics.buffered_items == 1

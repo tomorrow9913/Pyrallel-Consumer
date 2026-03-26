@@ -304,6 +304,9 @@ docker compose up -d
 - `consumer_processed_total`
 - `consumer_processing_latency_seconds_bucket`
 - `consumer_in_flight_count`
+- `consumer_process_batch_flush_count{reason="timer"}`
+- `consumer_process_batch_avg_size`
+- `consumer_process_batch_buffered_age_seconds`
 
 ## 🤝 Contributing
 

@@ -14,7 +14,13 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 from ..config import KafkaConfig
-from ..dto import CompletionEvent, DLQPayloadMode, OrderingMode, SystemMetrics
+from ..dto import (
+    CompletionEvent,
+    DLQPayloadMode,
+    OrderingMode,
+    ProcessBatchMetrics,
+    SystemMetrics,
+)
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
@@ -703,7 +709,18 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:
-        return self._make_runtime_support().build_system_metrics()
+        metrics = self._make_runtime_support().build_system_metrics()
+        runtime_metrics = self._execution_engine.get_runtime_metrics()
+        return SystemMetrics(
+            total_in_flight=metrics.total_in_flight,
+            is_paused=metrics.is_paused,
+            partitions=metrics.partitions,
+            process_batch_metrics=(
+                runtime_metrics
+                if isinstance(runtime_metrics, ProcessBatchMetrics)
+                else None
+            ),
+        )
 
     def _make_runtime_support(self) -> BrokerRuntimeSupport:
         return BrokerRuntimeSupport(

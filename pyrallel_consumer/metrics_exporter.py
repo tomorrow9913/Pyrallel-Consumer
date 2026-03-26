@@ -11,7 +11,12 @@ from prometheus_client import (
 )
 
 from pyrallel_consumer.config import MetricsConfig
-from pyrallel_consumer.dto import CompletionStatus, SystemMetrics, TopicPartition
+from pyrallel_consumer.dto import (
+    CompletionStatus,
+    ProcessBatchMetrics,
+    SystemMetrics,
+    TopicPartition,
+)
 
 
 class PrometheusMetricsExporter:
@@ -75,6 +80,37 @@ class PrometheusMetricsExporter:
             labelnames=("topic",),
             registry=self._registry,
         )
+        self._process_batch_flush_count = Gauge(
+            "consumer_process_batch_flush_count",
+            "Cumulative process batch flush count by reason",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        self._process_batch_avg_size_gauge = Gauge(
+            "consumer_process_batch_avg_size",
+            "Average process batch size across all flushes",
+            registry=self._registry,
+        )
+        self._process_batch_last_size_gauge = Gauge(
+            "consumer_process_batch_last_size",
+            "Size of the most recent process batch flush",
+            registry=self._registry,
+        )
+        self._process_batch_last_wait_seconds_gauge = Gauge(
+            "consumer_process_batch_last_wait_seconds",
+            "Wait time for the most recent process batch flush",
+            registry=self._registry,
+        )
+        self._process_batch_buffered_items_gauge = Gauge(
+            "consumer_process_batch_buffered_items",
+            "Number of currently buffered process batch items",
+            registry=self._registry,
+        )
+        self._process_batch_buffered_age_seconds_gauge = Gauge(
+            "consumer_process_batch_buffered_age_seconds",
+            "Age of the current process batch buffer",
+            registry=self._registry,
+        )
 
         if self._config.enabled:
             start_http_server(self._config.port, registry=self._registry)
@@ -89,6 +125,7 @@ class PrometheusMetricsExporter:
             self._queued_gauge.labels(*labels).set(partition.queued_count)
             duration = partition.blocking_duration_sec or 0.0
             self._blocking_duration_gauge.labels(*labels).set(duration)
+        self._update_process_batch_metrics(metrics.process_batch_metrics)
 
     def observe_completion(
         self, tp: TopicPartition, status: CompletionStatus, duration_seconds: float
@@ -102,3 +139,39 @@ class PrometheusMetricsExporter:
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
+
+    def _update_process_batch_metrics(
+        self, metrics: Optional[ProcessBatchMetrics]
+    ) -> None:
+        if metrics is None:
+            for reason in ("size", "timer", "close"):
+                self._process_batch_flush_count.labels(reason=reason).set(0)
+            self._process_batch_avg_size_gauge.set(0)
+            self._process_batch_last_size_gauge.set(0)
+            self._process_batch_last_wait_seconds_gauge.set(0)
+            self._process_batch_buffered_items_gauge.set(0)
+            self._process_batch_buffered_age_seconds_gauge.set(0)
+            return
+
+        self._process_batch_flush_count.labels(reason="size").set(
+            metrics.size_flush_count
+        )
+        self._process_batch_flush_count.labels(reason="timer").set(
+            metrics.timer_flush_count
+        )
+        self._process_batch_flush_count.labels(reason="close").set(
+            metrics.close_flush_count
+        )
+        flush_total = (
+            metrics.size_flush_count
+            + metrics.timer_flush_count
+            + metrics.close_flush_count
+        )
+        average_batch_size = (
+            metrics.total_flushed_items / flush_total if flush_total > 0 else 0.0
+        )
+        self._process_batch_avg_size_gauge.set(average_batch_size)
+        self._process_batch_last_size_gauge.set(metrics.last_flush_size)
+        self._process_batch_last_wait_seconds_gauge.set(metrics.last_flush_wait_seconds)
+        self._process_batch_buffered_items_gauge.set(metrics.buffered_items)
+        self._process_batch_buffered_age_seconds_gauge.set(metrics.buffered_age_seconds)

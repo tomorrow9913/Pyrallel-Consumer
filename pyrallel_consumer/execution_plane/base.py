@@ -1,7 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from pyrallel_consumer.dto import CompletionEvent, TopicPartition, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    ProcessBatchMetrics,
+    TopicPartition,
+    WorkItem,
+)
 
 
 class BaseExecutionEngine(ABC):
@@ -77,6 +82,10 @@ class BaseExecutionEngine(ABC):
         Returns:
             Optional[int]: 최소 in-flight offset 또는 None
         """
+        return None
+
+    def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
+        """Returns optional engine-specific runtime metrics."""
         return None
 
     @abstractmethod
