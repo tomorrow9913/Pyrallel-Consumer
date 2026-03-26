@@ -5,7 +5,6 @@ import asyncio
 import inspect
 import random
 from collections import OrderedDict
-from itertools import islice
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import OFFSET_INVALID, Consumer, KafkaException, Message, Producer
@@ -26,6 +25,7 @@ from ..dto import (
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
+from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
@@ -98,6 +98,11 @@ class BrokerPoller:
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
+        self._commit_planner = BrokerCommitPlanner(
+            metadata_encoder=self._metadata_encoder,
+            max_completed_offsets=self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
+        )
+        self._dlq_cache_support = DlqCacheSupport()
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
@@ -142,28 +147,19 @@ class BrokerPoller:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
-        if self._rebalance_state_strategy() != "metadata_snapshot":
-            return set()
-
-        raw_metadata = getattr(committed_partition, "metadata", None)
-        if not isinstance(raw_metadata, str) or not raw_metadata:
-            raw_metadata = getattr(partition, "metadata", None)
-        if not isinstance(raw_metadata, str) or not raw_metadata:
-            return set()
-
-        decoded = self._metadata_encoder.decode_metadata(raw_metadata)
-        return {offset for offset in decoded if offset > last_committed}
+        return self._commit_planner.decode_assignment_completed_offsets(
+            strategy=self._rebalance_state_strategy(),
+            partition=partition,
+            committed_partition=committed_partition,
+            last_committed=last_committed,
+        )
 
     def _encode_revoke_metadata(self, tracker: OffsetTracker, base_offset: int) -> str:
-        if self._rebalance_state_strategy() != "metadata_snapshot":
-            return ""
-        metadata_offsets = self._get_commit_metadata_offsets(tracker, base_offset)
-        metadata = self._metadata_encoder.encode_metadata(metadata_offsets, base_offset)
-        if isinstance(metadata, str):
-            return metadata
-        if isinstance(metadata, (bytes, bytearray)):
-            return bytes(metadata).decode("utf-8", errors="ignore")
-        return ""
+        return self._commit_planner.encode_revoke_metadata(
+            strategy=self._rebalance_state_strategy(),
+            tracker=tracker,
+            base_offset=base_offset,
+        )
 
     # ------------------------------------------------------------------
     async def _get_consume_timeout_seconds(self) -> float:
@@ -197,76 +193,44 @@ class BrokerPoller:
         return 0
 
     def _get_cached_message_size(self, key: Any, value: Any) -> int:
-        return self._estimate_cached_payload_bytes(
-            key
-        ) + self._estimate_cached_payload_bytes(value)
+        return self._dlq_cache_support.get_cached_message_size(key, value)
 
     def _pop_cached_message(
         self, cache_key: Tuple[DtoTopicPartition, int]
     ) -> Optional[Tuple[Any, Any]]:
-        cached_message = self._message_cache.pop(cache_key, None)
-        if cached_message is None:
-            return None
-
-        self._message_cache_size_bytes = max(
-            0,
-            self._message_cache_size_bytes
-            - self._get_cached_message_size(*cached_message),
+        (
+            cached_message,
+            self._message_cache_size_bytes,
+        ) = self._dlq_cache_support.pop_cached_message(
+            self._message_cache,
+            self._message_cache_size_bytes,
+            cache_key,
         )
         return cached_message
 
     def _cache_message_for_dlq(
         self, tp: DtoTopicPartition, offset: int, key: Any, value: Any
     ) -> None:
-        cache_key = (tp, offset)
-        if not self._should_cache_message_payloads():
-            self._pop_cached_message(cache_key)
-            return
-
-        self._pop_cached_message(cache_key)
-        entry_size = self._get_cached_message_size(key, value)
-
-        if (
-            self._message_cache_max_bytes > 0
-            and entry_size > self._message_cache_max_bytes
-        ):
-            logger.warning(
-                "Skipping raw DLQ cache for %s@%d because payload size %d exceeds cache budget %d",
-                tp,
-                offset,
-                entry_size,
-                self._message_cache_max_bytes,
-            )
-            return
-
-        while (
-            self._message_cache
-            and self._message_cache_max_bytes > 0
-            and self._message_cache_size_bytes + entry_size
-            > self._message_cache_max_bytes
-        ):
-            evicted_key, evicted_value = self._message_cache.popitem(last=False)
-            self._message_cache_size_bytes = max(
-                0,
-                self._message_cache_size_bytes
-                - self._get_cached_message_size(*evicted_value),
-            )
-            logger.warning(
-                "Evicted raw DLQ cache entry for %s@%d to stay within %d bytes",
-                evicted_key[0],
-                evicted_key[1],
-                self._message_cache_max_bytes,
-            )
-
-        self._message_cache[cache_key] = (key, value)
-        self._message_cache_size_bytes += entry_size
+        self._message_cache_size_bytes = self._dlq_cache_support.cache_message_for_dlq(
+            message_cache=self._message_cache,
+            size_bytes=self._message_cache_size_bytes,
+            should_cache=self._should_cache_message_payloads(),
+            max_bytes=self._message_cache_max_bytes,
+            tp=tp,
+            offset=offset,
+            key=key,
+            value=value,
+            logger=logger,
+        )
 
     def _drop_cached_partition_messages(self, tp: DtoTopicPartition) -> None:
-        cache_keys_to_remove = [
-            cache_key for cache_key in self._message_cache if cache_key[0] == tp
-        ]
-        for cache_key in cache_keys_to_remove:
-            self._pop_cached_message(cache_key)
+        self._message_cache_size_bytes = (
+            self._dlq_cache_support.drop_partition_messages(
+                message_cache=self._message_cache,
+                size_bytes=self._message_cache_size_bytes,
+                tp=tp,
+            )
+        )
 
     # ------------------------------------------------------------------
     async def _publish_to_dlq(
@@ -636,31 +600,11 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
-        offsets_to_commit = []
-        for tp, safe_offset in commits_to_make:
-            tracker = self._offset_trackers[tp]
-            base_offset = safe_offset + 1
-            metadata_offsets = self._get_commit_metadata_offsets(tracker, base_offset)
-            metadata = self._metadata_encoder.encode_metadata(
-                metadata_offsets, base_offset
-            )
-            if isinstance(metadata, (bytes, bytearray)):
-                metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
-            elif isinstance(metadata, str):
-                metadata_text = metadata
-            else:
-                metadata_text = ""
-
-            kafka_tp = cast(
-                KafkaTopicPartition,
-                cast(Any, KafkaTopicPartition)(
-                    tp.topic,
-                    tp.partition,
-                    safe_offset + 1,
-                    metadata=metadata_text,
-                ),
-            )
-            offsets_to_commit.append(kafka_tp)
+        offsets_to_commit = self._commit_planner.build_offsets_to_commit(
+            commits_to_make=commits_to_make,
+            trackers=self._offset_trackers,
+            strategy=self._rebalance_state_strategy(),
+        )
 
         max_attempts = 2  # 1 initial + 1 retry
         for attempt in range(max_attempts):
@@ -691,15 +635,7 @@ class BrokerPoller:
     def _get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
     ) -> set[int]:
-        if hasattr(tracker.completed_offsets, "irange"):
-            return set(
-                islice(
-                    tracker.completed_offsets.irange(minimum=base_offset),
-                    self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
-                )
-            )
-
-        return {offset for offset in tracker.completed_offsets if offset >= base_offset}
+        return self._commit_planner.get_commit_metadata_offsets(tracker, base_offset)
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
