@@ -221,6 +221,8 @@ def build_kafka_config(
     bootstrap_servers: Optional[str] = None,
     consumer_group: Optional[str] = None,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: Optional[int] = None,
+    process_max_batch_wait_ms: Optional[int] = None,
 ) -> KafkaConfig:
     effective_conf = dict(conf)
     if bootstrap_servers:
@@ -241,6 +243,14 @@ def build_kafka_config(
     kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
         strict_completion_monitor_enabled
     )
+    if process_batch_size is not None:
+        kafka_config.parallel_consumer.execution.process_config.batch_size = (
+            process_batch_size
+        )
+    if process_max_batch_wait_ms is not None:
+        kafka_config.parallel_consumer.execution.process_config.max_batch_wait_ms = (
+            process_max_batch_wait_ms
+        )
 
     return kafka_config
 
@@ -261,6 +271,8 @@ async def run_pyrallel_consumer_test(
     ordering_mode: str = OrderingMode.KEY_HASH.value,
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: Optional[int] = None,
+    process_max_batch_wait_ms: Optional[int] = None,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -285,6 +297,8 @@ async def run_pyrallel_consumer_test(
         bootstrap_servers=bootstrap_servers,
         consumer_group=consumer_group,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_batch_size=process_batch_size,
+        process_max_batch_wait_ms=process_max_batch_wait_ms,
     )
     mode_value = ExecutionMode(execution_mode)
     ordering_mode_value = OrderingMode(ordering_mode)

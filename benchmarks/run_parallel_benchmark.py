@@ -351,6 +351,8 @@ async def _run_pyrparallel_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: int | None = None,
+    process_max_batch_wait_ms: int | None = None,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -382,6 +384,8 @@ async def _run_pyrparallel_round(
         ordering_mode=ordering,
         ensure_topic_exists=ensure_topic_exists,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_batch_size=process_batch_size,
+        process_max_batch_wait_ms=process_max_batch_wait_ms,
     )
     if timed_out:
         raise RuntimeError(
@@ -644,6 +648,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Sleep per message for IO workload (simulated IO wait)",
     )
+    parser.add_argument(
+        "--process-batch-size",
+        type=int,
+        default=None,
+        help="Override process-mode micro-batch size for benchmark runs",
+    )
+    parser.add_argument(
+        "--process-max-batch-wait-ms",
+        type=int,
+        default=None,
+        help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
+    )
     # -- py-spy profiling options (process mode) --
     parser.add_argument(
         "--py-spy",
@@ -839,6 +855,10 @@ def run_benchmark(
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
+                                    process_batch_size=args.process_batch_size,
+                                    process_max_batch_wait_ms=(
+                                        args.process_max_batch_wait_ms
+                                    ),
                                 )
                             )
                     if not args.skip_process:
@@ -882,6 +902,10 @@ def run_benchmark(
                                 ensure_topic_exists=args.skip_reset,
                                 strict_completion_monitor_enabled=(
                                     strict_completion_monitor_enabled
+                                ),
+                                process_batch_size=args.process_batch_size,
+                                process_max_batch_wait_ms=(
+                                    args.process_max_batch_wait_ms
                                 ),
                             )
                         )
