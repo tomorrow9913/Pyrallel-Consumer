@@ -118,6 +118,23 @@ def test_broker_poller_syncs_ordering_mode_from_injected_work_manager(
     assert poller.ORDERING_MODE == injected_work_manager.get_ordering_mode.return_value
 
 
+def test_get_partition_index_uses_worker_pool_size_for_key_hash_shards(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.worker_pool_size = 4
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+    message = MagicMock()
+    message.key.return_value = b"fixed-key"
+
+    partition_index = poller._get_partition_index(message)
+
+    assert 0 <= partition_index < 4
+
+
 @pytest.mark.asyncio
 async def test_on_assign_uses_configured_max_revoke_grace_ms(
     mock_kafka_config, mock_execution_engine, mock_consumer

@@ -210,8 +210,12 @@ Ordering modes:
 - `partition`: preserve order per Kafka partition
 - `unordered`: maximize throughput without ordering guarantees
 
-For process mode tuning, use `config.parallel_consumer.execution.process_config.process_count`
-rather than `worker_pool_size`.
+`worker_pool_size` controls key-hash shard width for ordered routing. It does not
+control process concurrency.
+
+For process mode tuning, use
+`config.parallel_consumer.execution.process_config.process_count` rather than
+`worker_pool_size`.
 
 For detailed runnable patterns, see [`examples/`](./examples/).
 
@@ -245,6 +249,19 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
 - Use `--strict-completion-monitor on,off` to compare the completion monitor modes in benchmark output.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
+
+## 🧪 Run E2E Tests
+
+```bash
+# Start local Kafka
+docker compose up -d kafka-1
+
+# Run Kafka-backed end-to-end tests
+uv run pytest tests/e2e -q
+```
+
+- If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
+- Use the local `docker compose` stack when you want the full Kafka-backed path.
 
 ## 📖 Documentation
 

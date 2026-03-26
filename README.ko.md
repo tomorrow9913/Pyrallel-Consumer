@@ -262,6 +262,9 @@ consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 - `partition`: Kafka 파티션 단위 순서를 보장
 - `unordered`: 순서 보장 없이 처리량을 최우선
 
+`worker_pool_size`는 ordered `key_hash` 라우팅 폭을 정하는 값이며,
+process 워커 수를 뜻하지 않습니다.
+
 process 모드 튜닝은 `worker_pool_size`보다
 `config.parallel_consumer.execution.process_config.process_count`를 기준으로
 조정하는 편이 맞습니다.
@@ -362,6 +365,19 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - `--strict-completion-monitor on,off`를 사용하면 completion monitor 모드 비교 벤치마크를 한 번에 실행할 수 있습니다.
 - 기본 동작으로 AdminClient를 사용해 벤치마크 토픽과 컨슈머 그룹을 삭제 후 재생성하여 이전 실행의 레그가 섞이지 않습니다. 클러스터 권한이 없거나 수동 제어가 필요한 경우 `--skip-reset` 플래그로 재설정을 비활성화할 수 있습니다.
 - 워커가 느려질 때는 `--timeout-sec` 값(기본 60초)을 늘려 async/process 라운드의 타임아웃을 조정할 수 있습니다.
+
+## 🧪 E2E 테스트 실행
+
+```bash
+# 로컬 Kafka 시작
+docker compose up -d kafka-1
+
+# Kafka-backed end-to-end 테스트 실행
+uv run pytest tests/e2e -q
+```
+
+- `localhost:9092`에 Kafka가 없으면 E2E 테스트는 즉시 실패하지 않고 skip 됩니다.
+- 실제 Kafka 경로를 확인하려면 로컬 `docker compose` 스택을 띄운 뒤 실행하면 됩니다.
 
 ## 📖 문서
 

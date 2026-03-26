@@ -208,6 +208,87 @@ def test_drain_registry_events_applies_start_and_timeout_sequence() -> None:
     }
 
 
+def test_drain_registry_event_queue_returns_drained_count() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+
+    key = (0, "topic", 1, 42)
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": key,
+            "payload": {
+                "id": "work-42",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+            },
+        }
+    )
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "timeout",
+            "key": key,
+            "attempt": 2,
+            "timeout_error": "task timed out",
+        }
+    )
+
+    drained = engine._drain_registry_event_queue()
+
+    assert drained == 2
+    assert engine_any._in_flight_registry[key]["timed_out"] is True
+    assert engine_any._in_flight_registry[key]["attempt"] == 2
+
+
+def test_recover_dead_worker_items_emits_timeout_failure_and_requeues_retryable_work():
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+            "timed_out": True,
+            "timeout_error": "task_timeout",
+            "attempt": 1,
+        },
+        (0, "topic", 1, 43): {
+            "id": "work-43",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 43,
+            "epoch": 7,
+            "requeue_attempts": 1,
+        },
+    }
+
+    to_requeue = engine._recover_dead_worker_items(0)
+
+    assert len(to_requeue) == 1
+    assert to_requeue[0]["offset"] == 43
+    assert to_requeue[0]["requeue_attempts"] == 2
+    assert engine_any._in_flight_registry == {}
+
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "task_timeout"
+    assert event.offset == 42
+
+
 def test_drain_shutdown_ipc_once_reuses_registry_event_rules_and_prefetches_completion():
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
