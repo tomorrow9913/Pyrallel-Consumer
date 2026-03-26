@@ -2,6 +2,7 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
+import inspect
 import random
 from collections import OrderedDict
 from itertools import islice
@@ -382,6 +383,9 @@ class BrokerPoller:
 
                 async with self._control_lock:
                     if messages:
+                        grouped_messages: Dict[
+                            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
+                        ] = {}
                         for msg in messages:
                             if msg.error():
                                 logger.warning(
@@ -419,13 +423,27 @@ class BrokerPoller:
                             else:
                                 submit_key = msg.key()
 
-                            await self._work_manager.submit_message(
-                                tp=tp,
-                                offset=offset_val,
-                                epoch=tracker.get_current_epoch(),
-                                key=submit_key,
-                                payload=msg.value(),
-                            )
+                            if self.ORDERING_MODE == OrderingMode.UNORDERED:
+                                await self._work_manager.submit_message(
+                                    tp=tp,
+                                    offset=offset_val,
+                                    epoch=tracker.get_current_epoch(),
+                                    key=submit_key,
+                                    payload=msg.value(),
+                                )
+                            else:
+                                grouped_messages.setdefault(
+                                    (tp, submit_key), []
+                                ).append(
+                                    (
+                                        offset_val,
+                                        tracker.get_current_epoch(),
+                                        msg.value(),
+                                    )
+                                )
+
+                        if grouped_messages:
+                            await self._submit_grouped_messages(grouped_messages)
 
                         await self._work_manager.schedule()
 
@@ -812,6 +830,30 @@ class BrokerPoller:
         error = self._fatal_error
         self._fatal_error = None
         raise error
+
+    async def _submit_grouped_messages(
+        self,
+        grouped_messages: Dict[
+            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
+        ],
+    ) -> None:
+        if not grouped_messages:
+            return
+
+        submit_message_batch = getattr(self._work_manager, "submit_message_batch", None)
+        if inspect.iscoroutinefunction(submit_message_batch):
+            await submit_message_batch(grouped_messages)
+            return
+
+        for (tp, key), messages in grouped_messages.items():
+            for offset, epoch, payload in messages:
+                await self._work_manager.submit_message(
+                    tp=tp,
+                    offset=offset,
+                    epoch=epoch,
+                    key=key,
+                    payload=payload,
+                )
 
     # ------------------------------------------------------------------
     def _on_assign(

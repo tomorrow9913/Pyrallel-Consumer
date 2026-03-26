@@ -173,6 +173,57 @@ async def test_run_consumer_schedules_twice_when_messages_and_completions_share_
 
 
 @pytest.mark.asyncio
+async def test_run_consumer_falls_back_without_duplicate_enqueue_for_sync_batch_submit(
+    broker_poller, topic_partition
+):
+    tracker = _make_tracker(topic_partition)
+    broker_poller._offset_trackers[topic_partition] = tracker
+
+    class _SyncBatchWorkManager:
+        def __init__(self) -> None:
+            self.batch_calls = 0
+            self.submit_message = AsyncMock()
+            self.poll_completed_events = AsyncMock(side_effect=[[], []])
+            self.schedule = AsyncMock()
+            self.get_total_in_flight_count = MagicMock(return_value=0)
+            self.get_virtual_queue_sizes = MagicMock(return_value={})
+
+        def submit_message_batch(self, _grouped_messages) -> None:
+            self.batch_calls += 1
+            return None
+
+    broker_poller._work_manager = _SyncBatchWorkManager()
+    broker_poller._process_completed_events = AsyncMock()
+
+    message = MagicMock()
+    message.error.return_value = None
+    message.topic.return_value = topic_partition.topic
+    message.partition.return_value = topic_partition.partition
+    message.offset.return_value = 0
+    message.key.return_value = b"key-A"
+    message.value.return_value = b"payload-0"
+    _run_consume_loop_once_then_stop(broker_poller, [message])
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    broker_poller._running = True
+    with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
+        "asyncio.sleep", new=AsyncMock()
+    ):
+        await broker_poller._run_consumer()
+
+    assert broker_poller._work_manager.batch_calls == 0
+    broker_poller._work_manager.submit_message.assert_awaited_once_with(
+        tp=topic_partition,
+        offset=0,
+        epoch=1,
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
     broker_poller, topic_partition, completion_event
 ):

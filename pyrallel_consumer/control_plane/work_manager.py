@@ -17,6 +17,7 @@ from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 OffsetTrackerAssignment = Mapping[DtoTopicPartition, int | OffsetTracker]
+GroupedMessages = Mapping[tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]]
 
 
 class MetricsExporter(Protocol):
@@ -141,6 +142,39 @@ class WorkManager:
         if queue_key not in self._active_runnable_queue_keys:
             self._runnable_queue_keys.append(queue_key)
             self._active_runnable_queue_keys.add(queue_key)
+
+    @staticmethod
+    def _enqueue_work_items(
+        queue: asyncio.Queue[WorkItem],
+        work_items: list[WorkItem],
+    ) -> None:
+        if not work_items:
+            return
+        if len(work_items) == 1:
+            queue.put_nowait(work_items[0])
+            return
+
+        internal_queue = getattr(queue, "_queue", None)
+        unfinished_tasks = getattr(queue, "_unfinished_tasks", None)
+        finished = getattr(queue, "_finished", None)
+        wakeup_next = getattr(queue, "_wakeup_next", None)
+        getters = getattr(queue, "_getters", None)
+        if (
+            internal_queue is None
+            or unfinished_tasks is None
+            or finished is None
+            or getters is None
+            or not callable(wakeup_next)
+            or getattr(queue, "_is_shutdown", False)
+        ):
+            for work_item in work_items:
+                queue.put_nowait(work_item)
+            return
+
+        internal_queue.extend(work_items)
+        queue._unfinished_tasks += len(work_items)  # type: ignore[attr-defined]
+        finished.clear()
+        wakeup_next(getters)
 
     def _release_in_flight_item(
         self,
@@ -335,38 +369,54 @@ class WorkManager:
         Returns:
             None
         """
-        if tp not in self._virtual_partition_queues:
-            raise ValueError("TopicPartition %s is not assigned to WorkManager." % tp)
+        await self.submit_message_batch({(tp, key): [(offset, epoch, payload)]})
 
-        # Get or create the virtual partition queue for this key
-        if key not in self._virtual_partition_queues[tp]:
-            self._virtual_partition_queues[tp][key] = asyncio.Queue()
-            if self._logger.isEnabledFor(logging.DEBUG):
-                self._logger.debug("Created virtual queue for %s key=%s", tp, key)
+    async def submit_message_batch(self, grouped_messages: GroupedMessages) -> None:
+        max_offsets_by_tp: Dict[DtoTopicPartition, int] = {}
 
-        virtual_partition_queue = self._virtual_partition_queues[tp][key]
-        was_empty = virtual_partition_queue.empty()
+        for (tp, key), messages in grouped_messages.items():
+            if tp not in self._virtual_partition_queues:
+                raise ValueError(
+                    "TopicPartition %s is not assigned to WorkManager." % tp
+                )
 
-        # Create a WorkItem with a unique ID and put it into the queue
-        work_item_id = str(uuid.uuid4())
-        work_item = WorkItem(
-            id=work_item_id, tp=tp, offset=offset, epoch=epoch, key=key, payload=payload
-        )
-        await virtual_partition_queue.put(work_item)
-        self._total_queued_messages += 1
-        if was_empty:
-            self._refresh_queue_head(tp, key, virtual_partition_queue)
-        self._in_flight_work_items[work_item_id] = work_item  # Track all work items
-        self._work_item_ids_by_tp_offset[(tp, offset)] = work_item_id
+            if key not in self._virtual_partition_queues[tp]:
+                self._virtual_partition_queues[tp][key] = asyncio.Queue()
+                if self._logger.isEnabledFor(logging.DEBUG):
+                    self._logger.debug("Created virtual queue for %s key=%s", tp, key)
 
-        # Keep WorkManager's OffsetTracker in sync so that get_blocking_offsets()
-        # can compute gaps correctly and guide the scheduling policy.
-        if tp in self._offset_trackers:
-            self._offset_trackers[tp].update_last_fetched_offset(offset)
+            virtual_partition_queue = self._virtual_partition_queues[tp][key]
+            was_empty = virtual_partition_queue.empty()
+            work_items: list[WorkItem] = []
+
+            for offset, epoch, payload in messages:
+                work_item_id = str(uuid.uuid4())
+                work_item = WorkItem(
+                    id=work_item_id,
+                    tp=tp,
+                    offset=offset,
+                    epoch=epoch,
+                    key=key,
+                    payload=payload,
+                )
+                work_items.append(work_item)
+                self._in_flight_work_items[work_item_id] = work_item
+                self._work_item_ids_by_tp_offset[(tp, offset)] = work_item_id
+                previous_max = max_offsets_by_tp.get(tp)
+                if previous_max is None or offset > previous_max:
+                    max_offsets_by_tp[tp] = offset
+
+            self._enqueue_work_items(virtual_partition_queue, work_items)
+            self._total_queued_messages += len(work_items)
+            if was_empty and not virtual_partition_queue.empty():
+                self._refresh_queue_head(tp, key, virtual_partition_queue)
+
+        if max_offsets_by_tp:
+            for tp, max_offset in max_offsets_by_tp.items():
+                tracker = self._offset_trackers.get(tp)
+                if tracker is not None:
+                    tracker.update_last_fetched_offset(max_offset)
             self._invalidate_blocking_cache()
-
-        # Attempt to submit to the execution engine
-        # self._try_submit_to_execution_engine() # This will be triggered by a separate mechanism
 
     async def schedule(self) -> None:
         """

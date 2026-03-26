@@ -83,6 +83,11 @@ def mock_work_manager():
         )
         wm.submitted_messages.append(work_item)
 
+    async def submit_message_batch_side_effect(grouped_messages):
+        for (tp, key), messages in grouped_messages.items():
+            for offset, epoch, payload in messages:
+                await submit_message_side_effect(tp, offset, epoch, key, payload)
+
     async def poll_completed_events_side_effect():
         if completion_queue.empty():
             return []
@@ -96,6 +101,7 @@ def mock_work_manager():
         completion_queue.put_nowait(event)
 
     wm.submit_message.side_effect = submit_message_side_effect
+    wm.submit_message_batch.side_effect = submit_message_batch_side_effect
     wm.poll_completed_events.side_effect = poll_completed_events_side_effect
     wm._push_completion_event = _push_completion_event
 
@@ -259,7 +265,8 @@ async def test_run_consumer_loop_basic_flow(
     await consumer_task
 
     assert mock_consumer.consume.call_count >= 1
-    assert mock_work_manager.submit_message.call_count == 3
+    assert mock_work_manager.submit_message_batch.call_count == 1
+    assert mock_work_manager.submit_message.call_count == 0
     assert len(mock_work_manager.submitted_messages) == 3
 
     submitted_item = mock_work_manager.submitted_messages[0]
