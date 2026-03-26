@@ -23,6 +23,7 @@ from .broker_dispatch_support import BrokerDispatchSupport
 from .broker_rebalance_support import BrokerRebalanceSupport
 from .broker_runtime_support import BrokerRuntimeSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
+from .broker_task_lifecycle_support import BrokerTaskLifecycleSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
@@ -635,37 +636,36 @@ class BrokerPoller:
                 dict[str, str | int | float | bool],
                 self._kafka_config.get_producer_config(),
             )
-            self.producer = Producer(producer_conf)  # type: ignore[arg-type]
-
             admin_conf = cast(
                 dict[str, str | int | float | bool],
                 {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]},
             )
-            self.admin = AdminClient(admin_conf)  # type: ignore[arg-type]
-
             consumer_conf = cast(
                 dict[str, str | int | float | bool | None],
                 self._kafka_config.get_consumer_config(),
             )
-            self.consumer = Consumer(consumer_conf)  # type: ignore[arg-type]
-            self.consumer.subscribe(
-                [self._consume_topic],
+            (
+                self.producer,
+                self.admin,
+                self.consumer,
+                self._consumer_task,
+                self._completion_monitor_task,
+            ) = self._make_task_lifecycle_support().start_runtime(
+                consume_topic=self._consume_topic,
+                producer_conf=producer_conf,
+                admin_conf=admin_conf,
+                consumer_conf=consumer_conf,
                 on_assign=self._on_assign,
                 on_revoke=self._on_revoke,
+                consumer_loop_coro_factory=self._run_consumer,
+                completion_monitor_coro_factory=self._run_completion_monitor,
+                strict_completion_monitor_enabled=getattr(
+                    self._kafka_config.parallel_consumer,
+                    "strict_completion_monitor_enabled",
+                    True,
+                ),
             )
             self._running = True
-            if getattr(
-                self._kafka_config.parallel_consumer,
-                "strict_completion_monitor_enabled",
-                True,
-            ):
-                self._completion_monitor_task = asyncio.create_task(
-                    self._run_completion_monitor()
-                )
-            self._consumer_task = asyncio.create_task(
-                self._run_consumer(),
-                name="broker-poller-loop",
-            )
             logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:
             logger.error("Failed to start BrokerPoller: %s", exc, exc_info=True)
@@ -680,17 +680,14 @@ class BrokerPoller:
         self._running = False
         if self._consumer_task is not None:
             consumer_task = self._consumer_task
-            try:
-                await asyncio.wait_for(
-                    consumer_task,
-                    timeout=self._consumer_task_stop_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                consumer_task.cancel()
-                await asyncio.gather(consumer_task, return_exceptions=True)
-            finally:
-                self._consumer_task = None
-        await self._shutdown_event.wait()
+            await self._make_task_lifecycle_support().stop_runtime(
+                consumer_task=consumer_task,
+                shutdown_event=self._shutdown_event,
+                timeout_seconds=self._consumer_task_stop_timeout_seconds,
+                wait_for=asyncio.wait_for,
+                gather=asyncio.gather,
+            )
+            self._consumer_task = None
         self._raise_if_failed()
         logger.debug("BrokerPoller stopped")
 
@@ -699,8 +696,10 @@ class BrokerPoller:
             if self._shutdown_event.is_set():
                 self._raise_if_failed()
             return
-        await self._shutdown_event.wait()
-        self._raise_if_failed()
+        await self._make_task_lifecycle_support().wait_closed(
+            shutdown_event=self._shutdown_event,
+            raise_if_failed=self._raise_if_failed,
+        )
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:
@@ -718,4 +717,17 @@ class BrokerPoller:
             is_paused=self._is_paused,
             blocking_warn_seconds=self._blocking_warn_seconds,
             logger=logger,
+        )
+
+    def _make_task_lifecycle_support(self) -> BrokerTaskLifecycleSupport:
+        def create_task_with_name(
+            coro: Any, name: str | None = None
+        ) -> asyncio.Task[Any]:
+            return asyncio.create_task(coro, name=name)
+
+        return BrokerTaskLifecycleSupport(
+            producer_factory=Producer,
+            admin_factory=AdminClient,
+            consumer_factory=Consumer,
+            task_factory=create_task_with_name,
         )
