@@ -51,6 +51,10 @@ OPTION_HELP = {
         label="Worker IO sleep (ms)",
         description="Delay each simulated IO workload by this many milliseconds.",
     ),
+    "metrics-port": OptionHelp(
+        label="Metrics port",
+        description="Expose benchmark Prometheus metrics on this host port. Use 0 to disable.",
+    ),
     "json-output": OptionHelp(
         label="JSON summary output",
         description="Save the benchmark summary JSON under this directory or file path.",

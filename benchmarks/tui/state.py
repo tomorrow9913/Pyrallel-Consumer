@@ -33,6 +33,7 @@ class BenchmarkTuiState:
     worker_sleep_ms: float = 0.5
     worker_cpu_iterations: int = 1000
     worker_io_sleep_ms: float = 0.5
+    metrics_port: int = 9091
     py_spy: bool = False
     py_spy_format: str = "flamegraph"
     py_spy_output: str = "benchmarks/results/pyspy"
@@ -74,6 +75,9 @@ class BenchmarkTuiState:
             "--worker-io-sleep-ms",
             str(self.worker_io_sleep_ms),
         ]
+
+        if self.metrics_port > 0:
+            argv.extend(["--metrics-port", str(self.metrics_port)])
 
         if self.profiling_enabled:
             argv.extend(

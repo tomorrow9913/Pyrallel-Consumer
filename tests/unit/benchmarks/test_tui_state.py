@@ -22,6 +22,8 @@ def test_tui_state_to_argv_uses_cli_defaults() -> None:
     assert "sleep" in argv
     assert "--order" in argv
     assert "key_hash" in argv
+    assert "--metrics-port" in argv
+    assert "9091" in argv
     assert "--skip-reset" not in argv
     assert "--py-spy" not in argv
 
@@ -57,6 +59,14 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
     assert "--py-spy-native" in argv
     assert "--py-spy-idle" in argv
     assert "--skip-process" in argv
+
+
+def test_tui_state_to_argv_omits_metrics_port_when_disabled() -> None:
+    state = BenchmarkTuiState(metrics_port=0)
+
+    argv = state.to_argv()
+
+    assert "--metrics-port" not in argv
 
 
 def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -> None:
