@@ -64,31 +64,31 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
     - Type: Stat
-    - Query: `sum(pyrallel_system_in_flight)`
+    - Query: `consumer_in_flight_count`
     - Threshold: `max_in_flight`의 80% 이상 시 Yellow, 100% 이상 시 Red
 - **Consumer Status**:
     - Type: State Timeline / Status History
-    - Query: `pyrallel_system_paused` (0=Running, 1=Paused)
+    - Query: `consumer_backpressure_active` (0=Running, 1=Paused)
     - Color: 0=Green, 1=Red
 
 ### 4.2. Performance (Row)
 - **True Lag by Partition**:
     - Type: Time Series (Stacked)
-    - Query: `pyrallel_partition_true_lag`
+    - Query: `consumer_parallel_lag`
     - Insight: 특정 파티션만 Lag가 튄다면 해당 파티션의 Key 분포(Skew)를 확인하십시오.
 - **Blocking Duration**:
     - Type: Time Series
-    - Query: `max(pyrallel_partition_blocking_duration_sec)`
+    - Query: `max(consumer_oldest_task_duration_seconds)`
     - Insight: 이 값이 계속 증가한다면 처리가 영원히 끝나지 않는 "독 메시지(Poison Pill)"일 가능성이 높습니다.
 
 ### 4.3. Internal State (Row)
 - **Gap Count**:
     - Type: Time Series
-    - Query: `sum(pyrallel_partition_gap_count)`
+    - Query: `sum(consumer_gap_count)`
     - Insight: 리밸런싱 직후 증가하는 것은 정상이나, 평상시에도 높다면 `OutOfOrder` 처리가 심한 상태입니다.
 - **Queued Messages**:
     - Type: Bar Gauge
-    - Query: `pyrallel_partition_queued_count`
+    - Query: `consumer_internal_queue_depth`
     - Insight: 가상 파티션 큐의 백로그 상태를 확인합니다.
 
 ---
