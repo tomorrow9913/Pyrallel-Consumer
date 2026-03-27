@@ -21,12 +21,11 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 
 ## 📈 Observability
 
-A `PrometheusMetricsExporter` helper exists for Prometheus integration, but the
-current `PyrallelConsumer` facade does **not** auto-start or auto-wire that
-exporter from `KafkaConfig.metrics` yet.
-
-Treat `KafkaConfig.metrics` as configuration for manual or advanced wiring
-rather than a one-line facade toggle.
+`PyrallelConsumer` auto-wires `PrometheusMetricsExporter` when
+`KafkaConfig.metrics.enabled=True`. When enabled, the facade starts the
+Prometheus HTTP endpoint on `KafkaConfig.metrics.port`, forwards completion
+metrics through `WorkManager`, and publishes gauge snapshots from
+`BrokerPoller.get_metrics()` on a background task.
 
 ### Core Metrics
 
@@ -194,6 +193,8 @@ from pyrallel_consumer.dto import ExecutionMode, WorkItem
 config = KafkaConfig()
 config.dlq_enabled = True
 config.DLQ_TOPIC_SUFFIX = ".failed"
+config.metrics.enabled = True
+config.metrics.port = 9091
 config.parallel_consumer.ordering_mode = "key_hash"  # or "partition" / "unordered"
 config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
 config.parallel_consumer.execution.max_retries = 5
@@ -267,8 +268,8 @@ uv run pytest tests/e2e -q
   - Prometheus: http://localhost:9090
   - Grafana: http://localhost:3000 (`local-e2e`)
 - `kafka-exporter` may show `down` briefly during the first Kafka startup, but the compose stack restarts it automatically until Kafka is ready.
-- To bring the `pyrallel-consumer` Prometheus target up, run a benchmark or test harness with `--metrics-port 9091`.
-- If no benchmark or test harness is actively running with `--metrics-port 9091`, the `pyrallel-consumer` target staying `down` in Prometheus is expected.
+- To bring the `pyrallel-consumer` Prometheus target up, run either a benchmark/test harness with `--metrics-port 9091` or any library consumer process with `config.metrics.enabled = True` and `config.metrics.port = 9091`.
+- If no benchmark/test harness or library consumer process is actively exposing port `9091`, the `pyrallel-consumer` target staying `down` in Prometheus is expected.
 - Example:
 ```bash
 uv run python benchmarks/run_parallel_benchmark.py \
@@ -283,7 +284,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 - `prd_dev.md`: concise developer-oriented summary
 - `prd.md`: full design rationale and architecture details
-- `docs/ops_playbooks.md`: ops playbook, tuning guide, incident response
+- `docs/operations/playbooks.md`: ops playbook, tuning guide, incident response
 
 ## 📊 Monitoring Stack (Prometheus + Grafana)
 
@@ -297,10 +298,10 @@ Included stack (via `docker-compose.yml`):
 Usage:
 
 1) Current facade note:
-- `config.metrics.enabled = True` by itself does **not** auto-expose `/metrics`
-  through `PyrallelConsumer` yet.
-- Use this stack only after wiring `PrometheusMetricsExporter` manually in a
-  custom integration, or when working through lower-level components.
+- `config.metrics.enabled = True` makes `PyrallelConsumer` auto-start the
+  Prometheus exporter on `config.metrics.port`.
+- Use a port Prometheus can reach. In the test compose stack, `9091` is scraped
+  as `host.docker.internal:9091`.
 
 2) Start stack:
 ```bash

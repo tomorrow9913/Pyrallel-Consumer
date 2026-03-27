@@ -1,28 +1,29 @@
-# Directory Index
+# Docs Index
 
-## Files
+`docs/`는 세 가지 문서군으로 나뉜다.
 
-- **[operations.en.md](./operations.en.md)** - English ops guide for metrics, tuning, troubleshooting
-- **[operations.md](./operations.md)** - Korean ops guide for metrics, tuning, troubleshooting
+## 1. Blueprint
 
-## Subdirectories
+- **[blueprint/00-index.md](./blueprint/00-index.md)** - 서비스 정의, 요구사항, 아키텍처, feature blueprint의 메인 진입점
 
-### plans/
+이 문서군에는 다음이 포함된다.
 
-- **[2026-02-14-benchmark-validation-reset-design.md](./plans/2026-02-14-benchmark-validation-reset-design.md)** - Design for validation runs and Kafka reset helper
-- **[2026-02-14-benchmark-validation-reset-plan.md](./plans/2026-02-14-benchmark-validation-reset-plan.md)** - Plan to add AdminClient reset and validation flow
-- **[2026-02-14-process-benchmark-design.md](./plans/2026-02-14-process-benchmark-design.md)** - Design for process benchmark metrics and Prometheus exporter
-- **[2026-02-14-process-benchmark-implementation.md](./plans/2026-02-14-process-benchmark-implementation.md)** - Plan to implement process benchmark metrics and exporter wiring
-- **[2026-02-14-refactor-microbatch-examples.md](./plans/2026-02-14-refactor-microbatch-examples.md)** - Plan to remove message processor, add batching, refresh examples
-- **[2026-02-15-e2e-test-isolation-and-key-ordering.md](./plans/2026-02-15-e2e-test-isolation-and-key-ordering.md)** - Plan to isolate e2e topics and enforce key ordering
-- **[2026-02-16-retry-dlq-plan.md](./plans/2026-02-16-retry-dlq-plan.md)** - Plan to add retry backoff and DLQ publishing
-- **[2026-02-24-profile-analysis-design.md](./plans/2026-02-24-profile-analysis-design.md)** - Design for yappi profiling runs and analysis
-- **[2026-02-24-profile-analysis-implementation-plan.md](./plans/2026-02-24-profile-analysis-implementation-plan.md)** - Plan to run and summarize yappi benchmark profiles
-- **[2026-02-25-dlq-retry-cap-design.md](./plans/2026-02-25-dlq-retry-cap-design.md)** - Design verifying capped worker failures flow to DLQ
-- **[2026-02-25-dlq-retry-cap-implementation-plan.md](./plans/2026-02-25-dlq-retry-cap-implementation-plan.md)** - Plan to test DLQ handling of capped failure events
-- **[2026-02-25-security-hardening-design.md](./plans/2026-02-25-security-hardening-design.md)** - Design for compose secrets, DLQ minimization, validation, guardrails
-- **[2026-02-25-security-hardening-implementation-plan.md](./plans/2026-02-25-security-hardening-implementation-plan.md)** - Plan to harden secrets, DLQ mode, validation, msgpack guard
-- **[2026-02-26-proactive-recycling-design.md](./plans/2026-02-26-proactive-recycling-design.md)** - Design for optional process worker recycling thresholds
-- **[2026-02-26-proactive-recycling-plan.md](./plans/2026-02-26-proactive-recycling-plan.md)** - Plan to add configurable worker recycling knobs
-- **[2026-02-26-textual-tui-design.md](./plans/2026-02-26-textual-tui-design.md)** - Design for Textual benchmark TUI wrapper
-- **[2026-02-26-textual-tui-plan.md](./plans/2026-02-26-textual-tui-plan.md)** - Plan to build Textual TUI benchmark frontend
+- overview / requirements / architecture / open decisions / context restoration
+- feature별 `00-index -> 01-requirements -> 02-architecture -> 03-design`
+
+## 2. Operations
+
+- **[operations/index.md](./operations/index.md)** - 운영 문서 entrypoint
+- **[operations/guide.ko.md](./operations/guide.ko.md)** - 한국어 운영 가이드
+- **[operations/guide.en.md](./operations/guide.en.md)** - 영문 운영 가이드
+- **[operations/playbooks.md](./operations/playbooks.md)** - 운영 플레이북과 튜닝 절차
+
+## 3. Plans
+
+- **[plans/](./plans/)** - 날짜별 design / implementation plan 아카이브
+
+## 빠른 안내
+
+- 현재 runtime 구조와 feature 청사진을 보려면 `blueprint/`
+- 운영과 장애 대응만 보려면 `operations/`
+- 과거 작업 계획과 설계 결정을 보려면 `plans/`
