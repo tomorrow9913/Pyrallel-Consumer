@@ -1021,9 +1021,9 @@ async def test_run_screen_exposes_report_and_exit_controls_after_success(
         settings_button = run_screen.query_one("#settings-button", Button)
         exit_button = run_screen.query_one("#exit-button", Button)
 
-    assert str(report_button.label) == "결과 다시 보기"
-    assert str(settings_button.label) == "설정으로 돌아가기"
-    assert str(exit_button.label) == "종료"
+    assert str(report_button.label) == "View results"
+    assert str(settings_button.label) == "Back to settings"
+    assert str(exit_button.label) == "Exit"
 
 
 @pytest.mark.asyncio

@@ -687,8 +687,8 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
                 yield Static("상세 결과", id="results-detail-title")
                 yield DataTable(id="results-table")
             with Container(id="results-modal-actions"):
-                yield Button("설정으로 돌아가기", id="results-modal-settings")
-                yield Button("닫기", id="results-modal-close", variant="primary")
+                yield Button("Back to settings", id="results-modal-settings")
+                yield Button("Close", id="results-modal-close", variant="primary")
 
     def on_mount(self) -> None:
         table = self.query_one("#results-table", DataTable)
@@ -837,9 +837,9 @@ class RunScreen(Screen[None]):
                 yield DataTable(id="run-summary")
                 yield Log(id="run-log")
             with Container(id="run-actions"):
-                yield Button("실행 취소", id="cancel-button", variant="error")
-                yield Button("설정으로 돌아가기", id="settings-button")
-                yield Button("뒤로", id="exit-button")
+                yield Button("Cancel run", id="cancel-button", variant="error")
+                yield Button("Back to settings", id="settings-button")
+                yield Button("Back", id="exit-button")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1012,11 +1012,11 @@ class RunScreen(Screen[None]):
         is_terminal = self._finished_at is not None or self._cancelled
 
         if show_report:
-            cancel_button.label = "결과 다시 보기"
+            cancel_button.label = "View results"
             cancel_button.variant = "primary"
             cancel_button.display = True
         elif not is_terminal:
-            cancel_button.label = "실행 취소"
+            cancel_button.label = "Cancel run"
             cancel_button.variant = "error"
             cancel_button.display = True
         else:
@@ -1024,7 +1024,7 @@ class RunScreen(Screen[None]):
 
         settings_button.display = is_terminal
         exit_button.display = is_terminal
-        exit_button.label = "종료"
+        exit_button.label = "Exit"
 
     def _configure_run_summary_table(self) -> None:
         table = self.query_one("#run-summary", DataTable)
