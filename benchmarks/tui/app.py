@@ -561,7 +561,7 @@ class OptionsScreen(Screen[None]):
             errors[widget_id] = "Enter a whole number."
             return
         if value < minimum:
-            comparator = ">=" if minimum == 0 else ">="
+            comparator = ">="
             errors[widget_id] = "Enter a whole number %s %d." % (comparator, minimum)
             return
         parsed_values[widget_id] = value
