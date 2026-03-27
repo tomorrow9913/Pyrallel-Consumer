@@ -76,6 +76,38 @@ def test_build_parser_accepts_comma_separated_workloads_and_order() -> None:
     assert args.strict_completion_monitor == ["on", "off"]
 
 
+def test_build_parser_accepts_process_batching_overrides() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--process-batch-size",
+            "1",
+            "--process-max-batch-wait-ms",
+            "0",
+        ]
+    )
+
+    assert args.process_batch_size == 1
+    assert args.process_max_batch_wait_ms == 0
+
+
+def test_build_parser_accepts_metrics_port() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--metrics-port", "9091"])
+
+    assert args.metrics_port == 9091
+
+
+def test_build_parser_defaults_metrics_port_to_9091() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args([])
+
+    assert args.metrics_port == 9091
+
+
 def test_build_parser_rejects_unknown_workload_token() -> None:
     parser = run_parallel_benchmark.build_parser()
 

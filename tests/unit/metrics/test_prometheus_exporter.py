@@ -7,6 +7,7 @@ from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
     CompletionStatus,
     PartitionMetrics,
+    ProcessBatchMetrics,
     SystemMetrics,
     TopicPartition,
 )
@@ -51,6 +52,16 @@ def test_exporter_updates_metrics_and_observes_completion():
             _make_partition_metrics("topic-a", 0),
             _make_partition_metrics("topic-b", 1),
         ],
+        process_batch_metrics=ProcessBatchMetrics(
+            size_flush_count=3,
+            timer_flush_count=2,
+            close_flush_count=1,
+            total_flushed_items=12,
+            last_flush_size=4,
+            last_flush_wait_seconds=0.05,
+            buffered_items=1,
+            buffered_age_seconds=0.2,
+        ),
     )
 
     exporter.update_from_system_metrics(metrics)
@@ -67,6 +78,12 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert gaps == 2
     assert queued == 7
     assert blocking == 1.5
+    assert exporter._process_batch_flush_count.labels(reason="size")._value.get() == 3
+    assert exporter._process_batch_flush_count.labels(reason="timer")._value.get() == 2
+    assert exporter._process_batch_last_size_gauge._value.get() == 4
+    assert exporter._process_batch_avg_size_gauge._value.get() == 2
+    assert exporter._process_batch_buffered_items_gauge._value.get() == 1
+    assert exporter._process_batch_buffered_age_seconds_gauge._value.get() == 0.2
 
     tp = TopicPartition(topic="topic-a", partition=0)
     exporter.observe_completion(tp, CompletionStatus.SUCCESS, duration_seconds=0.12)
@@ -83,3 +100,33 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert processed == 1
     assert pytest.approx(latency_sum, rel=1e-6) == 0.12
     assert metadata_size == 42
+
+
+def test_exporter_closes_http_server_when_enabled(monkeypatch):
+    registry = CollectorRegistry()
+    closed = {"shutdown": 0, "server_close": 0, "join": 0}
+
+    class _DummyServer:
+        def shutdown(self) -> None:
+            closed["shutdown"] += 1
+
+        def server_close(self) -> None:
+            closed["server_close"] += 1
+
+    class _DummyThread:
+        def join(self, timeout=None) -> None:  # noqa: ANN001
+            closed["join"] += 1
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.metrics_exporter.start_http_server",
+        lambda *a, **k: (_DummyServer(), _DummyThread()),
+    )
+
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=True, port=9100), registry=registry
+    )
+
+    exporter.close()
+    exporter.close()
+
+    assert closed == {"shutdown": 1, "server_close": 1, "join": 1}

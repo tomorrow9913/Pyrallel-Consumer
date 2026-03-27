@@ -163,10 +163,12 @@ def test_get_blocking_offset_durations(offset_tracker):
         offset_tracker.mark_complete(2)
         offset_tracker.advance_high_water_mark()  # last committed is 0
 
-        # First call to get_gaps, offsets 1, 3, 4, 5 become blocking
+        # First call to get_gaps, gap heads 1 and 3 become blocking
         offset_tracker.get_gaps()
         assert 1 in offset_tracker._blocking_offset_timestamps
         assert 3 in offset_tracker._blocking_offset_timestamps
+        assert 4 not in offset_tracker._blocking_offset_timestamps
+        assert 5 not in offset_tracker._blocking_offset_timestamps
         assert offset_tracker._blocking_offset_timestamps[1] == 1000.0
         assert offset_tracker._blocking_offset_timestamps[3] == 1000.0
 
@@ -179,8 +181,8 @@ def test_get_blocking_offset_durations(offset_tracker):
         assert 3 in durations
         assert pytest.approx(durations[1]) == 10.0
         assert pytest.approx(durations[3]) == 10.0
-        assert pytest.approx(durations[4]) == 10.0
-        assert pytest.approx(durations[5]) == 10.0
+        assert 4 not in durations
+        assert 5 not in durations
 
         # Now, complete one of the blocking offsets
         offset_tracker.mark_complete(1)
@@ -200,3 +202,14 @@ def test_get_blocking_offset_durations(offset_tracker):
         assert (
             pytest.approx(durations[3]) == 15.0
         )  # Total duration since it became blocking
+
+
+def test_get_blocking_offset_durations_tracks_gap_heads_only(offset_tracker):
+    with patch("time.time") as mock_time:
+        mock_time.return_value = 2000.0
+        offset_tracker.update_last_fetched_offset(1000)
+
+        offset_tracker.get_gaps()
+
+        assert len(offset_tracker._blocking_offset_timestamps) == 1
+        assert 0 in offset_tracker._blocking_offset_timestamps

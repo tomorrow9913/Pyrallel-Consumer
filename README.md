@@ -9,6 +9,8 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
+> **Release policy:** current published versions are alpha/prerelease (`0.1.2a1`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+
 ## 🌟 Key Features
 
 - **High parallelism**: Process messages in parallel without being tightly limited by Kafka partition count.
@@ -19,17 +21,11 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 
 ## 📈 Observability
 
-You can expose Prometheus metrics via `KafkaConfig.metrics`.
-Metrics are disabled by default (`enabled=False`).
-
-```python
-from pyrallel_consumer.config import KafkaConfig
-
-config = KafkaConfig()
-config.metrics.enabled = True
-config.metrics.port = 9095
-consumer = PyrallelConsumer(config, worker, topic="demo")
-```
+`PyrallelConsumer` auto-wires `PrometheusMetricsExporter` when
+`KafkaConfig.metrics.enabled=True`. When enabled, the facade starts the
+Prometheus HTTP endpoint on `KafkaConfig.metrics.port`, forwards completion
+metrics through `WorkManager`, and publishes gauge snapshots from
+`BrokerPoller.get_metrics()` on a background task.
 
 ### Core Metrics
 
@@ -81,6 +77,10 @@ These options are implemented in the benchmark workers and directly control per-
 The Control Plane manages Kafka communication and offsets independently from execution mode.
 The Execution Plane runs user workers via `asyncio` tasks or multiprocessing.
 
+The control plane talks to execution engines through the shared `BaseExecutionEngine`
+contract. Process-specific commit clamping is exposed as an engine capability, so
+`BrokerPoller` does not need concrete `ProcessExecutionEngine` type checks to stay safe.
+
 ```mermaid
 graph TD
     subgraph "Ingress Layer (Kafka Client)"
@@ -116,8 +116,8 @@ graph TD
 
 ```bash
 pip install uv
-uv pip install -r requirements.txt
-uv pip install -r dev-requirements.txt  # optional
+uv sync
+uv sync --group dev  # optional
 ```
 
 ### Package Build / Distribution
@@ -133,6 +133,10 @@ python -m build
 
 - Grafana admin password is expected via `GF_SECURITY_ADMIN_PASSWORD` in `.env`.
 - For DLQ payload minimization, set `KAFKA_DLQ_PAYLOAD_MODE=metadata_only`.
+- Raw DLQ payload caching is bounded by `PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES`
+  (default `67108864`, about 64 MiB). When the cache budget is exhausted, the
+  oldest raw payloads are evicted and DLQ publishing falls back to metadata-only
+  payloads instead of holding unbounded memory.
 - License: Apache-2.0
 
 ### Env-based Config (`pydantic-settings`)
@@ -140,7 +144,7 @@ python -m build
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
-EXECUTION_MODE=async # or process
+PARALLEL_CONSUMER_EXECUTION__MODE=async  # or process
 ```
 
 ## 🔁 Retry & DLQ
@@ -163,6 +167,8 @@ Pyrallel Consumer supports automatic retries and DLQ publishing.
 | --- | --- | --- |
 | `KAFKA_DLQ_ENABLED` | `true` | Enable DLQ publish |
 | `KAFKA_DLQ_TOPIC_SUFFIX` | `.dlq` | DLQ topic suffix |
+| `KAFKA_DLQ_PAYLOAD_MODE` | `full` | `full` preserves original key/value, `metadata_only` publishes headers only |
+| `PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES` | `67108864` | Max bytes reserved for raw DLQ payload cache before oldest entries are evicted |
 
 DLQ headers include:
 - `x-error-reason`
@@ -172,21 +178,27 @@ DLQ headers include:
 - `offset`
 - `epoch`
 
+When `KAFKA_DLQ_PAYLOAD_MODE=full`, the control plane keeps a bounded raw
+message cache only for final DLQ publishing. If an entry is evicted before the
+failure reaches DLQ, Pyrallel Consumer degrades to metadata-only DLQ publish
+instead of retaining the offset indefinitely.
+
 ## 💡 Usage
 
 ```python
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.config import KafkaConfig, ExecutionConfig
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 config = KafkaConfig()
 config.dlq_enabled = True
 config.DLQ_TOPIC_SUFFIX = ".failed"
-
-exec_conf = ExecutionConfig()
-exec_conf.mode = ExecutionMode.ASYNC
-exec_conf.max_retries = 5
-exec_conf.retry_backoff_ms = 2000
+config.metrics.enabled = True
+config.metrics.port = 9091
+config.parallel_consumer.ordering_mode = "key_hash"  # or "partition" / "unordered"
+config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+config.parallel_consumer.execution.max_retries = 5
+config.parallel_consumer.execution.retry_backoff_ms = 2000
 
 async def worker(item: WorkItem):
     ...
@@ -194,7 +206,30 @@ async def worker(item: WorkItem):
 consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
 ```
 
+Ordering modes:
+- `key_hash` (default): preserve order per message key while allowing parallelism across keys
+- `partition`: preserve order per Kafka partition
+- `unordered`: maximize throughput without ordering guarantees
+
+`worker_pool_size` controls key-hash shard width for ordered routing. It does not
+control process concurrency.
+
+For process mode tuning, use
+`config.parallel_consumer.execution.process_config.process_count` rather than
+`worker_pool_size`.
+
 For detailed runnable patterns, see [`examples/`](./examples/).
+
+### Rebalance state preservation
+
+- Default: `contiguous_only`
+  - On rebalance/restart, only the safe contiguous HWM is preserved via the committed Kafka offset.
+  - Sparse completed offsets beyond the HWM may be replayed later; this is the simplest and safest at-least-once default.
+- Optional: `metadata_snapshot`
+  - Sparse completed offsets are encoded into Kafka commit metadata on revoke/commit and restored on the next assignment.
+  - This can reduce avoidable reprocessing, but failures must remain fail-closed back to `contiguous_only` semantics.
+
+Even with `metadata_snapshot`, downstream side effects should remain idempotent.
 
 ## 🧪 Run Benchmarks
 
@@ -216,11 +251,40 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - Use `--strict-completion-monitor on,off` to compare the completion monitor modes in benchmark output.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
 
+## 🧪 Run E2E Tests
+
+```bash
+# Start local Kafka
+docker compose up -d kafka-1
+
+# Run Kafka-backed end-to-end tests
+uv run pytest tests/e2e -q
+```
+
+- If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
+- Use the local `docker compose` stack when you want the full Kafka-backed path.
+- For the test monitoring stack, run `docker compose -f .github/e2e.compose.yml up -d`.
+- Test-stack dashboards:
+  - Prometheus: http://localhost:9090
+  - Grafana: http://localhost:3000 (`local-e2e`)
+- `kafka-exporter` may show `down` briefly during the first Kafka startup, but the compose stack restarts it automatically until Kafka is ready.
+- To bring the `pyrallel-consumer` Prometheus target up, run either the benchmark/test harness (which now defaults to `--metrics-port 9091`) or any library consumer process with `config.metrics.enabled = True` and `config.metrics.port = 9091`.
+- If no benchmark/test harness or library consumer process is actively exposing port `9091`, the `pyrallel-consumer` target staying `down` in Prometheus is expected.
+- Example:
+```bash
+uv run python benchmarks/run_parallel_benchmark.py \
+  --skip-baseline --skip-async \
+  --workloads sleep --order partition \
+  --num-messages 4000 \
+  --worker-sleep-ms 0.02 \
+  --metrics-port 9091
+```
+
 ## 📖 Documentation
 
 - `prd_dev.md`: concise developer-oriented summary
 - `prd.md`: full design rationale and architecture details
-- `docs/ops_playbooks.md`: ops playbook, tuning guide, incident response
+- `docs/operations/playbooks.md`: ops playbook, tuning guide, incident response
 
 ## 📊 Monitoring Stack (Prometheus + Grafana)
 
@@ -233,11 +297,11 @@ Included stack (via `docker-compose.yml`):
 
 Usage:
 
-1) Enable metrics in app:
-```python
-config.metrics.enabled = True
-config.metrics.port = 9091
-```
+1) Current facade note:
+- `config.metrics.enabled = True` makes `PyrallelConsumer` auto-start the
+  Prometheus exporter on `config.metrics.port`.
+- Use a port Prometheus can reach. In the test compose stack, `9091` is scraped
+  as `host.docker.internal:9091`.
 
 2) Start stack:
 ```bash
@@ -246,7 +310,7 @@ docker compose up -d
 
 3) Verify:
 - Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (default `admin` / `admin`)
+- Grafana: http://localhost:3000 (`GF_SECURITY_ADMIN_PASSWORD` from `.env`)
 
 4) Add Grafana datasource:
 - Type: Prometheus
@@ -257,6 +321,9 @@ docker compose up -d
 - `consumer_processed_total`
 - `consumer_processing_latency_seconds_bucket`
 - `consumer_in_flight_count`
+- `consumer_process_batch_flush_count{reason="timer"}`
+- `consumer_process_batch_avg_size`
+- `consumer_process_batch_buffered_age_seconds`
 
 ## 🤝 Contributing
 

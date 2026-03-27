@@ -83,6 +83,11 @@ def mock_work_manager():
         )
         wm.submitted_messages.append(work_item)
 
+    async def submit_message_batch_side_effect(grouped_messages):
+        for (tp, key), messages in grouped_messages.items():
+            for offset, epoch, payload in messages:
+                await submit_message_side_effect(tp, offset, epoch, key, payload)
+
     async def poll_completed_events_side_effect():
         if completion_queue.empty():
             return []
@@ -96,6 +101,7 @@ def mock_work_manager():
         completion_queue.put_nowait(event)
 
     wm.submit_message.side_effect = submit_message_side_effect
+    wm.submit_message_batch.side_effect = submit_message_batch_side_effect
     wm.poll_completed_events.side_effect = poll_completed_events_side_effect
     wm._push_completion_event = _push_completion_event
 
@@ -166,9 +172,9 @@ def broker_poller(
         execution_engine=mock_execution_engine,
         work_manager=mock_work_manager,
     )
-    poller.producer = AsyncMock()
+    poller.producer = MagicMock()
     poller.consumer = mock_consumer
-    poller.admin = AsyncMock()
+    poller.admin = MagicMock()
     return poller
 
 
@@ -259,7 +265,8 @@ async def test_run_consumer_loop_basic_flow(
     await consumer_task
 
     assert mock_consumer.consume.call_count >= 1
-    assert mock_work_manager.submit_message.call_count == 3
+    assert mock_work_manager.submit_message_batch.call_count == 1
+    assert mock_work_manager.submit_message.call_count == 0
     assert len(mock_work_manager.submitted_messages) == 3
 
     submitted_item = mock_work_manager.submitted_messages[0]
@@ -467,6 +474,26 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
 
 
 @pytest.mark.asyncio
+async def test_stop_surfaces_consumer_loop_failure(
+    broker_poller,
+    mock_consumer,
+):
+    mock_consumer.consume.side_effect = RuntimeError("boom")
+
+    broker_poller._running = True
+    broker_poller._consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    start_time = asyncio.get_event_loop().time()
+    while not broker_poller._shutdown_event.is_set():
+        if asyncio.get_event_loop().time() - start_time > 2:
+            raise AssertionError("Timeout waiting for consumer loop failure")
+        await asyncio.sleep(0.01)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await broker_poller.stop()
+
+
+@pytest.mark.asyncio
 async def test_dlq_disabled_failure_commits_normally(
     broker_poller,
     mock_consumer,
@@ -595,9 +622,12 @@ async def test_dlq_publish_retry_on_failure(
 
     original_publish_to_dlq = broker_poller._publish_to_dlq
 
+    async def _fake_sleep(*args, **kwargs):
+        return None
+
     async def mock_publish_to_dlq(*args, **kwargs):
-        with mocker.patch("asyncio.sleep", new_callable=AsyncMock):
-            return await original_publish_to_dlq(*args, **kwargs)
+        mocker.patch("asyncio.sleep", side_effect=_fake_sleep)
+        return await original_publish_to_dlq(*args, **kwargs)
 
     broker_poller._publish_to_dlq = mock_publish_to_dlq
 

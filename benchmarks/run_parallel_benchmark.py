@@ -70,6 +70,12 @@ def _check_kafka_connection(bootstrap_servers: str) -> None:
         ) from exc
 
 
+def _normalize_metrics_port(metrics_port: int | None) -> int | None:
+    if metrics_port is None or metrics_port <= 0:
+        return None
+    return metrics_port
+
+
 def _run_baseline_round(
     *,
     run_name: str,
@@ -351,6 +357,9 @@ async def _run_pyrparallel_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: int | None = None,
+    process_max_batch_wait_ms: int | None = None,
+    metrics_port: int | None = None,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -382,6 +391,9 @@ async def _run_pyrparallel_round(
         ordering_mode=ordering,
         ensure_topic_exists=ensure_topic_exists,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_batch_size=process_batch_size,
+        process_max_batch_wait_ms=process_max_batch_wait_ms,
+        metrics_port=metrics_port,
     )
     if timed_out:
         raise RuntimeError(
@@ -644,6 +656,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Sleep per message for IO workload (simulated IO wait)",
     )
+    parser.add_argument(
+        "--process-batch-size",
+        type=int,
+        default=None,
+        help="Override process-mode micro-batch size for benchmark runs",
+    )
+    parser.add_argument(
+        "--process-max-batch-wait-ms",
+        type=int,
+        default=None,
+        help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=9091,
+        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs (default: 9091, use 0 to disable)",
+    )
     # -- py-spy profiling options (process mode) --
     parser.add_argument(
         "--py-spy",
@@ -712,10 +742,32 @@ def launch_tui() -> None:
     BenchmarkTuiApp().run()
 
 
+def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
+    if args.skip_process:
+        return
+    if "sleep" not in args.workloads:
+        return
+    if "partition" not in args.order:
+        return
+    if args.worker_sleep_ms > 0.5:
+        return
+    if args.process_batch_size is not None:
+        return
+    if args.process_max_batch_wait_ms is not None:
+        return
+
+    print(
+        "[warning] Tiny process partition benchmark detected; default batching can dominate throughput. "
+        "Compare with --process-batch-size 1 --process-max-batch-wait-ms 0.",
+        flush=True,
+    )
+
+
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
     args._raw_argv = list(raw_argv or [])
+    metrics_port = _normalize_metrics_port(args.metrics_port)
 
     # -- py-spy self-relaunch gate --
     # When --py-spy is requested and we are NOT already the child process,
@@ -737,6 +789,8 @@ def run_benchmark(
     orderings = list(args.order)
     strict_monitor_modes = list(args.strict_completion_monitor)
     profile_dir = Path(args.profile_dir)
+
+    _warn_on_tiny_partition_process_defaults(args)
 
     results: List[BenchmarkResult] = []
 
@@ -839,6 +893,11 @@ def run_benchmark(
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
+                                    process_batch_size=args.process_batch_size,
+                                    process_max_batch_wait_ms=(
+                                        args.process_max_batch_wait_ms
+                                    ),
+                                    metrics_port=metrics_port,
                                 )
                             )
                     if not args.skip_process:
@@ -883,6 +942,11 @@ def run_benchmark(
                                 strict_completion_monitor_enabled=(
                                     strict_completion_monitor_enabled
                                 ),
+                                process_batch_size=args.process_batch_size,
+                                process_max_batch_wait_ms=(
+                                    args.process_max_batch_wait_ms
+                                ),
+                                metrics_port=metrics_port,
                             )
                         )
                         if args.profile and args.profile_process_workers:

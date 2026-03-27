@@ -12,6 +12,9 @@ _HEADERS = (
     ("Workload", "workload"),
     ("Messages", "messages_processed"),
     ("TPS", "throughput_tps"),
+    ("TPS P50 (100)", "tps_p50_window"),
+    ("TPS P10 (100)", "tps_p10_window"),
+    ("TPS Min (100)", "tps_min_window"),
     ("Avg ms", "avg_processing_ms"),
     ("P99 ms", "p99_processing_ms"),
 )
@@ -176,6 +179,9 @@ def _format_row(result: dict[str, Any]) -> list[str]:
         str(result.get("workload", "")),
         _format_integer(result.get("messages_processed")),
         _format_float(result.get("throughput_tps"), 2),
+        _format_optional_float(result.get("tps_p50_window"), 2),
+        _format_optional_float(result.get("tps_p10_window"), 2),
+        _format_optional_float(result.get("tps_min_window"), 2),
         _format_float(result.get("avg_processing_ms"), 3),
         _format_float(result.get("p99_processing_ms"), 3),
     ]
@@ -193,6 +199,15 @@ def _format_float(value: Any, precision: int) -> str:
         return f"{float(value):,.{precision}f}"
     except (TypeError, ValueError):
         return f"{0:.{precision}f}"
+
+
+def _format_optional_float(value: Any, precision: int) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):,.{precision}f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def _float_value(value: Any) -> float:

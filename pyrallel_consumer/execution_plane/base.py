@@ -1,7 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from pyrallel_consumer.dto import CompletionEvent, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    ProcessBatchMetrics,
+    TopicPartition,
+    WorkItem,
+)
 
 
 class BaseExecutionEngine(ABC):
@@ -65,6 +70,23 @@ class BaseExecutionEngine(ABC):
         Returns:
             int: 현재 처리 중인 메시지 수
         """
+
+    def get_min_inflight_offset(self, _tp: TopicPartition) -> Optional[int]:
+        """
+        Returns the minimum in-flight offset for a partition when the engine
+        can expose that detail. Engines that do not track it return None.
+
+        Args:
+            _tp (TopicPartition): 조회할 토픽/파티션
+
+        Returns:
+            Optional[int]: 최소 in-flight offset 또는 None
+        """
+        return None
+
+    def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
+        """Returns optional engine-specific runtime metrics."""
+        return None
 
     @abstractmethod
     async def shutdown(self) -> None:

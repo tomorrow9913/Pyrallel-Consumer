@@ -1,11 +1,48 @@
-from collections.abc import Callable  # Add Callable import
-from typing import Any  # Add Any import
+import inspect
+import pickle
+from collections.abc import Callable
+from typing import Any
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+
+
+def _is_async_worker(worker_fn: Callable[[WorkItem], Any]) -> bool:
+    if inspect.iscoroutinefunction(worker_fn):
+        return True
+
+    call = getattr(worker_fn, "__call__", None)
+    return inspect.iscoroutinefunction(call)
+
+
+def _ensure_worker_matches_mode(
+    config: ExecutionConfig,
+    worker_fn: Callable[[WorkItem], Any],
+) -> None:
+    mode = config.mode
+    if isinstance(mode, str):
+        mode = ExecutionMode(mode)
+
+    if mode == ExecutionMode.ASYNC:
+        if not _is_async_worker(worker_fn):
+            raise TypeError("Async execution mode requires an async worker function")
+        return
+
+    if mode == ExecutionMode.PROCESS:
+        if _is_async_worker(worker_fn):
+            raise TypeError(
+                "Process execution mode requires a synchronous worker function"
+            )
+        if getattr(config.process_config, "require_picklable_worker", False):
+            try:
+                pickle.dumps(worker_fn)
+            except Exception as exc:
+                raise TypeError(
+                    "Process execution mode requires a picklable worker"
+                ) from exc
 
 
 def create_execution_engine(
@@ -26,6 +63,8 @@ def create_execution_engine(
     mode = config.mode
     if isinstance(mode, str):
         mode = ExecutionMode(mode)
+
+    _ensure_worker_matches_mode(config, worker_fn)
 
     if mode == ExecutionMode.ASYNC:
         return AsyncExecutionEngine(config=config, worker_fn=worker_fn)

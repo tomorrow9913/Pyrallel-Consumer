@@ -1,0 +1,59 @@
+name: e2e
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, reopened, ready_for_review, synchronize]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "docker-compose.yml"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/e2e.yml"
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Start Kafka
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+        run: |
+          docker compose -f .github/e2e.compose.yml up -d kafka-1
+      - name: Wait for Kafka readiness
+        run: |
+          python - <<'PY'
+          import socket
+          import time
+
+          deadline = time.time() + 60
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection(("127.0.0.1", 9092), timeout=1):
+                      raise SystemExit(0)
+              except OSError:
+                  time.sleep(1)
+          raise SystemExit("Kafka did not become ready on localhost:9092 within 60 seconds")
+          PY
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Run E2E tests
+        run: |
+          uv run pytest tests/e2e -q
+      - name: Stop Kafka
+        if: always()
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+        run: |
+          docker compose -f .github/e2e.compose.yml down

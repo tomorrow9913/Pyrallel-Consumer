@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 from benchmarks.tui.log_parser import BenchmarkLogParser
 
 
@@ -218,3 +220,68 @@ def test_log_parser_assigns_interleaved_final_tps_by_workload_ordering_start_ord
     assert (
         snapshot.tps_by_workload_ordering["sleep"]["unordered"]["baseline"] == "2500.50"
     )
+
+
+def test_log_parser_tracks_strict_mode_variants_as_distinct_runs() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume(
+        "Starting PyrallelConsumer test for topic 'demo-sleep-key_hash-async-strict-on'."
+    )
+    parser.consume(
+        "Starting PyrallelConsumer test for topic 'demo-sleep-key_hash-async-strict-off'."
+    )
+    parser.consume("Final TPS: 1386.01")
+    parser.consume("Final TPS: 2500.50")
+
+    assert parser.snapshot.completed_runs == 2
+    assert parser._completed_runs == {
+        ("sleep", "key_hash", "on", "async"),
+        ("sleep", "key_hash", "off", "async"),
+    }
+    assert parser.snapshot.total_runs == 4
+    assert parser._started_run_order == deque()
+
+
+def test_log_parser_detects_strict_suffix_phases_from_topic_names() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume(
+        "Starting PyrallelConsumer test for topic 'demo-sleep-key_hash-async-strict-off'."
+    )
+
+    assert parser.snapshot.phase_statuses["async"] == "running"
+    assert parser._started_run_order[0] == ("sleep", "key_hash", "off", "async")
+
+    parser.consume("Final TPS: 1386.01")
+    parser.consume(
+        "Starting PyrallelConsumer test for topic 'demo-sleep-key_hash-process-strict-off'."
+    )
+
+    assert parser.snapshot.phase_statuses["process"] == "running"
+    assert parser._started_run_order[0] == (
+        "sleep",
+        "key_hash",
+        "off",
+        "process",
+    )
+
+    parser.consume("Final TPS: 2500.50")
+
+    assert parser.snapshot.completed_runs == 2
+    assert parser.snapshot.tps_by_workload["sleep"]["async"] == "1386.01"
+    assert parser.snapshot.tps_by_workload["sleep"]["process"] == "2500.50"
+
+
+def test_log_parser_counts_strict_result_rows_as_distinct_completed_runs() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume(
+        "sleep-key_hash-async-strict-on | pyrallel | strict-on | topic-a | 100 | 10.00 | 1.000 | 1.000"
+    )
+    parser.consume(
+        "sleep-key_hash-async-strict-off | pyrallel | strict-off | topic-b | 100 | 20.00 | 1.000 | 1.000"
+    )
+
+    assert parser.snapshot.completed_runs == 2
+    assert parser.snapshot.total_runs == 4

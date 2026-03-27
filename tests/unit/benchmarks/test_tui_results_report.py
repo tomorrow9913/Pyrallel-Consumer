@@ -32,6 +32,10 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
                         "throughput_tps": 40.0,
                         "avg_processing_ms": 1.25,
                         "p99_processing_ms": 2.5,
+                        "window_size_messages": 100,
+                        "tps_p50_window": 39.0,
+                        "tps_p10_window": 35.0,
+                        "tps_min_window": 30.0,
                     },
                     {
                         "run_name": "sleep-pyrallel-process",
@@ -43,6 +47,10 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
                         "throughput_tps": 80.0,
                         "avg_processing_ms": 0.75,
                         "p99_processing_ms": 1.5,
+                        "window_size_messages": 100,
+                        "tps_p50_window": 78.0,
+                        "tps_p10_window": 60.0,
+                        "tps_min_window": 50.0,
                     },
                 ],
             }
@@ -54,6 +62,7 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
 
     assert "Run" in summary
     assert "Workload" in summary
+    assert "TPS P50 (100)" in summary
     assert "sleep-baseline" in summary
     assert "sleep-pyrallel-process" in summary
 
@@ -360,6 +369,9 @@ async def test_run_screen_opens_results_modal_after_completion(
             "sleep",
             "100",
             "40.00",
+            "—",
+            "—",
+            "—",
             "1.250",
             "2.500",
         ]
@@ -369,6 +381,9 @@ async def test_run_screen_opens_results_modal_after_completion(
             "sleep",
             "100",
             "66.00",
+            "—",
+            "—",
+            "—",
             "1.000",
             "2.000",
         ]

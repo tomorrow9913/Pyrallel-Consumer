@@ -260,6 +260,12 @@ class OptionsScreen(Screen[None]):
                     widget_id="json-output",
                     placeholder="benchmarks/results/benchmark-results.json",
                 )
+                yield from self._labeled_input(
+                    option_id="metrics-port",
+                    value=str(state.metrics_port),
+                    widget_id="metrics-port",
+                    placeholder="9091",
+                )
                 yield from self._switch_field(
                     option_id="skip-reset",
                     value=state.skip_reset,
@@ -469,6 +475,9 @@ class OptionsScreen(Screen[None]):
             ),
             timeout_sec=_safe_int(
                 self.query_one("#timeout-sec", Input).value, state.timeout_sec
+            ),
+            metrics_port=_safe_int(
+                self.query_one("#metrics-port", Input).value, state.metrics_port
             ),
             topic_prefix=self.query_one("#topic-prefix", Input).value,
             workloads=tuple(

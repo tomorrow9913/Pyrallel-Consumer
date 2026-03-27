@@ -1,6 +1,7 @@
 """Tests for ProcessExecutionEngine micro-batching."""
 
 import asyncio
+import queue
 import time
 from collections import deque
 from typing import Any, Dict, cast
@@ -8,7 +9,12 @@ from typing import Any, Dict, cast
 import pytest
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
-from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
+from pyrallel_consumer.dto import (
+    CompletionStatus,
+    ProcessBatchMetrics,
+    TopicPartition,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 
@@ -98,6 +104,65 @@ def retry_config() -> ExecutionConfig:
 
 
 class TestMicroBatching:
+    @pytest.mark.asyncio
+    async def test_get_runtime_metrics_reports_buffered_items_before_flush(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                batch_size=4,
+                max_batch_wait_ms=1000,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        try:
+            await engine.submit(_make_work_item(0))
+            metrics = engine.get_runtime_metrics()
+
+            assert isinstance(metrics, ProcessBatchMetrics)
+            assert metrics.buffered_items == 1
+            assert metrics.size_flush_count == 0
+            assert metrics.timer_flush_count == 0
+            assert metrics.buffered_age_seconds >= 0.0
+        finally:
+            await engine.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_metrics_reports_size_flush_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                batch_size=2,
+                max_batch_wait_ms=1000,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        try:
+            await engine.submit(_make_work_item(0))
+            await engine.submit(_make_work_item(1))
+
+            metrics = engine.get_runtime_metrics()
+
+            assert isinstance(metrics, ProcessBatchMetrics)
+            assert metrics.size_flush_count == 1
+            assert metrics.timer_flush_count == 0
+            assert metrics.close_flush_count == 0
+            assert metrics.total_flushed_items == 2
+            assert metrics.last_flush_size == 2
+            assert metrics.buffered_items == 0
+            assert metrics.last_flush_wait_seconds >= 0.0
+        finally:
+            await engine.shutdown()
+
     @pytest.mark.asyncio
     async def test_batch_flush_on_size(self, small_batch_config):
         engine = ProcessExecutionEngine(
@@ -345,6 +410,9 @@ class _FakeCloser:
     def put(self, item) -> None:
         self.items.append(item)
 
+    def get_nowait(self):
+        raise queue.Empty()
+
     def close(self) -> None:
         self.closed = True
 
@@ -355,6 +423,24 @@ class _FakeListener:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+class _FakeDrainQueue:
+    def __init__(self, items=None):
+        self._items = list(items or [])
+        self.closed = False
+        self.put_items = []
+
+    def get_nowait(self):
+        if not self._items:
+            raise queue.Empty()
+        return self._items.pop(0)
+
+    def put(self, item) -> None:
+        self.put_items.append(item)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class TestShutdownLifecycle:
@@ -388,12 +474,40 @@ class TestShutdownLifecycle:
         engine._log_listener = cast(Any, _FakeListener())
         engine._prefetched_completion_events = deque()
         engine._in_flight_registry = {}
+        engine._worker_pid_by_index = {}
         engine._in_flight_count = 0
         engine._in_flight_lock = __import__("threading").Lock()
         engine._logger = __import__("logging").getLogger(__name__)
         engine._is_shutdown = False
         setattr(engine, "_drain_registry_events", lambda: None)
         return engine
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_registry_events_before_join(self):
+        worker = _FakeShutdownWorker(pid=303, alive_states=[False])
+        engine = self._build_shutdown_engine(worker)
+        engine._registry_event_queue = _FakeDrainQueue(
+            [
+                {
+                    "kind": "done",
+                    "key": (0, "topic", 0, 42),
+                }
+            ]
+        )
+        engine._completion_queue = _FakeDrainQueue()
+        engine._in_flight_registry = {
+            (0, "topic", 0, 42): {
+                "offset": 42,
+                "topic": "topic",
+                "partition": 0,
+                "requeue_attempts": 0,
+            }
+        }
+
+        await engine.shutdown()
+
+        assert engine._in_flight_registry == {}
+        assert worker.join_calls == [0.05]
 
     @pytest.mark.asyncio
     async def test_shutdown_rejoins_after_terminate_before_considering_kill(self):

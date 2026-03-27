@@ -2,7 +2,7 @@ from typing import List
 
 import pytest
 
-from pyrallel_consumer.dto import CompletionEvent, WorkItem
+from pyrallel_consumer.dto import CompletionEvent, TopicPartition, WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
@@ -44,7 +44,8 @@ def test_incomplete_execution_engine_raises_type_error():
     with pytest.raises(TypeError) as excinfo:
         IncompleteExecutionEngine()
     assert (
-        "Can't instantiate abstract class IncompleteExecutionEngine without an implementation for abstract methods 'get_in_flight_count', 'shutdown'"
+        "Can't instantiate abstract class IncompleteExecutionEngine without an "
+        "implementation for abstract methods 'get_in_flight_count', 'shutdown'"
         in str(excinfo.value)
     )
 
@@ -55,3 +56,12 @@ def test_concrete_execution_engine_can_be_instantiated():
         assert isinstance(engine, ConcreteExecutionEngine)
     except TypeError as e:
         pytest.fail(f"Could not instantiate ConcreteExecutionEngine: {e}")
+
+
+def test_base_execution_engine_min_inflight_offset_defaults_to_none():
+    engine = ConcreteExecutionEngine()
+
+    assert (
+        engine.get_min_inflight_offset(TopicPartition(topic="test", partition=0))
+        is None
+    )

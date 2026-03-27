@@ -21,6 +21,10 @@ class BenchmarkResult:
     throughput_tps: float
     avg_processing_ms: float
     p99_processing_ms: float
+    window_size_messages: int | None = None
+    tps_p50_window: float | None = None
+    tps_p10_window: float | None = None
+    tps_min_window: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -45,17 +49,23 @@ class BenchmarkStats:
         self._start_time: Optional[float] = None
         self._end_time: Optional[float] = None
         self._durations: list[float] = []
+        self._completion_times: list[float] = []
         self._processed = 0
+        self._window_size_messages = 100
 
     def start(self) -> None:
         if self._start_time is None:
             self._start_time = perf_counter()
 
-    def record(self, duration_sec: float) -> None:
+    def record(self, duration_sec: float, *, completed_at: float | None = None) -> None:
         if self._start_time is None:
             self.start()
         self._durations.append(duration_sec)
         self._processed += 1
+        completion_time = completed_at
+        if completion_time is None:
+            completion_time = perf_counter()
+        self._completion_times.append(completion_time)
 
     def stop(self) -> None:
         if self._start_time is None:
@@ -79,6 +89,7 @@ class BenchmarkStats:
         throughput = (self._processed / total_time) if total_time > 0 else 0.0
         avg_ms = _safe_mean(self._durations) * 1000
         p99_ms = _percentile(self._durations, 99) * 1000
+        window_tps = self._windowed_tps_samples()
         return BenchmarkResult(
             run_name=self.run_name,
             run_type=self.run_type,
@@ -90,7 +101,33 @@ class BenchmarkStats:
             throughput_tps=throughput,
             avg_processing_ms=avg_ms,
             p99_processing_ms=p99_ms,
+            window_size_messages=self._window_size_messages,
+            tps_p50_window=_optional_percentile(window_tps, 50),
+            tps_p10_window=_optional_percentile(window_tps, 10),
+            tps_min_window=min(window_tps) if window_tps else None,
         )
+
+    def _windowed_tps_samples(self) -> list[float]:
+        if len(self._completion_times) < self._window_size_messages:
+            return []
+        if self._start_time is None:
+            return []
+
+        samples: list[float] = []
+        window_size = self._window_size_messages
+        for end_index in range(
+            window_size - 1, len(self._completion_times), window_size
+        ):
+            start_index = end_index - window_size + 1
+            window_start = (
+                self._start_time
+                if start_index == 0
+                else self._completion_times[start_index - 1]
+            )
+            window_end = self._completion_times[end_index]
+            elapsed = max(window_end - window_start, 0.0)
+            samples.append((window_size / elapsed) if elapsed > 0 else 0.0)
+        return samples
 
 
 def _safe_mean(values: list[float]) -> float:
@@ -114,6 +151,12 @@ def _percentile(values: list[float], percentile: float) -> float:
     upper_value = sorted_values[upper_index]
     fraction = rank - lower_index
     return lower_value + (upper_value - lower_value) * fraction
+
+
+def _optional_percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    return _percentile(values, percentile)
 
 
 def write_results_json(

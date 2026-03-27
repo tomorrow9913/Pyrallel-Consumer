@@ -2,7 +2,9 @@
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
+import inspect
 import random
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
@@ -10,20 +12,24 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
-from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 from ..config import KafkaConfig
 from ..dto import (
     CompletionEvent,
-    CompletionStatus,
     DLQPayloadMode,
     OrderingMode,
-    PartitionMetrics,
+    ProcessBatchMetrics,
     SystemMetrics,
 )
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
+from .broker_completion_support import BrokerCompletionSupport
+from .broker_dispatch_support import BrokerDispatchSupport
+from .broker_rebalance_support import BrokerRebalanceSupport
+from .broker_runtime_support import BrokerRuntimeSupport
+from .broker_support import BrokerCommitPlanner, DlqCacheSupport
+from .broker_task_lifecycle_support import BrokerTaskLifecycleSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
 from .work_manager import WorkManager
@@ -33,6 +39,8 @@ logger = LogManager.get_logger(__name__)
 
 class BrokerPoller:
     """Polls Kafka, feeds WorkManager, coordinates commits."""
+
+    MAX_COMPLETED_OFFSETS_FOR_METADATA = 2048
 
     def __init__(
         self,
@@ -49,10 +57,36 @@ class BrokerPoller:
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
         self._worker_pool_size = getattr(pc_conf, "worker_pool_size", 0) or 0
         self.QUEUE_MAX_MESSAGES = int(getattr(pc_conf, "queue_max_messages", 0) or 0)
+        raw_message_cache_max_bytes = getattr(
+            pc_conf, "message_cache_max_bytes", 64 * 1024 * 1024
+        )
+        self._message_cache_max_bytes = (
+            raw_message_cache_max_bytes
+            if isinstance(raw_message_cache_max_bytes, int)
+            else 64 * 1024 * 1024
+        )
         self._queue_resume_threshold = (
             int(self.QUEUE_MAX_MESSAGES * 0.7) if self.QUEUE_MAX_MESSAGES else 0
         )
-        self.ORDERING_MODE = OrderingMode.KEY_HASH
+        config_ordering_mode = getattr(pc_conf, "ordering_mode", OrderingMode.KEY_HASH)
+        if isinstance(config_ordering_mode, str):
+            config_ordering_mode = OrderingMode(config_ordering_mode)
+        if not isinstance(config_ordering_mode, OrderingMode):
+            config_ordering_mode = OrderingMode.KEY_HASH
+        get_ordering_mode = getattr(work_manager, "get_ordering_mode", None)
+        injected_ordering_mode = (
+            get_ordering_mode() if callable(get_ordering_mode) else None
+        )
+        if isinstance(injected_ordering_mode, OrderingMode):
+            self.ORDERING_MODE = injected_ordering_mode
+            if injected_ordering_mode != config_ordering_mode:
+                logger.warning(
+                    "Injected WorkManager ordering_mode %s overrides config ordering_mode %s",
+                    injected_ordering_mode.value,
+                    config_ordering_mode.value,
+                )
+        else:
+            self.ORDERING_MODE = config_ordering_mode
 
         self.producer: Optional[Producer] = None
         self.consumer: Optional[Consumer] = None
@@ -62,13 +96,26 @@ class BrokerPoller:
         self._shutdown_event = asyncio.Event()
         self._control_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
+        self._consumer_task: Optional[asyncio.Task[None]] = None
+        self._consumer_task_stop_timeout_seconds = 5.0
+        self._fatal_error: Optional[Exception] = None
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._metadata_encoder = MetadataEncoder()
+        self._rebalance_support = BrokerRebalanceSupport(
+            metadata_encoder=self._metadata_encoder,
+            tracker_factory=OffsetTracker,
+        )
+        self._commit_planner = BrokerCommitPlanner(
+            metadata_encoder=self._metadata_encoder,
+            max_completed_offsets=self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
+        )
+        self._dlq_cache_support = DlqCacheSupport()
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
             blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
+            max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
         )
 
         self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
@@ -86,8 +133,41 @@ class BrokerPoller:
         )
         self._is_paused = False
 
-        self._message_cache: Dict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]] = {}
+        self._message_cache: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
+        ) = OrderedDict()
+        self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
+
+    # ------------------------------------------------------------------
+    def _rebalance_state_strategy(self) -> str:
+        return str(
+            getattr(
+                self._kafka_config.parallel_consumer,
+                "rebalance_state_strategy",
+                "contiguous_only",
+            )
+        )
+
+    def _decode_assignment_completed_offsets(
+        self,
+        partition: KafkaTopicPartition,
+        committed_partition: Optional[KafkaTopicPartition],
+        last_committed: int,
+    ) -> set[int]:
+        return self._commit_planner.decode_assignment_completed_offsets(
+            strategy=self._rebalance_state_strategy(),
+            partition=partition,
+            committed_partition=committed_partition,
+            last_committed=last_committed,
+        )
+
+    def _encode_revoke_metadata(self, tracker: OffsetTracker, base_offset: int) -> str:
+        return self._commit_planner.encode_revoke_metadata(
+            strategy=self._rebalance_state_strategy(),
+            tracker=tracker,
+            base_offset=base_offset,
+        )
 
     # ------------------------------------------------------------------
     async def _get_consume_timeout_seconds(self) -> float:
@@ -96,6 +176,69 @@ class BrokerPoller:
         if total_in_flight > 0 or total_queued > 0:
             return 0.0
         return self._idle_consume_timeout_seconds
+
+    def _should_cache_message_payloads(self) -> bool:
+        dlq_enabled = bool(getattr(self._kafka_config, "dlq_enabled", False))
+        payload_mode = getattr(
+            self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
+        )
+        return bool(
+            dlq_enabled
+            and payload_mode == DLQPayloadMode.FULL
+            and self._message_cache_max_bytes != 0
+        )
+
+    @staticmethod
+    def _estimate_cached_payload_bytes(payload: Any) -> int:
+        if payload is None:
+            return 0
+        if isinstance(payload, memoryview):
+            return len(payload)
+        if isinstance(payload, (bytes, bytearray)):
+            return len(payload)
+        if isinstance(payload, str):
+            return len(payload.encode("utf-8"))
+        return 0
+
+    def _get_cached_message_size(self, key: Any, value: Any) -> int:
+        return self._dlq_cache_support.get_cached_message_size(key, value)
+
+    def _pop_cached_message(
+        self, cache_key: Tuple[DtoTopicPartition, int]
+    ) -> Optional[Tuple[Any, Any]]:
+        (
+            cached_message,
+            self._message_cache_size_bytes,
+        ) = self._dlq_cache_support.pop_cached_message(
+            self._message_cache,
+            self._message_cache_size_bytes,
+            cache_key,
+        )
+        return cached_message
+
+    def _cache_message_for_dlq(
+        self, tp: DtoTopicPartition, offset: int, key: Any, value: Any
+    ) -> None:
+        self._message_cache_size_bytes = self._dlq_cache_support.cache_message_for_dlq(
+            message_cache=self._message_cache,
+            size_bytes=self._message_cache_size_bytes,
+            should_cache=self._should_cache_message_payloads(),
+            max_bytes=self._message_cache_max_bytes,
+            tp=tp,
+            offset=offset,
+            key=key,
+            value=value,
+            logger=logger,
+        )
+
+    def _drop_cached_partition_messages(self, tp: DtoTopicPartition) -> None:
+        self._message_cache_size_bytes = (
+            self._dlq_cache_support.drop_partition_messages(
+                message_cache=self._message_cache,
+                size_bytes=self._message_cache_size_bytes,
+                tp=tp,
+            )
+        )
 
     # ------------------------------------------------------------------
     async def _publish_to_dlq(
@@ -212,65 +355,14 @@ class BrokerPoller:
 
                 async with self._control_lock:
                     if messages:
-                        for msg in messages:
-                            if msg.error():
-                                logger.warning(
-                                    "Consumed message with error: %s", msg.error()
-                                )
-                                continue
-
-                            topic = msg.topic()
-                            partition = msg.partition()
-                            if topic is None or partition is None:
-                                logger.warning(
-                                    "Received message with None topic or partition"
-                                )
-                                continue
-
-                            tp = DtoTopicPartition(topic=topic, partition=partition)
-                            offset_val = msg.offset()
-                            if offset_val is None:
-                                continue
-                            tracker = self._offset_trackers.get(tp)
-                            if tracker is None:
-                                logger.warning("Untracked partition %s - skipping", tp)
-                                continue
-
-                            cache_key = (tp, offset_val)
-                            self._message_cache[cache_key] = (msg.key(), msg.value())
-
-                            submit_key: Any
-                            if self.ORDERING_MODE == OrderingMode.PARTITION:
-                                submit_key = tp.partition
-                            else:
-                                submit_key = msg.key()
-
-                            await self._work_manager.submit_message(
-                                tp=tp,
-                                offset=offset_val,
-                                epoch=tracker.get_current_epoch(),
-                                key=submit_key,
-                                payload=msg.value(),
-                            )
-
+                        await self._make_dispatch_support().dispatch_messages(messages)
                         await self._work_manager.schedule()
 
                     await self._drain_completion_events_once()
 
-                commits_to_make: List[tuple[DtoTopicPartition, int]] = []
-                for tp, tracker in self._offset_trackers.items():
-                    potential_hwm = tracker.last_committed_offset
-                    for offset in tracker.completed_offsets:
-                        if offset == potential_hwm + 1:
-                            potential_hwm = offset
-                        else:
-                            break
-                    min_inflight = self._get_min_inflight_offset(tp)
-                    if min_inflight is not None and min_inflight <= potential_hwm:
-                        potential_hwm = min_inflight - 1
-                    if potential_hwm > tracker.last_committed_offset:
-                        commits_to_make.append((tp, potential_hwm))
-
+                commits_to_make = (
+                    self._make_dispatch_support().build_commit_candidates()
+                )
                 if commits_to_make:
                     await self._commit_offsets(commits_to_make)
 
@@ -278,6 +370,7 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
+            self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
             self._running = False
@@ -289,6 +382,7 @@ class BrokerPoller:
                 self._completion_monitor_task = None
             await self._cleanup()
             self._shutdown_event.set()
+            self._consumer_task = None
 
     async def _drain_completion_events_once(self) -> bool:
         completed_events = await self._work_manager.poll_completed_events()
@@ -327,106 +421,36 @@ class BrokerPoller:
         except asyncio.CancelledError:
             raise
 
+    def _make_completion_support(self) -> BrokerCompletionSupport:
+        async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
+            return await self._publish_to_dlq(**kwargs)
+
+        return BrokerCompletionSupport(
+            kafka_config=self._kafka_config,
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            message_cache=self._message_cache,
+            should_cache_message_payloads=self._should_cache_message_payloads,
+            pop_cached_message=self._pop_cached_message,
+            publish_to_dlq=_publish_to_dlq_proxy,
+            logger=logger,
+        )
+
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
-        if self._max_blocking_duration_ms <= 0:
-            return []
-
-        threshold_sec = self._max_blocking_duration_ms / 1000.0
-        forced = False
-        execution_config = self._kafka_config.parallel_consumer.execution
-
-        for tp, tracker in self._offset_trackers.items():
-            durations = tracker.get_blocking_offset_durations()
-            if not durations:
-                continue
-
-            for offset, duration in durations.items():
-                if duration < threshold_sec:
-                    continue
-
-                error_text = "Blocking offset %d exceeded %.3fs" % (offset, duration)
-                success = await self._work_manager.force_fail(
-                    tp=tp,
-                    offset=offset,
-                    epoch=tracker.get_current_epoch(),
-                    error=error_text,
-                    attempt=execution_config.max_retries,
-                )
-                if success:
-                    forced = True
-
-        if not forced:
-            return []
-
-        return await self._work_manager.poll_completed_events()
+        return await self._make_completion_support().handle_blocking_timeouts(
+            max_blocking_duration_ms=self._max_blocking_duration_ms
+        )
 
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
-        for event in completed_events:
-            tracker = self._offset_trackers.get(event.tp)
-            if tracker is None:
-                logger.warning("Completion for untracked partition %s", event.tp)
-                continue
-            if event.epoch != tracker.get_current_epoch():
-                logger.warning(
-                    "Discarding zombie completion for %s@%d (epoch %d vs %d)",
-                    event.tp,
-                    event.offset,
-                    event.epoch,
-                    tracker.get_current_epoch(),
-                )
-                continue
+        processed_count = (
+            await self._make_completion_support().process_completed_events(
+                completed_events
+            )
+        )
 
-            dlq_success: bool = True
-
-            if event.status == CompletionStatus.FAILURE:
-                logger.error(
-                    "Message processing failed for %s@%d: %s",
-                    event.tp,
-                    event.offset,
-                    event.error,
-                )
-
-                max_retries = self._kafka_config.parallel_consumer.execution.max_retries
-                if (
-                    self._kafka_config.dlq_enabled and event.attempt >= max_retries  # type: ignore[attr-defined]
-                ):
-                    cache_key = (event.tp, event.offset)
-                    cached_msg = self._message_cache.get(cache_key)
-                    if cached_msg is None:
-                        logger.warning(
-                            "No cached message for %s@%d, skipping DLQ publish and commit",
-                            event.tp,
-                            event.offset,
-                        )
-                        continue
-
-                    msg_key, msg_value = cached_msg
-                    error_text = event.error or "Unknown error"
-                    dlq_success = await self._publish_to_dlq(
-                        tp=event.tp,
-                        offset=event.offset,
-                        epoch=event.epoch,
-                        key=msg_key,
-                        value=msg_value,
-                        error=error_text,
-                        attempt=event.attempt,  # type: ignore[attr-defined]
-                    )
-
-                if not dlq_success:
-                    logger.error(
-                        "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
-                        event.tp,
-                        event.offset,
-                    )
-                    continue
-
-            tracker.mark_complete(event.offset)
-            cache_key_to_remove = (event.tp, event.offset)
-            self._message_cache.pop(cache_key_to_remove, None)
-
-        self._diag_events_since_log += len(completed_events)
+        self._diag_events_since_log += processed_count
         if self._diag_events_since_log >= self._diag_log_every:
             self._log_partition_diagnostics()
             self._diag_events_since_log = 0
@@ -442,29 +466,11 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
-        offsets_to_commit = []
-        for tp, safe_offset in commits_to_make:
-            tracker = self._offset_trackers[tp]
-            metadata = self._metadata_encoder.encode_metadata(
-                tracker.completed_offsets, safe_offset + 1
-            )
-            if isinstance(metadata, (bytes, bytearray)):
-                metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
-            elif isinstance(metadata, str):
-                metadata_text = metadata
-            else:
-                metadata_text = ""
-
-            kafka_tp = cast(
-                KafkaTopicPartition,
-                cast(Any, KafkaTopicPartition)(
-                    tp.topic,
-                    tp.partition,
-                    safe_offset + 1,
-                    metadata=metadata_text,
-                ),
-            )
-            offsets_to_commit.append(kafka_tp)
+        offsets_to_commit = self._commit_planner.build_offsets_to_commit(
+            commits_to_make=commits_to_make,
+            trackers=self._offset_trackers,
+            strategy=self._rebalance_state_strategy(),
+        )
 
         max_attempts = 2  # 1 initial + 1 retry
         for attempt in range(max_attempts):
@@ -492,11 +498,24 @@ class BrokerPoller:
                         exc,
                     )
 
+    def _get_commit_metadata_offsets(
+        self, tracker: OffsetTracker, base_offset: int
+    ) -> set[int]:
+        return self._commit_planner.get_commit_metadata_offsets(tracker, base_offset)
+
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
         return hash(cast(bytes, msg.key() or b"")) % self._worker_pool_size
 
     async def _get_total_queued_messages(self) -> int:
+        get_total_queued_messages = getattr(
+            self._work_manager, "get_total_queued_messages", None
+        )
+        if callable(get_total_queued_messages):
+            total = get_total_queued_messages()
+            if isinstance(total, int):
+                return total
+
         total = 0
         for queue_map in self._work_manager.get_virtual_queue_sizes().values():
             for size in queue_map.values():
@@ -504,95 +523,20 @@ class BrokerPoller:
         return total
 
     def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
-        if not isinstance(self._execution_engine, ProcessExecutionEngine):
-            return None
-        return self._execution_engine.get_min_inflight_offset(tp)
+        min_inflight = self._execution_engine.get_min_inflight_offset(tp)
+        return min_inflight if isinstance(min_inflight, int) else None
 
     def _log_partition_diagnostics(self) -> None:
-        queue_sizes = self._work_manager.get_virtual_queue_sizes()
-        gaps = self._work_manager.get_gaps()
-        blocking = self._work_manager.get_blocking_offsets()
-        parts: list[str] = []
-        for tp, tracker in self._offset_trackers.items():
-            safe_topic = validate_topic_name(tp.topic)
-            queued = sum(queue_sizes.get(tp, {}).values())
-            gap_count = len(gaps.get(tp, []))
-            blocking_offset = blocking.get(tp)
-            blocking_age = None
-            if blocking_offset is not None:
-                durations = tracker.get_blocking_offset_durations()
-                blocking_age = durations.get(blocking_offset.start)
-            age_str = (
-                "%.2fs" % blocking_age
-                if isinstance(blocking_age, (int, float))
-                else "n/a"
-            )
-            parts.append(
-                "%s-%d queued=%d gaps=%d blocking=%s age=%s"
-                % (
-                    safe_topic,
-                    tp.partition,
-                    queued,
-                    gap_count,
-                    blocking_offset.start if blocking_offset else "none",
-                    age_str,
-                )
-            )
-            if (
-                blocking_offset is not None
-                and isinstance(blocking_age, (int, float))
-                and blocking_age >= self._blocking_warn_seconds
-            ):
-                logger.warning(
-                    "Prolonged blocking offset %s@%d age=%.2fs gaps=%d queued=%d",
-                    tp,
-                    blocking_offset.start,
-                    blocking_age,
-                    gap_count,
-                    queued,
-                )
-        logger.debug("Partition diag: %s", "; ".join(parts))
+        self._make_runtime_support().log_partition_diagnostics()
 
     async def _check_backpressure(self) -> None:
         if self.consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
-        total_in_flight = self._work_manager.get_total_in_flight_count()
         total_queued = await self._get_total_queued_messages()
-        current_load = total_in_flight + total_queued
-
-        partitions = self.consumer.assignment()
-        if not partitions:
-            return
-
-        queue_full = (
-            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        self._is_paused = self._make_runtime_support().check_backpressure(
+            total_queued=total_queued
         )
-
-        if not self._is_paused and (
-            current_load > self.MAX_IN_FLIGHT_MESSAGES or queue_full
-        ):
-            logger.warning(
-                "Backpressure: pausing consumer (load=%d limit=%d)",
-                current_load,
-                self.MAX_IN_FLIGHT_MESSAGES,
-            )
-            self.consumer.pause(partitions)
-            self._is_paused = True
-        elif self._is_paused and (
-            current_load < self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME
-            and (
-                self._queue_resume_threshold == 0
-                or total_queued <= self._queue_resume_threshold
-            )
-        ):
-            logger.debug(
-                "Backpressure released: resuming consumer (load=%d resume=%d)",
-                current_load,
-                self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
-            )
-            self.consumer.resume(partitions)
-            self._is_paused = False
 
     # ------------------------------------------------------------------
     def _delivery_report(self, err: Optional[KafkaException], msg: Message) -> None:
@@ -604,6 +548,51 @@ class BrokerPoller:
             await asyncio.to_thread(self.producer.flush, timeout=5)
         if self.consumer:
             self.consumer.close()
+        self._message_cache.clear()
+        self._message_cache_size_bytes = 0
+
+    def _raise_if_failed(self) -> None:
+        if self._fatal_error is None:
+            return
+
+        error = self._fatal_error
+        self._fatal_error = None
+        raise error
+
+    async def _submit_grouped_messages(
+        self,
+        grouped_messages: Dict[
+            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
+        ],
+    ) -> None:
+        if not grouped_messages:
+            return
+
+        submit_message_batch = getattr(self._work_manager, "submit_message_batch", None)
+        if inspect.iscoroutinefunction(submit_message_batch):
+            await submit_message_batch(grouped_messages)
+            return
+
+        for (tp, key), messages in grouped_messages.items():
+            for offset, epoch, payload in messages:
+                await self._work_manager.submit_message(
+                    tp=tp,
+                    offset=offset,
+                    epoch=epoch,
+                    key=key,
+                    payload=payload,
+                )
+
+    def _make_dispatch_support(self) -> BrokerDispatchSupport:
+        return BrokerDispatchSupport(
+            ordering_mode=self.ORDERING_MODE,
+            offset_trackers=self._offset_trackers,
+            cache_message_for_dlq=self._cache_message_for_dlq,
+            submit_message=self._work_manager.submit_message,
+            submit_grouped_messages=self._submit_grouped_messages,
+            get_min_inflight_offset=self._get_min_inflight_offset,
+            logger=logger,
+        )
 
     # ------------------------------------------------------------------
     def _on_assign(
@@ -614,27 +603,14 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
         )
 
-        work_manager_assignments: Dict[DtoTopicPartition, OffsetTracker] = {}
-
-        for partition in partitions:
-            tp_dto = DtoTopicPartition(partition.topic, partition.partition)
-            tracker = OffsetTracker(
-                topic_partition=tp_dto,
-                starting_offset=partition.offset,
-                max_revoke_grace_ms=0,
-                initial_completed_offsets=set(),
-            )
-            last_committed = (
-                partition.offset - 1
-                if partition.offset and partition.offset > 0
-                else -1
-            )
-            tracker.last_committed_offset = last_committed
-            tracker.last_fetched_offset = last_committed
-            tracker.increment_epoch()
-            self._offset_trackers[tp_dto] = tracker
-            work_manager_assignments[tp_dto] = tracker
-
+        work_manager_assignments = self._rebalance_support.build_assignments(
+            consumer=consumer,
+            partitions=partitions,
+            strategy=self._rebalance_state_strategy(),
+            max_revoke_grace_ms=self._kafka_config.parallel_consumer.execution.max_revoke_grace_ms,
+            logger=logger,
+        )
+        self._offset_trackers.update(work_manager_assignments)
         self._work_manager.on_assign(work_manager_assignments)
 
     def _on_revoke(
@@ -645,118 +621,130 @@ class BrokerPoller:
             ", ".join(f"{tp.topic}-{tp.partition}" for tp in partitions),
         )
 
-        tp_dtos = [
-            DtoTopicPartition(topic=tp.topic, partition=tp.partition)
-            for tp in partitions
-        ]
-        self._work_manager.on_revoke(tp_dtos)
-
-        for tp_kafka in partitions:
-            tp_dto = DtoTopicPartition(tp_kafka.topic, tp_kafka.partition)
-            tracker = self._offset_trackers.get(tp_dto)
-            if tracker is None:
-                continue
-
-            tracker.advance_high_water_mark()
-            safe_offset = tracker.last_committed_offset
-            if safe_offset >= 0:
-                tp_to_commit = KafkaTopicPartition(
-                    tp_dto.topic,
-                    tp_dto.partition,
-                    safe_offset + 1,
-                )
-                try:
-                    consumer.commit(offsets=[tp_to_commit], asynchronous=False)
-                except KafkaException as exc:
-                    logger.warning(
-                        "Revoke commit failed for %s-%d at offset %d: %s",
-                        tp_dto.topic,
-                        tp_dto.partition,
-                        safe_offset + 1,
-                        exc,
-                    )
-
-            del self._offset_trackers[tp_dto]
+        self._rebalance_support.handle_revoke(
+            consumer=consumer,
+            partitions=partitions,
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            drop_cached_partition_messages=self._drop_cached_partition_messages,
+            strategy=self._rebalance_state_strategy(),
+            logger=logger,
+        )
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
         try:
+            if self._running:
+                return
+            self._shutdown_event = asyncio.Event()
+            self._fatal_error = None
             producer_conf = cast(
                 dict[str, str | int | float | bool],
                 self._kafka_config.get_producer_config(),
             )
-            self.producer = Producer(producer_conf)  # type: ignore[arg-type]
-
             admin_conf = cast(
                 dict[str, str | int | float | bool],
                 {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]},
             )
-            self.admin = AdminClient(admin_conf)  # type: ignore[arg-type]
-
             consumer_conf = cast(
                 dict[str, str | int | float | bool | None],
                 self._kafka_config.get_consumer_config(),
             )
-            self.consumer = Consumer(consumer_conf)  # type: ignore[arg-type]
-            self.consumer.subscribe(
-                [self._consume_topic],
+            (
+                self.producer,
+                self.admin,
+                self.consumer,
+                self._consumer_task,
+                self._completion_monitor_task,
+            ) = self._make_task_lifecycle_support().start_runtime(
+                consume_topic=self._consume_topic,
+                producer_conf=producer_conf,
+                admin_conf=admin_conf,
+                consumer_conf=consumer_conf,
                 on_assign=self._on_assign,
                 on_revoke=self._on_revoke,
+                consumer_loop_coro_factory=self._run_consumer,
+                completion_monitor_coro_factory=self._run_completion_monitor,
+                strict_completion_monitor_enabled=getattr(
+                    self._kafka_config.parallel_consumer,
+                    "strict_completion_monitor_enabled",
+                    True,
+                ),
             )
             self._running = True
-            if getattr(
-                self._kafka_config.parallel_consumer,
-                "strict_completion_monitor_enabled",
-                True,
-            ):
-                self._completion_monitor_task = asyncio.create_task(
-                    self._run_completion_monitor()
-                )
-            asyncio.create_task(self._run_consumer())
             logger.debug("Kafka consumer subscribed to %s", self._consume_topic)
         except Exception as exc:
             logger.error("Failed to start BrokerPoller: %s", exc, exc_info=True)
             raise
 
     async def stop(self) -> None:
-        if not self._running:
+        if not self._running and self._consumer_task is None:
+            if self._shutdown_event.is_set():
+                self._raise_if_failed()
             return
         logger.debug("Shutdown signal received")
         self._running = False
-        await self._shutdown_event.wait()
+        if self._consumer_task is not None:
+            consumer_task = self._consumer_task
+            await self._make_task_lifecycle_support().stop_runtime(
+                consumer_task=consumer_task,
+                shutdown_event=self._shutdown_event,
+                timeout_seconds=self._consumer_task_stop_timeout_seconds,
+                wait_for=asyncio.wait_for,
+                gather=asyncio.gather,
+            )
+            self._consumer_task = None
+        self._raise_if_failed()
         logger.debug("BrokerPoller stopped")
+
+    async def wait_closed(self) -> None:
+        if not self._running and self._consumer_task is None:
+            if self._shutdown_event.is_set():
+                self._raise_if_failed()
+            return
+        await self._make_task_lifecycle_support().wait_closed(
+            shutdown_event=self._shutdown_event,
+            raise_if_failed=self._raise_if_failed,
+        )
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:
-        partition_metrics_list: List[PartitionMetrics] = []
-        queue_sizes = self._work_manager.get_virtual_queue_sizes()
-
-        for tp, tracker in self._offset_trackers.items():
-            true_lag = max(
-                0, tracker.last_fetched_offset - tracker.last_committed_offset
-            )
-            gaps = tracker.get_gaps()
-            gap_count = len(gaps)
-            blocking_offset = gaps[0].start if gaps else None
-            durations = tracker.get_blocking_offset_durations()
-            blocking_duration = (
-                durations.get(blocking_offset) if blocking_offset else None
-            )
-            queued_count = sum(queue_sizes.get(tp, {}).values())
-
-            partition_metrics_list.append(
-                PartitionMetrics(
-                    tp=tp,
-                    true_lag=true_lag,
-                    gap_count=gap_count,
-                    blocking_offset=blocking_offset,
-                    blocking_duration_sec=blocking_duration,
-                    queued_count=queued_count,
-                )
-            )
-
+        metrics = self._make_runtime_support().build_system_metrics()
+        runtime_metrics = self._execution_engine.get_runtime_metrics()
         return SystemMetrics(
-            total_in_flight=self._work_manager.get_total_in_flight_count(),
+            total_in_flight=metrics.total_in_flight,
+            is_paused=metrics.is_paused,
+            partitions=metrics.partitions,
+            process_batch_metrics=(
+                runtime_metrics
+                if isinstance(runtime_metrics, ProcessBatchMetrics)
+                else None
+            ),
+        )
+
+    def _make_runtime_support(self) -> BrokerRuntimeSupport:
+        return BrokerRuntimeSupport(
+            work_manager=self._work_manager,
+            offset_trackers=self._offset_trackers,
+            consumer=self.consumer,
+            max_in_flight_messages=self.MAX_IN_FLIGHT_MESSAGES,
+            min_in_flight_messages_to_resume=self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
+            queue_max_messages=self.QUEUE_MAX_MESSAGES,
+            queue_resume_threshold=self._queue_resume_threshold,
             is_paused=self._is_paused,
-            partitions=partition_metrics_list,
+            blocking_warn_seconds=self._blocking_warn_seconds,
+            logger=logger,
+        )
+
+    def _make_task_lifecycle_support(self) -> BrokerTaskLifecycleSupport:
+        def create_task_with_name(
+            coro: Any, name: str | None = None
+        ) -> asyncio.Task[Any]:
+            return asyncio.create_task(coro, name=name)
+
+        return BrokerTaskLifecycleSupport(
+            producer_factory=Producer,
+            admin_factory=AdminClient,
+            consumer_factory=Consumer,
+            task_factory=create_task_with_name,
         )

@@ -187,9 +187,7 @@ class OffsetTracker:
             self._last_gap_key = cache_key
             self._repeat_gap_count = 0
 
-        current_blocking_offsets_set: Set[int] = set()
-        for gap in gaps:
-            current_blocking_offsets_set.update(range(gap.start, gap.end + 1))
+        current_blocking_offsets_set: Set[int] = {gap.start for gap in gaps}
 
         for offset in current_blocking_offsets_set:
             if offset not in self._blocking_offset_timestamps:
@@ -223,8 +221,8 @@ class OffsetTracker:
 
     def get_blocking_offset_durations(self) -> Dict[int, float]:
         """
-        Returns the duration (in seconds) that each blocking offset has been blocking.
-        각 블로킹 오프셋이 블로킹된 시간을 초 단위로 반환합니다.
+        Returns the duration (in seconds) for each current blocking gap head offset.
+        현재 블로킹 gap의 시작 오프셋별 블로킹 시간을 초 단위로 반환합니다.
 
         Returns:
             Dict[int, float]: 오프셋과 해당 블로킹 시간(초) 딕셔너리

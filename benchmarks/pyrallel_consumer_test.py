@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
 
-from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
+from pyrallel_consumer.config import ExecutionConfig, KafkaConfig, MetricsConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
@@ -20,6 +20,7 @@ from pyrallel_consumer.dto import (
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
 
 from .kafka_admin import TopicConfig, reset_topics_and_groups
 from .stats import BenchmarkResult, BenchmarkStats
@@ -36,6 +37,16 @@ conf: Dict[str, Any] = {
     "enable.auto.commit": False,
     "session.timeout.ms": 6000,
 }
+
+_PROMETHEUS_EXPORTERS: dict[int, PrometheusMetricsExporter] = {}
+
+
+def _get_or_create_prometheus_exporter(port: int) -> PrometheusMetricsExporter:
+    exporter = _PROMETHEUS_EXPORTERS.get(port)
+    if exporter is None:
+        exporter = PrometheusMetricsExporter(MetricsConfig(enabled=True, port=port))
+        _PROMETHEUS_EXPORTERS[port] = exporter
+    return exporter
 
 
 def create_topic_if_not_exists(
@@ -221,6 +232,9 @@ def build_kafka_config(
     bootstrap_servers: Optional[str] = None,
     consumer_group: Optional[str] = None,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: Optional[int] = None,
+    process_max_batch_wait_ms: Optional[int] = None,
+    metrics_port: Optional[int] = None,
 ) -> KafkaConfig:
     effective_conf = dict(conf)
     if bootstrap_servers:
@@ -241,6 +255,16 @@ def build_kafka_config(
     kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
         strict_completion_monitor_enabled
     )
+    if process_batch_size is not None:
+        kafka_config.parallel_consumer.execution.process_config.batch_size = (
+            process_batch_size
+        )
+    if process_max_batch_wait_ms is not None:
+        kafka_config.parallel_consumer.execution.process_config.max_batch_wait_ms = (
+            process_max_batch_wait_ms
+        )
+    if metrics_port is not None:
+        kafka_config.metrics = MetricsConfig(enabled=True, port=metrics_port)
 
     return kafka_config
 
@@ -261,6 +285,9 @@ async def run_pyrallel_consumer_test(
     ordering_mode: str = OrderingMode.KEY_HASH.value,
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_batch_size: Optional[int] = None,
+    process_max_batch_wait_ms: Optional[int] = None,
+    metrics_port: Optional[int] = None,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -285,6 +312,9 @@ async def run_pyrallel_consumer_test(
         bootstrap_servers=bootstrap_servers,
         consumer_group=consumer_group,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_batch_size=process_batch_size,
+        process_max_batch_wait_ms=process_max_batch_wait_ms,
+        metrics_port=metrics_port,
     )
     mode_value = ExecutionMode(execution_mode)
     ordering_mode_value = OrderingMode(ordering_mode)
@@ -293,6 +323,11 @@ async def run_pyrallel_consumer_test(
     stats = stats_tracker
     if stats:
         stats.start()
+    prometheus_exporter = (
+        _get_or_create_prometheus_exporter(metrics_port)
+        if metrics_port is not None
+        else None
+    )
 
     class BenchmarkMetricsObserver:
         def __init__(
@@ -301,12 +336,14 @@ async def run_pyrallel_consumer_test(
             cons_stats: ConsumptionStats,
             completion_event: asyncio.Event,
             completion_ordering_validator: Optional[OrderingValidator] = None,
+            prometheus_metrics_exporter: Optional[PrometheusMetricsExporter] = None,
         ) -> None:
             self._stats = benchmark_stats
             self._consumption_stats = cons_stats
             self._stop_event = completion_event
             self._failure_error: Optional[str] = None
             self._completion_ordering_validator = completion_ordering_validator
+            self._prometheus_metrics_exporter = prometheus_metrics_exporter
 
         @property
         def failure_error(self) -> Optional[str]:
@@ -324,6 +361,10 @@ async def run_pyrallel_consumer_test(
                     % (tp.topic, tp.partition)
                 )
                 return
+            if self._prometheus_metrics_exporter is not None:
+                self._prometheus_metrics_exporter.observe_completion(
+                    tp, status, duration_seconds
+                )
             self._consumption_stats.record()
             if self._stats:
                 self._stats.record(duration_seconds)
@@ -370,6 +411,7 @@ async def run_pyrallel_consumer_test(
         consumption_stats,
         stop_event,
         completion_ordering_validator=process_completion_validator,
+        prometheus_metrics_exporter=prometheus_exporter,
     )
 
     async def async_worker(item: WorkItem) -> None:
@@ -426,10 +468,21 @@ async def run_pyrallel_consumer_test(
     print("Timeout: %ds" % timeout_sec)
 
     diagnostics_task: Optional[asyncio.Task[None]] = None
+    metrics_task: Optional[asyncio.Task[None]] = None
     timed_out = False
     run_completed = False
     try:
         await broker_poller.start()
+        if prometheus_exporter is not None:
+
+            async def _publish_metrics() -> None:
+                while not stop_event.is_set():
+                    prometheus_exporter.update_from_system_metrics(
+                        broker_poller.get_metrics()
+                    )
+                    await asyncio.sleep(0.5)
+
+            metrics_task = asyncio.create_task(_publish_metrics())
         assignment_timeout_sec = min(max(timeout_sec / 4, 1.0), 10.0)
         await _wait_for_partition_assignment(
             broker_poller,
@@ -494,9 +547,17 @@ async def run_pyrallel_consumer_test(
                 await diagnostics_task
             except asyncio.CancelledError:
                 pass
+        if metrics_task is not None:
+            metrics_task.cancel()
+            try:
+                await metrics_task
+            except asyncio.CancelledError:
+                pass
 
         print("Stopping PyrallelConsumer...")
         await broker_poller.stop()
+        if prometheus_exporter is not None:
+            prometheus_exporter.update_from_system_metrics(broker_poller.get_metrics())
         await engine.shutdown()
         if stats:
             stats.stop()

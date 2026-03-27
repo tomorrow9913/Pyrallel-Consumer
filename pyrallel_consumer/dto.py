@@ -86,6 +86,7 @@ class WorkItem:
         epoch (int): 처리 에포크(작업 항목이 속한 시점의 파티션 소유권 세대 번호)
         key (Any): 가상 파티셔닝을 위한 메시지 키
         payload (Any): 실제 메시지 페이로드
+        requeue_attempts (int): process worker 재큐 시도 횟수
     """
 
     id: str
@@ -94,6 +95,7 @@ class WorkItem:
     epoch: int
     key: Any  # Message key for virtual partitioning
     payload: Any  # The actual message payload
+    requeue_attempts: int = 0
 
 
 # --- Process Execution ---
@@ -148,6 +150,32 @@ class EngineMetrics:
 
 
 @dataclass(frozen=True)
+class ProcessBatchMetrics:
+    """
+    ProcessExecutionEngine micro-batch runtime metrics snapshot.
+
+    Attributes:
+        size_flush_count (int): Number of size-triggered flushes
+        timer_flush_count (int): Number of timer-triggered flushes
+        close_flush_count (int): Number of close-triggered flushes
+        total_flushed_items (int): Total items flushed across all batches
+        last_flush_size (int): Size of the most recent flushed batch
+        last_flush_wait_seconds (float): Wait time of the most recent flushed batch
+        buffered_items (int): Number of currently buffered items
+        buffered_age_seconds (float): Age of current buffer since first item
+    """
+
+    size_flush_count: int
+    timer_flush_count: int
+    close_flush_count: int
+    total_flushed_items: int
+    last_flush_size: int
+    last_flush_wait_seconds: float
+    buffered_items: int
+    buffered_age_seconds: float
+
+
+@dataclass(frozen=True)
 class PartitionMetrics:
     """
     개별 파티션에 대한 메트릭 정보입니다.
@@ -183,3 +211,4 @@ class SystemMetrics:
     total_in_flight: int
     is_paused: bool
     partitions: list[PartitionMetrics]
+    process_batch_metrics: Optional[ProcessBatchMetrics] = None

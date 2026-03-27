@@ -7,7 +7,7 @@ This directory contains runnable examples demonstrating how to use Pyrallel Cons
 1. A running Kafka broker (default: `localhost:9092`)
 2. Install dependencies:
    ```bash
-   uv pip install -r requirements.txt
+   uv sync
    ```
 3. Produce test messages (using the bundled producer script):
    ```bash

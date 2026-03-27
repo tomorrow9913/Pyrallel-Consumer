@@ -36,6 +36,12 @@ uv run python -m benchmarks.run_parallel_benchmark \
   --worker-io-sleep-ms 5
 ```
 
+For benchmark development or local benchmark test runs, install the dev tooling set:
+
+```bash
+uv sync --group dev
+```
+
 ## Key options
 - No arguments: launches the Textual TUI so you can configure and start the benchmark interactively.
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.
@@ -43,9 +49,12 @@ uv run python -m benchmarks.run_parallel_benchmark \
   - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
+  - `--metrics-port`: expose Prometheus metrics on the host for the current benchmark process (defaults to `9091`; use `0` to disable).
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
   - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).
+  - `--process-batch-size`: override process-mode micro-batch size for benchmark runs only.
+  - `--process-max-batch-wait-ms`: override process-mode micro-batch wait for benchmark runs only.
 - Profiling (yappi):
   - `--profile`: enable profiling (baseline/async only; process mode profiling is disabled by default).
   - `--profile-dir`: directory to write `.prof` files (default `benchmarks/results/profiles`).
@@ -80,6 +89,10 @@ uv run python -m benchmarks.run_parallel_benchmark \
 - Profiling adds overhead; do not compare TPS from profiled runs to non-profiled runs.
 - Process worker profiling is enabled when `--profile` is set; per-worker files are saved automatically. Use `uv run snakeviz <prof>` to inspect.
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
+- For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
+- If Prometheus/Grafana is running from `.github/e2e.compose.yml`, the benchmark now exposes metrics on `9091` by default so the `pyrallel-consumer` target comes up automatically.
+- Use `--metrics-port 0` when you want to disable benchmark-side Prometheus exposure.
+- `kafka-exporter` should recover automatically once Kafka is ready; if `pyrallel-consumer` stays `down`, make sure the benchmark process is still running with `--metrics-port 9091`.
 
 ## Interpreting TPS vs per-message latency
 
