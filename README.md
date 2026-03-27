@@ -9,7 +9,7 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
-> **Release policy:** current published versions are alpha/prerelease (`0.1.2a1`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+> **Release policy:** current published versions are alpha/prerelease (`0.1.2a2`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
 
 ## 🌟 Key Features
 
