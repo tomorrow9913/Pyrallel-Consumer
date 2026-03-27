@@ -98,6 +98,63 @@ class OffsetTracker:
             if len(self.completed_offsets) != before_size:
                 self._bump_version()
 
+    def get_committable_high_water_mark(
+        self, min_inflight_offset: Optional[int] = None
+    ) -> int:
+        """
+        Return the highest contiguous offset that is safe to commit.
+
+        Args:
+            min_inflight_offset (Optional[int]): Lowest still in-flight offset for the
+                same topic/partition. When provided, the committable HWM is clamped
+                below this offset.
+
+        Returns:
+            int: Highest contiguous offset safe to commit.
+        """
+        potential_hwm = self.last_committed_offset
+        for offset in self.completed_offsets:
+            if offset == potential_hwm + 1:
+                potential_hwm = offset
+            else:
+                break
+
+        if min_inflight_offset is not None and min_inflight_offset <= potential_hwm:
+            potential_hwm = min_inflight_offset - 1
+
+        return potential_hwm
+
+    def commit_through(self, committed_offset: int) -> None:
+        """
+        Advance the committed offset to a known contiguous-safe value.
+
+        Args:
+            committed_offset (int): Highest contiguous-safe offset that has been
+                durably committed.
+        """
+        if committed_offset <= self.last_committed_offset:
+            return
+
+        old_hwm = self.last_committed_offset
+        offsets_to_remove = list(
+            self.completed_offsets.irange(
+                minimum=self.last_committed_offset + 1,
+                maximum=committed_offset,
+            )
+        )
+        for offset in offsets_to_remove:
+            self.completed_offsets.remove(offset)
+
+        self.last_committed_offset = committed_offset
+        self._bump_version()
+        if self._logger.isEnabledFor(logging.DEBUG):
+            self._logger.debug(
+                "HWM advanced for %s: %d -> %d",
+                self.topic_partition,
+                old_hwm,
+                committed_offset,
+            )
+
     def advance_high_water_mark(self) -> None:
         """
         Advances the last committed offset based on completed offsets.
@@ -106,34 +163,8 @@ class OffsetTracker:
         Returns:
             None
         """
-        old_hwm = self.last_committed_offset
-        new_hwm = self.last_committed_offset
-        # SortedSet allows efficient iteration in sorted order
-        for offset in list(
-            self.completed_offsets
-        ):  # Iterate over a copy to allow modification
-            if offset == new_hwm + 1:
-                new_hwm = offset
-            else:
-                # Found a gap, stop advancing HWM
-                break
-
-        # Remove committed offsets from the set
-        if new_hwm > self.last_committed_offset:
-            for i in range(self.last_committed_offset + 1, new_hwm + 1):
-                if (
-                    i in self.completed_offsets
-                ):  # Ensure the offset is still in the set before removing
-                    self.completed_offsets.remove(i)
-            self.last_committed_offset = new_hwm
-            self._bump_version()
-            if self._logger.isEnabledFor(logging.DEBUG):
-                self._logger.debug(
-                    "HWM advanced for %s: %d -> %d",
-                    self.topic_partition,
-                    old_hwm,
-                    new_hwm,
-                )
+        new_hwm = self.get_committable_high_water_mark()
+        self.commit_through(new_hwm)
 
     def get_gaps(self) -> list[OffsetRange]:
         """

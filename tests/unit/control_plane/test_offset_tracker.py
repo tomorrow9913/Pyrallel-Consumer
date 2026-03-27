@@ -42,6 +42,26 @@ def test_advance_high_water_mark_contiguous_offsets(offset_tracker):
     assert offset_tracker.completed_offsets == set()  # Should be empty after committing
 
 
+def test_get_committable_high_water_mark_clamps_by_min_inflight(offset_tracker):
+    offset_tracker.mark_complete(offset=0)
+    offset_tracker.mark_complete(offset=1)
+    offset_tracker.mark_complete(offset=2)
+
+    assert offset_tracker.get_committable_high_water_mark() == 2
+    assert offset_tracker.get_committable_high_water_mark(min_inflight_offset=2) == 1
+
+
+def test_commit_through_updates_hwm_and_retains_future_offsets(offset_tracker):
+    offset_tracker.mark_complete(offset=0)
+    offset_tracker.mark_complete(offset=1)
+    offset_tracker.mark_complete(offset=3)
+
+    offset_tracker.commit_through(1)
+
+    assert offset_tracker.last_committed_offset == 1
+    assert offset_tracker.completed_offsets == {3}
+
+
 def test_advance_high_water_mark_with_gap(offset_tracker):
     offset_tracker.mark_complete(offset=0)
     offset_tracker.mark_complete(offset=2)  # Gap at 1

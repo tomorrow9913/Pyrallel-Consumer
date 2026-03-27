@@ -657,6 +657,32 @@ async def test_commit_offsets_uses_topic_partition_with_metadata(broker_poller):
     assert kafka_tp.metadata == expected_metadata
 
 
+@pytest.mark.asyncio
+async def test_commit_offsets_uses_safe_offset_without_rescanning_tracker(
+    broker_poller,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.mark_complete(0)
+    tracker.mark_complete(1)
+    tracker.mark_complete(3)
+    tracker.advance_high_water_mark = MagicMock(
+        side_effect=AssertionError("advance_high_water_mark should not be called")
+    )
+    broker_poller._offset_trackers[tp] = tracker
+    broker_poller.consumer = MagicMock(spec=Consumer)
+
+    await broker_poller._commit_offsets([(tp, 1)])
+
+    assert tracker.last_committed_offset == 1
+    assert tracker.completed_offsets == {3}
+
+
 class TestRunConsumerCommitExceptionDefense:
     """_run_consumer commit failure must not kill the consumer loop."""
 
