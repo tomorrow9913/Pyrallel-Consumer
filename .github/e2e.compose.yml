@@ -24,6 +24,44 @@ services:
     networks:
       - yamong_network
 
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    command:
+      - "--kafka.server=kafka-1:29092"
+    ports:
+      - "9308:9308"
+    depends_on:
+      - kafka-1
+    networks:
+      - yamong_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - kafka-exporter
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - yamong_network
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=local-e2e
+    depends_on:
+      - prometheus
+    volumes:
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    networks:
+      - yamong_network
+
 networks:
   yamong_network:
     driver: bridge

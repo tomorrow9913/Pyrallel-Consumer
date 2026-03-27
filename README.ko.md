@@ -378,6 +378,10 @@ uv run pytest tests/e2e -q
 
 - `localhost:9092`에 Kafka가 없으면 E2E 테스트는 즉시 실패하지 않고 skip 됩니다.
 - 실제 Kafka 경로를 확인하려면 로컬 `docker compose` 스택을 띄운 뒤 실행하면 됩니다.
+- 테스트용 모니터링 스택은 `docker compose -f .github/e2e.compose.yml up -d`로 띄울 수 있습니다.
+- 테스트 스택 대시보드:
+  - Prometheus: http://localhost:9090
+  - Grafana: http://localhost:3000 (`local-e2e`)
 
 ## 📖 문서
 

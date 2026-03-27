@@ -262,6 +262,10 @@ uv run pytest tests/e2e -q
 
 - If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
 - Use the local `docker compose` stack when you want the full Kafka-backed path.
+- For the test monitoring stack, run `docker compose -f .github/e2e.compose.yml up -d`.
+- Test-stack dashboards:
+  - Prometheus: http://localhost:9090
+  - Grafana: http://localhost:3000 (`local-e2e`)
 
 ## 📖 Documentation
 
