@@ -10,6 +10,7 @@ def test_e2e_compose_includes_prometheus_and_grafana_services() -> None:
     compose_text = (REPO_ROOT / ".github" / "e2e.compose.yml").read_text()
 
     assert "kafka-exporter:" in compose_text
+    assert "restart: unless-stopped" in compose_text
     assert "prometheus:" in compose_text
     assert "grafana:" in compose_text
     assert "../monitoring/prometheus.yml" in compose_text

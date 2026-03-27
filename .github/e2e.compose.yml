@@ -30,6 +30,7 @@ services:
       - "--kafka.server=kafka-1:29092"
     ports:
       - "9308:9308"
+    restart: unless-stopped
     depends_on:
       - kafka-1
     networks:

@@ -91,6 +91,7 @@ uv sync --group dev
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
 - For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
 - If Prometheus/Grafana is running from `.github/e2e.compose.yml`, launch the benchmark with `--metrics-port 9091` so the `pyrallel-consumer` target comes up.
+- `kafka-exporter` should recover automatically once Kafka is ready; if `pyrallel-consumer` stays `down`, make sure the benchmark process is still running with `--metrics-port 9091`.
 
 ## Interpreting TPS vs per-message latency
 

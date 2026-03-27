@@ -266,7 +266,9 @@ uv run pytest tests/e2e -q
 - Test-stack dashboards:
   - Prometheus: http://localhost:9090
   - Grafana: http://localhost:3000 (`local-e2e`)
+- `kafka-exporter` may show `down` briefly during the first Kafka startup, but the compose stack restarts it automatically until Kafka is ready.
 - To bring the `pyrallel-consumer` Prometheus target up, run a benchmark or test harness with `--metrics-port 9091`.
+- If no benchmark or test harness is actively running with `--metrics-port 9091`, the `pyrallel-consumer` target staying `down` in Prometheus is expected.
 - Example:
 ```bash
 uv run python benchmarks/run_parallel_benchmark.py \
