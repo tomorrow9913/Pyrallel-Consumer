@@ -9,7 +9,7 @@
 | 구성요소 | 역할 |
 | --- | --- |
 | `virtual_partition_queues` | key 또는 partition 단위 backlog 보관 |
-| `runnable_queue_keys` | 현재 실행 가능 후보 queue 목록 |
+| `runnable_queue_keys` | 현재 실행 가능 후보 queue 목록 (`WorkQueueTopology`의 ordered-set helper가 순서를 유지) |
 | `in_flight_work_items` | 실행 중인 canonical work item 추적 |
 | `keys_in_flight` / `partitions_in_flight` | ordering mode별 동시 실행 fence |
 | `OffsetTracker` | blocking gap 정보 제공 |
@@ -47,11 +47,14 @@ flowchart LR
 5. submit 후에는 ordering mode에 맞게 `keys_in_flight` 또는 `partitions_in_flight`에 fence를 건다.
 6. completion이 도착하면 in-flight 상태를 지우고 다음 head를 다시 활성화한다.
 
+현재 구현에서는 `deactivate_queue_key()`가 queue key 하나를 제거할 때 전체 deque를 재구성하지 않도록 `WorkQueueTopology` 내부 helper가 ordered-set 형태로 runnable key 순서를 관리한다. 이로써 queue 정리 경로는 여전히 FIFO/round-robin semantics를 유지하면서 hot-path rebuild 비용을 줄인다.
+
 ## 5. 경계
 
 - `WorkManager`는 `submit` 전까지의 scheduling 책임만 가진다.
 - 실제 worker retry/timeout/crash 처리 로직은 execution engine에 있다.
 - gap 계산과 HWM 판단은 `OffsetTracker` 책임이고, `WorkManager`는 blocking hint만 소비한다.
+- commit candidate 계산과 커밋 성공 후 state advance는 같은 contiguous-safe tracker API(`get_committable_high_water_mark()` / `commit_through()`)를 사용해 한 번만 계산되도록 유지한다.
 
 ## 6. 실패/복구 관점
 

@@ -62,6 +62,7 @@ flowchart LR
 - `BrokerPoller`와 `WorkManager`는 서로 다른 파일이지만 `ingress`와 `reliability`라는 별도 작업 단위로 읽히도록 재배치한다.
 - `OffsetTracker`와 `MetadataEncoder`는 현재 별도 파일이지만 commit-safe state라는 한 subfeature로 묶는다.
 - benchmark와 observability는 현재 여러 README/ops 문서에 흩어져 있으므로 `04-tooling`으로 통합해 읽기 경로를 단순화한다.
+- 현재 control-plane 구현은 `BrokerPoller` 한 파일에 모든 책임이 몰려 있지 않도록 dispatch / completion / rebalance / runtime / lifecycle helper들로 분해돼 있고, `WorkManager`의 queue topology도 `work_queue_topology.py`로 분리돼 있다.
 
 ## 5. feature와 레이어 대응
 
@@ -112,6 +113,8 @@ flowchart LR
 5. `OffsetTracker`가 HWM/gap state를 갱신하고, 필요 시 metadata snapshot을 계산한다.
 6. 최종 실패는 retry exhaustion 이후 DLQ로 보낸다.
 7. metrics/exporter와 benchmark runtime이 결과를 운영자에게 노출한다.
+
+commit-path에서는 contiguous-safe HWM 후보 계산과 실제 commit success 후 state advance가 같은 tracker API를 통해 일관되게 처리된다. 즉, consume loop가 candidate를 계산한 뒤 commit 성공 경로가 다시 같은 contiguous scan을 반복하지 않는다.
 
 ## 7. 저장소와 상태 역할
 

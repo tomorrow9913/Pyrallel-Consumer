@@ -173,6 +173,13 @@ class ProcessBatchMetrics:
     last_flush_wait_seconds: float
     buffered_items: int
     buffered_age_seconds: float
+    demand_flush_count: int = 0
+    last_main_to_worker_ipc_seconds: float = 0.0
+    avg_main_to_worker_ipc_seconds: float = 0.0
+    last_worker_exec_seconds: float = 0.0
+    avg_worker_exec_seconds: float = 0.0
+    last_worker_to_main_ipc_seconds: float = 0.0
+    avg_worker_to_main_ipc_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

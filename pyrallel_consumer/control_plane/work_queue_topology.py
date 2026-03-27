@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 from pyrallel_consumer.dto import OffsetRange
@@ -11,12 +11,46 @@ from pyrallel_consumer.dto import WorkItem
 QueueKey = tuple[DtoTopicPartition, Any]
 
 
+class RunnableQueueKeys:
+    def __init__(self) -> None:
+        self._ordered: OrderedDict[QueueKey, None] = OrderedDict()
+
+    def append(self, queue_key: QueueKey) -> None:
+        self._ordered[queue_key] = None
+
+    def discard(self, queue_key: QueueKey) -> None:
+        self._ordered.pop(queue_key, None)
+
+    def popleft(self) -> QueueKey:
+        queue_key, _ = self._ordered.popitem(last=False)
+        return queue_key
+
+    def clear(self) -> None:
+        self._ordered.clear()
+
+    def extend(self, queue_keys: list[QueueKey]) -> None:
+        for queue_key in queue_keys:
+            self._ordered[queue_key] = None
+
+    def count(self, queue_key: QueueKey) -> int:
+        return 1 if queue_key in self._ordered else 0
+
+    def __contains__(self, queue_key: object) -> bool:
+        return queue_key in self._ordered
+
+    def __len__(self) -> int:
+        return len(self._ordered)
+
+    def __iter__(self):
+        return iter(self._ordered)
+
+
 class WorkQueueTopology:
     def __init__(self) -> None:
         self.virtual_partition_queues: dict[
             DtoTopicPartition, dict[Any, asyncio.Queue[WorkItem]]
         ] = {}
-        self.runnable_queue_keys: deque[QueueKey] = deque()
+        self.runnable_queue_keys = RunnableQueueKeys()
         self.active_runnable_queue_keys: set[QueueKey] = set()
         self.head_offsets: dict[QueueKey, int] = {}
         self.head_queue_keys_by_offset: dict[
@@ -105,14 +139,7 @@ class WorkQueueTopology:
         if head_offset is not None:
             self.head_queue_keys_by_offset.pop((queue_key[0], head_offset), None)
 
-        if queue_key in self.runnable_queue_keys:
-            retained_keys = [
-                queued_key
-                for queued_key in self.runnable_queue_keys
-                if queued_key != queue_key
-            ]
-            self.runnable_queue_keys.clear()
-            self.runnable_queue_keys.extend(retained_keys)
+        self.runnable_queue_keys.discard(queue_key)
 
     def activate_queue_key(self, queue_key: QueueKey) -> None:
         if queue_key not in self.active_runnable_queue_keys:
@@ -171,6 +198,7 @@ class WorkQueueTopology:
 
         if best_queue_key is not None:
             self.active_runnable_queue_keys.discard(best_queue_key)
+            self.runnable_queue_keys.discard(best_queue_key)
         return best_queue_key
 
     def pick_next_runnable_queue_key(

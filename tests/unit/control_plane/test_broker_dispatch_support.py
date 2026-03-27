@@ -32,6 +32,20 @@ def _make_tracker(epoch: int = 1):
     tracker.get_current_epoch.return_value = epoch
     tracker.last_committed_offset = 0
     tracker.completed_offsets = []
+    tracker.get_committable_high_water_mark.side_effect = (
+        lambda min_inflight_offset=None: (
+            min(
+                max(tracker.completed_offsets),
+                min_inflight_offset - 1,
+            )
+            if tracker.completed_offsets and min_inflight_offset is not None
+            else (
+                max(tracker.completed_offsets)
+                if tracker.completed_offsets
+                else tracker.last_committed_offset
+            )
+        )
+    )
     return tracker
 
 

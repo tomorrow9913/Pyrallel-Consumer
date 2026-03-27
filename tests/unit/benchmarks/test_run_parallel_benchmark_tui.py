@@ -92,6 +92,22 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
     assert args.process_max_batch_wait_ms == 0
 
 
+def test_build_parser_accepts_process_flush_policy_overrides() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--process-flush-policy",
+            "demand_min_residence",
+            "--process-demand-flush-min-residence-ms",
+            "2",
+        ]
+    )
+
+    assert args.process_flush_policy == "demand_min_residence"
+    assert args.process_demand_flush_min_residence_ms == 2
+
+
 def test_build_parser_accepts_metrics_port() -> None:
     parser = run_parallel_benchmark.build_parser()
 

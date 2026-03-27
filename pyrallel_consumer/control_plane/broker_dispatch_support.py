@@ -94,15 +94,8 @@ class BrokerDispatchSupport:
         commits_to_make: list[tuple[DtoTopicPartition, int]] = []
 
         for tp, tracker in self._offset_trackers.items():
-            potential_hwm = tracker.last_committed_offset
-            for offset in tracker.completed_offsets:
-                if offset == potential_hwm + 1:
-                    potential_hwm = offset
-                else:
-                    break
             min_inflight = self._get_min_inflight_offset(tp)
-            if min_inflight is not None and min_inflight <= potential_hwm:
-                potential_hwm = min_inflight - 1
+            potential_hwm = tracker.get_committable_high_water_mark(min_inflight)
             if potential_hwm > tracker.last_committed_offset:
                 commits_to_make.append((tp, potential_hwm))
 

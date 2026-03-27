@@ -324,6 +324,9 @@ docker compose up -d
 - `consumer_process_batch_flush_count{reason="timer"}`
 - `consumer_process_batch_avg_size`
 - `consumer_process_batch_buffered_age_seconds`
+- `consumer_process_batch_avg_main_to_worker_ipc_seconds`
+- `consumer_process_batch_avg_worker_exec_seconds`
+- `consumer_process_batch_avg_worker_to_main_ipc_seconds`
 
 ## 🤝 Contributing
 

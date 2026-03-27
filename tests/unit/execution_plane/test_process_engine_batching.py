@@ -15,7 +15,11 @@ from pyrallel_consumer.dto import (
     TopicPartition,
     WorkItem,
 )
-from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.execution_plane.process_engine import (
+    ProcessExecutionEngine,
+    _BatchAccumulator,
+    _decode_incoming_payloads,
+)
 
 
 class _RetryCounter:
@@ -42,6 +46,10 @@ def _make_work_item(offset: int, partition: int = 0, topic: str = "test") -> Wor
 
 def _sync_worker(item: WorkItem) -> None:
     pass
+
+
+def _sleepy_worker(item: WorkItem) -> None:
+    time.sleep(0.01)
 
 
 def _failing_worker(item: WorkItem) -> None:
@@ -104,6 +112,66 @@ def retry_config() -> ExecutionConfig:
 
 
 class TestMicroBatching:
+    def test_demand_flush_emits_existing_buffer_before_appending_new_item(self):
+        task_queue: queue.Queue[bytes] = queue.Queue()
+        accumulator = _BatchAccumulator(
+            task_queue=task_queue,
+            batch_size=64,
+            max_batch_wait_ms=1000,
+            flush_policy="demand",
+            demand_flush_min_residence_ms=0,
+        )
+
+        accumulator.add(_make_work_item(0))
+        assert task_queue.empty()
+
+        accumulator.add(_make_work_item(1))
+
+        flushed_payload, _ = _decode_incoming_payloads(
+            task_queue.get_nowait(), 1_000_000
+        )
+        assert [payload["offset"] for payload in flushed_payload] == [0]
+
+        metrics = accumulator.snapshot()
+        assert metrics.demand_flush_count == 1
+        assert metrics.buffered_items == 1
+
+    def test_demand_min_residence_waits_until_threshold_before_flushing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"now": 100.0}
+        monkeypatch.setattr(
+            "pyrallel_consumer.execution_plane.process_engine.time.monotonic",
+            lambda: clock["now"],
+        )
+        monkeypatch.setattr(_BatchAccumulator, "_start_flush_timer", lambda self: None)
+
+        task_queue: queue.Queue[bytes] = queue.Queue()
+        accumulator = _BatchAccumulator(
+            task_queue=task_queue,
+            batch_size=64,
+            max_batch_wait_ms=1000,
+            flush_policy="demand_min_residence",
+            demand_flush_min_residence_ms=2,
+        )
+
+        accumulator.add(_make_work_item(0))
+        clock["now"] += 0.001
+        accumulator.add(_make_work_item(1))
+        assert task_queue.empty()
+
+        clock["now"] += 0.002
+        accumulator.add(_make_work_item(2))
+
+        flushed_payload, _ = _decode_incoming_payloads(
+            task_queue.get_nowait(), 1_000_000
+        )
+        assert [payload["offset"] for payload in flushed_payload] == [0, 1]
+
+        metrics = accumulator.snapshot()
+        assert metrics.demand_flush_count == 1
+        assert metrics.buffered_items == 1
+
     @pytest.mark.asyncio
     async def test_get_runtime_metrics_reports_buffered_items_before_flush(
         self, monkeypatch: pytest.MonkeyPatch
@@ -160,6 +228,40 @@ class TestMicroBatching:
             assert metrics.last_flush_size == 2
             assert metrics.buffered_items == 0
             assert metrics.last_flush_wait_seconds >= 0.0
+        finally:
+            await engine.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_metrics_reports_process_timing_after_completion(
+        self,
+    ) -> None:
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                batch_size=1,
+                max_batch_wait_ms=0,
+                worker_join_timeout_ms=5000,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sleepy_worker)
+        try:
+            await engine.submit(_make_work_item(0))
+
+            assert await engine.wait_for_completion(timeout_seconds=2.0) is True
+
+            events = await engine.poll_completed_events()
+            metrics = engine.get_runtime_metrics()
+
+            assert len(events) == 1
+            assert isinstance(metrics, ProcessBatchMetrics)
+            assert metrics.last_main_to_worker_ipc_seconds >= 0.0
+            assert metrics.avg_main_to_worker_ipc_seconds >= 0.0
+            assert metrics.last_worker_exec_seconds > 0.0
+            assert metrics.avg_worker_exec_seconds > 0.0
+            assert metrics.last_worker_to_main_ipc_seconds >= 0.0
+            assert metrics.avg_worker_to_main_ipc_seconds >= 0.0
         finally:
             await engine.shutdown()
 

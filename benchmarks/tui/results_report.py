@@ -7,15 +7,15 @@ from typing import Any
 
 _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _HEADERS = (
-    ("Run", "run_name"),
-    ("Type", "run_type"),
-    ("Workload", "workload"),
-    ("Messages", "messages_processed"),
+    ("실행", "run_name"),
+    ("유형", "run_type"),
+    ("워크로드", "workload"),
+    ("메시지", "messages_processed"),
     ("TPS", "throughput_tps"),
     ("TPS P50 (100)", "tps_p50_window"),
     ("TPS P10 (100)", "tps_p10_window"),
-    ("TPS Min (100)", "tps_min_window"),
-    ("Avg ms", "avg_processing_ms"),
+    ("TPS 최소 (100)", "tps_min_window"),
+    ("평균 ms", "avg_processing_ms"),
     ("P99 ms", "p99_processing_ms"),
 )
 
@@ -41,7 +41,8 @@ class WorkloadWinner:
     ordering: str
     run_type: str
     throughput_tps: str
-    total_time_sec: str
+    avg_processing_ms: str
+    p99_processing_ms: str
 
 
 def summarize_results_overview(output_path: str | Path) -> ResultsOverview | None:
@@ -140,7 +141,8 @@ def summarize_workload_winners(
                 str(result.get("run_name", "")),
             ),
             throughput_tps=_format_float(result.get("throughput_tps"), 2),
-            total_time_sec=_format_float(result.get("total_time_sec"), 2),
+            avg_processing_ms=_format_float(result.get("avg_processing_ms"), 3),
+            p99_processing_ms=_format_float(result.get("p99_processing_ms"), 3),
         )
     return ordering_groups
 

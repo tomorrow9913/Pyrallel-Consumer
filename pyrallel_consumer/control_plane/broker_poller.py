@@ -480,8 +480,8 @@ class BrokerPoller:
                     offsets=offsets_to_commit,
                     asynchronous=False,
                 )
-                for tp, _ in commits_to_make:
-                    self._offset_trackers[tp].advance_high_water_mark()
+                for tp, safe_offset in commits_to_make:
+                    self._offset_trackers[tp].commit_through(safe_offset)
                 return
             except KafkaException as exc:
                 if attempt < max_attempts - 1:

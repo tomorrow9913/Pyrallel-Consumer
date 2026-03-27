@@ -129,23 +129,36 @@ def mock_offset_tracker_class(mocker):
         tracker_mock.completed_offsets.add(offset)
 
     def advance_hwm_side_effect():
-        new_hwm = tracker_mock.last_committed_offset
+        tracker_mock.commit_through(tracker_mock.get_committable_high_water_mark(None))
+
+    def get_committable_high_water_mark_side_effect(min_inflight_offset=None):
+        potential_hwm = tracker_mock.last_committed_offset
         for offset in tracker_mock.completed_offsets:
-            if offset == new_hwm + 1:
-                new_hwm = offset
+            if offset == potential_hwm + 1:
+                potential_hwm = offset
             else:
                 break
-        if new_hwm > tracker_mock.last_committed_offset:
-            tracker_mock.last_committed_offset = new_hwm
-            tracker_mock.completed_offsets = SortedSet(
-                o for o in tracker_mock.completed_offsets if o > new_hwm
-            )
+        if min_inflight_offset is not None and min_inflight_offset <= potential_hwm:
+            potential_hwm = min_inflight_offset - 1
+        return potential_hwm
+
+    def commit_through_side_effect(committed_offset):
+        if committed_offset <= tracker_mock.last_committed_offset:
+            return
+        tracker_mock.last_committed_offset = committed_offset
+        tracker_mock.completed_offsets = SortedSet(
+            o for o in tracker_mock.completed_offsets if o > committed_offset
+        )
 
     tracker_mock.increment_epoch.side_effect = lambda: setattr(
         tracker_mock, "epoch", tracker_mock.epoch + 1
     )
     tracker_mock.get_current_epoch.side_effect = lambda: tracker_mock.epoch
     tracker_mock.mark_complete.side_effect = mark_complete_side_effect
+    tracker_mock.get_committable_high_water_mark.side_effect = (
+        get_committable_high_water_mark_side_effect
+    )
+    tracker_mock.commit_through.side_effect = commit_through_side_effect
     tracker_mock.advance_high_water_mark.side_effect = advance_hwm_side_effect
     tracker_mock.update_last_fetched_offset.return_value = None  # This is a void method
 
@@ -199,6 +212,9 @@ async def test_run_consumer_loop_basic_flow(
     setup_assigned_partitions,
     mock_work_manager,
 ):
+    broker_poller._kafka_config.parallel_consumer.rebalance_state_strategy = (
+        "metadata_snapshot"
+    )
     test_tp_kafka, mock_offset_tracker_instance = setup_assigned_partitions
     DtoTopicPartition(test_tp_kafka.topic, test_tp_kafka.partition)
 
@@ -285,7 +301,7 @@ async def test_run_consumer_loop_basic_flow(
     mock_offset_tracker_instance.mark_complete.assert_any_call(1)
     mock_offset_tracker_instance.mark_complete.assert_any_call(2)
 
-    assert mock_offset_tracker_instance.advance_high_water_mark.call_count >= 1
+    assert mock_offset_tracker_instance.commit_through.call_count >= 1
 
     mock_consumer.commit.assert_called_once()
     commit_args = mock_consumer.commit.call_args
