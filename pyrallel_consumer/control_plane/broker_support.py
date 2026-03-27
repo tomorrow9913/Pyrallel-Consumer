@@ -175,21 +175,22 @@ class BrokerCommitPlanner:
         trackers: dict[DtoTopicPartition, OffsetTracker],
         strategy: str,
     ) -> list[KafkaTopicPartition]:
-        del strategy
         offsets_to_commit: list[KafkaTopicPartition] = []
         for tp, safe_offset in commits_to_make:
             tracker = trackers[tp]
             base_offset = safe_offset + 1
-            metadata_offsets = self.get_commit_metadata_offsets(tracker, base_offset)
-            metadata = self.metadata_encoder.encode_metadata(
-                metadata_offsets, base_offset
-            )
-            if isinstance(metadata, (bytes, bytearray)):
-                metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
-            elif isinstance(metadata, str):
-                metadata_text = metadata
-            else:
-                metadata_text = ""
+            metadata_text = ""
+            if strategy == "metadata_snapshot":
+                metadata_offsets = self.get_commit_metadata_offsets(
+                    tracker, base_offset
+                )
+                metadata = self.metadata_encoder.encode_metadata(
+                    metadata_offsets, base_offset
+                )
+                if isinstance(metadata, (bytes, bytearray)):
+                    metadata_text = bytes(metadata).decode("utf-8", errors="ignore")
+                elif isinstance(metadata, str):
+                    metadata_text = metadata
 
             kafka_tp = cast(
                 KafkaTopicPartition,

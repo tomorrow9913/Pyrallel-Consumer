@@ -112,3 +112,35 @@ def test_commit_planner_builds_commit_payload_with_metadata_snapshot() -> None:
     kafka_tp = offsets[0]
     assert kafka_tp.offset == 5
     assert kafka_tp.metadata == planner.metadata_encoder.encode_metadata({6, 7}, 5)
+
+
+def test_commit_planner_omits_metadata_in_contiguous_only_mode() -> None:
+    from pyrallel_consumer.control_plane.broker_support import BrokerCommitPlanner
+    from pyrallel_consumer.control_plane.metadata_encoder import MetadataEncoder
+
+    planner = BrokerCommitPlanner(
+        metadata_encoder=MetadataEncoder(),
+        max_completed_offsets=2048,
+    )
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    tracker.last_fetched_offset = 7
+    tracker.mark_complete(6)
+    tracker.mark_complete(7)
+
+    offsets = planner.build_offsets_to_commit(
+        commits_to_make=[(tp, 4)],
+        trackers={tp: tracker},
+        strategy="contiguous_only",
+    )
+
+    assert len(offsets) == 1
+    kafka_tp = offsets[0]
+    assert kafka_tp.offset == 5
+    assert kafka_tp.metadata in (None, "")

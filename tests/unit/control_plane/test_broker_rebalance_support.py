@@ -104,3 +104,31 @@ def test_build_assignments_uses_negative_one_hwm_for_zero_offset_assignment() ->
     tracker = assignments[DtoTopicPartition("test-topic", 0)]
     assert tracker.last_committed_offset == -1
     assert tracker.last_fetched_offset == -1
+
+
+def test_build_assignments_bounds_committed_lookup_timeout() -> None:
+    from pyrallel_consumer.control_plane.broker_rebalance_support import (
+        BrokerRebalanceSupport,
+    )
+    from pyrallel_consumer.control_plane.metadata_encoder import MetadataEncoder
+
+    consumer = MagicMock()
+    consumer.committed.return_value = [
+        KafkaTopicPartition("test-topic", 0, OFFSET_INVALID)
+    ]
+
+    support = BrokerRebalanceSupport(
+        metadata_encoder=MetadataEncoder(),
+        committed_lookup_timeout_seconds=7.5,
+    )
+    support.build_assignments(
+        consumer=consumer,
+        partitions=[KafkaTopicPartition("test-topic", 0, 0)],
+        strategy="contiguous_only",
+        max_revoke_grace_ms=500,
+    )
+
+    consumer.committed.assert_called_once_with(
+        [KafkaTopicPartition("test-topic", 0, 0)],
+        timeout=7.5,
+    )

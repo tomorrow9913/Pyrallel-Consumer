@@ -626,6 +626,9 @@ class TestOnRevokeCommitExceptionDefense:
 
 @pytest.mark.asyncio
 async def test_commit_offsets_uses_topic_partition_with_metadata(broker_poller):
+    broker_poller._kafka_config.parallel_consumer.rebalance_state_strategy = (
+        "metadata_snapshot"
+    )
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     tracker = OffsetTracker(
         topic_partition=tp,
@@ -874,3 +877,46 @@ async def test_wait_closed_reraises_terminal_error_when_shutdown_is_complete(
 
     with pytest.raises(RuntimeError, match="closed-boom"):
         await broker_poller.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_run_consumer_keeps_consumer_task_until_cleanup_finishes(
+    broker_poller, mock_consumer
+):
+    cleanup_started = asyncio.Event()
+    allow_cleanup_finish = asyncio.Event()
+
+    async def fake_cleanup():
+        cleanup_started.set()
+        await allow_cleanup_finish.wait()
+
+    def fake_consume(num_messages=1, timeout=0.1):
+        broker_poller._running = False
+        return []
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = MagicMock()
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock(return_value=[])
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._max_blocking_duration_ms = 0
+    broker_poller.consumer.consume = MagicMock(side_effect=fake_consume)
+    broker_poller._cleanup = AsyncMock(side_effect=fake_cleanup)
+    broker_poller._running = True
+
+    with patch("asyncio.to_thread", side_effect=passthrough_to_thread):
+        consumer_task = asyncio.create_task(broker_poller._run_consumer())
+        broker_poller._consumer_task = consumer_task
+        await cleanup_started.wait()
+        assert broker_poller._consumer_task is consumer_task
+        assert not broker_poller._shutdown_event.is_set()
+        allow_cleanup_finish.set()
+        await consumer_task
+
+    assert broker_poller._shutdown_event.is_set()
+    assert broker_poller._consumer_task is None

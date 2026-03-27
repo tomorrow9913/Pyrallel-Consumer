@@ -76,8 +76,7 @@ class BenchmarkTuiState:
             str(self.worker_io_sleep_ms),
         ]
 
-        if self.metrics_port > 0:
-            argv.extend(["--metrics-port", str(self.metrics_port)])
+        argv.extend(["--metrics-port", str(self.metrics_port)])
 
         if self.profiling_enabled:
             argv.extend(

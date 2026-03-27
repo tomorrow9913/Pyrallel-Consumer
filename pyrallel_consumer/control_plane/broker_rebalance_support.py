@@ -16,9 +16,11 @@ class BrokerRebalanceSupport:
         self,
         metadata_encoder: MetadataEncoder,
         tracker_factory=OffsetTracker,
+        committed_lookup_timeout_seconds: float = 5.0,
     ) -> None:
         self._metadata_encoder = metadata_encoder
         self._tracker_factory = tracker_factory
+        self._committed_lookup_timeout_seconds = committed_lookup_timeout_seconds
 
     def _decode_assignment_completed_offsets(
         self,
@@ -73,7 +75,10 @@ class BrokerRebalanceSupport:
             logger = logging.getLogger(__name__)
         committed_offsets: dict[tuple[str, int], KafkaTopicPartition] = {}
         try:
-            committed_partitions = consumer.committed(partitions)
+            committed_partitions = consumer.committed(
+                partitions,
+                timeout=self._committed_lookup_timeout_seconds,
+            )
             for committed_tp in committed_partitions:
                 if committed_tp.offset is None:
                     continue

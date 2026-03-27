@@ -374,7 +374,6 @@ class BrokerPoller:
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
             self._running = False
-            self._consumer_task = None
             if self._completion_monitor_task is not None:
                 self._completion_monitor_task.cancel()
                 await asyncio.gather(
@@ -383,6 +382,7 @@ class BrokerPoller:
                 self._completion_monitor_task = None
             await self._cleanup()
             self._shutdown_event.set()
+            self._consumer_task = None
 
     async def _drain_completion_events_once(self) -> bool:
         completed_events = await self._work_manager.poll_completed_events()
