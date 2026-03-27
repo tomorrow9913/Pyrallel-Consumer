@@ -70,6 +70,12 @@ def _check_kafka_connection(bootstrap_servers: str) -> None:
         ) from exc
 
 
+def _normalize_metrics_port(metrics_port: int | None) -> int | None:
+    if metrics_port is None or metrics_port <= 0:
+        return None
+    return metrics_port
+
+
 def _run_baseline_round(
     *,
     run_name: str,
@@ -665,8 +671,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--metrics-port",
         type=int,
-        default=None,
-        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs",
+        default=9091,
+        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs (default: 9091, use 0 to disable)",
     )
     # -- py-spy profiling options (process mode) --
     parser.add_argument(
@@ -761,6 +767,7 @@ def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
     args._raw_argv = list(raw_argv or [])
+    metrics_port = _normalize_metrics_port(args.metrics_port)
 
     # -- py-spy self-relaunch gate --
     # When --py-spy is requested and we are NOT already the child process,
@@ -890,7 +897,7 @@ def run_benchmark(
                                     process_max_batch_wait_ms=(
                                         args.process_max_batch_wait_ms
                                     ),
-                                    metrics_port=args.metrics_port,
+                                    metrics_port=metrics_port,
                                 )
                             )
                     if not args.skip_process:
@@ -939,7 +946,7 @@ def run_benchmark(
                                 process_max_batch_wait_ms=(
                                     args.process_max_batch_wait_ms
                                 ),
-                                metrics_port=args.metrics_port,
+                                metrics_port=metrics_port,
                             )
                         )
                         if args.profile and args.profile_process_workers:

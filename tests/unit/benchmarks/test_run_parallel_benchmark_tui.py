@@ -100,6 +100,14 @@ def test_build_parser_accepts_metrics_port() -> None:
     assert args.metrics_port == 9091
 
 
+def test_build_parser_defaults_metrics_port_to_9091() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args([])
+
+    assert args.metrics_port == 9091
+
+
 def test_build_parser_rejects_unknown_workload_token() -> None:
     parser = run_parallel_benchmark.build_parser()
 

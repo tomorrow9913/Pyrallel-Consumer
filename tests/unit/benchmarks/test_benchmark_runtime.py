@@ -536,6 +536,13 @@ def test_build_kafka_config_enables_metrics_when_port_provided() -> None:
     assert config.metrics.port == 9091
 
 
+def test_normalize_metrics_port_treats_non_positive_values_as_disabled() -> None:
+    assert run_parallel_benchmark._normalize_metrics_port(None) is None
+    assert run_parallel_benchmark._normalize_metrics_port(0) is None
+    assert run_parallel_benchmark._normalize_metrics_port(-1) is None
+    assert run_parallel_benchmark._normalize_metrics_port(9091) == 9091
+
+
 def test_get_or_create_prometheus_exporter_reuses_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

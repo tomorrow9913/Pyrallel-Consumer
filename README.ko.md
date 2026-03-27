@@ -384,7 +384,7 @@ uv run pytest tests/e2e -q
   - Prometheus: http://localhost:9090
   - Grafana: http://localhost:3000 (`local-e2e`)
 - Kafka가 처음 뜨는 동안 `kafka-exporter` target은 잠깐 `down`으로 보일 수 있지만, compose 재시작 정책으로 Kafka 준비 후 자동 복구됩니다.
-- `pyrallel-consumer` Prometheus target을 실제로 올리려면 benchmark/test harness를 `--metrics-port 9091`로 실행하거나, 일반 라이브러리 consumer 프로세스를 `config.metrics.enabled = True`, `config.metrics.port = 9091`로 실행하면 됩니다.
+- `pyrallel-consumer` Prometheus target을 실제로 올리려면 benchmark/test harness를 실행하면 됩니다. benchmark는 이제 기본으로 `--metrics-port 9091`을 사용합니다. 또는 일반 라이브러리 consumer 프로세스를 `config.metrics.enabled = True`, `config.metrics.port = 9091`로 실행해도 됩니다.
 - `9091`을 실제로 노출 중인 benchmark/test harness 또는 라이브러리 consumer 프로세스가 없으면 `pyrallel-consumer` target이 `down`인 것은 정상입니다.
 - 예시:
 ```bash
