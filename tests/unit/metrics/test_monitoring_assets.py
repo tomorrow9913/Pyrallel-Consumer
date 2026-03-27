@@ -18,6 +18,19 @@ def test_e2e_compose_includes_prometheus_and_grafana_services() -> None:
     assert "../monitoring/grafana/dashboards" in compose_text
 
 
+def test_grafana_prometheus_datasource_uses_stable_uid() -> None:
+    datasource_text = (
+        REPO_ROOT
+        / "monitoring"
+        / "grafana"
+        / "provisioning"
+        / "datasources"
+        / "datasource.yml"
+    ).read_text()
+
+    assert "uid: prometheus" in datasource_text
+
+
 def test_grafana_dashboard_includes_process_batch_panels() -> None:
     dashboard = json.loads(
         (

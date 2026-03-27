@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Protocol, cast
 
 from prometheus_client import (
     CollectorRegistry,
@@ -19,6 +19,11 @@ from pyrallel_consumer.dto import (
 )
 
 
+class _Joinable(Protocol):
+    def join(self, timeout: float | None = None) -> None:
+        ...
+
+
 class PrometheusMetricsExporter:
     def __init__(
         self,
@@ -27,6 +32,8 @@ class PrometheusMetricsExporter:
     ) -> None:
         self._config = config or MetricsConfig()
         self._registry = registry or CollectorRegistry()
+        self._http_server = None
+        self._http_thread: Optional[_Joinable] = None
 
         self._processed_total = Counter(
             "consumer_processed_total",
@@ -113,7 +120,14 @@ class PrometheusMetricsExporter:
         )
 
         if self._config.enabled:
-            start_http_server(self._config.port, registry=self._registry)
+            server = start_http_server(self._config.port, registry=self._registry)
+            if isinstance(server, tuple):
+                self._http_server = server[0]
+                thread = server[1]
+                if hasattr(thread, "join"):
+                    self._http_thread = cast(_Joinable, thread)
+            elif server is not None:
+                self._http_server = server
 
     def update_from_system_metrics(self, metrics: SystemMetrics) -> None:
         self._in_flight_gauge.set(metrics.total_in_flight)
@@ -139,6 +153,24 @@ class PrometheusMetricsExporter:
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
+
+    def close(self) -> None:
+        if self._http_server is None:
+            return
+
+        shutdown = getattr(self._http_server, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
+        server_close = getattr(self._http_server, "server_close", None)
+        if callable(server_close):
+            server_close()
+
+        if self._http_thread is not None:
+            self._http_thread.join(timeout=1.0)
+
+        self._http_server = None
+        self._http_thread = None
 
     def _update_process_batch_metrics(
         self, metrics: Optional[ProcessBatchMetrics]

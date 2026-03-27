@@ -100,3 +100,33 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert processed == 1
     assert pytest.approx(latency_sum, rel=1e-6) == 0.12
     assert metadata_size == 42
+
+
+def test_exporter_closes_http_server_when_enabled(monkeypatch):
+    registry = CollectorRegistry()
+    closed = {"shutdown": 0, "server_close": 0, "join": 0}
+
+    class _DummyServer:
+        def shutdown(self) -> None:
+            closed["shutdown"] += 1
+
+        def server_close(self) -> None:
+            closed["server_close"] += 1
+
+    class _DummyThread:
+        def join(self, timeout=None) -> None:  # noqa: ANN001
+            closed["join"] += 1
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.metrics_exporter.start_http_server",
+        lambda *a, **k: (_DummyServer(), _DummyThread()),
+    )
+
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=True, port=9100), registry=registry
+    )
+
+    exporter.close()
+    exporter.close()
+
+    assert closed == {"shutdown": 1, "server_close": 1, "join": 1}

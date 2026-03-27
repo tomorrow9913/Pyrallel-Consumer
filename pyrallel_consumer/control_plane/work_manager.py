@@ -78,6 +78,9 @@ class WorkManager:
     def get_ordering_mode(self) -> OrderingMode:
         return self._ordering_mode
 
+    def set_metrics_exporter(self, metrics_exporter: Optional[MetricsExporter]) -> None:
+        self._metrics_exporter = metrics_exporter
+
     async def force_fail(
         self,
         tp: DtoTopicPartition,
