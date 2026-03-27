@@ -285,3 +285,30 @@ def test_log_parser_counts_strict_result_rows_as_distinct_completed_runs() -> No
 
     assert parser.snapshot.completed_runs == 2
     assert parser.snapshot.total_runs == 4
+
+
+def test_log_parser_tracks_current_run_message_progress_from_logs() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume("Starting baseline consumer for topic 'demo-sleep-baseline'.")
+    parser.consume(
+        "Will process up to 100000 messages if specified, otherwise indefinitely."
+    )
+    parser.consume("Processed 100 messages. Committed offsets. Current TPS: 500.00")
+
+    snapshot = parser.snapshot
+    assert snapshot.current_run_target_messages == 100000
+    assert snapshot.current_run_processed_messages == 100
+
+
+def test_log_parser_tracks_pyrallel_current_run_target_and_final_processed() -> None:
+    parser = BenchmarkLogParser(workload_mode="sleep")
+
+    parser.consume("Starting PyrallelConsumer test for topic 'demo-sleep-async'.")
+    parser.consume("Target messages to process: 50000")
+    parser.consume("Processed 1000 messages. Current TPS: 1200.00")
+    parser.consume("Total messages processed: 50000")
+
+    snapshot = parser.snapshot
+    assert snapshot.current_run_target_messages == 50000
+    assert snapshot.current_run_processed_messages == 50000

@@ -71,16 +71,19 @@ async def test_options_screen_orders_input_blocks_label_help_control() -> None:
             "Label",
             "Static",
             "Input",
+            "Static",
         ]
         assert _block_child_types(app, "workloads") == [
             "Label",
             "Static",
             "SelectionList",
+            "Static",
         ]
         assert _block_child_types(app, "json-output") == [
             "Label",
             "Static",
             "Container",
+            "Static",
         ]
 
 
@@ -94,6 +97,7 @@ async def test_options_screen_orders_checkbox_blocks_label_help_control() -> Non
             "Label",
             "Static",
             "Switch",
+            "Static",
         ]
 
 
@@ -264,7 +268,133 @@ async def test_browse_button_opens_directory_picker_modal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_screen_back_cancels_active_benchmark(monkeypatch) -> None:
+async def test_options_screen_disables_run_for_invalid_numeric_input() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        run_button = app.screen.query_one("#run-button", Button)
+        preview = app.screen.query_one("#argv-preview", Static)
+        original_preview = str(preview.content)
+
+        num_messages.value = "oops"
+        await pilot.pause()
+
+        error = app.screen.query_one("#error-num-messages", Static)
+
+    assert run_button.disabled is True
+    assert "number" in str(error.content).lower()
+    assert str(preview.content) == original_preview
+
+
+@pytest.mark.asyncio
+async def test_options_screen_hides_error_summary_until_needed() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        summary = app.screen.query_one("#form-error-summary", Static)
+        num_messages = app.screen.query_one("#num-messages", Input)
+
+        assert summary.display is False
+
+        num_messages.value = "oops"
+        await pilot.pause()
+        assert summary.display is True
+
+        num_messages.value = "100"
+        await pilot.pause()
+
+    assert summary.display is False
+
+
+@pytest.mark.asyncio
+async def test_success_modal_returns_to_options_with_existing_values(
+    monkeypatch, tmp_path: Path
+) -> None:
+    results_path = tmp_path / "results.json"
+    results_path.write_text('{"options": {}, "results": []}', encoding="utf-8")
+
+    class _CompletedController:
+        def __init__(self, *, state, on_output, on_progress, on_complete) -> None:
+            del state
+            del on_output
+            del on_progress
+            self._on_complete = on_complete
+
+        async def run(self) -> None:
+            self._on_complete(0)
+
+        async def cancel(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _CompletedController
+    )
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        json_output = app.screen.query_one("#json-output", Input)
+        num_messages.value = "42"
+        json_output.value = str(results_path)
+        await pilot.pause()
+
+        await pilot.click("#run-button")
+        await pilot.pause()
+        await pilot.pause()
+
+        await pilot.click("#results-modal-settings")
+        await pilot.pause()
+
+        restored_messages = app.screen.query_one("#num-messages", Input)
+        restored_output = app.screen.query_one("#json-output", Input)
+
+    assert restored_messages.value == "42"
+    assert restored_output.value == str(results_path)
+
+
+@pytest.mark.asyncio
+async def test_failed_run_returns_to_options_with_existing_values(
+    monkeypatch,
+) -> None:
+    class _FailedController:
+        def __init__(self, *, state, on_output, on_progress, on_complete) -> None:
+            del state
+            del on_output
+            del on_progress
+            self._on_complete = on_complete
+
+        async def run(self) -> None:
+            self._on_complete(1)
+
+        async def cancel(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FailedController
+    )
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        num_messages.value = "4242"
+        await pilot.pause()
+
+        await pilot.click("#run-button")
+        await pilot.pause()
+        await pilot.pause()
+
+        await app.screen.action_settings()
+
+        restored_messages = app.screen.query_one("#num-messages", Input)
+
+    assert restored_messages.value == "4242"
+
+
+@pytest.mark.asyncio
+async def test_run_screen_back_stays_on_active_benchmark(monkeypatch) -> None:
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -279,8 +409,8 @@ async def test_run_screen_back_cancels_active_benchmark(monkeypatch) -> None:
         await app.screen.action_back()
         await pilot.pause()
 
-        assert _FakeController.instances[0].cancel_called is True
-        assert app.screen.query_one("#run-button", Button)
+        assert _FakeController.instances[0].cancel_called is False
+        assert app.screen.__class__.__name__ == "RunScreen"
 
 
 @pytest.mark.asyncio
@@ -301,7 +431,7 @@ async def test_run_screen_preserves_cancelled_status(monkeypatch) -> None:
         await pilot.pause()
 
         status = run_screen.query_one("#run-status", Static)
-        assert "cancelled" in str(status.content).lower()
+        assert "취소" in str(status.content)
 
 
 @pytest.mark.asyncio
@@ -324,43 +454,59 @@ async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
         )
         await pilot.pause()
 
-        phase_badge = app.screen.query_one("#phase-badge", Static)
-        workload_badge = app.screen.query_one("#workload-badge", Static)
-        ordering_badge = app.screen.query_one("#ordering-badge", Static)
+        spotlight = app.screen.query_one("#run-spotlight", Static)
+        workload_chip = app.screen.query_one("#run-chip-workload", Static)
+        ordering_chip = app.screen.query_one("#run-chip-ordering", Static)
+        phase_chip = app.screen.query_one("#run-chip-phase", Static)
+        current_progress_badge = app.screen.query_one("#phase-progress-badge", Static)
+        current_elapsed = app.screen.query_one("#current-run-elapsed", Static)
         progress_badge = app.screen.query_one("#progress-badge", Static)
-        baseline_pill = app.screen.query_one("#phase-pill-baseline", Static)
-        sleep_pill = app.screen.query_one("#workload-pill-sleep", Static)
+        elapsed = app.screen.query_one("#run-elapsed", Static)
+        phase_progress_bar = app.screen.query_one("#phase-progress", ProgressBar)
         progress_bar = app.screen.query_one("#run-progress", ProgressBar)
         loading_indicator = app.screen.query_one("#run-loading", LoadingIndicator)
+        exit_button = app.screen.query_one("#exit-button", Button)
         summary_table = app.screen.query_one("#run-summary", DataTable)
-        assert str(phase_badge.content) == "PHASE Pending"
-        assert str(workload_badge.content) == "WORKLOAD —"
-        assert str(ordering_badge.content) == "ORDERING —"
-        assert str(progress_badge.content) == "PROGRESS 0 / 18"
-        assert str(baseline_pill.content) == "baseline pending"
-        assert str(sleep_pill.content) == "sleep pending"
+        assert str(spotlight.content) == "현재 실행"
+        assert str(workload_chip.content) == "workload: 대기 중"
+        assert str(ordering_chip.content) == "ordering: 대기 중"
+        assert str(phase_chip.content) == "engine: 대기 중"
+        assert workload_chip.has_class("is-waiting")
+        assert ordering_chip.has_class("is-waiting")
+        assert phase_chip.has_class("is-waiting")
+        assert str(current_progress_badge.content) == "현재 0 / -- 메시지"
+        assert str(current_elapsed.content) == "현재 처리시간 00:00:00"
+        assert str(progress_badge.content) == "전체 0 / 18 벤치마크"
+        assert str(elapsed.content) == "전체 처리시간 00:00:00"
+        assert phase_progress_bar.total is None
+        assert phase_progress_bar.progress == 0
+        assert phase_progress_bar.show_eta is True
         assert progress_bar.total == 18
+        assert progress_bar.show_eta is True
         assert loading_indicator.display is True
+        assert "run-spotlight-card" in _ancestor_ids(progress_bar)
+        assert "run-log-header" in _ancestor_ids(loading_indicator)
+        assert exit_button.display is False
         assert summary_table.get_row("sleep-key_hash") == [
             "sleep",
             "key_hash",
-            "…",
-            "…",
-            "…",
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
         ]
         assert summary_table.get_row("cpu-partition") == [
             "cpu",
             "partition",
-            "…",
-            "…",
-            "…",
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
         ]
         assert summary_table.get_row("io-partition") == [
             "io",
             "partition",
-            "…",
-            "…",
-            "…",
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
+            Text("WAITING", style="grey62"),
         ]
 
 
@@ -435,13 +581,11 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
         summary_table = run_screen.query_one("#run-summary", DataTable)
 
     assert progress_bar.progress == 2
-    assert summary_table.get_row("sleep-key_hash") == [
-        "sleep",
-        "key_hash",
-        "111.11 TPS",
-        "222.22 TPS",
-        "…",
-    ]
+    row = summary_table.get_row("sleep-key_hash")
+    assert row[:2] == ["sleep", "key_hash"]
+    assert row[2] == Text("111.11 TPS", style="bold bright_green")
+    assert row[3] == Text("222.22 TPS", style="bold bright_green")
+    assert row[4] == Text("WAITING", style="grey62")
 
 
 @pytest.mark.asyncio
@@ -515,17 +659,115 @@ async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -
         )
         await pilot.pause()
 
-        ordering_badge = run_screen.query_one("#ordering-badge", Static)
+        spotlight = run_screen.query_one("#run-spotlight", Static)
+        workload_chip = run_screen.query_one("#run-chip-workload", Static)
+        ordering_chip = run_screen.query_one("#run-chip-ordering", Static)
+        phase_chip = run_screen.query_one("#run-chip-phase", Static)
         summary_table = run_screen.query_one("#run-summary", DataTable)
+        active_cell = summary_table.get_cell("sleep-partition", "async")
 
-    assert str(ordering_badge.content) == "ORDERING partition"
-    assert summary_table.get_row("sleep-partition") == [
-        "sleep",
-        "partition",
-        "…",
-        "222.22 TPS",
-        "…",
-    ]
+    assert str(spotlight.content) == "현재 실행"
+    assert str(workload_chip.content) == "workload: sleep"
+    assert str(ordering_chip.content) == "ordering: partition"
+    assert str(phase_chip.content) == "engine: async"
+    assert workload_chip.has_class("is-running")
+    assert ordering_chip.has_class("is-running")
+    assert phase_chip.has_class("is-running")
+    assert isinstance(active_cell, Text)
+    assert active_cell.plain == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_rows_only(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FakeController
+    )
+    _FakeController.instances.clear()
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        app.push_screen(
+            RunScreen(
+                BenchmarkTuiState(
+                    workloads=("sleep",),
+                    ordering_modes=("key_hash", "partition"),
+                    skip_process=True,
+                )
+            )
+        )
+        await pilot.pause()
+
+        run_screen = app.screen
+        run_screen._render_snapshot(
+            BenchmarkProgressSnapshot(
+                status_message="Running async benchmark",
+                current_workload="sleep",
+                current_ordering="partition",
+                current_run_target_messages=50000,
+                current_run_processed_messages=1000,
+                completed_runs=1,
+                total_runs=4,
+                progress_value=1.5,
+                phase_statuses={
+                    "baseline": "completed",
+                    "async": "running",
+                    "process": "pending",
+                },
+                tps_by_workload_ordering={
+                    "sleep": {
+                        "key_hash": {
+                            "baseline": "111.11",
+                            "async": "--",
+                            "process": "--",
+                        },
+                        "partition": {
+                            "baseline": "--",
+                            "async": "--",
+                            "process": "--",
+                        },
+                    }
+                },
+            )
+        )
+        await pilot.pause()
+
+        status = run_screen.query_one("#run-status", Static)
+        spotlight = run_screen.query_one("#run-spotlight", Static)
+        workload_chip = run_screen.query_one("#run-chip-workload", Static)
+        ordering_chip = run_screen.query_one("#run-chip-ordering", Static)
+        phase_chip = run_screen.query_one("#run-chip-phase", Static)
+        current_progress_badge = run_screen.query_one("#phase-progress-badge", Static)
+        current_elapsed = run_screen.query_one("#current-run-elapsed", Static)
+        phase_progress_bar = run_screen.query_one("#phase-progress", ProgressBar)
+        progress_badge = run_screen.query_one("#progress-badge", Static)
+        progress_bar = run_screen.query_one("#run-progress", ProgressBar)
+        elapsed = run_screen.query_one("#run-elapsed", Static)
+        summary_table = run_screen.query_one("#run-summary", DataTable)
+        active_cell = summary_table.get_cell("sleep-partition", "async")
+
+    assert str(status.content) == "벤치마크 실행 중"
+    assert str(spotlight.content) == "현재 실행"
+    assert str(workload_chip.content) == "workload: sleep"
+    assert str(ordering_chip.content) == "ordering: partition"
+    assert str(phase_chip.content) == "engine: async"
+    assert str(current_progress_badge.content) == "현재 1000 / 50000 메시지"
+    assert str(current_elapsed.content).startswith("현재 처리시간 ")
+    assert str(progress_badge.content) == "전체 1 / 4 벤치마크"
+    assert str(elapsed.content).startswith("전체 처리시간 ")
+    assert phase_progress_bar.total == 50000
+    assert phase_progress_bar.progress == 1000
+    assert progress_bar.progress == 1
+    row = summary_table.get_row("sleep-key_hash")
+    assert row[:2] == ["sleep", "key_hash"]
+    assert row[2] == Text("111.11 TPS", style="bold bright_green")
+    assert row[3] == Text("WAITING", style="grey62")
+    assert isinstance(active_cell, Text)
+    assert "RUNNING" in active_cell.plain
+
+    assert summary_table.row_count == 2
 
 
 @pytest.mark.asyncio
@@ -553,7 +795,7 @@ async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
 
         progress_bar = run_screen.query_one("#run-progress", ProgressBar)
 
-    assert progress_bar.progress == 0.5
+    assert progress_bar.progress == 0
 
 
 @pytest.mark.asyncio
@@ -577,6 +819,8 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
                 status_message="Running async benchmark",
                 current_workload="sleep",
                 current_ordering="key_hash",
+                current_run_target_messages=100,
+                current_run_processed_messages=10,
                 completed_runs=1,
                 total_runs=3,
                 progress_value=1.5,
@@ -611,20 +855,58 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
         await pilot.pause()
 
         status = run_screen.query_one("#run-status", Static)
-        phase_badge = run_screen.query_one("#phase-badge", Static)
-        workload_badge = run_screen.query_one("#workload-badge", Static)
+        spotlight = run_screen.query_one("#run-spotlight", Static)
+        workload_chip = run_screen.query_one("#run-chip-workload", Static)
+        ordering_chip = run_screen.query_one("#run-chip-ordering", Static)
+        phase_chip = run_screen.query_one("#run-chip-phase", Static)
+        current_progress_badge = run_screen.query_one("#phase-progress-badge", Static)
+        current_elapsed = run_screen.query_one("#current-run-elapsed", Static)
+        phase_progress_bar = run_screen.query_one("#phase-progress", ProgressBar)
         progress_badge = run_screen.query_one("#progress-badge", Static)
-        async_pill = run_screen.query_one("#phase-pill-async", Static)
-        sleep_pill = run_screen.query_one("#workload-pill-sleep", Static)
+        elapsed = run_screen.query_one("#run-elapsed", Static)
         summary_table = run_screen.query_one("#run-summary", DataTable)
+        active_cell = summary_table.get_cell("sleep-key_hash", "async")
 
-    assert str(status.content) == "Running async (sleep)"
-    assert str(phase_badge.content) == "PHASE Async"
-    assert str(workload_badge.content) == "WORKLOAD Sleep"
-    assert str(progress_badge.content) == "PROGRESS 1 / 3"
-    assert str(async_pill.content) == "async running"
-    assert str(sleep_pill.content) == "sleep running"
-    assert summary_table.get_row("sleep") == ["sleep", "111.11 TPS", "…", "…"]
+    assert str(status.content) == "벤치마크 실행 중"
+    assert str(spotlight.content) == "현재 실행"
+    assert str(workload_chip.content) == "workload: sleep"
+    assert str(ordering_chip.content) == "ordering: key_hash"
+    assert str(phase_chip.content) == "engine: async"
+    assert str(current_progress_badge.content) == "현재 10 / 100 메시지"
+    assert str(current_elapsed.content).startswith("현재 처리시간 ")
+    assert str(progress_badge.content) == "전체 1 / 3 벤치마크"
+    assert str(elapsed.content).startswith("전체 처리시간 ")
+    assert phase_progress_bar.total == 100
+    assert phase_progress_bar.progress == 10
+    assert isinstance(active_cell, Text)
+    assert active_cell.plain == "RUNNING"
+    active_row = summary_table.get_row("sleep-key_hash")
+    assert isinstance(active_row[0], Text)
+    assert isinstance(active_row[1], Text)
+    assert active_row[2] == Text("111.11 TPS", style="bold bright_green")
+    assert active_row[3] == active_cell
+    assert active_row[4] == Text("WAITING", style="grey62")
+
+
+@pytest.mark.asyncio
+async def test_run_screen_back_does_not_leave_screen_while_running(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FakeController
+    )
+    _FakeController.instances.clear()
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
+        await pilot.pause()
+
+        run_screen = app.screen
+        await run_screen.action_back()
+        await pilot.pause()
+
+        assert app.screen is run_screen
+        assert _FakeController.instances[0].cancel_called is False
 
 
 @pytest.mark.asyncio
@@ -659,16 +941,18 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
         await pilot.pause()
 
         failed_cell = run_screen.query_one("#run-summary", DataTable).get_cell(
-            "sleep", "async"
+            "sleep-key_hash", "async"
         )
         loading_indicator = run_screen.query_one("#run-loading", LoadingIndicator)
         status = run_screen.query_one("#run-status", Static)
+        reason = run_screen.query_one("#run-terminal-reason", Static)
 
     assert isinstance(failed_cell, Text)
     assert failed_cell.plain == "FAILED"
     assert "red" in str(failed_cell.style)
     assert loading_indicator.display is False
-    assert str(status.content) == "Benchmark failed (exit=1)"
+    assert str(status.content) == "벤치마크가 실패했습니다"
+    assert reason.has_class("is-failed")
 
 
 @pytest.mark.asyncio
@@ -691,9 +975,9 @@ async def test_run_screen_surfaces_last_error_line_in_failure_status(
         run_screen._on_complete(1)
         await pilot.pause()
 
-        status = run_screen.query_one("#run-status", Static)
+        reason = run_screen.query_one("#run-terminal-reason", Static)
 
-    assert str(status.content) == "Benchmark failed (exit=1): RuntimeError: boom"
+    assert str(reason.content) == "종료 사유: RuntimeError: boom"
 
 
 @pytest.mark.asyncio
@@ -734,10 +1018,12 @@ async def test_run_screen_exposes_report_and_exit_controls_after_success(
 
         run_screen = app.screen
         report_button = run_screen.query_one("#cancel-button", Button)
-        exit_button = run_screen.query_one("#back-button", Button)
+        settings_button = run_screen.query_one("#settings-button", Button)
+        exit_button = run_screen.query_one("#exit-button", Button)
 
-    assert str(report_button.label) == "Reopen report"
-    assert str(exit_button.label) == "Exit"
+    assert str(report_button.label) == "결과 다시 보기"
+    assert str(settings_button.label) == "설정으로 돌아가기"
+    assert str(exit_button.label) == "종료"
 
 
 @pytest.mark.asyncio
@@ -826,6 +1112,6 @@ async def test_run_screen_exit_control_quits_app_after_success(
         modal_screen.action_close()
         await pilot.pause()
 
-        await app.screen.action_back()
+        await app.screen.action_exit()
 
     assert len(exit_calls) == 1

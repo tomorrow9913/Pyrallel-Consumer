@@ -11,6 +11,12 @@ _TOPIC_PATTERN = re.compile(r"topic '([^']+)'")
 _JSON_OUTPUT_PATTERN = re.compile(r"JSON summary written to (.+)$")
 _FINAL_TPS_PATTERN = re.compile(r"Final TPS:\s*([0-9]+(?:\.[0-9]+)?)")
 _STRICT_SUFFIX_PATTERN = re.compile(r"(?:^|-)strict-(on|off)(?:$|[.-])")
+_WILL_PROCESS_PATTERN = re.compile(r"Will process up to (\d+) messages")
+_TARGET_MESSAGES_PATTERN = re.compile(r"Target messages to process:\s*(\d+)")
+_PROCESSED_MESSAGES_PATTERN = re.compile(r"Processed (\d+) messages")
+_TOTAL_MESSAGES_PROCESSED_PATTERN = re.compile(
+    r"Total messages processed(?: \(approx\))?:\s*(\d+)"
+)
 
 RunIdentity = tuple[str, str, str, str]
 
@@ -43,6 +49,8 @@ class BenchmarkProgressSnapshot:
     )
     current_workload: str | None = None
     current_ordering: str | None = None
+    current_run_target_messages: int = 0
+    current_run_processed_messages: int = 0
     output_path: str | None = None
     completed_runs: int = 0
     total_runs: int = 0
@@ -87,6 +95,30 @@ class BenchmarkLogParser:
         if "Resetting benchmark topics/groups:" in stripped:
             self.snapshot.status_message = "Resetting topics/groups"
             return self.snapshot
+
+        will_process_match = _WILL_PROCESS_PATTERN.search(stripped)
+        if will_process_match is not None:
+            self.snapshot.current_run_target_messages = int(will_process_match.group(1))
+            return self.snapshot
+
+        target_messages_match = _TARGET_MESSAGES_PATTERN.search(stripped)
+        if target_messages_match is not None:
+            self.snapshot.current_run_target_messages = int(
+                target_messages_match.group(1)
+            )
+            return self.snapshot
+
+        processed_messages_match = _PROCESSED_MESSAGES_PATTERN.search(stripped)
+        if processed_messages_match is not None:
+            self.snapshot.current_run_processed_messages = int(
+                processed_messages_match.group(1)
+            )
+
+        total_processed_match = _TOTAL_MESSAGES_PROCESSED_PATTERN.search(stripped)
+        if total_processed_match is not None:
+            self.snapshot.current_run_processed_messages = int(
+                total_processed_match.group(1)
+            )
 
         topic_match = _TOPIC_PATTERN.search(stripped)
         topic_name = topic_match.group(1) if topic_match else None
@@ -212,6 +244,8 @@ class BenchmarkLogParser:
         if workload is None or ordering is None or phase not in self._active_phases:
             return
         self.snapshot.current_ordering = ordering
+        self.snapshot.current_run_processed_messages = 0
+        self.snapshot.current_run_target_messages = 0
         self._record_run_variant(workload, ordering, strict_mode, phase)
         key = (workload, ordering, strict_mode, phase)
         if key not in self._started_runs:
