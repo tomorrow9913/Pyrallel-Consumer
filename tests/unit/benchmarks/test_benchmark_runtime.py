@@ -529,6 +529,34 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
     assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
 
 
+def test_build_kafka_config_enables_metrics_when_port_provided() -> None:
+    config = pyrallel_consumer_test.build_kafka_config(metrics_port=9091)
+
+    assert config.metrics.enabled is True
+    assert config.metrics.port == 9091
+
+
+def test_get_or_create_prometheus_exporter_reuses_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[int] = []
+
+    class _FakeExporter:
+        def __init__(self, config):
+            created.append(config.port)
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "PrometheusMetricsExporter", _FakeExporter
+    )
+    pyrallel_consumer_test._PROMETHEUS_EXPORTERS.clear()
+
+    first = pyrallel_consumer_test._get_or_create_prometheus_exporter(9091)
+    second = pyrallel_consumer_test._get_or_create_prometheus_exporter(9091)
+
+    assert first is second
+    assert created == [9091]
+
+
 @pytest.mark.asyncio
 async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
@@ -599,6 +627,83 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
 
     assert captured["process_batch_size"] == 1
     assert captured["process_max_batch_wait_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics_port_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_metrics_exporter: Any = None
+    metrics_updates: list[Any] = []
+
+    class _FakePrometheusExporter:
+        def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            del tp, status, duration_seconds
+
+        def update_from_system_metrics(self, metrics) -> None:
+            metrics_updates.append(metrics)
+
+    class _FakePoller:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[],
+                process_batch_metrics=None,
+            )
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_get_or_create_prometheus_exporter",
+        lambda port: _FakePrometheusExporter(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "AsyncExecutionEngine",
+        lambda **_kwargs: _FakeEngine(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "BrokerPoller",
+        lambda **_kwargs: _FakePoller(),
+    )
+
+    def _capture_work_manager(**kwargs):
+        nonlocal captured_metrics_exporter
+        captured_metrics_exporter = kwargs["metrics_exporter"]
+        return object()
+
+    monkeypatch.setattr(pyrallel_consumer_test, "WorkManager", _capture_work_manager)
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+
+    await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=0,
+        timeout_sec=0,
+        execution_mode="async",
+        metrics_port=9091,
+    )
+
+    assert captured_metrics_exporter is not None
+    assert metrics_updates
 
 
 def test_run_benchmark_passes_process_batching_overrides_to_process_round(

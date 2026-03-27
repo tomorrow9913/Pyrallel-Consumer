@@ -49,6 +49,7 @@ uv sync --group dev
   - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
+  - `--metrics-port`: expose Prometheus metrics on the host for the current benchmark process.
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
   - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).
@@ -89,6 +90,7 @@ uv sync --group dev
 - Process worker profiling is enabled when `--profile` is set; per-worker files are saved automatically. Use `uv run snakeviz <prof>` to inspect.
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
 - For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
+- If Prometheus/Grafana is running from `.github/e2e.compose.yml`, launch the benchmark with `--metrics-port 9091` so the `pyrallel-consumer` target comes up.
 
 ## Interpreting TPS vs per-message latency
 

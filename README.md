@@ -266,6 +266,16 @@ uv run pytest tests/e2e -q
 - Test-stack dashboards:
   - Prometheus: http://localhost:9090
   - Grafana: http://localhost:3000 (`local-e2e`)
+- To bring the `pyrallel-consumer` Prometheus target up, run a benchmark or test harness with `--metrics-port 9091`.
+- Example:
+```bash
+uv run python benchmarks/run_parallel_benchmark.py \
+  --skip-baseline --skip-async \
+  --workloads sleep --order partition \
+  --num-messages 4000 \
+  --worker-sleep-ms 0.02 \
+  --metrics-port 9091
+```
 
 ## 📖 Documentation
 

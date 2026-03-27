@@ -353,6 +353,7 @@ async def _run_pyrparallel_round(
     strict_completion_monitor_enabled: bool = True,
     process_batch_size: int | None = None,
     process_max_batch_wait_ms: int | None = None,
+    metrics_port: int | None = None,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -386,6 +387,7 @@ async def _run_pyrparallel_round(
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
+        metrics_port=metrics_port,
     )
     if timed_out:
         raise RuntimeError(
@@ -660,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs",
+    )
     # -- py-spy profiling options (process mode) --
     parser.add_argument(
         "--py-spy",
@@ -882,6 +890,7 @@ def run_benchmark(
                                     process_max_batch_wait_ms=(
                                         args.process_max_batch_wait_ms
                                     ),
+                                    metrics_port=args.metrics_port,
                                 )
                             )
                     if not args.skip_process:
@@ -930,6 +939,7 @@ def run_benchmark(
                                 process_max_batch_wait_ms=(
                                     args.process_max_batch_wait_ms
                                 ),
+                                metrics_port=args.metrics_port,
                             )
                         )
                         if args.profile and args.profile_process_workers:
