@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
@@ -28,6 +28,7 @@ from .stats import BenchmarkResult, BenchmarkStats
 topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
 DEFAULT_TIMEOUT_SEC = 60
+ProcessFlushPolicy = Literal["size_or_timer", "demand", "demand_min_residence"]
 
 
 conf: Dict[str, Any] = {
@@ -234,6 +235,8 @@ def build_kafka_config(
     strict_completion_monitor_enabled: bool = True,
     process_batch_size: Optional[int] = None,
     process_max_batch_wait_ms: Optional[int] = None,
+    process_flush_policy: Optional[ProcessFlushPolicy] = None,
+    process_demand_flush_min_residence_ms: Optional[int] = None,
     metrics_port: Optional[int] = None,
 ) -> KafkaConfig:
     effective_conf = dict(conf)
@@ -263,6 +266,14 @@ def build_kafka_config(
         kafka_config.parallel_consumer.execution.process_config.max_batch_wait_ms = (
             process_max_batch_wait_ms
         )
+    if process_flush_policy is not None:
+        kafka_config.parallel_consumer.execution.process_config.flush_policy = (
+            process_flush_policy
+        )
+    if process_demand_flush_min_residence_ms is not None:
+        (
+            kafka_config.parallel_consumer.execution.process_config.demand_flush_min_residence_ms
+        ) = process_demand_flush_min_residence_ms
     if metrics_port is not None:
         kafka_config.metrics = MetricsConfig(enabled=True, port=metrics_port)
 
@@ -287,6 +298,8 @@ async def run_pyrallel_consumer_test(
     strict_completion_monitor_enabled: bool = True,
     process_batch_size: Optional[int] = None,
     process_max_batch_wait_ms: Optional[int] = None,
+    process_flush_policy: Optional[ProcessFlushPolicy] = None,
+    process_demand_flush_min_residence_ms: Optional[int] = None,
     metrics_port: Optional[int] = None,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
@@ -314,6 +327,8 @@ async def run_pyrallel_consumer_test(
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
+        process_flush_policy=process_flush_policy,
+        process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         metrics_port=metrics_port,
     )
     mode_value = ExecutionMode(execution_mode)

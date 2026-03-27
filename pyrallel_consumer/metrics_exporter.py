@@ -118,6 +118,36 @@ class PrometheusMetricsExporter:
             "Age of the current process batch buffer",
             registry=self._registry,
         )
+        self._process_batch_last_main_to_worker_ipc_seconds_gauge = Gauge(
+            "consumer_process_batch_last_main_to_worker_ipc_seconds",
+            "Last observed main-to-worker IPC time for process batches",
+            registry=self._registry,
+        )
+        self._process_batch_avg_main_to_worker_ipc_seconds_gauge = Gauge(
+            "consumer_process_batch_avg_main_to_worker_ipc_seconds",
+            "Average observed main-to-worker IPC time for process batches",
+            registry=self._registry,
+        )
+        self._process_batch_last_worker_exec_seconds_gauge = Gauge(
+            "consumer_process_batch_last_worker_exec_seconds",
+            "Last observed worker execution time for process batches",
+            registry=self._registry,
+        )
+        self._process_batch_avg_worker_exec_seconds_gauge = Gauge(
+            "consumer_process_batch_avg_worker_exec_seconds",
+            "Average observed worker execution time for process batches",
+            registry=self._registry,
+        )
+        self._process_batch_last_worker_to_main_ipc_seconds_gauge = Gauge(
+            "consumer_process_batch_last_worker_to_main_ipc_seconds",
+            "Last observed worker-to-main IPC time for process completions",
+            registry=self._registry,
+        )
+        self._process_batch_avg_worker_to_main_ipc_seconds_gauge = Gauge(
+            "consumer_process_batch_avg_worker_to_main_ipc_seconds",
+            "Average observed worker-to-main IPC time for process completions",
+            registry=self._registry,
+        )
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -176,13 +206,19 @@ class PrometheusMetricsExporter:
         self, metrics: Optional[ProcessBatchMetrics]
     ) -> None:
         if metrics is None:
-            for reason in ("size", "timer", "close"):
+            for reason in ("size", "timer", "close", "demand"):
                 self._process_batch_flush_count.labels(reason=reason).set(0)
             self._process_batch_avg_size_gauge.set(0)
             self._process_batch_last_size_gauge.set(0)
             self._process_batch_last_wait_seconds_gauge.set(0)
             self._process_batch_buffered_items_gauge.set(0)
             self._process_batch_buffered_age_seconds_gauge.set(0)
+            self._process_batch_last_main_to_worker_ipc_seconds_gauge.set(0)
+            self._process_batch_avg_main_to_worker_ipc_seconds_gauge.set(0)
+            self._process_batch_last_worker_exec_seconds_gauge.set(0)
+            self._process_batch_avg_worker_exec_seconds_gauge.set(0)
+            self._process_batch_last_worker_to_main_ipc_seconds_gauge.set(0)
+            self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(0)
             return
 
         self._process_batch_flush_count.labels(reason="size").set(
@@ -194,10 +230,14 @@ class PrometheusMetricsExporter:
         self._process_batch_flush_count.labels(reason="close").set(
             metrics.close_flush_count
         )
+        self._process_batch_flush_count.labels(reason="demand").set(
+            metrics.demand_flush_count
+        )
         flush_total = (
             metrics.size_flush_count
             + metrics.timer_flush_count
             + metrics.close_flush_count
+            + metrics.demand_flush_count
         )
         average_batch_size = (
             metrics.total_flushed_items / flush_total if flush_total > 0 else 0.0
@@ -207,3 +247,21 @@ class PrometheusMetricsExporter:
         self._process_batch_last_wait_seconds_gauge.set(metrics.last_flush_wait_seconds)
         self._process_batch_buffered_items_gauge.set(metrics.buffered_items)
         self._process_batch_buffered_age_seconds_gauge.set(metrics.buffered_age_seconds)
+        self._process_batch_last_main_to_worker_ipc_seconds_gauge.set(
+            metrics.last_main_to_worker_ipc_seconds
+        )
+        self._process_batch_avg_main_to_worker_ipc_seconds_gauge.set(
+            metrics.avg_main_to_worker_ipc_seconds
+        )
+        self._process_batch_last_worker_exec_seconds_gauge.set(
+            metrics.last_worker_exec_seconds
+        )
+        self._process_batch_avg_worker_exec_seconds_gauge.set(
+            metrics.avg_worker_exec_seconds
+        )
+        self._process_batch_last_worker_to_main_ipc_seconds_gauge.set(
+            metrics.last_worker_to_main_ipc_seconds
+        )
+        self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(
+            metrics.avg_worker_to_main_ipc_seconds
+        )

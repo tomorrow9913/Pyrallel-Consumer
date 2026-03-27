@@ -55,6 +55,8 @@ uv sync --group dev
   - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).
   - `--process-batch-size`: override process-mode micro-batch size for benchmark runs only.
   - `--process-max-batch-wait-ms`: override process-mode micro-batch wait for benchmark runs only.
+  - `--process-flush-policy`: override process-mode flush policy (`size_or_timer`, `demand`, `demand_min_residence`) for benchmark runs only.
+  - `--process-demand-flush-min-residence-ms`: minimum residence time before demand flush is allowed when using `demand_min_residence`.
 - Profiling (yappi):
   - `--profile`: enable profiling (baseline/async only; process mode profiling is disabled by default).
   - `--profile-dir`: directory to write `.prof` files (default `benchmarks/results/profiles`).
@@ -90,6 +92,7 @@ uv sync --group dev
 - Process worker profiling is enabled when `--profile` is set; per-worker files are saved automatically. Use `uv run snakeviz <prof>` to inspect.
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
 - For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
+- Experimental demand-flush policies are exposed through `--process-flush-policy`; start with `demand` and `demand_min_residence --process-demand-flush-min-residence-ms 1` when reproducing issue #14.
 - If Prometheus/Grafana is running from `.github/e2e.compose.yml`, the benchmark now exposes metrics on `9091` by default so the `pyrallel-consumer` target comes up automatically.
 - Use `--metrics-port 0` when you want to disable benchmark-side Prometheus exposure.
 - `kafka-exporter` should recover automatically once Kafka is ready; if `pyrallel-consumer` stays `down`, make sure the benchmark process is still running with `--metrics-port 9091`.

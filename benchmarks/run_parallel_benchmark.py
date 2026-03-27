@@ -25,7 +25,11 @@ from confluent_kafka.admin import AdminClient
 from benchmarks.baseline_consumer import consume_messages
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
-from benchmarks.pyrallel_consumer_test import ExecutionMode, run_pyrallel_consumer_test
+from benchmarks.pyrallel_consumer_test import (
+    ExecutionMode,
+    ProcessFlushPolicy,
+    run_pyrallel_consumer_test,
+)
 from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
 from pyrallel_consumer.dto import OrderingMode, WorkItem
 
@@ -33,6 +37,11 @@ _YAPPI_WORKER_STARTED = False
 _WORKLOAD_CHOICES = ("sleep", "cpu", "io")
 _ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
 _STRICT_COMPLETION_MONITOR_CHOICES = ("on", "off")
+_PROCESS_FLUSH_POLICY_CHOICES = (
+    "size_or_timer",
+    "demand",
+    "demand_min_residence",
+)
 
 
 def _parse_csv_selection(
@@ -359,6 +368,8 @@ async def _run_pyrparallel_round(
     strict_completion_monitor_enabled: bool = True,
     process_batch_size: int | None = None,
     process_max_batch_wait_ms: int | None = None,
+    process_flush_policy: ProcessFlushPolicy | None = None,
+    process_demand_flush_min_residence_ms: int | None = None,
     metrics_port: int | None = None,
 ) -> BenchmarkResult:
     produce_messages(
@@ -393,6 +404,8 @@ async def _run_pyrparallel_round(
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
+        process_flush_policy=process_flush_policy,
+        process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         metrics_port=metrics_port,
     )
     if timed_out:
@@ -669,6 +682,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
     )
     parser.add_argument(
+        "--process-flush-policy",
+        choices=_PROCESS_FLUSH_POLICY_CHOICES,
+        default=None,
+        help="Override process-mode flush policy for benchmark runs",
+    )
+    parser.add_argument(
+        "--process-demand-flush-min-residence-ms",
+        type=int,
+        default=None,
+        help="Override minimum residence time before demand flush is allowed",
+    )
+    parser.add_argument(
         "--metrics-port",
         type=int,
         default=9091,
@@ -754,6 +779,10 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
     if args.process_batch_size is not None:
         return
     if args.process_max_batch_wait_ms is not None:
+        return
+    if args.process_flush_policy is not None:
+        return
+    if args.process_demand_flush_min_residence_ms is not None:
         return
 
     print(
@@ -897,6 +926,10 @@ def run_benchmark(
                                     process_max_batch_wait_ms=(
                                         args.process_max_batch_wait_ms
                                     ),
+                                    process_flush_policy=args.process_flush_policy,
+                                    process_demand_flush_min_residence_ms=(
+                                        args.process_demand_flush_min_residence_ms
+                                    ),
                                     metrics_port=metrics_port,
                                 )
                             )
@@ -945,6 +978,10 @@ def run_benchmark(
                                 process_batch_size=args.process_batch_size,
                                 process_max_batch_wait_ms=(
                                     args.process_max_batch_wait_ms
+                                ),
+                                process_flush_policy=args.process_flush_policy,
+                                process_demand_flush_min_residence_ms=(
+                                    args.process_demand_flush_min_residence_ms
                                 ),
                                 metrics_port=metrics_port,
                             )

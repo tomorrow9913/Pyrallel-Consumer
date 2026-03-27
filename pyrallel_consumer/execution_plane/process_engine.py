@@ -32,6 +32,7 @@ from pyrallel_consumer.logger import LogManager
 SerializedWorkItem = dict[str, Any]
 SerializedCompletionEvent = dict[str, Any]
 SerializedRegistryEvent = dict[str, Any]
+SerializedBatchEnvelope = dict[str, Any]
 
 _SENTINEL = None
 _logger = logging.getLogger(__name__)
@@ -64,8 +65,9 @@ def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
 
 def _completion_event_to_dict(
     event: CompletionEvent,
+    extra_fields: Optional[dict[str, Any]] = None,
 ) -> SerializedCompletionEvent:
-    return {
+    payload: SerializedCompletionEvent = {
         "id": event.id,
         "topic": event.tp.topic,
         "partition": event.tp.partition,
@@ -75,6 +77,9 @@ def _completion_event_to_dict(
         "error": event.error,
         "attempt": event.attempt,
     }
+    if extra_fields:
+        payload.update(extra_fields)
+    return payload
 
 
 def _completion_event_from_dict(
@@ -91,38 +96,70 @@ def _completion_event_from_dict(
     )
 
 
-def _decode_incoming_payloads(item: Any, max_bytes: int) -> list[SerializedWorkItem]:
-    if isinstance(item, (bytes, bytearray)):
-        if len(item) > max_bytes:
-            raise ValueError("payload_too_large")
-        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=max_bytes)
-        unpacker.feed(item)
-        decoded = list(unpacker)
-        if len(decoded) == 1 and isinstance(decoded[0], list):
-            decoded = decoded[0]
-        return [dict(entry) for entry in decoded]
-    if isinstance(item, list):
+def _serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> bytes:
+    envelope: SerializedBatchEnvelope = {
+        "items": [_work_item_to_dict(item) for item in batch],
+        "timing": {"flush_enqueued_at": flush_enqueued_at},
+    }
+    return msgpack.packb(envelope, use_bin_type=True)
+
+
+def _normalize_decoded_payloads(
+    decoded: Any,
+) -> tuple[list[SerializedWorkItem], dict[str, float]]:
+    if isinstance(decoded, dict):
+        if "items" in decoded:
+            timing = decoded.get("timing", {})
+            timing_values = {
+                key: float(value)
+                for key, value in dict(timing).items()
+                if isinstance(value, (int, float))
+            }
+            return [dict(entry) for entry in decoded.get("items", [])], timing_values
+        payload = dict(decoded)
+        payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
+        return [payload], {}
+
+    if isinstance(decoded, list):
         payloads: list[SerializedWorkItem] = []
-        for entry in item:
+        for entry in decoded:
             if isinstance(entry, WorkItem):
                 payload = _work_item_to_dict(entry)
             else:
                 payload = dict(entry)
             payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
             payloads.append(payload)
-        return payloads
-    if isinstance(item, WorkItem):
-        payload = _work_item_to_dict(item)
+        return payloads, {}
+
+    if isinstance(decoded, WorkItem):
+        payload = _work_item_to_dict(decoded)
     else:
-        payload = dict(item)
+        payload = dict(decoded)
     payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-    return [payload]
+    return [payload], {}
+
+
+def _decode_incoming_payloads(
+    item: Any, max_bytes: int
+) -> tuple[list[SerializedWorkItem], dict[str, float]]:
+    if isinstance(item, (bytes, bytearray)):
+        if len(item) > max_bytes:
+            raise ValueError("payload_too_large")
+        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=max_bytes)
+        unpacker.feed(item)
+        decoded_items = list(unpacker)
+        if len(decoded_items) == 1:
+            decoded = decoded_items[0]
+        else:
+            decoded = decoded_items
+        return _normalize_decoded_payloads(decoded)
+    return _normalize_decoded_payloads(item)
 
 
 def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
     return [
         _work_item_from_dict(payload)
-        for payload in _decode_incoming_payloads(item, max_bytes)
+        for payload in _decode_incoming_payloads(item, max_bytes)[0]
     ]
 
 
@@ -136,13 +173,17 @@ class _BatchAccumulator:
 
     def __init__(
         self,
-        task_queue: Queue,
+        task_queue: Any,
         batch_size: int,
         max_batch_wait_ms: int,
+        flush_policy: str = "size_or_timer",
+        demand_flush_min_residence_ms: int = 0,
     ):
         self._task_queue = task_queue
         self._batch_size = batch_size
         self._max_batch_wait_sec = max_batch_wait_ms / 1000.0
+        self._flush_policy = flush_policy
+        self._demand_flush_min_residence_sec = demand_flush_min_residence_ms / 1000.0
         self._buffer: list[WorkItem] = []
         self._first_item_time: Optional[float] = None
         self._lock = threading.Lock()
@@ -151,6 +192,7 @@ class _BatchAccumulator:
         self._size_flush_count = 0
         self._timer_flush_count = 0
         self._close_flush_count = 0
+        self._demand_flush_count = 0
         self._total_flushed_items = 0
         self._last_flush_size = 0
         self._last_flush_wait_seconds = 0.0
@@ -159,12 +201,26 @@ class _BatchAccumulator:
         with self._lock:
             if self._closed:
                 return
+            if self._should_flush_on_demand_locked():
+                self._flush_locked(reason="demand")
             self._buffer.append(work_item)
             if self._first_item_time is None:
                 self._first_item_time = time.monotonic()
                 self._start_flush_timer()
             if len(self._buffer) >= self._batch_size:
                 self._flush_locked(reason="size")
+
+    def _should_flush_on_demand_locked(self) -> bool:
+        if not self._buffer:
+            return False
+        if self._flush_policy == "demand":
+            return True
+        if self._flush_policy != "demand_min_residence":
+            return False
+        if self._first_item_time is None:
+            return False
+        oldest_age = max(0.0, time.monotonic() - self._first_item_time)
+        return oldest_age >= self._demand_flush_min_residence_sec
 
     def _start_flush_timer(self) -> None:
         if self._flush_timer is not None:
@@ -198,13 +254,15 @@ class _BatchAccumulator:
             self._timer_flush_count += 1
         elif reason == "close":
             self._close_flush_count += 1
+        elif reason == "demand":
+            self._demand_flush_count += 1
         self._total_flushed_items += len(batch)
         self._last_flush_size = len(batch)
         self._last_flush_wait_seconds = wait_seconds
         if _logger.isEnabledFor(logging.DEBUG):
             _logger.debug("Batch flush (%s): size=%d", reason, len(batch))
-        payload = [_work_item_to_dict(item) for item in batch]
-        packed = msgpack.packb(payload, use_bin_type=True)
+        flush_enqueued_at = time.monotonic()
+        packed = _serialize_batch_payload(batch, flush_enqueued_at)
         self._task_queue.put(packed)
 
     def close(self) -> None:
@@ -232,6 +290,7 @@ class _BatchAccumulator:
                 last_flush_wait_seconds=self._last_flush_wait_seconds,
                 buffered_items=len(self._buffer),
                 buffered_age_seconds=buffered_age_seconds,
+                demand_flush_count=self._demand_flush_count,
             )
 
 
@@ -284,6 +343,7 @@ def _worker_loop(
     )
     while True:
         item = task_queue.get()
+        worker_received_at = time.monotonic()
         if item is _SENTINEL:
             worker_logger.debug(
                 "ProcessWorker[%d] received sentinel, shutting down.",
@@ -292,7 +352,7 @@ def _worker_loop(
             break
 
         try:
-            payloads = _decode_incoming_payloads(
+            payloads, timing_metadata = _decode_incoming_payloads(
                 item, execution_config.process_config.msgpack_max_bytes
             )
         except Exception as decode_exc:
@@ -318,6 +378,20 @@ def _worker_loop(
                     put_exc,
                 )
             continue
+
+        flush_enqueued_at = timing_metadata.get("flush_enqueued_at")
+        if flush_enqueued_at is not None:
+            registry_event_queue.put(
+                {
+                    "kind": "batch_received",
+                    "main_to_worker_ipc_seconds": max(
+                        0.0, worker_received_at - flush_enqueued_at
+                    ),
+                }
+            )
+
+        batch_run_started_at: Optional[float] = None
+        batch_completed_sent = False
 
         for idx, payload in enumerate(payloads):
             work_item = _work_item_from_dict(payload)
@@ -345,6 +419,8 @@ def _worker_loop(
 
             for attempt in range(1, execution_config.max_retries + 1):
                 try:
+                    if batch_run_started_at is None:
+                        batch_run_started_at = time.monotonic()
 
                     def _run_with_timeout() -> None:
                         worker_fn(work_item)
@@ -434,13 +510,29 @@ def _worker_loop(
                     error=error,
                     attempt=attempt,
                 )
-                try:
-                    completion_queue.put(
-                        msgpack.packb(
-                            _completion_event_to_dict(completion_event),
-                            use_bin_type=True,
-                        )
+                if (
+                    not batch_completed_sent
+                    and batch_run_started_at is not None
+                    and idx == len(payloads) - 1
+                ):
+                    registry_event_queue.put(
+                        {
+                            "kind": "batch_completed",
+                            "worker_exec_seconds": max(
+                                0.0, time.monotonic() - batch_run_started_at
+                            ),
+                        }
                     )
+                    batch_completed_sent = True
+                packed_completion = msgpack.packb(
+                    _completion_event_to_dict(
+                        completion_event,
+                        extra_fields={"completion_enqueued_at": time.monotonic()},
+                    ),
+                    use_bin_type=True,
+                )
+                try:
+                    completion_queue.put(packed_completion)
                 except Exception as put_exc:
                     worker_logger.error(
                         "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
@@ -477,6 +569,16 @@ def _worker_loop(
 
             if should_exit_after_batch:
                 break
+
+        if batch_run_started_at is not None and not batch_completed_sent:
+            registry_event_queue.put(
+                {
+                    "kind": "batch_completed",
+                    "worker_exec_seconds": max(
+                        0.0, time.monotonic() - batch_run_started_at
+                    ),
+                }
+            )
 
         if should_exit_after_batch:
             break
@@ -526,6 +628,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
+        self._initialize_runtime_timing_state()
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
             maxsize=config.process_config.queue_size
@@ -540,6 +643,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             task_queue=self._task_queue,
             batch_size=config.process_config.batch_size,
             max_batch_wait_ms=config.process_config.max_batch_wait_ms,
+            flush_policy=config.process_config.flush_policy,
+            demand_flush_min_residence_ms=(
+                config.process_config.demand_flush_min_residence_ms
+            ),
         )
 
         self._start_workers()
@@ -723,6 +830,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._workers[idx] = new_worker
 
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
+        self._initialize_runtime_timing_state()
         kind = event.get("kind")
         key = event.get("key")
         if kind == "start" and key is not None:
@@ -741,6 +849,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         if kind == "done" and key is not None:
             self._in_flight_registry.pop(key, None)
+            return
+
+        if kind == "batch_received":
+            self._record_main_to_worker_ipc(
+                event.get("main_to_worker_ipc_seconds", 0.0)
+            )
+            return
+
+        if kind == "batch_completed":
+            self._record_worker_exec(event.get("worker_exec_seconds", 0.0))
 
     def _drain_registry_events(self) -> None:
         self._drain_registry_event_queue()
@@ -755,13 +873,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             except queue.Empty:
                 break
             drained_completion += 1
-            if isinstance(raw_event, (bytes, bytearray)):
-                event = _completion_event_from_dict(
-                    msgpack.unpackb(raw_event, raw=False)
-                )
-            else:
-                event = raw_event
-            self._prefetched_completion_events.append(event)
+            self._prefetched_completion_events.append(
+                self._decode_completion_queue_item(raw_event)
+            )
 
         return drained_registry, drained_completion
 
@@ -777,7 +891,42 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return min_offset
 
     def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
-        return self._batch_accumulator.snapshot()
+        self._drain_registry_events()
+        base_metrics = self._batch_accumulator.snapshot()
+        self._initialize_runtime_timing_state()
+        with self._runtime_timing_lock:
+            main_to_worker_avg = (
+                self._main_to_worker_ipc_sum_seconds / self._main_to_worker_ipc_samples
+                if self._main_to_worker_ipc_samples > 0
+                else 0.0
+            )
+            worker_exec_avg = (
+                self._worker_exec_sum_seconds / self._worker_exec_samples
+                if self._worker_exec_samples > 0
+                else 0.0
+            )
+            worker_to_main_avg = (
+                self._worker_to_main_ipc_sum_seconds / self._worker_to_main_ipc_samples
+                if self._worker_to_main_ipc_samples > 0
+                else 0.0
+            )
+            return ProcessBatchMetrics(
+                size_flush_count=base_metrics.size_flush_count,
+                timer_flush_count=base_metrics.timer_flush_count,
+                close_flush_count=base_metrics.close_flush_count,
+                total_flushed_items=base_metrics.total_flushed_items,
+                last_flush_size=base_metrics.last_flush_size,
+                last_flush_wait_seconds=base_metrics.last_flush_wait_seconds,
+                buffered_items=base_metrics.buffered_items,
+                buffered_age_seconds=base_metrics.buffered_age_seconds,
+                demand_flush_count=base_metrics.demand_flush_count,
+                last_main_to_worker_ipc_seconds=self._last_main_to_worker_ipc_seconds,
+                avg_main_to_worker_ipc_seconds=main_to_worker_avg,
+                last_worker_exec_seconds=self._last_worker_exec_seconds,
+                avg_worker_exec_seconds=worker_exec_avg,
+                last_worker_to_main_ipc_seconds=self._last_worker_to_main_ipc_seconds,
+                avg_worker_to_main_ipc_seconds=worker_to_main_avg,
+            )
 
     async def submit(self, work_item: WorkItem) -> None:
         """
@@ -808,13 +957,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         ):
             try:
                 raw_event = self._completion_queue.get_nowait()
-                if isinstance(raw_event, (bytes, bytearray)):
-                    event = _completion_event_from_dict(
-                        msgpack.unpackb(raw_event, raw=False)
-                    )
-                else:
-                    event = raw_event
-
+                event = self._decode_completion_queue_item(raw_event)
                 completed_events.append(event)
                 with self._in_flight_lock:
                     self._in_flight_count -= 1
@@ -848,13 +991,76 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         except queue.Empty:
             return False
 
-        if isinstance(raw_event, (bytes, bytearray)):
-            event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
-        else:
-            event = raw_event
-
-        self._prefetched_completion_events.append(event)
+        self._prefetched_completion_events.append(
+            self._decode_completion_queue_item(raw_event)
+        )
         return True
+
+    def _initialize_runtime_timing_state(self) -> None:
+        if hasattr(self, "_runtime_timing_lock"):
+            return
+        self._runtime_timing_lock = threading.Lock()
+        self._main_to_worker_ipc_samples = 0
+        self._main_to_worker_ipc_sum_seconds = 0.0
+        self._last_main_to_worker_ipc_seconds = 0.0
+        self._worker_exec_samples = 0
+        self._worker_exec_sum_seconds = 0.0
+        self._last_worker_exec_seconds = 0.0
+        self._worker_to_main_ipc_samples = 0
+        self._worker_to_main_ipc_sum_seconds = 0.0
+        self._last_worker_to_main_ipc_seconds = 0.0
+
+    def _record_main_to_worker_ipc(self, duration_seconds: Any) -> None:
+        self._record_runtime_timing(
+            duration_seconds,
+            sample_attr="_main_to_worker_ipc_samples",
+            sum_attr="_main_to_worker_ipc_sum_seconds",
+            last_attr="_last_main_to_worker_ipc_seconds",
+        )
+
+    def _record_worker_exec(self, duration_seconds: Any) -> None:
+        self._record_runtime_timing(
+            duration_seconds,
+            sample_attr="_worker_exec_samples",
+            sum_attr="_worker_exec_sum_seconds",
+            last_attr="_last_worker_exec_seconds",
+        )
+
+    def _record_worker_to_main_ipc(self, duration_seconds: Any) -> None:
+        self._record_runtime_timing(
+            duration_seconds,
+            sample_attr="_worker_to_main_ipc_samples",
+            sum_attr="_worker_to_main_ipc_sum_seconds",
+            last_attr="_last_worker_to_main_ipc_seconds",
+        )
+
+    def _record_runtime_timing(
+        self,
+        duration_seconds: Any,
+        *,
+        sample_attr: str,
+        sum_attr: str,
+        last_attr: str,
+    ) -> None:
+        if not isinstance(duration_seconds, (int, float)):
+            return
+        self._initialize_runtime_timing_state()
+        duration = max(0.0, float(duration_seconds))
+        with self._runtime_timing_lock:
+            setattr(self, sample_attr, getattr(self, sample_attr) + 1)
+            setattr(self, sum_attr, getattr(self, sum_attr) + duration)
+            setattr(self, last_attr, duration)
+
+    def _decode_completion_queue_item(self, raw_event: Any) -> CompletionEvent:
+        if isinstance(raw_event, (bytes, bytearray)):
+            payload = msgpack.unpackb(raw_event, raw=False)
+            completion_enqueued_at = payload.get("completion_enqueued_at")
+            if isinstance(completion_enqueued_at, (int, float)):
+                self._record_worker_to_main_ipc(
+                    time.monotonic() - float(completion_enqueued_at)
+                )
+            return _completion_event_from_dict(payload)
+        return raw_event
 
     def get_in_flight_count(self) -> int:
         """

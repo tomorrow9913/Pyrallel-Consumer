@@ -27,6 +27,10 @@ class ProcessConfig(BaseSettings):
     batch_size: int = 64
     batch_bytes: str = "256KB"
     max_batch_wait_ms: int = 5
+    flush_policy: Literal[
+        "size_or_timer", "demand", "demand_min_residence"
+    ] = "size_or_timer"
+    demand_flush_min_residence_ms: int = 0
     worker_join_timeout_ms: int = 30000
     task_timeout_ms: int = 30000
     msgpack_max_bytes: int = 1_000_000

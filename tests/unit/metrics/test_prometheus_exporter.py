@@ -61,6 +61,12 @@ def test_exporter_updates_metrics_and_observes_completion():
             last_flush_wait_seconds=0.05,
             buffered_items=1,
             buffered_age_seconds=0.2,
+            last_main_to_worker_ipc_seconds=0.003,
+            avg_main_to_worker_ipc_seconds=0.002,
+            last_worker_exec_seconds=0.015,
+            avg_worker_exec_seconds=0.012,
+            last_worker_to_main_ipc_seconds=0.004,
+            avg_worker_to_main_ipc_seconds=0.003,
         ),
     )
 
@@ -84,6 +90,24 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert exporter._process_batch_avg_size_gauge._value.get() == 2
     assert exporter._process_batch_buffered_items_gauge._value.get() == 1
     assert exporter._process_batch_buffered_age_seconds_gauge._value.get() == 0.2
+    assert (
+        exporter._process_batch_last_main_to_worker_ipc_seconds_gauge._value.get()
+        == 0.003
+    )
+    assert (
+        exporter._process_batch_avg_main_to_worker_ipc_seconds_gauge._value.get()
+        == 0.002
+    )
+    assert exporter._process_batch_last_worker_exec_seconds_gauge._value.get() == 0.015
+    assert exporter._process_batch_avg_worker_exec_seconds_gauge._value.get() == 0.012
+    assert (
+        exporter._process_batch_last_worker_to_main_ipc_seconds_gauge._value.get()
+        == 0.004
+    )
+    assert (
+        exporter._process_batch_avg_worker_to_main_ipc_seconds_gauge._value.get()
+        == 0.003
+    )
 
     tp = TopicPartition(topic="topic-a", partition=0)
     exporter.observe_completion(tp, CompletionStatus.SUCCESS, duration_seconds=0.12)
