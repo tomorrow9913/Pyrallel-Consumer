@@ -44,22 +44,25 @@ jobs:
           docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana
       - name: Wait for Kafka, Prometheus, and Grafana
         run: |
-          python - <<'PY'
+          UV_CACHE_DIR=.uv-cache uv run python - <<'PY'
           import base64
-          import json
-          import socket
           import time
           import urllib.request
 
-          def wait_for_socket(host: str, port: int, timeout_sec: float) -> None:
+          from confluent_kafka.admin import AdminClient
+
+          def wait_for_kafka_metadata(bootstrap_servers: str, timeout_sec: float) -> None:
+              client = AdminClient({"bootstrap.servers": bootstrap_servers})
               deadline = time.time() + timeout_sec
               while time.time() < deadline:
                   try:
-                      with socket.create_connection((host, port), timeout=1):
-                          return
-                  except OSError:
+                      client.list_topics(timeout=5)
+                      return
+                  except Exception:
                       time.sleep(1)
-              raise SystemExit(f"{host}:{port} did not become reachable within {timeout_sec} seconds")
+              raise SystemExit(
+                  f"{bootstrap_servers} did not answer Kafka metadata requests within {timeout_sec} seconds"
+              )
 
           def wait_for_http(url: str, timeout_sec: float, auth: str | None = None) -> None:
               deadline = time.time() + timeout_sec
@@ -76,7 +79,7 @@ jobs:
               raise SystemExit(f"{url} did not return HTTP 200 within {timeout_sec} seconds")
 
           grafana_auth = base64.b64encode(b"admin:local-e2e").decode()
-          wait_for_socket("127.0.0.1", 9092, 90)
+          wait_for_kafka_metadata("127.0.0.1:9092", 90)
           wait_for_http("http://127.0.0.1:9090/-/ready", 90)
           wait_for_http("http://127.0.0.1:3000/api/health", 90, auth=grafana_auth)
           PY
