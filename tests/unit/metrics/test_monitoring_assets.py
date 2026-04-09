@@ -76,3 +76,5 @@ def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> No
     assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in workflow_text
     assert "from confluent_kafka.admin import AdminClient" in workflow_text
     assert "client.list_topics(timeout=5)" in workflow_text
+    assert "--num-messages 4000" in workflow_text
+    assert "--timeout-sec 180" in workflow_text

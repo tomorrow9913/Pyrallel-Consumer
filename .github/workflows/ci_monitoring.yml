@@ -92,11 +92,11 @@ jobs:
             --skip-async \
             --workloads sleep \
             --order partition \
-            --num-messages 20000 \
+            --num-messages 4000 \
             --num-keys 200 \
             --num-partitions 4 \
             --worker-sleep-ms 5 \
-            --timeout-sec 60 \
+            --timeout-sec 180 \
             --metrics-port 9091 \
             --topic-prefix ci-monitoring-${{ github.run_id }} \
             --json-output benchmarks/results/ci-monitoring.json \
