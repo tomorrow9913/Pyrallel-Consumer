@@ -305,6 +305,7 @@ graph TD
 - **Async/Process Engine-Specific Tests**:
     - **Async**: Task 취소, 타임아웃, 태스크 누수 없음.
     - **Process**: 워커 프로세스 Crash, SIGKILL 시그널, Pickle 불가 워커 전달 시 즉각 에러, 프로세스 누수 없음.
+- **Kafka-backed Ordering E2E**: 실제 Kafka 브로커를 띄운 상태에서 `key_hash`/`partition` ordering에 대해 `AsyncExecutionEngine`과 `ProcessExecutionEngine`이 모두 순서 보장을 유지하는지 검증합니다. 이 스위트는 실브로커에서 엔진 교체 가능성을 확인하는 최소 correctness gate이며, retry/DLQ/rebalance/restart는 별도 hardening 항목으로 확장합니다.
 
 ### 6.3. TDD 실행 순서
 1.  **Phase 1 (Control Plane First)**: `ExecutionEngine`을 Mock으로 대체하고 `OffsetTracker`, `WorkManager` 등 Control Plane 로직을 먼저 TDD로 구현합니다.

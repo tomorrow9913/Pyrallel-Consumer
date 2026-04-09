@@ -32,4 +32,5 @@
 ## Test Matrix (perf regression gate)
 - **Async**: `max_in_flight={256,1024}`, `poll_batch_size={500,1000}` on I/O workload; record TPS/p99.
 - **Process**: `process_count={cpu_count/2, cpu_count}`, `process_config.batch_size={64,128}`, `queue_size=2048`; run CPU workload.
+- **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` for both `async` and `process` execution modes, including KEY_HASH and PARTITION ordering paths, before stable promotion.
 - **Failure paths**: DLQ enabled with `dlq_payload_mode=metadata_only`, inject worker exceptions, assert commits + DLQ succeed.
