@@ -291,6 +291,26 @@ async def test_commit_ready_offsets_serializes_commit_calls_and_releases_control
 
 
 @pytest.mark.asyncio
+async def test_commit_ready_offsets_tolerates_tracker_removed_after_candidate_generation(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller.consumer = MagicMock(spec=Consumer)
+    dispatch_support = MagicMock()
+
+    def build_commit_candidates():
+        broker_poller._offset_trackers.pop(topic_partition, None)
+        return [(topic_partition, 0)]
+
+    dispatch_support.build_commit_candidates.side_effect = build_commit_candidates
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    await broker_poller._commit_ready_offsets()
+
+    broker_poller.consumer.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_noops_when_wait_for_completion_times_out(
     broker_poller, topic_partition
 ):

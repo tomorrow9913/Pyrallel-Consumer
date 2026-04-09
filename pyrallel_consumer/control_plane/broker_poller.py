@@ -474,9 +474,26 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
+
+        async with self._control_lock:
+            tracked_commits: list[tuple[DtoTopicPartition, int]] = []
+            tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
+            for tp, safe_offset in commits_to_make:
+                tracker = self._offset_trackers.get(tp)
+                if tracker is None:
+                    logger.debug(
+                        "Skipping commit candidate for untracked partition %s", tp
+                    )
+                    continue
+                tracked_commits.append((tp, safe_offset))
+                tracker_snapshot[tp] = tracker
+
+        if not tracked_commits:
+            return
+
         offsets_to_commit = self._commit_planner.build_offsets_to_commit(
-            commits_to_make=commits_to_make,
-            trackers=self._offset_trackers,
+            commits_to_make=tracked_commits,
+            trackers=tracker_snapshot,
             strategy=self._rebalance_state_strategy(),
         )
 
@@ -489,7 +506,7 @@ class BrokerPoller:
                     asynchronous=False,
                 )
                 async with self._control_lock:
-                    for tp, safe_offset in commits_to_make:
+                    for tp, safe_offset in tracked_commits:
                         tracker = self._offset_trackers.get(tp)
                         if tracker is None:
                             continue
