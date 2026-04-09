@@ -6,8 +6,9 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from multiprocessing import Manager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import pytest
 from confluent_kafka.admin import AdminClient
@@ -17,24 +18,22 @@ from confluent_kafka.cimpl import TopicPartition as KafkaTopicPartition
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import OrderingMode, WorkItem
+from pyrallel_consumer.dto import ExecutionMode, OrderingMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
+from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 # --- Test Configuration ---
 E2E_TOPIC = "e2e_ordering_test_topic"
 PRODUCER_SCRIPT = Path(__file__).resolve().parents[2] / "benchmarks" / "producer.py"
-E2E_CONF = {
-    "bootstrap.servers": "localhost:9092",
-    "group.id": "e2e_test_group",
-    "auto.offset.reset": "earliest",
-    "enable.auto.commit": False,
-}
+E2E_BOOTSTRAP_SERVERS = "localhost:9092"
+E2E_AUTO_OFFSET_RESET: Literal["earliest"] = "earliest"
+E2E_ENABLE_AUTO_COMMIT = False
 
 
 def _require_kafka() -> None:
     admin = AdminClient(
         {
-            "bootstrap.servers": E2E_CONF["bootstrap.servers"],
+            "bootstrap.servers": E2E_BOOTSTRAP_SERVERS,
             "socket.timeout.ms": 1000,
         }
     )
@@ -86,11 +85,54 @@ class ResultTracker:
         return self.processed_count
 
 
+class _ProcessKeyHashWorker:
+    """Picklable sync worker for process-mode Kafka-backed ordering tests."""
+
+    def __init__(self, shared_results, sleep_min_ms: float = 0.0) -> None:
+        self._shared_results = shared_results
+        self._sleep_min_ms = sleep_min_ms
+
+    def __call__(self, item: WorkItem) -> None:
+        if self._sleep_min_ms > 0:
+            time.sleep(self._sleep_min_ms / 1000.0)
+        payload = json.loads(item.payload.decode("utf-8"))
+        self._shared_results.append((payload["key"], payload["sequence"]))
+
+
+class _ProcessPartitionWorker:
+    """Picklable sync worker for process-mode partition ordering tests."""
+
+    def __init__(self, shared_results, sleep_min_ms: float = 0.0) -> None:
+        self._shared_results = shared_results
+        self._sleep_min_ms = sleep_min_ms
+
+    def __call__(self, item: WorkItem) -> None:
+        if self._sleep_min_ms > 0:
+            time.sleep(self._sleep_min_ms / 1000.0)
+        self._shared_results.append((item.tp.partition, item.offset))
+
+
+async def _wait_for_shared_results(
+    shared_results,
+    expected_count: int,
+    timeout_seconds: float,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if len(shared_results) >= expected_count:
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(
+        f"Timed out waiting for {expected_count} process-mode results; "
+        f"only observed {len(shared_results)}"
+    )
+
+
 # --- Pytest Fixtures ---
 @pytest.fixture
 def kafka_admin_client():
     """테스트용 Kafka AdminClient fixture."""
-    return AdminClient({"bootstrap.servers": E2E_CONF["bootstrap.servers"]})
+    return AdminClient({"bootstrap.servers": E2E_BOOTSTRAP_SERVERS})
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +145,7 @@ def create_e2e_topic(kafka_admin_client: AdminClient):
         kafka_admin_client.delete_topics([topic_name])[topic_name].result(timeout=5)
         time.sleep(2)
     except KafkaException as e:
-        if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:
+        if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:  # type: ignore[attr-defined]
             raise
 
     num_partitions = 8
@@ -116,7 +158,7 @@ def create_e2e_topic(kafka_admin_client: AdminClient):
     try:
         kafka_admin_client.delete_topics([topic_name])[topic_name].result(timeout=5)
     except KafkaException as e:
-        if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:
+        if e.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:  # type: ignore[attr-defined]
             raise
 
 
@@ -124,10 +166,10 @@ def create_e2e_topic(kafka_admin_client: AdminClient):
 def base_kafka_config() -> KafkaConfig:
     """테스트용 기본 KafkaConfig 객체를 생성합니다 (고유 consumer group)."""
     return KafkaConfig(
-        BOOTSTRAP_SERVERS=[E2E_CONF["bootstrap.servers"]],
+        BOOTSTRAP_SERVERS=[E2E_BOOTSTRAP_SERVERS],
         CONSUMER_GROUP=f"e2e_test_{uuid.uuid4().hex[:8]}",
-        AUTO_OFFSET_RESET=E2E_CONF["auto.offset.reset"],
-        ENABLE_AUTO_COMMIT=E2E_CONF["enable.auto.commit"],
+        AUTO_OFFSET_RESET=E2E_AUTO_OFFSET_RESET,
+        ENABLE_AUTO_COMMIT=E2E_ENABLE_AUTO_COMMIT,
     )
 
 
@@ -136,6 +178,7 @@ async def run_ordering_test(
     ordering_mode: OrderingMode,
     num_messages: int,
     num_keys: int,
+    execution_mode: ExecutionMode = ExecutionMode.ASYNC,
     worker_fn=None,
     max_in_flight: Optional[int] = None,
     timeout: int = 60,
@@ -156,7 +199,7 @@ async def run_ordering_test(
         if result_tracker.get_processed_count() >= num_messages:
             stop_event.set()
 
-    if worker_fn is None:
+    if worker_fn is None and execution_mode == ExecutionMode.ASYNC:
         if ordering_mode == OrderingMode.PARTITION:
             worker_fn = partition_worker
         else:
@@ -168,9 +211,84 @@ async def run_ordering_test(
 
     execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
     execution_config.max_in_flight = effective_max_in_flight
-    engine = AsyncExecutionEngine(config=execution_config, worker_fn=worker_fn)
+    if execution_mode == ExecutionMode.PROCESS:
+        with Manager() as manager:
+            shared_results = manager.list()
+            if worker_fn is None:
+                if ordering_mode == OrderingMode.PARTITION:
+                    worker_fn = _ProcessPartitionWorker(
+                        shared_results,
+                        sleep_min_ms=1.0,
+                    )
+                else:
+                    worker_fn = _ProcessKeyHashWorker(
+                        shared_results,
+                        sleep_min_ms=1.0,
+                    )
+
+            execution_config.mode = ExecutionMode.PROCESS
+            execution_config.process_config.process_count = 2
+            execution_config.process_config.queue_size = 256
+            execution_config.process_config.batch_size = 1
+            execution_config.process_config.max_batch_wait_ms = 0
+            process_engine = ProcessExecutionEngine(
+                config=execution_config, worker_fn=worker_fn
+            )
+            work_manager = WorkManager(
+                execution_engine=process_engine,
+                max_in_flight_messages=execution_config.max_in_flight,
+                ordering_mode=ordering_mode,
+            )
+
+            poller = BrokerPoller(
+                consume_topic=E2E_TOPIC,
+                kafka_config=kafka_config,
+                execution_engine=process_engine,
+                work_manager=work_manager,
+            )
+            poller.ORDERING_MODE = ordering_mode
+
+            producer_process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(PRODUCER_SCRIPT),
+                "--num-messages",
+                str(num_messages),
+                "--num-keys",
+                str(num_keys),
+                "--num-partitions",
+                "8",
+                "--topic",
+                E2E_TOPIC,
+            )
+
+            await poller.start()
+
+            try:
+                await _wait_for_shared_results(
+                    shared_results=shared_results,
+                    expected_count=num_messages,
+                    timeout_seconds=timeout,
+                )
+            finally:
+                await poller.stop()
+                await process_engine.shutdown()
+                await producer_process.wait()
+
+            if ordering_mode == OrderingMode.PARTITION:
+                for partition, offset in list(shared_results):
+                    result_tracker.partition_results[partition].append(offset)
+                    result_tracker.processed_count += 1
+            else:
+                for key, sequence in list(shared_results):
+                    result_tracker.results[key].append(sequence)
+                    result_tracker.processed_count += 1
+
+            return result_tracker, poller
+
+    execution_config.mode = ExecutionMode.ASYNC
+    async_engine = AsyncExecutionEngine(config=execution_config, worker_fn=worker_fn)
     work_manager = WorkManager(
-        execution_engine=engine,
+        execution_engine=async_engine,
         max_in_flight_messages=execution_config.max_in_flight,
         ordering_mode=ordering_mode,
     )
@@ -178,7 +296,7 @@ async def run_ordering_test(
     poller = BrokerPoller(
         consume_topic=E2E_TOPIC,
         kafka_config=kafka_config,
-        execution_engine=engine,
+        execution_engine=async_engine,
         work_manager=work_manager,
     )
     poller.ORDERING_MODE = ordering_mode
@@ -202,13 +320,21 @@ async def run_ordering_test(
         await asyncio.wait_for(stop_event.wait(), timeout=timeout)
     finally:
         await poller.stop()
+        await async_engine.shutdown()
         await producer_process.wait()
 
     return result_tracker, poller
 
 
 @pytest.mark.asyncio
-async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_key_hash_ordering(
+    base_kafka_config: KafkaConfig, execution_mode: ExecutionMode
+):
     """KEY_HASH 모드에서 키별 순서 보장을 테스트합니다."""
     num_messages = 2000
     num_keys = 200
@@ -216,6 +342,7 @@ async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
         ordering_mode=OrderingMode.KEY_HASH,
+        execution_mode=execution_mode,
         num_messages=num_messages,
         num_keys=num_keys,
     )
@@ -225,7 +352,14 @@ async def test_key_hash_ordering(base_kafka_config: KafkaConfig):
 
 
 @pytest.mark.asyncio
-async def test_partition_ordering(base_kafka_config: KafkaConfig):
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_partition_ordering(
+    base_kafka_config: KafkaConfig, execution_mode: ExecutionMode
+):
     """PARTITION 모드에서 파티션별 순서 보장을 테스트합니다."""
     num_messages = 500
     num_keys = 50
@@ -233,6 +367,7 @@ async def test_partition_ordering(base_kafka_config: KafkaConfig):
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
         ordering_mode=OrderingMode.PARTITION,
+        execution_mode=execution_mode,
         num_messages=num_messages,
         num_keys=num_keys,
     )
@@ -384,7 +519,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
 
     verify_consumer = Consumer(
         {
-            "bootstrap.servers": E2E_CONF["bootstrap.servers"],
+            "bootstrap.servers": E2E_BOOTSTRAP_SERVERS,
             "group.id": base_kafka_config.CONSUMER_GROUP,
         }
     )
