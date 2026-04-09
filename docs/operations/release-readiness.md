@@ -122,3 +122,22 @@ UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-*
 - `key_hash`/`partition` ordering에 더해 process mode의 retry, DLQ, in-flight rebalance, restart/offset continuity에 대한 실브로커 E2E도 확보됐다.
 - 당장 stable 승격을 막는 핵심은 이제 `알파 메타데이터`, `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
 - 이번 라운드에서는 process recovery 경로의 실브로커 증거를 확보했고, 이후 라운드는 문서 정책 정리와 release gate 정밀화에 집중하면 된다.
+
+## Type Ignore Inventory Snapshot
+
+2026-04-09 기준으로 production 코드의 `type: ignore`는 주로 아래 세 부류로 정리된다.
+
+- **third-party stub gap**
+  - `pyrallel_consumer/control_plane/offset_tracker.py`
+  - `pyrallel_consumer/execution_plane/process_engine.py`
+  - 이유: `cachetools`, `sortedcontainers`, `msgpack`의 typing 정보가 런타임 사용 범위와 완전히 맞지 않음
+- **private/internal attribute boundary**
+  - `pyrallel_consumer/control_plane/work_queue_topology.py`
+  - 이유: `asyncio.Queue` 내부 상태를 읽거나 조정하는 경계가 typing stub에 노출되지 않음
+- **confluent-kafka / multiprocessing call-site stub gap**
+  - `pyrallel_consumer/control_plane/broker_rebalance_support.py`
+  - `pyrallel_consumer/control_plane/broker_poller.py`
+  - `pyrallel_consumer/execution_plane/process_engine.py`
+  - 이유: `KafkaTopicPartition(metadata=...)`, producer headers, multiprocessing queue payload 타입이 런타임에서는 유효하지만 현재 stub이 좁게 선언됨
+
+즉, 현재 inventory는 **무분별한 ignore 누적이라기보다 stub 한계 또는 의도적인 내부 경계 접근을 문서화한 상태**에 가깝다. stable 전환 전에는 이 목록을 다시 점검하되, 지금 단계에서는 각 ignore가 왜 필요한지 설명 가능한 상태를 유지하는 것을 우선한다.

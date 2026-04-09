@@ -11,6 +11,12 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 
 > **Release policy:** current published versions are alpha/prerelease (`0.1.2a2`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
 
+## Support / Compatibility Policy
+
+- **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
+- **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
+- **Release support:** only the latest published prerelease is treated as an actively maintained support target right now. Older prerelease builds are best-effort until the project graduates from alpha/hardening status.
+
 ## 🌟 Key Features
 
 - **High parallelism**: Process messages in parallel without being tightly limited by Kafka partition count.
