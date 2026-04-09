@@ -379,6 +379,9 @@ uv run pytest tests/e2e -q
 
 - `localhost:9092`에 Kafka가 없으면 E2E 테스트는 즉시 실패하지 않고 skip 됩니다.
 - 실제 Kafka 경로를 확인하려면 로컬 `docker compose` 스택을 띄운 뒤 실행하면 됩니다.
+- Kafka-backed ordering 스위트는 이제 실제 브로커에서 `key_hash`/`partition` 정렬에 대해 `async`와 `process` 실행 모드를 모두 검증합니다.
+- `tests/e2e/test_process_recovery.py`를 통해 process 모드의 retry, DLQ, in-flight rebalance, restart/offset continuity도 실제 브로커 기준으로 검증합니다.
+- 다만 이 증거는 broker-visible recovery invariant 범위에 한정되며, 장시간 soak이나 더 넓은 release-readiness 항목은 별도로 계속 추적합니다.
 - 테스트용 모니터링 스택은 `docker compose -f .github/e2e.compose.yml up -d`로 띄울 수 있습니다.
 - 테스트 스택 대시보드:
   - Prometheus: http://localhost:9090
