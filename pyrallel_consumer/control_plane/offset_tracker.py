@@ -3,7 +3,7 @@ import time
 from typing import Dict, Optional, Set
 
 from cachetools import LRUCache  # type: ignore[import-untyped]
-from sortedcontainers import SortedSet
+from sortedcontainers import SortedSet  # type: ignore[import-untyped]
 
 from pyrallel_consumer.dto import OffsetRange, TopicPartition
 

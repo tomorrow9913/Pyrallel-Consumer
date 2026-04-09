@@ -168,11 +168,18 @@ class BrokerRebalanceSupport:
                     tracker=tracker,
                     base_offset=safe_offset + 1,
                 )
+                # Kafka committed offsets can only persist the next contiguous
+                # restart position. In metadata_snapshot mode we also attach the
+                # sparse completed offsets beyond that HWM here so assignment can
+                # hydrate OffsetTracker later and avoid unnecessary replay.
+                #
+                # confluent-kafka accepts metadata at construction time, but the
+                # shipped Python stub does not model that keyword argument yet.
                 tp_to_commit = KafkaTopicPartition(
                     tp_dto.topic,
                     tp_dto.partition,
                     safe_offset + 1,
-                    metadata=metadata,
+                    metadata=metadata,  # type: ignore[call-arg]
                 )
                 try:
                     consumer.commit(offsets=[tp_to_commit], asynchronous=False)

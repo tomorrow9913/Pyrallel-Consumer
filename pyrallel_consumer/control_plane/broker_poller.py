@@ -417,7 +417,13 @@ class BrokerPoller:
                     continue
 
                 async with self._control_lock:
-                    await self._drain_completion_events_once()
+                    has_completion = await self._drain_completion_events_once()
+                    if has_completion:
+                        commits_to_make = (
+                            self._make_dispatch_support().build_commit_candidates()
+                        )
+                        if commits_to_make:
+                            await self._commit_offsets(commits_to_make)
         except asyncio.CancelledError:
             raise
 

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from multiprocessing import Process, Queue
 from typing import Any, Deque, List, Optional
 
-import msgpack
+import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
