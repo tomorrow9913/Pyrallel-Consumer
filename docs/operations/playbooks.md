@@ -34,3 +34,20 @@
 - **Process**: `process_count={cpu_count/2, cpu_count}`, `process_config.batch_size={64,128}`, `queue_size=2048`; run CPU workload.
 - **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` for both `async` and `process` execution modes, including KEY_HASH and PARTITION ordering paths, before stable promotion.
 - **Failure paths**: DLQ enabled with `dlq_payload_mode=metadata_only`, inject worker exceptions, assert commits + DLQ succeed.
+
+## Soak / Long-Running Stability Notes
+- Goal: capture longer-running evidence for backpressure, rebalance, worker recycle, restart continuity, and DLQ behavior beyond the short correctness suites.
+- Minimum note set per run:
+  - command line used
+  - runtime duration / message volume
+  - workload + ordering mode
+  - key metrics observed (`throughput_tps`, `p99_processing_ms`, lag/gap, backpressure)
+  - whether rebalance/restart/DLQ behavior matched expectations
+  - links or paths to JSON/profiler outputs when produced
+- Recommended baseline soak flow:
+  1. Start the local Kafka/monitoring stack: `docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana`
+  2. Run a longer benchmark window with Prometheus exposure enabled, for example:
+     `uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,io --order key_hash,partition --num-messages 50000 --num-partitions 8 --strict-completion-monitor on,off --metrics-port 9091`
+  3. Re-run the recovery proof suite after the long run: `uv run pytest tests/e2e/test_process_recovery.py -q`
+  4. Record observations in the release-readiness issue/comment or a follow-up note before making stronger stability claims.
+- Until there is a dedicated automated soak workflow, treat these notes as the required evidence trail for the P1 stability item rather than assuming the short E2E suite is sufficient by itself.

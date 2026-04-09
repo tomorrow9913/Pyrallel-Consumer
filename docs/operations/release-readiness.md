@@ -85,6 +85,23 @@
   - Evidence: monitoring assets와 운영 문서가 함께 유지된다.
   - Owner hint: `monitoring/`, `docs/operations/*`
 
+### Current `type: ignore` inventory (reviewed)
+
+현재 runtime/source 기준 `type: ignore`는 주로 **서드파티 stub 한계** 또는 **의도적인 private-attribute 경계**를 설명하는 용도다.
+
+- `pyrallel_consumer/control_plane/offset_tracker.py`
+  - `cachetools`, `sortedcontainers`의 untyped import 보정
+- `pyrallel_consumer/control_plane/work_queue_topology.py`
+  - `asyncio.Queue` 내부/private attribute 접근 보정
+- `pyrallel_consumer/control_plane/broker_rebalance_support.py`
+  - `confluent_kafka` stub이 `KafkaTopicPartition(..., metadata=...)`를 모델링하지 않는 경계 보정
+- `pyrallel_consumer/control_plane/broker_poller.py`
+  - Kafka headers typing mismatch 보정
+- `pyrallel_consumer/execution_plane/process_engine.py`
+  - `msgpack` untyped import, multiprocessing queue arg typing 보정
+
+테스트 코드에도 white-box/private-attribute 검증을 위한 추가 `type: ignore`가 남아 있지만, stable readiness 관점에서는 우선 runtime/source ignore를 inventory화하고 정당화하는 것을 기준선으로 삼는다. 이후 stable 전에는 이 목록을 줄이거나, 남길 경우 같은 수준의 근거를 유지해야 한다.
+
 ## Recommended Verification Commands
 
 ```bash

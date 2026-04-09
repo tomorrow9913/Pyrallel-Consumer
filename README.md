@@ -147,6 +147,12 @@ KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async  # or process
 ```
 
+## Support / Compatibility Policy
+
+- **Python:** current CI and local verification target **Python 3.12**. Treat other Python versions as best-effort until an explicit support matrix is published.
+- **Kafka path:** the documented broker-visible verification path is the local Docker-based Kafka workflow used by `tests/e2e/` and the benchmark tooling. Broader broker/version compatibility should be treated as best-effort until it is called out explicitly in release notes or a dedicated support policy.
+- **Change policy:** support/compatibility expectations should be updated in `README*`, `SECURITY.md`, and `CHANGELOG.md` before making stronger stable-support claims.
+
 ## 🔁 Retry & DLQ
 
 Pyrallel Consumer supports automatic retries and DLQ publishing.
