@@ -12,6 +12,9 @@ on:
       - ".github/workflows/benchmarks.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   benchmark-tests:
     runs-on: ubuntu-latest
