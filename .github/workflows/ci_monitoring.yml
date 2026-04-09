@@ -1,0 +1,191 @@
+name: ci_monitoring
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "benchmarks/**"
+      - "monitoring/**"
+      - "pyrallel_consumer/consumer.py"
+      - "pyrallel_consumer/metrics_exporter.py"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/ci_monitoring.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "benchmarks/**"
+      - "monitoring/**"
+      - "pyrallel_consumer/consumer.py"
+      - "pyrallel_consumer/metrics_exporter.py"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/ci_monitoring.yml"
+  workflow_dispatch:
+
+jobs:
+  monitoring-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Start monitoring stack
+        run: |
+          docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana
+      - name: Wait for Kafka, Prometheus, and Grafana
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import socket
+          import time
+          import urllib.request
+
+          def wait_for_socket(host: str, port: int, timeout_sec: float) -> None:
+              deadline = time.time() + timeout_sec
+              while time.time() < deadline:
+                  try:
+                      with socket.create_connection((host, port), timeout=1):
+                          return
+                  except OSError:
+                      time.sleep(1)
+              raise SystemExit(f"{host}:{port} did not become reachable within {timeout_sec} seconds")
+
+          def wait_for_http(url: str, timeout_sec: float, auth: str | None = None) -> None:
+              deadline = time.time() + timeout_sec
+              while time.time() < deadline:
+                  try:
+                      request = urllib.request.Request(url)
+                      if auth is not None:
+                          request.add_header("Authorization", f"Basic {auth}")
+                      with urllib.request.urlopen(request, timeout=5) as response:
+                          if response.status == 200:
+                              return
+                  except Exception:
+                      time.sleep(1)
+              raise SystemExit(f"{url} did not return HTTP 200 within {timeout_sec} seconds")
+
+          grafana_auth = base64.b64encode(b"admin:local-e2e").decode()
+          wait_for_socket("127.0.0.1", 9092, 90)
+          wait_for_http("http://127.0.0.1:9090/-/ready", 90)
+          wait_for_http("http://127.0.0.1:3000/api/health", 90, auth=grafana_auth)
+          PY
+      - name: Run monitoring smoke
+        run: |
+          set -euo pipefail
+          BENCH_LOG=/tmp/ci-monitoring-benchmark.log
+          UV_CACHE_DIR=.uv-cache uv run python benchmarks/run_parallel_benchmark.py \
+            --skip-baseline \
+            --skip-async \
+            --workloads sleep \
+            --order partition \
+            --num-messages 20000 \
+            --num-keys 200 \
+            --num-partitions 4 \
+            --worker-sleep-ms 5 \
+            --timeout-sec 60 \
+            --metrics-port 9091 \
+            --topic-prefix ci-monitoring-${{ github.run_id }} \
+            --json-output benchmarks/results/ci-monitoring.json \
+            >"${BENCH_LOG}" 2>&1 &
+          BENCH_PID=$!
+
+          cleanup() {
+            if kill -0 "${BENCH_PID}" >/dev/null 2>&1; then
+              wait "${BENCH_PID}" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          python - <<'PY'
+          import base64
+          import json
+          import time
+          import urllib.request
+
+          grafana_auth = base64.b64encode(b"admin:local-e2e").decode()
+
+          def fetch_json(url: str, auth: str | None = None) -> dict:
+              request = urllib.request.Request(url)
+              if auth is not None:
+                  request.add_header("Authorization", f"Basic {auth}")
+              with urllib.request.urlopen(request, timeout=5) as response:
+                  return json.load(response)
+
+          def fetch_text(url: str) -> str:
+              with urllib.request.urlopen(url, timeout=5) as response:
+                  return response.read().decode()
+
+          deadline = time.time() + 180
+          while time.time() < deadline:
+              try:
+                  metrics_text = fetch_text("http://127.0.0.1:9091/metrics")
+                  if (
+                      "consumer_processed_total" in metrics_text
+                      and "consumer_in_flight_count" in metrics_text
+                  ):
+                      break
+              except Exception:
+                  pass
+              time.sleep(2)
+          else:
+              raise SystemExit("Benchmark metrics endpoint did not expose expected metrics in time")
+
+          deadline = time.time() + 180
+          while time.time() < deadline:
+              try:
+                  targets = fetch_json("http://127.0.0.1:9090/api/v1/targets")
+                  active_targets = {
+                      item["labels"].get("job"): item["health"]
+                      for item in targets["data"]["activeTargets"]
+                  }
+                  if (
+                      active_targets.get("kafka-exporter") == "up"
+                      and active_targets.get("pyrallel-consumer") == "up"
+                  ):
+                      break
+              except Exception:
+                  pass
+              time.sleep(2)
+          else:
+              raise SystemExit("Prometheus targets did not report kafka-exporter and pyrallel-consumer as up")
+
+          deadline = time.time() + 60
+          while time.time() < deadline:
+              try:
+                  datasource = fetch_json(
+                      "http://127.0.0.1:3000/api/datasources/uid/prometheus",
+                      auth=grafana_auth,
+                  )
+                  search_results = fetch_json(
+                      "http://127.0.0.1:3000/api/search?query=Pyrallel",
+                      auth=grafana_auth,
+                  )
+                  if datasource.get("uid") == "prometheus" and any(
+                      result.get("title") == "Pyrallel Overview"
+                      for result in search_results
+                  ):
+                      break
+              except Exception:
+                  pass
+              time.sleep(2)
+          else:
+              raise SystemExit("Grafana datasource or dashboard provisioning did not become ready in time")
+          PY
+
+          wait "${BENCH_PID}"
+      - name: Show benchmark log
+        if: always()
+        run: |
+          test -f /tmp/ci-monitoring-benchmark.log && tail -n 200 /tmp/ci-monitoring-benchmark.log || true
+      - name: Stop monitoring stack
+        if: always()
+        run: |
+          docker compose -f .github/e2e.compose.yml down
