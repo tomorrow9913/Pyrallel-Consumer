@@ -17,6 +17,7 @@
 - **[operations/guide.ko.md](./operations/guide.ko.md)** - 한국어 운영 가이드
 - **[operations/guide.en.md](./operations/guide.en.md)** - 영문 운영 가이드
 - **[operations/playbooks.md](./operations/playbooks.md)** - 운영 플레이북과 튜닝 절차
+- **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness 체크리스트
 
 ## 3. Plans
 

@@ -9,7 +9,13 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
-> **Release policy:** current published versions are alpha/prerelease (`0.1.2a1`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+> **Release policy:** current published versions are alpha/prerelease (`0.1.2a2`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+
+## Support / Compatibility Policy
+
+- **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
+- **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
+- **Release support:** only the latest published prerelease is treated as an actively maintained support target right now. Older prerelease builds are best-effort until the project graduates from alpha/hardening status.
 
 ## 🌟 Key Features
 
@@ -263,6 +269,9 @@ uv run pytest tests/e2e -q
 
 - If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
 - Use the local `docker compose` stack when you want the full Kafka-backed path.
+- The Kafka-backed ordering suite now exercises both `async` and `process` execution modes for `key_hash` and `partition` ordering on a real broker.
+- The process-mode recovery suite now also covers retry, DLQ, rebalance during in-flight work, and restart/offset continuity on a real broker via `tests/e2e/test_process_recovery.py`.
+- These tests prove broker-visible recovery invariants; longer-running soak and broader release-readiness concerns are still tracked separately.
 - For the test monitoring stack, run `docker compose -f .github/e2e.compose.yml up -d`.
 - Test-stack dashboards:
   - Prometheus: http://localhost:9090

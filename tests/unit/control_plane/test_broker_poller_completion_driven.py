@@ -238,6 +238,7 @@ async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
     broker_poller._process_completed_events = AsyncMock()
     broker_poller._handle_blocking_timeouts = AsyncMock(return_value=[])
     broker_poller._execution_engine = AsyncMock()
+    broker_poller._commit_ready_offsets = AsyncMock()
 
     async def wait_for_completion(timeout_seconds=None):
         broker_poller._running = False
@@ -254,6 +255,59 @@ async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
     broker_poller._execution_engine.wait_for_completion.assert_awaited_once()
     broker_poller._process_completed_events.assert_awaited_once_with([completion_event])
     broker_poller._work_manager.schedule.assert_awaited_once_with()
+    broker_poller._commit_ready_offsets.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_serializes_commit_calls_and_releases_control_lock(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    dispatch_support = MagicMock()
+    dispatch_support.build_commit_candidates.return_value = [(topic_partition, 0)]
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    active_commits = 0
+    max_active_commits = 0
+
+    async def fake_commit_offsets(commits_to_make):
+        nonlocal active_commits, max_active_commits
+        assert commits_to_make == [(topic_partition, 0)]
+        assert not broker_poller._control_lock.locked()
+        active_commits += 1
+        max_active_commits = max(max_active_commits, active_commits)
+        await asyncio.sleep(0)
+        active_commits -= 1
+
+    broker_poller._commit_offsets = AsyncMock(side_effect=fake_commit_offsets)
+
+    await asyncio.gather(
+        broker_poller._commit_ready_offsets(),
+        broker_poller._commit_ready_offsets(),
+    )
+
+    assert broker_poller._commit_offsets.await_count == 2
+    assert max_active_commits == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_tolerates_tracker_removed_after_candidate_generation(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller.consumer = MagicMock(spec=Consumer)
+    dispatch_support = MagicMock()
+
+    def build_commit_candidates():
+        broker_poller._offset_trackers.pop(topic_partition, None)
+        return [(topic_partition, 0)]
+
+    dispatch_support.build_commit_candidates.side_effect = build_commit_candidates
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    await broker_poller._commit_ready_offsets()
+
+    broker_poller.consumer.commit.assert_not_called()
 
 
 @pytest.mark.asyncio

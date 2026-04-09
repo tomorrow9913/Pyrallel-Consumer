@@ -57,3 +57,24 @@ def test_grafana_dashboard_includes_process_batch_panels() -> None:
     assert "consumer_process_batch_avg_main_to_worker_ipc_seconds" in expressions
     assert "consumer_process_batch_avg_worker_exec_seconds" in expressions
     assert "consumer_process_batch_avg_worker_to_main_ipc_seconds" in expressions
+
+
+def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> None:
+    workflow_text = (
+        REPO_ROOT / ".github" / "workflows" / "ci_monitoring.yml"
+    ).read_text()
+
+    assert (
+        "docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana"
+        in workflow_text
+    )
+    assert "http://127.0.0.1:9090/-/ready" in workflow_text
+    assert "http://127.0.0.1:3000/api/health" in workflow_text
+    assert "http://127.0.0.1:9091/metrics" in workflow_text
+    assert "http://127.0.0.1:9090/api/v1/targets" in workflow_text
+    assert "http://127.0.0.1:3000/api/datasources/uid/prometheus" in workflow_text
+    assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in workflow_text
+    assert "from confluent_kafka.admin import AdminClient" in workflow_text
+    assert "client.list_topics(timeout=5)" in workflow_text
+    assert "--num-messages 4000" in workflow_text
+    assert "--timeout-sec 180" in workflow_text

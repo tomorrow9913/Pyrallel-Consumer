@@ -95,6 +95,7 @@ class BrokerPoller:
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._control_lock = asyncio.Lock()
+        self._commit_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
         self._consumer_task_stop_timeout_seconds = 5.0
@@ -360,11 +361,7 @@ class BrokerPoller:
 
                     await self._drain_completion_events_once()
 
-                commits_to_make = (
-                    self._make_dispatch_support().build_commit_candidates()
-                )
-                if commits_to_make:
-                    await self._commit_offsets(commits_to_make)
+                await self._commit_ready_offsets()
 
                 if not messages and consume_timeout > 0:
                     await asyncio.sleep(consume_timeout)
@@ -417,9 +414,20 @@ class BrokerPoller:
                     continue
 
                 async with self._control_lock:
-                    await self._drain_completion_events_once()
+                    has_completion = await self._drain_completion_events_once()
+                if has_completion:
+                    await self._commit_ready_offsets()
         except asyncio.CancelledError:
             raise
+
+    async def _commit_ready_offsets(self) -> None:
+        async with self._commit_lock:
+            async with self._control_lock:
+                commits_to_make = (
+                    self._make_dispatch_support().build_commit_candidates()
+                )
+            if commits_to_make:
+                await self._commit_offsets(commits_to_make)
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
@@ -466,9 +474,26 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
+
+        async with self._control_lock:
+            tracked_commits: list[tuple[DtoTopicPartition, int]] = []
+            tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
+            for tp, safe_offset in commits_to_make:
+                tracker = self._offset_trackers.get(tp)
+                if tracker is None:
+                    logger.debug(
+                        "Skipping commit candidate for untracked partition %s", tp
+                    )
+                    continue
+                tracked_commits.append((tp, safe_offset))
+                tracker_snapshot[tp] = tracker
+
+        if not tracked_commits:
+            return
+
         offsets_to_commit = self._commit_planner.build_offsets_to_commit(
-            commits_to_make=commits_to_make,
-            trackers=self._offset_trackers,
+            commits_to_make=tracked_commits,
+            trackers=tracker_snapshot,
             strategy=self._rebalance_state_strategy(),
         )
 
@@ -480,8 +505,12 @@ class BrokerPoller:
                     offsets=offsets_to_commit,
                     asynchronous=False,
                 )
-                for tp, safe_offset in commits_to_make:
-                    self._offset_trackers[tp].commit_through(safe_offset)
+                async with self._control_lock:
+                    for tp, safe_offset in tracked_commits:
+                        tracker = self._offset_trackers.get(tp)
+                        if tracker is None:
+                            continue
+                        tracker.commit_through(safe_offset)
                 return
             except KafkaException as exc:
                 if attempt < max_attempts - 1:

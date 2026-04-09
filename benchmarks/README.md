@@ -97,6 +97,39 @@ uv sync --group dev
 - Use `--metrics-port 0` when you want to disable benchmark-side Prometheus exposure.
 - `kafka-exporter` should recover automatically once Kafka is ready; if `pyrallel-consumer` stays `down`, make sure the benchmark process is still running with `--metrics-port 9091`.
 
+## Soak / Long-Running Stability Notes
+
+For release-readiness work, keep a lightweight note for any long-running benchmark or soak pass rather than treating the console output as disposable.
+
+Recommended note fields:
+- benchmark command
+- start/end time or approximate duration
+- workloads / ordering modes exercised
+- whether strict completion monitor was on or off
+- resulting JSON/profiler artifact paths
+- notable lag, gap, backpressure, DLQ, rebalance, or restart observations
+
+Example soak-oriented run:
+
+```bash
+uv run python -m benchmarks.run_parallel_benchmark \
+  --skip-baseline \
+  --workloads sleep,io \
+  --order key_hash,partition \
+  --num-messages 50000 \
+  --num-partitions 8 \
+  --strict-completion-monitor on,off \
+  --metrics-port 9091
+```
+
+After a long run, re-check recovery semantics with:
+
+```bash
+uv run pytest tests/e2e/test_process_recovery.py -q
+```
+
+These notes are the minimum evidence trail for the remaining soak / long-running stability checklist item in release-readiness tracking.
+
 ## Interpreting TPS vs per-message latency
 
 The JSON summary reports both wall-clock throughput (`throughput_tps`, `total_time_sec`) and per-message timings (`avg_processing_ms`, `p99_processing_ms`). A run can finish much faster (higher TPS, lower total_time_sec) while showing higher per-message latency because:

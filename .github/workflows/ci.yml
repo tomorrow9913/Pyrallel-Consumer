@@ -1,6 +1,13 @@
 name: ci
 
 on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, develop]
     paths:
@@ -8,6 +15,10 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   unit:
@@ -145,7 +156,16 @@ jobs:
           uv sync --frozen --group dev
       - name: Run Bandit
         run: |
-          .venv/bin/bandit -q -lll -r pyrallel_consumer
+          uv run bandit -q -lll -r pyrallel_consumer
+      - name: Run Ruff
+        run: |
+          uv run ruff check .
+      - name: Run mypy
+        run: |
+          uv run mypy pyrallel_consumer
       - name: Build package
         run: |
           uv build
+      - name: Check distribution metadata
+        run: |
+          uv run twine check dist/pyrallel_consumer-*
