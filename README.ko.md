@@ -167,12 +167,6 @@ KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async # 또는 process
 ```
 
-## 지원 / 호환성 정책
-
-- **Python:** 현재 CI와 로컬 검증 기준은 **Python 3.12**입니다. 명시적인 지원 매트릭스가 나오기 전까지 다른 Python 버전은 best-effort로 보는 것이 맞습니다.
-- **Kafka 경로:** 문서화된 broker-visible 검증 경로는 `tests/e2e/` 및 benchmark 도구에서 사용하는 로컬 Docker 기반 Kafka 흐름입니다. 더 넓은 Kafka 브로커/버전 호환성은 release note나 별도 지원 정책에서 명시되기 전까지 best-effort로 취급해야 합니다.
-- **변경 정책:** 더 강한 stable/support claim을 하기 전에는 `README*`, `SECURITY.md`, `CHANGELOG.md`에 지원/호환성 기대치를 함께 갱신해야 합니다.
-
 ### 재시도 및 DLQ (Dead Letter Queue) 설정
 
 Pyrallel Consumer는 실패한 메시지에 대한 자동 재시도와 DLQ 퍼블리싱을 지원합니다.

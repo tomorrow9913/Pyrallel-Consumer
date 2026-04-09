@@ -21,6 +21,9 @@ on:
       - ".github/workflows/ci_monitoring.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   monitoring-smoke:
     runs-on: ubuntu-latest

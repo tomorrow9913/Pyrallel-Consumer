@@ -95,6 +95,7 @@ class BrokerPoller:
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._control_lock = asyncio.Lock()
+        self._commit_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
         self._consumer_task_stop_timeout_seconds = 5.0
@@ -360,11 +361,7 @@ class BrokerPoller:
 
                     await self._drain_completion_events_once()
 
-                commits_to_make = (
-                    self._make_dispatch_support().build_commit_candidates()
-                )
-                if commits_to_make:
-                    await self._commit_offsets(commits_to_make)
+                await self._commit_ready_offsets()
 
                 if not messages and consume_timeout > 0:
                     await asyncio.sleep(consume_timeout)
@@ -418,14 +415,19 @@ class BrokerPoller:
 
                 async with self._control_lock:
                     has_completion = await self._drain_completion_events_once()
-                    if has_completion:
-                        commits_to_make = (
-                            self._make_dispatch_support().build_commit_candidates()
-                        )
-                        if commits_to_make:
-                            await self._commit_offsets(commits_to_make)
+                if has_completion:
+                    await self._commit_ready_offsets()
         except asyncio.CancelledError:
             raise
+
+    async def _commit_ready_offsets(self) -> None:
+        async with self._commit_lock:
+            async with self._control_lock:
+                commits_to_make = (
+                    self._make_dispatch_support().build_commit_candidates()
+                )
+            if commits_to_make:
+                await self._commit_offsets(commits_to_make)
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
@@ -486,8 +488,12 @@ class BrokerPoller:
                     offsets=offsets_to_commit,
                     asynchronous=False,
                 )
-                for tp, safe_offset in commits_to_make:
-                    self._offset_trackers[tp].commit_through(safe_offset)
+                async with self._control_lock:
+                    for tp, safe_offset in commits_to_make:
+                        tracker = self._offset_trackers.get(tp)
+                        if tracker is None:
+                            continue
+                        tracker.commit_through(safe_offset)
                 return
             except KafkaException as exc:
                 if attempt < max_attempts - 1:
