@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections import Counter
@@ -33,6 +34,9 @@ E2E_CONF = {
 
 
 def _require_kafka() -> None:
+    strict_ci_gate = os.environ.get(
+        "PYRALLEL_E2E_REQUIRE_BROKER", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     admin = AdminClient(
         {
             "bootstrap.servers": BOOTSTRAP_SERVERS,
@@ -40,9 +44,14 @@ def _require_kafka() -> None:
         }
     )
     try:
-        admin.list_topics(timeout=3)
+        metadata = admin.list_topics(timeout=5)
+        if not getattr(metadata, "brokers", None):
+            raise RuntimeError("Kafka metadata response did not include broker entries")
     except Exception as exc:
-        pytest.skip(f"Kafka broker not available for recovery e2e tests: {exc}")
+        message = f"Kafka broker not available for recovery e2e tests: {exc}"
+        if strict_ci_gate:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 class _BlockingPartitionWorker:
