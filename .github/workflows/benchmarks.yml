@@ -103,10 +103,12 @@ jobs:
           set -euo pipefail
           RUN_KEY="${WORKLOAD}-${ORDERING}-${STRICT_COMPLETION_MONITOR}"
           BASE_DIR=".artifacts/benchmark-matrix/${RUN_KEY}"
+          mkdir -p "benchmarks/results"
           mkdir -p "${BASE_DIR}"
           echo "BENCH_RUN_KEY=${RUN_KEY}" >> "$GITHUB_ENV"
           echo "BENCH_ARTIFACT_DIR=${BASE_DIR}" >> "$GITHUB_ENV"
           echo "BENCH_RESULT_JSON=${BASE_DIR}/benchmark.json" >> "$GITHUB_ENV"
+          echo "BENCH_RESULTS_JSON_PATH=benchmarks/results/${RUN_KEY}.json" >> "$GITHUB_ENV"
           echo "BENCH_LOG=${BASE_DIR}/benchmark.log" >> "$GITHUB_ENV"
       - name: Run benchmark matrix cell
         run: |
@@ -125,6 +127,7 @@ jobs:
           )
           printf '%s\n' "${CLI_ARGS[@]}" > "${BENCH_ARTIFACT_DIR}/cli-args.txt"
           uv run python -m benchmarks.run_parallel_benchmark "${CLI_ARGS[@]}" >"${BENCH_LOG}" 2>&1
+          cp "${BENCH_RESULT_JSON}" "${BENCH_RESULTS_JSON_PATH}"
       - name: Build artifact metadata and summary
         if: always()
         run: |
@@ -152,6 +155,7 @@ jobs:
               },
               "cli_args": cli_args,
               "result_json_path": str(result_path),
+              "results_json_artifact_path": os.environ.get("BENCH_RESULTS_JSON_PATH"),
           }
           summary_lines = [
               "# Benchmark Matrix Summary",
@@ -206,7 +210,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-matrix-${{ github.run_id }}-${{ matrix.workload }}-${{ matrix.ordering }}-${{ matrix.strict_completion_monitor }}
-          path: ${{ env.BENCH_ARTIFACT_DIR }}
+          path: |
+            ${{ env.BENCH_ARTIFACT_DIR }}
+            ${{ env.BENCH_RESULTS_JSON_PATH }}
       - name: Stop Kafka
         if: always()
         env:
