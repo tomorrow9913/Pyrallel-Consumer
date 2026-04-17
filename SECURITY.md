@@ -2,18 +2,32 @@
 
 ## Supported Versions
 
-현재는 prerelease/alpha 계열만 공개되어 있으므로, 최신 공개 버전만 보안 수정 대상으로 간주합니다.
+이 문서의 지원 기준은 `docs/operations/support-policy.md`와 동일하게 유지한다.
+
+### 현재(prerelease-only) 단계
 
 | Version | Supported |
 | --- | --- |
 | latest prerelease | Yes |
 | older prerelease builds | Best effort |
 
-stable release가 시작되면 지원 매트릭스를 이 문서에서 명시적으로 확장합니다.
+### stable 런치 이후(`1.0.0`부터 적용)
+
+| Version line | Security support |
+| --- | --- |
+| latest stable minor | Yes |
+| previous stable minor | Security fixes only |
+| prerelease builds newer than latest stable | Best effort |
+| older prerelease builds | Best effort |
 
 ## Reporting A Vulnerability
 
-보안 이슈는 공개 GitHub issue로 올리지 말고, 저장소 관리자에게 비공개 채널로 먼저 제보해 주세요.
+보안 이슈는 공개 GitHub issue로 올리지 말고 비공개 채널로 먼저 제보해 주세요.
+
+권장 비공개 채널:
+
+1. GitHub 저장소 `Security` 탭의 `Report a vulnerability`
+2. GitHub private security advisory draft
 
 - 포함하면 좋은 정보
   - 영향 범위

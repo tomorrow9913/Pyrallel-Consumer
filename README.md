@@ -15,7 +15,11 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
 - **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
-- **Release support:** only the latest published prerelease is treated as an actively maintained support target right now. Older prerelease builds are best-effort until the project graduates from alpha/hardening status.
+- **Release-line support:** while the project is prerelease-only, the latest prerelease is the active support target. After `1.0.0`, the latest stable minor is active support and the previous stable minor is security-fix-only.
+- **Policy detail:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
+- **Security reporting path:** see [`SECURITY.md`](./SECURITY.md).
+- **Upgrade/Rollback guide:** see [`docs/operations/upgrade-rollback-guide.md`](./docs/operations/upgrade-rollback-guide.md).
+- **Release incident runbook:** see [`docs/operations/playbooks.md`](./docs/operations/playbooks.md).
 
 ## 🌟 Key Features
 

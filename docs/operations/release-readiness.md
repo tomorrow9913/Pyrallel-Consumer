@@ -51,10 +51,10 @@
   - Evidence: release build 절차가 문서화되고 `twine check` 대상이 fresh artifact로 고정된다.
   - Owner hint: `CHANGELOG.md`, release workflow/commands, `GEMINI.md`
 
-- [ ] **보안 연락 경로와 책임 명시**
+- [x] **보안 연락 경로와 책임 명시**
   - What: 공개 이슈가 아닌 보안 제보 채널과 응답 기대치를 문서화한다.
-  - Evidence: `SECURITY.md` 존재, README/저장소 표면에서 쉽게 찾을 수 있다.
-  - Owner hint: `SECURITY.md`
+  - Evidence: `SECURITY.md`에 비공개 제보 경로와 응답 기준이 정의되고, `README*`/docs index에서 `SECURITY.md`로 직접 연결된다.
+  - Owner hint: `SECURITY.md`, `README*`, `docs/index.md`
 
 ## P1: Stable 직전 권장
 
@@ -63,15 +63,15 @@
   - Evidence: soak 시나리오 문서와 결과 기록, 반복 가능한 명령 또는 workflow.
   - Owner hint: `benchmarks/`, `tests/e2e/`, `docs/operations/playbooks.md`
 
-- [ ] **지원 범위와 호환성 정책 문서화**
+- [x] **지원 범위와 호환성 정책 문서화**
   - What: 지원 Python 버전, Kafka 브로커/클라이언트 호환 범위, deprecation policy를 정의한다.
-  - Evidence: 문서에 compatibility/support section이 생기고 릴리스 노트에서 참조된다.
-  - Owner hint: `README*`, `SECURITY.md`, dedicated support doc
+  - Evidence: `docs/operations/support-policy.md`에 release-line 지원 매트릭스와 Python/Kafka 경계가 문서화되고 `README*`에서 직접 참조한다.
+  - Owner hint: `README*`, `SECURITY.md`, `docs/operations/support-policy.md`
 
-- [ ] **업그레이드/롤백 가이드 추가**
+- [x] **업그레이드/롤백 가이드 추가**
   - What: alpha 사용자 또는 이전 버전 사용자가 stable로 올릴 때 확인할 설정/동작 차이를 안내한다.
-  - Evidence: upgrade/rollback 섹션 또는 별도 운영 문서.
-  - Owner hint: `docs/operations/*`, `CHANGELOG.md`
+  - Evidence: `docs/operations/upgrade-rollback-guide.md`가 추가되고 `README*`/operations index에서 링크되며, `playbooks.md`에 release incident rollback runbook이 정의된다.
+  - Owner hint: `docs/operations/*`, `CHANGELOG.md`, `README*`
 
 - [ ] **성능 회귀 기준선 고정**
   - What: workload별 허용 TPS/p99 범위를 advisory가 아니라 release review 입력값으로 고정한다.

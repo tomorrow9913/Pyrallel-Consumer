@@ -10,6 +10,31 @@
 - **Worker crash/timeout**: `CompletionStatus.FAILURE` with attempt=max_retries. Action: inspect worker logs, reduce `task_timeout_ms` for faster detection, increase `max_retries` only with idempotent workers.
 - **Rebalance stalls**: commits paused by gaps; monitor `consumer_parallel_lag` and `consumer_gap_count`. Action: verify `blocking_cache_ttl`, ensure `WorkManager` queues stay bounded (see queue cleanup), consider lowering `poll_batch_size`.
 
+## Release Incident / Rollback Runbook
+
+새 릴리즈 이후 운영 영향 장애가 발생하면 아래 순서로 대응한다.
+
+### Trigger conditions
+
+- 릴리즈 직후 `consumer_parallel_lag`가 지속 증가
+- `consumer_gap_count`가 수렴하지 않음
+- `DLQ publish failed` 경고가 반복
+- pre-release 기준 대비 ordering/retry 동작 이탈
+
+### Immediate containment (operator)
+
+1. 롤아웃을 중지하고 자동 배포를 잠시 동결한다.
+2. 마지막 정상 버전으로 pin/lockfile을 복원한다.
+3. 복원 버전으로 컨슈머를 재기동한다.
+4. lag/gap/backpressure가 기준선으로 회복되는지 확인한다.
+
+### Release-owner actions (maintainer)
+
+1. UTC 기준 인시던트 타임라인을 생성/갱신한다.
+2. 로그/메트릭 스냅샷/실패 명령 출력을 수집한다.
+3. 문제 릴리즈는 `yank + forward fix` 정책으로 처리한다.
+4. 재롤아웃 조건(버전/범위/검증 항목)을 공지한다.
+
 ## Observability & Alerts
 - **Backpressure**: `consumer_backpressure_active == 1` for >1 minute → alert; check `max_in_flight` and queue depth.
 - **Lag/Gap**: `consumer_parallel_lag` or `consumer_gap_count` growing for 5m → investigate stuck offsets, slow workers.

@@ -13,11 +13,14 @@
 
 ## 2. Operations
 
+- **[../SECURITY.md](../SECURITY.md)** - 비공개 취약점 제보 경로와 보안 응답 정책
 - **[operations/index.md](./operations/index.md)** - 운영 문서 entrypoint
 - **[operations/guide.ko.md](./operations/guide.ko.md)** - 한국어 운영 가이드
 - **[operations/guide.en.md](./operations/guide.en.md)** - 영문 운영 가이드
 - **[operations/playbooks.md](./operations/playbooks.md)** - 운영 플레이북과 튜닝 절차
 - **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness 체크리스트
+- **[operations/support-policy.md](./operations/support-policy.md)** - 지원 범위와 호환성 정책
+- **[operations/upgrade-rollback-guide.md](./operations/upgrade-rollback-guide.md)** - 업그레이드/롤백 가이드
 
 ## 3. Plans
 
