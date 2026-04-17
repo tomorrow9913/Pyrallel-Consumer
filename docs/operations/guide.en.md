@@ -31,37 +31,48 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: Process-only safety data such as minimum in-flight offsets should be exposed as an optional engine capability, not by branching on a concrete engine class inside `BrokerPoller`.
 - **Tip**: When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
 
-## 2. Tuning Guide
+## 2. Stable Public Contract Defaults (1.0.0 Gate)
 
-### 2.1. `max_in_flight_messages` (Control Plane)
+The following defaults are locked as public contract for the 1.0.0 gate
+(reference: `docs/blueprint/04-open-decisions.md`, GitHub issue `#34`):
+
+- **Ordering mode default**: `key_hash`
+- **DLQ payload default**: `full` (production recommendation: `metadata_only`)
+- **Commit semantics**: `on_complete` is the only stable public guarantee
+- **Rebalance/restart state strategy default**: `contiguous_only`
+  (`metadata_snapshot` is opt-in and fail-closed)
+
+## 3. Tuning Guide
+
+### 3.1. `max_in_flight_messages` (Control Plane)
 - **Description**: The maximum number of messages the entire system can process concurrently.
 - **Tuning**:
     - **Too Low**: Parallel processing efficiency drops, and consumers sit idle (Starvation).
     - **Too High**: Memory usage increases, and reprocessing costs during rebalancing become high.
     - **Recommendation**: Set it to roughly (Worker Count * 2) ~ (Worker Count * 10) to ensure workers always have tasks.
 
-### 2.2. `process_count` (Process Engine)
+### 3.2. `process_count` (Process Engine)
 - **Description**: The number of worker processes to perform parallel processing.
 - **Tuning**:
     - **CPU-bound**: Set close to the number of CPU cores (`os.cpu_count()`).
     - **I/O-bound**: Can be set higher than CPU cores, but consider using `AsyncExecutionEngine` instead.
 
-## 3. Troubleshooting
+## 4. Troubleshooting
 
-### 3.1. Consumer appears stuck
+### 4.1. Consumer appears stuck
 1. **Check Metrics**: Call `get_metrics()` to check the `is_paused` state.
 2. **Backpressure**: If `is_paused=True`, wait until `total_in_flight` decreases. Check if workers are blocked.
 3. **Blocking Offset**: If `blocking_duration_sec` is abnormally high, the message processing for that offset might be in an infinite loop or deadlock.
 
-### 3.2. Frequent Rebalancing
+### 4.2. Frequent Rebalancing
 - Increase `max_poll_interval_ms`. With parallel processing, individual message processing might be delayed, causing the Kafka broker to assume the consumer is dead.
 - Use `max_revoke_grace_ms` to ensure cleanup time during rebalancing.
 
-## 4. Monitoring Dashboard (Grafana Recommended)
+## 5. Monitoring Dashboard (Grafana Recommended)
 
 Assuming `get_metrics()` results are collected via Prometheus, the following panel configuration is recommended.
 
-### 4.1. System Overview (Row)
+### 5.1. System Overview (Row)
 - **Total In-Flight**:
     - Type: Stat
     - Query: `consumer_in_flight_count`
@@ -71,7 +82,7 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
     - Query: `consumer_backpressure_active` (0=Running, 1=Paused)
     - Color: 0=Green, 1=Red
 
-### 4.2. Performance (Row)
+### 5.2. Performance (Row)
 - **True Lag by Partition**:
     - Type: Time Series (Stacked)
     - Query: `consumer_parallel_lag`
@@ -81,7 +92,7 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
     - Query: `max(consumer_oldest_task_duration_seconds)`
     - Insight: If this value keeps increasing, it's highly likely a "Poison Pill" message that never finishes processing.
 
-### 4.3. Internal State (Row)
+### 5.3. Internal State (Row)
 - **Gap Count**:
     - Type: Time Series
     - Query: `sum(consumer_gap_count)`

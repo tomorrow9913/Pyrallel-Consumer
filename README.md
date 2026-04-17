@@ -20,6 +20,22 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 - **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
 - **Release support:** the latest stable line (`1.x`) is the actively maintained support target. Historical prerelease builds (`0.1.xa*`) are best-effort and receive no guaranteed fixes.
 
+## Stable Public Contract (1.0.0 Gate)
+
+The 1.0.0 release-gate contract decisions are locked in
+[`docs/blueprint/04-open-decisions.md`](./docs/blueprint/04-open-decisions.md)
+and tracked from GitHub issue `#34`.
+
+- **Ordering default**: `key_hash` is the canonical default. `partition` and
+  `unordered` are explicit opt-in modes.
+- **DLQ payload default**: runtime default is `full`; production guidance is
+  `metadata_only` with explicit cache-budget management.
+- **Commit semantics**: only `on_complete` is part of the stable public
+  contract. Periodic commit remains non-contract/experimental.
+- **Rebalance/restart state strategy**: default is `contiguous_only`;
+  `metadata_snapshot` is opt-in and must fail closed to `contiguous_only`
+  semantics on error.
+
 ## 🌟 Key Features
 
 - **High parallelism**: Process messages in parallel without being tightly limited by Kafka partition count.
