@@ -16,13 +16,13 @@
 
 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
-> **릴리즈 정책:** 현재 배포 버전은 alpha/prerelease(`0.1.2a2`)입니다. 버전/분류 정책이 alpha를 벗어나기 전까지는 `main` 브랜치를 안정화가 계속 진행 중인 hardening 브랜치로 보는 것이 맞습니다.
+> **릴리즈 정책:** 현재 배포 라인은 stable(`1.0.0`)입니다. `main` 브랜치는 Semantic Versioning 기준의 stable 패치/마이너 안정화 및 기능 개발 브랜치로 운영합니다.
 
 ## 지원 / 호환성 정책
 
 - **Python:** 현재 패키지 메타데이터 기준 지원 대상은 `>=3.12`이며, 배포 classifier는 Python `3.12`, `3.13`을 명시합니다.
 - **Kafka:** 지금 적극적으로 검증된 브로커 경로는 프로젝트의 로컬 Docker / CI 기반 Kafka E2E 흐름입니다. 그 외 브로커 배포판이나 더 오래된 client/broker 조합은, 별도 호환성 매트릭스가 문서화되고 자동화되기 전까지는 best-effort로 보는 편이 맞습니다.
-- **릴리즈 지원:** 현재는 최신 공개 prerelease만 적극 유지보수 대상으로 보고, 더 오래된 prerelease 빌드는 stable 전환 전까지 best-effort 범위로 취급합니다.
+- **릴리즈 지원:** 최신 stable 라인(`1.x`)을 적극 유지보수 대상으로 삼습니다. 과거 prerelease 빌드(`0.1.xa*`)는 best-effort 범위이며 수정 보장을 제공하지 않습니다.
 
 ## 🌟 주요 특징
 

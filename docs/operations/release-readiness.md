@@ -16,9 +16,10 @@
 
 ## P0: Stable 승격 전 필수
 
-- [ ] **알파 메타데이터 제거**
+- [x] **알파 메타데이터 제거**
   - What: `version`, classifier, README release policy가 stable 상태와 일치해야 한다.
-  - Evidence: `pyproject.toml`에서 alpha classifier 제거, stable 버전 반영, README 정책 문구 수정.
+  - Evidence: `pyproject.toml`에서 alpha classifier 제거, stable 버전(`1.0.0`) 반영, README 정책 문구 수정.
+  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33), PR 링크는 생성 후 추가.
   - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
 
 - [ ] **핵심 public contract 동결**
@@ -118,9 +119,9 @@ UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-*
 
 ## Current Assessment Snapshot
 
-- 현재 상태는 **hardening된 alpha**로 보는 것이 맞다.
+- 현재 상태는 **stable metadata/posture(`1.0.0`)가 반영된 릴리스 라인**으로 본다.
 - `key_hash`/`partition` ordering에 더해 process mode의 retry, DLQ, in-flight rebalance, restart/offset continuity에 대한 실브로커 E2E도 확보됐다.
-- 당장 stable 승격을 막는 핵심은 이제 `알파 메타데이터`, `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
+- 남은 안정화 핵심은 `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
 - 이번 라운드에서는 process recovery 경로의 실브로커 증거를 확보했고, 이후 라운드는 문서 정책 정리와 release gate 정밀화에 집중하면 된다.
 
 ## Type Ignore Inventory Snapshot
