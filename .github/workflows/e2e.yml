@@ -42,9 +42,12 @@ jobs:
           GF_SECURITY_ADMIN_PASSWORD: local-e2e
         run: |
           docker compose -f .github/e2e.compose.yml up -d kafka-1
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
       - name: Wait for Kafka readiness
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import time
 
           from confluent_kafka.admin import AdminClient
@@ -62,9 +65,6 @@ jobs:
               "Kafka did not become metadata-ready on localhost:9092 within 60 seconds"
           )
           PY
-      - name: Sync locked dependencies
-        run: |
-          uv sync --frozen --group dev
       - name: Run E2E tests
         env:
           PYRALLEL_E2E_REQUIRE_BROKER: "1"
