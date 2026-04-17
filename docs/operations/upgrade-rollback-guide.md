@@ -1,40 +1,87 @@
 # Upgrade / Rollback Guide
 
-이 문서는 prerelease/stable 전환 구간에서 운영자가 따라야 할
-업그레이드/롤백 절차를 정리한다.
+This document summarizes the checks required when `Pyrallel Consumer` users
+upgrade from alpha/prerelease to the latest version (or future stable), and the
+rollback procedure when issues occur.
 
-## 1. 원칙
+Because the project is currently in prerelease hardening, this guide emphasizes
+**conservative upgrades** and **fast recovery capability**.
 
-- 지원 범위는 `support-policy.md`를 따른다.
-- 장애 시에는 원인 완전 분석보다 서비스 안정성 확보를 위한 빠른 롤백을 우선한다.
-- 릴리즈 인시던트 대응은 `playbooks.md`의
-  `Release Incident / Rollback Runbook`을 함께 따른다.
+## 1. Scope and Principles
 
-## 2. 업그레이드 전 체크리스트
+- Canonical support-scope policy follows `support-policy.md`.
+- Release incident response/rollback operations follow the
+  `Release Incident / Rollback Runbook` section in `playbooks.md`.
+- The current primary support target is the **latest public prerelease**.
+- Perform upgrades in verifiable stages instead of large one-shot jumps.
+- On incidents, prioritize **fast rollback** for service stability before
+  full root-cause analysis/retry.
 
-1. 현재 운영 버전과 설정 스냅샷을 기록한다.
-2. `CHANGELOG.md` 변경사항(특히 ordering/retry/DLQ/commit)을 확인한다.
-3. 이전 정상 버전 artifact 또는 lockfile을 롤백용으로 확보한다.
-4. `support-policy.md`의 릴리즈 라인 지원 상태를 확인한다.
+## 2. Pre-upgrade Checklist
 
-## 3. 권장 업그레이드 절차
+1. Record the exact current production version and configuration snapshot.
+2. Review target-version changes in `CHANGELOG.md` (especially
+   ordering/retry/DLQ/commit-related changes).
+3. Confirm no assumptions conflict with
+   `docs/operations/public-contract-v1.md`.
+4. Check whether support boundaries changed in
+   `docs/operations/support-policy.md`.
+5. Pre-stage rollback artifacts (or lockfile) for the previous version.
 
-1. 스테이징에 신규 버전을 pin 설치한다.
-2. smoke 검증(기동/종료, consume/commit, DLQ 경로)을 수행한다.
-3. 짧은 soak로 lag/gap/backpressure/oldest-task 지표를 확인한다.
-4. 이상 없으면 점진 롤아웃한다.
+## 3. Recommended Upgrade Procedure
 
-## 4. 롤백 절차(운영자)
+### 3.1 Upgrade between Alpha/Prerelease versions
 
-1. 롤아웃을 중지한다.
-2. 마지막 정상 버전으로 pin/lockfile을 되돌린다.
-3. 컨슈머 재기동 후 핵심 지표 회복을 확인한다.
-4. 롤백 시점, 영향 범위, 임시 완화책을 기록한다.
+1. Pin and install the new version in test/staging.
+2. Run baseline smoke validation.
+   - consumer start/stop
+   - message consume/commit flow
+   - DLQ path behavior (if enabled)
+3. Run a short soak with production-like settings.
+4. Check for anomalies in metrics (`lag`, `gap`, `backpressure`,
+   `oldest task duration`).
+5. If healthy, roll out progressively to production traffic.
 
-## 5. 롤백 절차(유지보수자)
+### 3.2 Upgrade to future stable release
 
-문제 릴리즈가 배포된 경우 `release-versioning-policy`를 따른다.
+- The first stable release enforces stricter contract boundaries than prerelease.
+- Review release notes + support policy + public contract documents together.
+- Re-evaluate previous alpha assumptions (for example, best-effort
+  compatibility) separately from operations docs/SLO commitments.
 
-- 기존 버전 overwrite 금지
-- 기존 tag 재사용 금지
-- `yank + forward fix` 원칙 적용
+## 4. Rollback Procedure
+
+### 4.1 Rollback from user/operator perspective
+
+1. Revert dependencies to the most recent known-good version
+   (restore version pin/lockfile).
+2. If new-version-only settings were introduced, revert them to values
+   compatible with the prior version.
+3. Restart the consumer and verify key metrics return to normal range.
+4. Record rollback timestamp and root-cause summary in operations logs/release notes.
+
+### 4.2 Rollback from maintainer/release perspective
+
+If a bad release was published, follow the rollback rule in
+`release-versioning-policy.md`.
+
+- do not overwrite existing versions
+- do not reuse existing tags
+- apply `yank + forward fix`
+
+In short, yank the problematic version and publish a corrected new version.
+
+## 5. Minimum Post-upgrade Verification Commands (recommended)
+
+Minimum verification commands for project maintainers:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run pytest tests/unit -q --ignore=tests/unit/benchmarks
+UV_CACHE_DIR=.uv-cache uv run pytest tests/integration -q
+UV_CACHE_DIR=.uv-cache uv run pytest tests/e2e/test_ordering.py -q
+UV_CACHE_DIR=.uv-cache uv run ruff check .
+UV_CACHE_DIR=.uv-cache uv run mypy pyrallel_consumer
+```
+
+For user environments, running the full set may be unnecessary, but at minimum,
+run the same smoke checks for message consume/commit/DLQ/metrics behavior.
