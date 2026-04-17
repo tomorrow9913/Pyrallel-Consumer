@@ -22,9 +22,10 @@ For each item, review all three dimensions below.
 
 ## P0: Required Before Stable Promotion
 
-- [ ] **Remove alpha metadata**
+- [x] **Remove alpha metadata**
   - What: `version`, classifiers, and README release policy must match a stable state.
-  - Evidence: remove alpha classifier in `pyproject.toml`, set stable version, update README policy wording.
+  - Evidence: alpha classifier removed in `pyproject.toml`, stable version (`1.0.0`) applied, and README release policy updated.
+  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33)
   - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
 
 - [x] **Freeze core public contract**
@@ -173,14 +174,12 @@ UV_CACHE_DIR=.uv-cache uv run twine check "${release_artifacts[@]}"
 
 ## Current Assessment Snapshot
 
-- The current state is best described as a **hardened alpha**.
-- Beyond `key_hash`/`partition` ordering, real-broker E2E evidence now also
-  covers process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
-- The main blockers for immediate stable promotion are now alpha metadata,
-  remaining public contract decisions, and P1-type long-running/operations
-  maturity validation.
-- This round secured real-broker evidence for process recovery paths; next rounds
-  should focus on policy documentation closure and tighter release-gate precision.
+- The current state is a **stable-line posture (`1.0.0`) with broker-backed
+  release gates**.
+- Beyond `key_hash`/`partition` ordering, real-broker E2E evidence covers
+  process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
+- The remaining gaps are mostly P1/P2 operational maturity items, not alpha
+  metadata alignment.
 
 ## Type Ignore Inventory Snapshot
 

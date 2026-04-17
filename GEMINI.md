@@ -4,6 +4,7 @@
 
 ## 최근 업데이트 (2026-04-17)
 - Release gate evidence 문서 보강 (2026-04-17): QA 변경요청에 따라 `docs/operations/release-readiness.md`의 P0 구간에 `P0/E2E Gate (broker-backed release gate)` 라인을 추가했습니다. fresh evidence로 `e2e` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048`)와 `release-verify` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673`)를 고정 집계했고, `Run broker-backed E2E tests (release gate)` step success 확인 근거를 함께 명시했습니다.
+- Issue #33 stable metadata/posture 정렬 단계 (2026-04-17): `pyproject.toml`과 `uv.lock`의 package version을 `1.0.0`으로 올리고 classifier를 `Development Status :: 5 - Production/Stable`로 갱신했습니다. `README.md`/`README.ko.md` release policy를 stable 라인 기준으로 정리했고, `CHANGELOG.md`에 `1.0.0` 릴리스 내러티브와 마이그레이션 노트를 추가했습니다. 또한 `docs/operations/release-readiness.md`의 P0 `알파 메타데이터 제거` 항목을 완료 처리하고 evidence를 연결했습니다.
 
 ## 최근 업데이트 (2026-03-27)
 - Release prep (2026-03-27): PyPI prerelease를 `0.1.2a1`에서 `0.1.2a2`로 올리기 위해 `pyproject.toml`과 `uv.lock`의 package version을 갱신했고, README/README.ko의 release policy 문구도 `0.1.2a2` 기준으로 맞췄습니다. release artifact는 `PATH=".venv/bin:$PATH" python -m build --no-isolation --outdir dist/release-0.1.2a2`로 fresh sdist/wheel을 만들었고, `PATH=".venv/bin:$PATH" twine check dist/release-0.1.2a2/*`도 모두 PASSED였습니다.
