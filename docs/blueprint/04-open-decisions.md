@@ -1,14 +1,20 @@
-# Open Decisions
+# Stable Public Contract Decisions (Locked for 1.0.0)
 
-이 문서는 `pyrallel-consumer` 구현 전에 잠가야 하는 전역 정책값과 운영 기준만 모아 둔 문서다.
+이 문서는 `GitHub #34` 기준으로 1.0.0 안정 릴리스 전에 확정해야 하는
+public contract 결정을 잠근 결과다.
 
-| 항목 | 무엇을 결정해야 하는가 | 왜 중요한가 | 옵션 | 권장안 |
-| --- | --- | --- | --- | --- |
-| `metadata_snapshot` 기본값 | sparse completed offset 복원을 기본으로 켤지 | reprocessing 감소와 운영 복잡도 사이의 tradeoff가 크다 | `contiguous_only`, `metadata_snapshot` | 기본값은 `contiguous_only`, 특정 사용자군에서 opt-in |
-| metrics exporter packaging | facade 자동 wiring 이후 dashboard/compose integration을 어느 수준까지 canonical support로 둘지 | runtime metric 노출은 해결됐지만 운영 packaging 범위는 여전히 선택지가 있다 | runtime only, helper scripts, full bundled stack | 현재는 runtime auto-wiring + ops/test stack 문서화까지를 canonical로 유지 |
-| commit strategy public surface | `on_complete` 외에 periodic commit을 public contract로 승격할지 | 문서가 현재 capability와 미래 방향을 구분해야 한다 | `on_complete` only, experimental periodic, fully supported periodic | 현재는 `on_complete`만 canonical contract로 유지 |
-| process worker recycle default | `max_tasks_per_child`와 `recycle_jitter_ms`를 기본 동작으로 적극 사용할지 | 장기 실행 안정성과 예측 가능한 latency가 충돌한다 | recycle off, conservative default, aggressive recycle | 기본값은 off, ops guide에서 opt-in tuning |
-| DLQ payload default | `full`과 `metadata_only` 중 무엇을 기본으로 둘지 | 장애 분석 편의와 메모리/보안 비용이 다르다 | `full`, `metadata_only`, topic별 override | 개발 기본은 `full`, production guidance는 `metadata_only` 권장 |
-| ordering mode public guidance | 어떤 ordering mode를 README/예제의 기본 추천으로 둘지 | throughput과 correctness 기대치를 결정한다 | `key_hash`, `partition`, `unordered` | 일반 기본은 `key_hash`, 특수 workload별 별도 가이드 |
-| benchmark release gate | benchmark 수치를 릴리즈 품질 기준으로 강제할지 | 성능 regression 관리에 중요하지만 환경 의존성이 높다 | no gate, advisory gate, fixed CI gate | advisory gate부터 시작하고 수치 기준은 문서화 |
-| benchmark profiling policy | process mode profiling을 공식 지원 수준으로 올릴지 | py-spy/yappi 안정성이 플랫폼별로 다르다 | best-effort, official py-spy only, official multi-tool support | py-spy를 process 공식 경로로, yappi는 async/baseline 중심 |
+- 기준 이슈: https://github.com/tomorrow9913/Pyrallel-Consumer/issues/34
+- 잠금 일자: 2026-04-17
+- 상태: 1.0.0 gate 기준 unresolved 항목 없음
+
+| 계약 영역 | 1.0.0 고정 결정 | 사용자/운영 기대치 |
+| --- | --- | --- |
+| ordering mode 기본 가이드 | 기본값은 `key_hash` | `partition`, `unordered`는 의도적 opt-in 시나리오에서만 사용한다. README/예제 기본은 `key_hash`를 유지한다. |
+| DLQ payload default | 런타임 기본값은 `full` | production 운영 가이드는 `metadata_only`를 권장한다. `full` 사용 시 payload cache 예산(`PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES`)을 반드시 설정한다. |
+| commit semantics public surface | canonical public contract는 `on_complete`만 제공 | periodic commit은 실험/향후 확장 범위이며 1.0.0 안정 계약에는 포함하지 않는다. |
+| rebalance/restart state strategy 기본값 | 기본값은 `contiguous_only` | `metadata_snapshot`은 opt-in이며, 실패 시 `contiguous_only` 의미로 fail-closed 해야 한다. |
+
+## Notes
+
+- metrics exporter packaging, benchmark gate/policy, worker recycle default는
+  stable contract blocker가 아니라 운영 성숙도(P1/P2) 트랙에서 계속 관리한다.

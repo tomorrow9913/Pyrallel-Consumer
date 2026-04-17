@@ -22,9 +22,9 @@
   - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33), PR [#38](https://github.com/tomorrow9913/Pyrallel-Consumer/pull/38)
   - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
 
-- [ ] **핵심 public contract 동결**
+- [x] **핵심 public contract 동결**
   - What: ordering mode 기본 가이드, DLQ payload default, commit public surface, rebalance state strategy 기본값을 stable contract로 명시한다.
-  - Evidence: 열린 결정 문서가 stable 정책으로 닫히고 운영/README에 반영된다.
+  - Evidence: `docs/blueprint/04-open-decisions.md`가 lock 문서로 전환됐고, `README.md`, `README.ko.md`, `docs/operations/guide.en.md`, `docs/operations/guide.ko.md`에 동일 결정이 반영됐다. 기준 트래킹 이슈: https://github.com/tomorrow9913/Pyrallel-Consumer/issues/34
   - Owner hint: `docs/blueprint/04-open-decisions.md`, `README*`, `docs/operations/*`
 
 - [x] **실브로커 E2E에 process mode 포함**
@@ -124,7 +124,7 @@ UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-*
 
 - 현재 상태는 **stable metadata/posture(`1.0.0`)가 반영된 릴리스 라인**으로 본다.
 - `key_hash`/`partition` ordering에 더해 process mode의 retry, DLQ, in-flight rebalance, restart/offset continuity에 대한 실브로커 E2E도 확보됐다.
-- 남은 안정화 핵심은 `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
+- 남은 안정화 핵심은 P1 성격의 장시간/운영 성숙도 검증과 release automation 정밀화 쪽에 더 가깝다.
 - 이번 라운드에서는 process recovery 경로의 실브로커 증거를 확보했고, 이후 라운드는 문서 정책 정리와 release gate 정밀화에 집중하면 된다.
 
 ## Type Ignore Inventory Snapshot
