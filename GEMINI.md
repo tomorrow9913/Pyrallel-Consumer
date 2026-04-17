@@ -4,6 +4,7 @@
 
 ## 최근 업데이트 (2026-04-17)
 - Issue #33 stable metadata/posture 정렬 단계 (2026-04-17): `pyproject.toml`과 `uv.lock`의 package version을 `1.0.0`으로 올리고 classifier를 `Development Status :: 5 - Production/Stable`로 갱신했습니다. `README.md`/`README.ko.md` release policy를 stable 라인 기준으로 정리했고, `CHANGELOG.md`에 `1.0.0` 릴리스 내러티브와 마이그레이션 노트를 추가했습니다. 또한 `docs/operations/release-readiness.md`의 P0 `알파 메타데이터 제거` 항목을 완료 처리하고 evidence를 GitHub issue #33 / PR #38로 연결했습니다.
+- MQU-153 문서 갭 보완 단계 (2026-04-17): `README.md`/`README.ko.md`에 `SECURITY.md` 및 support-policy 직링크를 추가하고, `docs/operations/support-policy.md`를 신설해 지원 라인/호환 범위/보안 연계/폐기 정책을 명시했습니다. `docs/operations/playbooks.md`에는 `Release Rollback Runbook`과 `Release Incident Response` 절차를 추가했으며, `docs/operations/release-readiness.md`의 Security/Support/Rollback 항목에 증거 링크를 반영해 완료 처리했습니다.
 
 ## 최근 업데이트 (2026-03-27)
 - Release prep (2026-03-27): PyPI prerelease를 `0.1.2a1`에서 `0.1.2a2`로 올리기 위해 `pyproject.toml`과 `uv.lock`의 package version을 갱신했고, README/README.ko의 release policy 문구도 `0.1.2a2` 기준으로 맞췄습니다. release artifact는 `PATH=".venv/bin:$PATH" python -m build --no-isolation --outdir dist/release-0.1.2a2`로 fresh sdist/wheel을 만들었고, `PATH=".venv/bin:$PATH" twine check dist/release-0.1.2a2/*`도 모두 PASSED였습니다.

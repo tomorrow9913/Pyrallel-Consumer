@@ -17,6 +17,9 @@
 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
 > **릴리즈 정책:** 현재 배포 라인은 stable(`1.0.0`)입니다. `main` 브랜치는 Semantic Versioning 기준의 stable 패치/마이너 안정화 및 기능 개발 브랜치로 운영합니다.
+>
+> **보안 제보 경로:** [`SECURITY.md`](./SECURITY.md)를 확인하세요.  
+> **지원/호환성 정책:** [`docs/operations/support-policy.md`](./docs/operations/support-policy.md)를 확인하세요.
 
 ## 지원 / 호환성 정책
 
@@ -410,6 +413,8 @@ uv run python benchmarks/run_parallel_benchmark.py \
 -   **`prd_dev.md`**: 개발자를 위한 요약 문서. 프로젝트의 주요 기능, 아키텍처, 개발 방법론 등을 간결하게 설명합니다.
 -   **`prd.md`**: 상세 설계 해설서. 각 컴포넌트의 의도, 기술 선정 이유, 인터페이스 정의 등 "왜"라는 질문에 대한 깊이 있는 답변을 제공하는 문서입니다.
 -   **`docs/operations/playbooks.md`**: 운영 플레이북과 튜닝 가이드. 프로필별 권장 설정, 장애 대응, 모니터링/알람 기준, 튜닝 절차를 제공합니다.
+-   **`docs/operations/support-policy.md`**: 지원 버전, 호환 범위, 폐기 정책, 지원 기대치를 정의합니다.
+-   **`SECURITY.md`**: 취약점 비공개 제보 채널과 보안 응답 목표를 안내합니다.
 
 ## 📊 모니터링 스택 (Prometheus + Grafana)
 
