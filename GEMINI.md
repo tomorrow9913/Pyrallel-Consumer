@@ -1,6 +1,9 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 3월 27일 금요일*
+*최종 업데이트: 2026년 4월 17일 금요일*
+
+## 최근 업데이트 (2026-04-17)
+- Release gate evidence 문서 보강 (2026-04-17): QA 변경요청에 따라 `docs/operations/release-readiness.md`의 P0 구간에 `P0/E2E Gate (broker-backed release gate)` 라인을 추가했습니다. fresh evidence로 `e2e` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048`)와 `release-verify` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673`)를 고정 집계했고, `Run broker-backed E2E tests (release gate)` step success 확인 근거를 함께 명시했습니다.
 
 ## 최근 업데이트 (2026-03-27)
 - Release prep (2026-03-27): PyPI prerelease를 `0.1.2a1`에서 `0.1.2a2`로 올리기 위해 `pyproject.toml`과 `uv.lock`의 package version을 갱신했고, README/README.ko의 release policy 문구도 `0.1.2a2` 기준으로 맞췄습니다. release artifact는 `PATH=".venv/bin:$PATH" python -m build --no-isolation --outdir dist/release-0.1.2a2`로 fresh sdist/wheel을 만들었고, `PATH=".venv/bin:$PATH" twine check dist/release-0.1.2a2/*`도 모두 PASSED였습니다.

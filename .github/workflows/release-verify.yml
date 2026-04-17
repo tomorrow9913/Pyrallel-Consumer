@@ -1,4 +1,4 @@
-name: e2e
+name: release-verify
 
 on:
   push:
@@ -9,16 +9,7 @@ on:
       - "uv.lock"
       - "docker-compose.yml"
       - ".github/e2e.compose.yml"
-      - ".github/workflows/e2e.yml"
-  pull_request:
-    branches: [main, develop]
-    types: [opened, reopened, ready_for_review, synchronize]
-    paths:
-      - "**/*.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "docker-compose.yml"
-      - ".github/e2e.compose.yml"
+      - ".github/workflows/release-verify.yml"
       - ".github/workflows/e2e.yml"
   workflow_dispatch:
 
@@ -26,9 +17,9 @@ permissions:
   contents: read
 
 jobs:
-  e2e:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,15 +28,15 @@ jobs:
       - name: Install uv
         run: |
           python -m pip install --upgrade pip uv
-      - name: Start Kafka
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Start Kafka for broker-backed E2E gate
         env:
           GF_SECURITY_ADMIN_PASSWORD: local-e2e
         run: |
           docker compose -f .github/e2e.compose.yml up -d kafka-1
-      - name: Sync locked dependencies
-        run: |
-          uv sync --frozen --group dev
-      - name: Wait for Kafka readiness
+      - name: Wait for Kafka metadata readiness
         run: |
           uv run python - <<'PY'
           import time
@@ -53,7 +44,7 @@ jobs:
           from confluent_kafka.admin import AdminClient
 
           client = AdminClient({"bootstrap.servers": "127.0.0.1:9092"})
-          deadline = time.time() + 60
+          deadline = time.time() + 90
           while time.time() < deadline:
               try:
                   metadata = client.list_topics(timeout=5)
@@ -62,21 +53,49 @@ jobs:
               except Exception:
                   time.sleep(1)
           raise SystemExit(
-              "Kafka did not become metadata-ready on localhost:9092 within 60 seconds"
+              "Kafka did not become metadata-ready on localhost:9092 within 90 seconds"
           )
           PY
-      - name: Run E2E tests
+      - name: Run Ruff
+        run: |
+          uv run ruff check .
+      - name: Run mypy
+        run: |
+          uv run mypy pyrallel_consumer
+      - name: Run Bandit
+        run: |
+          uv run bandit -q -lll -r pyrallel_consumer
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/unit -q --ignore=tests/unit/benchmarks --maxfail=1
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/integration -q --maxfail=1
+      - name: Run broker-backed E2E tests (release gate)
         env:
           PYRALLEL_E2E_REQUIRE_BROKER: "1"
         run: |
           mkdir -p .artifacts
-          uv run pytest tests/e2e -q --maxfail=1 --junitxml=.artifacts/e2e-junit.xml
+          uv run pytest tests/e2e -q --maxfail=1 --junitxml=.artifacts/release-e2e-junit.xml
+      - name: Build distributions
+        run: |
+          rm -rf dist
+          uv build
+      - name: Check distribution metadata
+        run: |
+          uv run twine check dist/pyrallel_consumer-*
       - name: Upload broker-backed E2E report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-junit-${{ github.run_id }}
-          path: .artifacts/e2e-junit.xml
+          name: release-verify-e2e-junit-${{ github.run_id }}
+          path: .artifacts/release-e2e-junit.xml
+      - name: Upload distributions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/*
       - name: Stop Kafka
         if: always()
         env:

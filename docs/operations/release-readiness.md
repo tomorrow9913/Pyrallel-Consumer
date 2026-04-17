@@ -31,6 +31,16 @@
   - Evidence: `tests/e2e/test_ordering.py`와 `tests/e2e/test_process_recovery.py`에서 process mode 실브로커 E2E가 통과한다.
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 
+- [x] **P0/E2E Gate (broker-backed release gate)**
+  - What: 릴리스 경로에서 broker-backed E2E가 skip 없이 실행되고, run/artifact 증거가 문서에 고정 집계되어야 한다.
+  - Evidence: `e2e` run/artifact + `release-verify` run/artifact를 함께 기록하고, `Run broker-backed E2E tests (release gate)` step success를 확인한다.
+  - Fresh evidence (2026-04-17):
+    - `e2e` run: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840
+    - `e2e` artifact: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048
+    - `release-verify` run: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833
+    - `release-verify` artifact: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673
+  - Owner hint: `.github/workflows/e2e.yml`, `.github/workflows/release-verify.yml`, `docs/operations/release-readiness.md`
+
 - [ ] **CI quality gate 강화**
   - What: 최소한 lint/type/security/build/artifact check가 PR과 push에서 자동으로 검증돼야 한다.
   - Evidence: GitHub Actions가 `ruff`, `mypy`, `bandit`, `uv build`, `twine check`를 수행한다.
