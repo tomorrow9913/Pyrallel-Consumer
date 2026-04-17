@@ -19,7 +19,7 @@
 - [x] **알파 메타데이터 제거**
   - What: `version`, classifier, README release policy가 stable 상태와 일치해야 한다.
   - Evidence: `pyproject.toml`에서 alpha classifier 제거, stable 버전(`1.0.0`) 반영, README 정책 문구 수정.
-  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33), PR 링크는 생성 후 추가.
+  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33), PR [#38](https://github.com/tomorrow9913/Pyrallel-Consumer/pull/38)
   - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
 
 - [ ] **핵심 public contract 동결**
