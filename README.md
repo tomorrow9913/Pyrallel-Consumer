@@ -9,13 +9,16 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
-> **Release policy:** current published versions are alpha/prerelease (`0.1.2a2`). Treat `main` as an active hardening branch until the version/classifier policy is promoted beyond alpha.
+> **Release policy:** current published line is stable (`1.0.0`). Treat `main` as the active branch for stable patch/minor hardening and feature delivery under Semantic Versioning.
+>
+> **Security reporting:** see [`SECURITY.md`](./SECURITY.md).  
+> **Support/compatibility policy:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
 
 ## Support / Compatibility Policy
 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
 - **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
-- **Release support:** only the latest published prerelease is treated as an actively maintained support target right now. Older prerelease builds are best-effort until the project graduates from alpha/hardening status.
+- **Release support:** the latest stable line (`1.x`) is the actively maintained support target. Historical prerelease builds (`0.1.xa*`) are best-effort and receive no guaranteed fixes.
 
 ## 🌟 Key Features
 
@@ -294,6 +297,8 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - `prd_dev.md`: concise developer-oriented summary
 - `prd.md`: full design rationale and architecture details
 - `docs/operations/playbooks.md`: ops playbook, tuning guide, incident response
+- `docs/operations/support-policy.md`: supported versions, compatibility window, deprecation and support expectations
+- `SECURITY.md`: vulnerability reporting channel and security response expectations
 
 ## 📊 Monitoring Stack (Prometheus + Grafana)
 

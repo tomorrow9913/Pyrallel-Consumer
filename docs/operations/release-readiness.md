@@ -16,9 +16,10 @@
 
 ## P0: Stable 승격 전 필수
 
-- [ ] **알파 메타데이터 제거**
+- [x] **알파 메타데이터 제거**
   - What: `version`, classifier, README release policy가 stable 상태와 일치해야 한다.
-  - Evidence: `pyproject.toml`에서 alpha classifier 제거, stable 버전 반영, README 정책 문구 수정.
+  - Evidence: `pyproject.toml`에서 alpha classifier 제거, stable 버전(`1.0.0`) 반영, README 정책 문구 수정.
+  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33), PR [#38](https://github.com/tomorrow9913/Pyrallel-Consumer/pull/38)
   - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
 
 - [ ] **핵심 public contract 동결**
@@ -41,10 +42,11 @@
   - Evidence: release build 절차가 문서화되고 `twine check` 대상이 fresh artifact로 고정된다.
   - Owner hint: `CHANGELOG.md`, release workflow/commands, `GEMINI.md`
 
-- [ ] **보안 연락 경로와 책임 명시**
+- [x] **보안 연락 경로와 책임 명시**
   - What: 공개 이슈가 아닌 보안 제보 채널과 응답 기대치를 문서화한다.
   - Evidence: `SECURITY.md` 존재, README/저장소 표면에서 쉽게 찾을 수 있다.
-  - Owner hint: `SECURITY.md`
+  - Evidence link: `README.md`, `README.ko.md`의 `SECURITY.md` 직링크 + `SECURITY.md`
+  - Owner hint: `SECURITY.md`, `README*`
 
 ## P1: Stable 직전 권장
 
@@ -53,14 +55,16 @@
   - Evidence: soak 시나리오 문서와 결과 기록, 반복 가능한 명령 또는 workflow.
   - Owner hint: `benchmarks/`, `tests/e2e/`, `docs/operations/playbooks.md`
 
-- [ ] **지원 범위와 호환성 정책 문서화**
+- [x] **지원 범위와 호환성 정책 문서화**
   - What: 지원 Python 버전, Kafka 브로커/클라이언트 호환 범위, deprecation policy를 정의한다.
   - Evidence: 문서에 compatibility/support section이 생기고 릴리스 노트에서 참조된다.
-  - Owner hint: `README*`, `SECURITY.md`, dedicated support doc
+  - Evidence link: `docs/operations/support-policy.md`, `README.md`, `README.ko.md`
+  - Owner hint: `README*`, `SECURITY.md`, `docs/operations/support-policy.md`
 
-- [ ] **업그레이드/롤백 가이드 추가**
+- [x] **업그레이드/롤백 가이드 추가**
   - What: alpha 사용자 또는 이전 버전 사용자가 stable로 올릴 때 확인할 설정/동작 차이를 안내한다.
   - Evidence: upgrade/rollback 섹션 또는 별도 운영 문서.
+  - Evidence link: `docs/operations/playbooks.md`의 `Release Rollback Runbook`/`Release Incident Response`
   - Owner hint: `docs/operations/*`, `CHANGELOG.md`
 
 - [ ] **성능 회귀 기준선 고정**
@@ -118,9 +122,9 @@ UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-*
 
 ## Current Assessment Snapshot
 
-- 현재 상태는 **hardening된 alpha**로 보는 것이 맞다.
+- 현재 상태는 **stable metadata/posture(`1.0.0`)가 반영된 릴리스 라인**으로 본다.
 - `key_hash`/`partition` ordering에 더해 process mode의 retry, DLQ, in-flight rebalance, restart/offset continuity에 대한 실브로커 E2E도 확보됐다.
-- 당장 stable 승격을 막는 핵심은 이제 `알파 메타데이터`, `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
+- 남은 안정화 핵심은 `남은 public contract 결정`, 그리고 P1 성격의 장시간/운영 성숙도 검증 쪽에 더 가깝다.
 - 이번 라운드에서는 process recovery 경로의 실브로커 증거를 확보했고, 이후 라운드는 문서 정책 정리와 release gate 정밀화에 집중하면 된다.
 
 ## Type Ignore Inventory Snapshot
