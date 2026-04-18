@@ -28,7 +28,12 @@ from .broker_completion_support import BrokerCompletionSupport
 from .broker_dispatch_support import BrokerDispatchSupport
 from .broker_rebalance_support import BrokerRebalanceSupport
 from .broker_runtime_support import BrokerRuntimeSupport
-from .broker_support import BrokerCommitPlanner, DlqCacheSupport
+from .broker_support import (
+    BrokerCommitPlanner,
+    BrokerCommitSupport,
+    BrokerDrainSupport,
+    DlqCacheSupport,
+)
 from .broker_task_lifecycle_support import BrokerTaskLifecycleSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -111,6 +116,11 @@ class BrokerPoller:
             metadata_encoder=self._metadata_encoder,
             max_completed_offsets=self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
         )
+        self._commit_support = BrokerCommitSupport(
+            commit_planner=self._commit_planner,
+            logger=logger,
+        )
+        self._drain_support = BrokerDrainSupport()
         self._dlq_cache_support = DlqCacheSupport()
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
@@ -382,16 +392,12 @@ class BrokerPoller:
             self._consumer_task = None
 
     async def _drain_completion_events_once(self) -> bool:
-        completed_events = await self._work_manager.poll_completed_events()
-        timeout_events = await self._handle_blocking_timeouts()
-        if timeout_events:
-            completed_events.extend(timeout_events)
-        if not completed_events:
-            return False
-
-        await self._process_completed_events(completed_events)
-        await self._work_manager.schedule()
-        return True
+        return await self._drain_support.drain_completion_events_once(
+            poll_completed_events=self._work_manager.poll_completed_events,
+            handle_blocking_timeouts=self._handle_blocking_timeouts,
+            process_completed_events=self._process_completed_events,
+            schedule=self._work_manager.schedule,
+        )
 
     async def _run_completion_monitor(self) -> None:
         timeout_seconds = self._idle_consume_timeout_seconds
@@ -421,13 +427,12 @@ class BrokerPoller:
             raise
 
     async def _commit_ready_offsets(self) -> None:
-        async with self._commit_lock:
-            async with self._control_lock:
-                commits_to_make = (
-                    self._make_dispatch_support().build_commit_candidates()
-                )
-            if commits_to_make:
-                await self._commit_offsets(commits_to_make)
+        await self._commit_support.commit_ready_offsets(
+            commit_lock=self._commit_lock,
+            control_lock=self._control_lock,
+            build_commit_candidates=self._make_dispatch_support().build_commit_candidates,
+            commit_offsets=self._commit_offsets,
+        )
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
@@ -474,58 +479,14 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
-
-        async with self._control_lock:
-            tracked_commits: list[tuple[DtoTopicPartition, int]] = []
-            tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
-            for tp, safe_offset in commits_to_make:
-                tracker = self._offset_trackers.get(tp)
-                if tracker is None:
-                    logger.debug(
-                        "Skipping commit candidate for untracked partition %s", tp
-                    )
-                    continue
-                tracked_commits.append((tp, safe_offset))
-                tracker_snapshot[tp] = tracker
-
-        if not tracked_commits:
-            return
-
-        offsets_to_commit = self._commit_planner.build_offsets_to_commit(
-            commits_to_make=tracked_commits,
-            trackers=tracker_snapshot,
+        await self._commit_support.commit_offsets(
+            consumer=self.consumer,
+            offset_trackers=self._offset_trackers,
+            control_lock=self._control_lock,
+            commits_to_make=commits_to_make,
             strategy=self._rebalance_state_strategy(),
+            to_thread=asyncio.to_thread,
         )
-
-        max_attempts = 2  # 1 initial + 1 retry
-        for attempt in range(max_attempts):
-            try:
-                await asyncio.to_thread(
-                    self.consumer.commit,
-                    offsets=offsets_to_commit,
-                    asynchronous=False,
-                )
-                async with self._control_lock:
-                    for tp, safe_offset in tracked_commits:
-                        tracker = self._offset_trackers.get(tp)
-                        if tracker is None:
-                            continue
-                        tracker.commit_through(safe_offset)
-                return
-            except KafkaException as exc:
-                if attempt < max_attempts - 1:
-                    logger.warning(
-                        "Commit failed (attempt %d/%d), retrying: %s",
-                        attempt + 1,
-                        max_attempts,
-                        exc,
-                    )
-                else:
-                    logger.error(
-                        "Commit failed after %d attempts, skipping: %s",
-                        max_attempts,
-                        exc,
-                    )
 
     def _get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
