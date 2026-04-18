@@ -30,6 +30,7 @@
 - [x] **실브로커 E2E에 process mode 포함**
   - What: 실제 Kafka를 띄운 상태에서 async/process 엔진 모두에 대해 ordering, retry, DLQ, rebalance/restart 핵심 경로를 검증한다.
   - Evidence: `tests/e2e/test_ordering.py`와 `tests/e2e/test_process_recovery.py`에서 process mode 실브로커 E2E가 통과한다.
+  - Evidence link: GitHub [#53](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/53), `.github/workflows/e2e.yml` matrix gate (`ordering-kafka-backed`, `recovery-rebalance-restart`, `recovery-retry-dlq`)
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 
 - [ ] **CI quality gate 강화**
@@ -124,6 +125,7 @@ UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-*
 
 - 현재 상태는 **stable metadata/posture(`1.0.0`)가 반영된 릴리스 라인**으로 본다.
 - `key_hash`/`partition` ordering에 더해 process mode의 retry, DLQ, in-flight rebalance, restart/offset continuity에 대한 실브로커 E2E도 확보됐다.
+- Kafka-backed 게이트는 PR뿐 아니라 `push(main/develop)`에서도 동일하게 실행되며, recovery 시나리오는 rebalance/restart와 retry/DLQ로 분리돼 실패 지점을 즉시 식별할 수 있다.
 - 남은 안정화 핵심은 P1 성격의 장시간/운영 성숙도 검증과 release automation 정밀화 쪽에 더 가깝다.
 - 이번 라운드에서는 process recovery 경로의 실브로커 증거를 확보했고, 이후 라운드는 문서 정책 정리와 release gate 정밀화에 집중하면 된다.
 
