@@ -1,6 +1,9 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 3월 27일 금요일*
+*최종 업데이트: 2026년 4월 18일 토요일*
+
+## 최근 업데이트 (2026-04-18)
+- Issue #53 Kafka-backed integration/E2E gate 강화 단계 (2026-04-18): `.github/workflows/e2e.yml`를 단일 `tests/e2e -q` 실행에서 scenario-aware matrix gate로 재구성했습니다. 트리거는 `pull_request`뿐 아니라 `push(main/develop)`에도 확장했고, 게이트는 `ordering-kafka-backed`(`tests/e2e/test_ordering.py`), `recovery-rebalance-restart`(리밸런스/재시작), `recovery-retry-dlq`(재시도 성공/DLQ) 3축으로 분리해 실패 지점을 바로 식별할 수 있게 했습니다. 동시에 `docs/operations/release-readiness.md`에 #53 evidence link와 matrix gate 근거를 추가하고, `docs/operations/playbooks.md`의 Kafka-backed recovery gate 명령을 실제 test node 기준으로 명시했습니다. 검증: `docker compose -f .github/e2e.compose.yml up -d kafka-1` + readiness 확인 후 `uv run pytest tests/e2e/test_ordering.py -q --maxfail=1 -ra`(7 passed), `uv run pytest tests/e2e/test_process_recovery.py::test_process_rebalance_keeps_commit_safe_while_work_is_inflight tests/e2e/test_process_recovery.py::test_process_restart_preserves_offset_continuity -q --maxfail=1 -ra`(2 passed), `uv run pytest tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion -q --maxfail=1 -ra`(2 passed), 이후 `docker compose -f .github/e2e.compose.yml down` 정리 완료.
 
 ## 최근 업데이트 (2026-03-27)
 - Release prep (2026-03-27): PyPI prerelease를 `0.1.2a1`에서 `0.1.2a2`로 올리기 위해 `pyproject.toml`과 `uv.lock`의 package version을 갱신했고, README/README.ko의 release policy 문구도 `0.1.2a2` 기준으로 맞췄습니다. release artifact는 `PATH=".venv/bin:$PATH" python -m build --no-isolation --outdir dist/release-0.1.2a2`로 fresh sdist/wheel을 만들었고, `PATH=".venv/bin:$PATH" twine check dist/release-0.1.2a2/*`도 모두 PASSED였습니다.

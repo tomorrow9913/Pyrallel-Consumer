@@ -32,7 +32,8 @@
 ## Test Matrix (perf regression gate)
 - **Async**: `max_in_flight={256,1024}`, `poll_batch_size={500,1000}` on I/O workload; record TPS/p99.
 - **Process**: `process_count={cpu_count/2, cpu_count}`, `process_config.batch_size={64,128}`, `queue_size=2048`; run CPU workload.
-- **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` for both `async` and `process` execution modes, including KEY_HASH and PARTITION ordering paths, before stable promotion.
+- **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` (KEY_HASH/PARTITION + async/process) before stable promotion.
+- **Kafka-backed recovery gates**: run `tests/e2e/test_process_recovery.py::test_process_rebalance_keeps_commit_safe_while_work_is_inflight`, `tests/e2e/test_process_recovery.py::test_process_restart_preserves_offset_continuity`, `tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success`, `tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion`.
 - **Failure paths**: DLQ enabled with `dlq_payload_mode=metadata_only`, inject worker exceptions, assert commits + DLQ succeed.
 
 ## Soak / Long-Running Stability Notes
