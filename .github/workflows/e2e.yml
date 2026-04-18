@@ -1,6 +1,15 @@
 name: e2e
 
 on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "docker-compose.yml"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/e2e.yml"
   pull_request:
     branches: [main, develop]
     types: [opened, reopened, ready_for_review, synchronize]
@@ -16,10 +25,30 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
+    name: e2e (${{ matrix.suite.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: ordering-kafka-backed
+            pytest_args: >-
+              tests/e2e/test_ordering.py
+          - name: recovery-rebalance-restart
+            pytest_args: >-
+              tests/e2e/test_process_recovery.py::test_process_rebalance_keeps_commit_safe_while_work_is_inflight
+              tests/e2e/test_process_recovery.py::test_process_restart_preserves_offset_continuity
+          - name: recovery-retry-dlq
+            pytest_args: >-
+              tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success
+              tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,9 +80,9 @@ jobs:
       - name: Sync locked dependencies
         run: |
           uv sync --frozen --group dev
-      - name: Run E2E tests
+      - name: Run Kafka-backed gate
         run: |
-          uv run pytest tests/e2e -q
+          uv run pytest ${{ matrix.suite.pytest_args }} -q --maxfail=1 -ra
       - name: Stop Kafka
         if: always()
         env:
