@@ -16,13 +16,32 @@
 
 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
-> **릴리즈 정책:** 현재 배포 버전은 alpha/prerelease(`0.1.2a2`)입니다. 버전/분류 정책이 alpha를 벗어나기 전까지는 `main` 브랜치를 안정화가 계속 진행 중인 hardening 브랜치로 보는 것이 맞습니다.
+> **릴리즈 정책:** 현재 배포 라인은 stable(`1.0.0`)입니다. `main` 브랜치는 Semantic Versioning 기준의 stable 패치/마이너 안정화 및 기능 개발 브랜치로 운영합니다.
+>
+> **보안 제보 경로:** [`SECURITY.md`](./SECURITY.md)를 확인하세요.  
+> **지원/호환성 정책:** [`docs/operations/support-policy.md`](./docs/operations/support-policy.md)를 확인하세요.
 
 ## 지원 / 호환성 정책
 
 - **Python:** 현재 패키지 메타데이터 기준 지원 대상은 `>=3.12`이며, 배포 classifier는 Python `3.12`, `3.13`을 명시합니다.
 - **Kafka:** 지금 적극적으로 검증된 브로커 경로는 프로젝트의 로컬 Docker / CI 기반 Kafka E2E 흐름입니다. 그 외 브로커 배포판이나 더 오래된 client/broker 조합은, 별도 호환성 매트릭스가 문서화되고 자동화되기 전까지는 best-effort로 보는 편이 맞습니다.
-- **릴리즈 지원:** 현재는 최신 공개 prerelease만 적극 유지보수 대상으로 보고, 더 오래된 prerelease 빌드는 stable 전환 전까지 best-effort 범위로 취급합니다.
+- **릴리즈 지원:** 최신 stable 라인(`1.x`)을 적극 유지보수 대상으로 삼습니다. 과거 prerelease 빌드(`0.1.xa*`)는 best-effort 범위이며 수정 보장을 제공하지 않습니다.
+
+## Stable Public Contract (1.0.0 Gate)
+
+1.0.0 릴리스 게이트 기준 public contract 결정은
+[`docs/blueprint/04-open-decisions.md`](./docs/blueprint/04-open-decisions.md)에
+잠금됐고, GitHub `#34` 이슈를 기준으로 추적합니다.
+
+- **정렬 기본값**: canonical 기본값은 `key_hash`입니다.
+  `partition`, `unordered`는 명시적 opt-in 모드입니다.
+- **DLQ payload 기본값**: 런타임 기본값은 `full`이며, production 운영
+  가이드는 `metadata_only` + cache budget 관리 조합을 권장합니다.
+- **커밋 의미론**: stable public contract에는 `on_complete`만 포함합니다.
+  periodic commit은 실험/비계약 범위입니다.
+- **리밸런스/재시작 상태 전략**: 기본값은 `contiguous_only`이고,
+  `metadata_snapshot`은 opt-in이며 실패 시 `contiguous_only` 의미로
+  fail-closed 되어야 합니다.
 
 ## 🌟 주요 특징
 
@@ -410,6 +429,8 @@ uv run python benchmarks/run_parallel_benchmark.py \
 -   **`prd_dev.md`**: 개발자를 위한 요약 문서. 프로젝트의 주요 기능, 아키텍처, 개발 방법론 등을 간결하게 설명합니다.
 -   **`prd.md`**: 상세 설계 해설서. 각 컴포넌트의 의도, 기술 선정 이유, 인터페이스 정의 등 "왜"라는 질문에 대한 깊이 있는 답변을 제공하는 문서입니다.
 -   **`docs/operations/playbooks.md`**: 운영 플레이북과 튜닝 가이드. 프로필별 권장 설정, 장애 대응, 모니터링/알람 기준, 튜닝 절차를 제공합니다.
+-   **`docs/operations/support-policy.md`**: 지원 버전, 호환 범위, 폐기 정책, 지원 기대치를 정의합니다.
+-   **`SECURITY.md`**: 취약점 비공개 제보 채널과 보안 응답 목표를 안내합니다.
 
 ## 📊 모니터링 스택 (Prometheus + Grafana)
 
