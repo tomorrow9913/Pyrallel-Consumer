@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import OrderedDict
 from itertools import islice
-from typing import Any, Optional, Tuple, cast
+from typing import Any, Awaitable, Callable, Optional, Tuple, cast
 
 from confluent_kafka import TopicPartition as KafkaTopicPartition
+from confluent_kafka import KafkaException
 
 from pyrallel_consumer.control_plane.metadata_encoder import MetadataEncoder
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
@@ -204,3 +206,111 @@ class BrokerCommitPlanner:
             offsets_to_commit.append(kafka_tp)
 
         return offsets_to_commit
+
+
+class BrokerCommitSupport:
+    def __init__(
+        self,
+        *,
+        commit_planner: BrokerCommitPlanner,
+        logger: logging.Logger,
+    ) -> None:
+        self._commit_planner = commit_planner
+        self._logger = logger
+
+    async def commit_ready_offsets(
+        self,
+        *,
+        commit_lock: asyncio.Lock,
+        control_lock: asyncio.Lock,
+        build_commit_candidates: Callable[[], list[tuple[DtoTopicPartition, int]]],
+        commit_offsets: Callable[[list[tuple[DtoTopicPartition, int]]], Awaitable[None]],
+    ) -> None:
+        async with commit_lock:
+            async with control_lock:
+                commits_to_make = build_commit_candidates()
+            if commits_to_make:
+                await commit_offsets(commits_to_make)
+
+    async def commit_offsets(
+        self,
+        *,
+        consumer: Any,
+        offset_trackers: dict[DtoTopicPartition, OffsetTracker],
+        control_lock: asyncio.Lock,
+        commits_to_make: list[tuple[DtoTopicPartition, int]],
+        strategy: str,
+        to_thread: Callable[..., Awaitable[Any]],
+    ) -> None:
+        async with control_lock:
+            tracked_commits: list[tuple[DtoTopicPartition, int]] = []
+            tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
+            for tp, safe_offset in commits_to_make:
+                tracker = offset_trackers.get(tp)
+                if tracker is None:
+                    self._logger.debug(
+                        "Skipping commit candidate for untracked partition %s", tp
+                    )
+                    continue
+                tracked_commits.append((tp, safe_offset))
+                tracker_snapshot[tp] = tracker
+
+        if not tracked_commits:
+            return
+
+        offsets_to_commit = self._commit_planner.build_offsets_to_commit(
+            commits_to_make=tracked_commits,
+            trackers=tracker_snapshot,
+            strategy=strategy,
+        )
+
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                await to_thread(
+                    consumer.commit,
+                    offsets=offsets_to_commit,
+                    asynchronous=False,
+                )
+                async with control_lock:
+                    for tp, safe_offset in tracked_commits:
+                        tracker = offset_trackers.get(tp)
+                        if tracker is None:
+                            continue
+                        tracker.commit_through(safe_offset)
+                return
+            except KafkaException as exc:
+                if attempt < max_attempts - 1:
+                    self._logger.warning(
+                        "Commit failed (attempt %d/%d), retrying: %s",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                else:
+                    self._logger.error(
+                        "Commit failed after %d attempts, skipping: %s",
+                        max_attempts,
+                        exc,
+                    )
+
+
+class BrokerDrainSupport:
+    async def drain_completion_events_once(
+        self,
+        *,
+        poll_completed_events: Callable[[], Awaitable[list[Any]]],
+        handle_blocking_timeouts: Callable[[], Awaitable[list[Any]]],
+        process_completed_events: Callable[[list[Any]], Awaitable[None]],
+        schedule: Callable[[], Awaitable[None]],
+    ) -> bool:
+        completed_events = await poll_completed_events()
+        timeout_events = await handle_blocking_timeouts()
+        if timeout_events:
+            completed_events.extend(timeout_events)
+        if not completed_events:
+            return False
+
+        await process_completed_events(completed_events)
+        await schedule()
+        return True
