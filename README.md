@@ -341,6 +341,10 @@ docker compose up -d
 - `consumer_process_batch_avg_worker_exec_seconds`
 - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
 
+Interpretation and operator actions for these metrics live in:
+- `docs/operations/guide.en.md`
+- `docs/operations/guide.ko.md`
+
 ## 🤝 Contributing
 
 All commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
