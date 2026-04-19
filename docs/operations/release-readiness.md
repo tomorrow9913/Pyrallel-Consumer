@@ -40,6 +40,7 @@ For each item, review all three dimensions below.
     async/process engines against a real Kafka broker.
   - Evidence: process-mode real-broker E2E passes in
     `tests/e2e/test_ordering.py` and `tests/e2e/test_process_recovery.py`.
+  - Evidence link: GitHub [#53](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/53), `.github/workflows/e2e.yml` matrix gate (`ordering-kafka-backed`, `recovery-rebalance-restart`, `recovery-retry-dlq`)
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 
 - [x] **Fix broker-backed E2E as a release-blocking gate**
@@ -178,6 +179,9 @@ UV_CACHE_DIR=.uv-cache uv run twine check "${release_artifacts[@]}"
   release gates**.
 - Beyond `key_hash`/`partition` ordering, real-broker E2E evidence covers
   process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
+- The Kafka-backed gate is now scenario-aware, splitting ordering and recovery
+  coverage so failures surface by path rather than as a monolithic `tests/e2e`
+  run.
 - The remaining gaps are mostly P1/P2 operational maturity items, not alpha
   metadata alignment.
 

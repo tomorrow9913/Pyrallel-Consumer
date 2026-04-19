@@ -27,6 +27,9 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_registry_support import (
+    ProcessRegistrySupport,
+)
 from pyrallel_consumer.logger import LogManager
 
 SerializedWorkItem = dict[str, Any]
@@ -749,55 +752,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 )
 
     def _recover_dead_worker_items(self, idx: int) -> list[SerializedWorkItem]:
-        items = [
-            (key, payload)
-            for key, payload in self._in_flight_registry.items()
-            if key[0] == idx
-        ]
-        to_requeue: list[SerializedWorkItem] = []
-        for key, payload in items:
-            if payload.get("timed_out"):
-                self._emit_worker_recovery_failure(
-                    idx,
-                    payload,
-                    error=payload.get("timeout_error", "task_timeout"),
-                    attempt=payload.get("attempt", 1),
-                    timeout_failure=True,
-                )
-                self._in_flight_registry.pop(key, None)
-                continue
-
-            attempts = payload.get("requeue_attempts", 0)
-            if attempts >= self._config.max_retries:
-                self._emit_worker_recovery_failure(
-                    idx,
-                    payload,
-                    error="worker_died_max_retries",
-                    attempt=attempts,
-                )
-            else:
-                recovered_payload = dict(payload)
-                recovered_payload["requeue_attempts"] = attempts + 1
-                to_requeue.append(recovered_payload)
-
-            self._in_flight_registry.pop(key, None)
-
-        return to_requeue
+        return ProcessRegistrySupport.recover_dead_worker_items(
+            worker_index=idx,
+            in_flight_registry=self._in_flight_registry,
+            max_retries=self._config.max_retries,
+            emit_worker_recovery_failure=self._emit_worker_recovery_failure,
+        )
 
     def _drain_registry_event_queue(self) -> int:
-        registry_event_queue = getattr(self, "_registry_event_queue", None)
-        if registry_event_queue is None:
-            return 0
-
-        drained = 0
-        while True:
-            try:
-                event = registry_event_queue.get_nowait()
-            except queue.Empty:
-                return drained
-
-            drained += 1
-            self._apply_registry_event(event)
+        return ProcessRegistrySupport.drain_registry_event_queue(
+            registry_event_queue=getattr(self, "_registry_event_queue", None),
+            apply_event=self._apply_registry_event,
+        )
 
     def _ensure_workers_alive(self) -> None:
         self._drain_registry_events()
@@ -831,34 +797,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
         self._initialize_runtime_timing_state()
-        kind = event.get("kind")
-        key = event.get("key")
-        if kind == "start" and key is not None:
-            payload = dict(event.get("payload", {}))
-            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-            self._in_flight_registry[key] = payload
-            return
-
-        if kind == "timeout" and key in self._in_flight_registry:
-            payload = dict(self._in_flight_registry.get(key, {}))
-            payload["timed_out"] = True
-            payload["timeout_error"] = event.get("timeout_error", "task_timeout")
-            payload["attempt"] = event.get("attempt", 1)
-            self._in_flight_registry[key] = payload
-            return
-
-        if kind == "done" and key is not None:
-            self._in_flight_registry.pop(key, None)
-            return
-
-        if kind == "batch_received":
-            self._record_main_to_worker_ipc(
-                event.get("main_to_worker_ipc_seconds", 0.0)
-            )
-            return
-
-        if kind == "batch_completed":
-            self._record_worker_exec(event.get("worker_exec_seconds", 0.0))
+        ProcessRegistrySupport.apply_registry_event(
+            event=event,
+            in_flight_registry=self._in_flight_registry,
+            record_main_to_worker_ipc=self._record_main_to_worker_ipc,
+            record_worker_exec=self._record_worker_exec,
+        )
 
     def _drain_registry_events(self) -> None:
         self._drain_registry_event_queue()
@@ -881,14 +825,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         self._drain_registry_events()
-        min_offset = None
-        for (_w, topic, partition, _o), payload in self._in_flight_registry.items():
-            if topic == tp.topic and partition == tp.partition:
-                off = payload.get("offset")
-                if isinstance(off, int):
-                    if min_offset is None or off < min_offset:
-                        min_offset = off
-        return min_offset
+        return ProcessRegistrySupport.get_min_inflight_offset(
+            in_flight_registry=self._in_flight_registry,
+            tp=tp,
+        )
 
     def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
         self._drain_registry_events()
