@@ -54,10 +54,12 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 
 ### 1.7. IPC / Worker Timing Split (IPC와 워커 실행 시간 분해)
 - **Prometheus 쿼리**:
+    - `consumer_process_batch_last_main_to_worker_ipc_seconds`
     - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
+    - `consumer_process_batch_last_worker_exec_seconds`
     - `consumer_process_batch_avg_worker_exec_seconds`
+    - `consumer_process_batch_last_worker_to_main_ipc_seconds`
     - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
-    - 필요 시 `last_*` gauge를 함께 확인
 - **의미**:
     - `main_to_worker`: 직렬화 + task queue 전달 비용입니다.
     - `worker_exec`: 실제 사용자 worker 코드 실행 시간입니다.
@@ -65,7 +67,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **운영 팁**:
     - `main_to_worker`만 높으면 payload가 크거나 pickle/IPC 비용이 병목입니다. batch payload 크기, message size, queue saturation을 점검하십시오.
     - `worker_exec`만 높으면 CPU saturation 또는 느린 사용자 로직 문제입니다. `process_count` 증설, worker 최적화, timeout/DLQ 정책 점검이 우선입니다.
-    - `worker_to_main`이 높고 `buffered_items`나 `total_in_flight`도 높으면 completion drain이 밀리고 있을 가능성이 큽니다. main process 부하, completion polling cadence, 과도한 로그/metrics 갱신 빈도를 확인하십시오.
+    - `worker_to_main`이 높고 `buffered_items`나 `consumer_in_flight_count`도 높으면 completion drain이 밀리고 있을 가능성이 큽니다. main process 부하, completion polling cadence, 과도한 로그/metrics 갱신 빈도를 확인하십시오.
 
 ### 1.8. Engine Capability Boundary (엔진 capability 경계)
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
@@ -107,7 +109,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 ### 3.4. Process-mode에서 queue/backpressure가 반복될 때
 1. `consumer_backpressure_active`, `consumer_in_flight_count`, `consumer_process_batch_buffered_items`를 같이 보십시오.
 2. `buffered_items`와 `consumer_internal_queue_depth`가 동시에 높으면 main buffer와 partition queue가 함께 밀리는 상태입니다. `max_in_flight_messages`, `queue_size`, ordering skew를 점검하십시오.
-3. `buffered_items`는 낮은데 `worker_to_main_ipc_seconds`만 높으면 completion 회수가 병목일 수 있습니다. main process 부하와 polling cadence를 점검하십시오.
+3. `buffered_items`는 낮은데 `consumer_process_batch_avg_worker_to_main_ipc_seconds` 또는 `consumer_process_batch_last_worker_to_main_ipc_seconds`가 높으면 completion 회수가 병목일 수 있습니다. main process 부하와 polling cadence를 점검하십시오.
 
 ## 4. 모니터링 대시보드 (Grafana 권장)
 

@@ -57,6 +57,18 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | Blocking offset이 막고 있는 시간 |
 | `consumer_backpressure_active` | Gauge | – | Backpressure 동작 여부 (1=Pause) |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | Kafka 커밋 메타데이터 페이로드 크기 |
+| `consumer_process_batch_flush_count` | Gauge | `reason` | process-mode batch flush 이유별 누적 수 (`size`, `timer`, `close`, `demand`) |
+| `consumer_process_batch_avg_size` | Gauge | – | process-mode 평균 batch 크기 |
+| `consumer_process_batch_last_size` | Gauge | – | 최근 process-mode batch 크기 |
+| `consumer_process_batch_last_wait_seconds` | Gauge | – | 최근 process-mode batch flush 전 대기 시간 |
+| `consumer_process_batch_buffered_items` | Gauge | – | process-mode batch buffer에 남아 있는 item 수 |
+| `consumer_process_batch_buffered_age_seconds` | Gauge | – | 현재 process-mode batch buffer의 age |
+| `consumer_process_batch_last_main_to_worker_ipc_seconds` | Gauge | – | 최근 main-to-worker IPC 시간 |
+| `consumer_process_batch_avg_main_to_worker_ipc_seconds` | Gauge | – | 평균 main-to-worker IPC 시간 |
+| `consumer_process_batch_last_worker_exec_seconds` | Gauge | – | 최근 worker 실행 시간 |
+| `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | 평균 worker 실행 시간 |
+| `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | 최근 worker-to-main IPC 시간 |
+| `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | 평균 worker-to-main IPC 시간 |
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
 
@@ -444,8 +456,8 @@ docker compose up -d
 5) 대시보드:
 - Kafka Exporter 기본 지표 + Pyrallel Consumer `consumer_*` 메트릭을 선택하여 그래프 패널을 추가하면 됩니다.
 - 예시 쿼리: `consumer_processed_total`, `consumer_processing_latency_seconds_bucket`, `consumer_in_flight_count`.
-- process batch 관측 예시: `consumer_process_batch_flush_count{reason="timer"}`, `consumer_process_batch_avg_size`, `consumer_process_batch_buffered_age_seconds`.
-- process timing 분해 예시: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`.
+- process batch 관측 예시: `consumer_process_batch_flush_count{reason="timer"}`, `consumer_process_batch_avg_size`, `consumer_process_batch_last_size`, `consumer_process_batch_last_wait_seconds`, `consumer_process_batch_buffered_items`, `consumer_process_batch_buffered_age_seconds`.
+- process timing 분해 예시: `consumer_process_batch_last_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_last_worker_exec_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_last_worker_to_main_ipc_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`.
 - 위 process-mode 메트릭의 해석 기준과 운영자 대응 흐름은 `docs/operations/guide.ko.md`, `docs/operations/guide.en.md`를 기준 문서로 사용하십시오.
 
 ## 🤝 기여하기

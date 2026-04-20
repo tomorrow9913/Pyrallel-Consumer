@@ -54,10 +54,12 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 
 ### 1.7. IPC / Worker Timing Split
 - **Prometheus queries**:
+    - `consumer_process_batch_last_main_to_worker_ipc_seconds`
     - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
+    - `consumer_process_batch_last_worker_exec_seconds`
     - `consumer_process_batch_avg_worker_exec_seconds`
+    - `consumer_process_batch_last_worker_to_main_ipc_seconds`
     - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
-    - Inspect the matching `last_*` gauges when you need the most recent sample.
 - **Meaning**:
     - `main_to_worker`: serialization plus task-queue transfer cost.
     - `worker_exec`: actual user-worker execution time.
@@ -65,7 +67,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Tip**:
     - High `main_to_worker` alone points to payload size, pickle cost, or queue pressure.
     - High `worker_exec` alone points to CPU saturation or slow handler logic; tune `process_count`, optimize the worker, or tighten timeout/DLQ policy.
-    - High `worker_to_main` with rising `buffered_items` or `total_in_flight` suggests completion drain is lagging. Check main-process load, completion polling cadence, and overly chatty logging/metrics loops.
+    - High `worker_to_main` with rising `buffered_items` or `consumer_in_flight_count` suggests completion drain is lagging. Check main-process load, completion polling cadence, and overly chatty logging/metrics loops.
 
 ### 1.8. Engine Capability Boundary
 - **Definition**: The control plane only depends on the shared execution-engine contract.
@@ -107,7 +109,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 ### 3.4. Repeating queue/backpressure oscillation in process mode
 1. Inspect `consumer_backpressure_active`, `consumer_in_flight_count`, and `consumer_process_batch_buffered_items` together.
 2. If `buffered_items` and `consumer_internal_queue_depth` are both high, the main batch buffer and partition queues are backing up together. Revisit `max_in_flight_messages`, `queue_size`, and ordering skew.
-3. If `buffered_items` stays low but `worker_to_main_ipc_seconds` is high, completion draining may be the bottleneck. Check main-process load and completion polling cadence.
+3. If `buffered_items` stays low but `consumer_process_batch_avg_worker_to_main_ipc_seconds` or `consumer_process_batch_last_worker_to_main_ipc_seconds` is high, completion draining may be the bottleneck. Check main-process load and completion polling cadence.
 
 ## 4. Monitoring Dashboard (Grafana Recommended)
 
