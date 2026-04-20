@@ -14,7 +14,7 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 ## Support / Compatibility Policy
 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
-- **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
+- **Kafka:** the automated compatibility baseline currently covers the documented Python/client lanes on `confluentinc/cp-kafka:7.6.0` through broker-backed verification. Other broker distributions or older client/broker combinations remain best-effort. See [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md).
 - **Release support:** the latest stable line (`1.x`) is the actively maintained support target. Historical prerelease builds (`0.1.xa*`) are best-effort and receive no guaranteed fixes.
 - **Policy detail:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
 - **Security reporting path:** see [`SECURITY.md`](./SECURITY.md).

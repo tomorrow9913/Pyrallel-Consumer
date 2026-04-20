@@ -7,6 +7,14 @@ on:
       - "**/*.py"
       - "pyproject.toml"
       - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - ".github/compatibility-matrix.json"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/compatibility-matrix.yml"
+      - "docs/operations/**"
+      - "scripts/compatibility_matrix.py"
+      - "tests/unit/test_compatibility_matrix_assets.py"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, develop]
@@ -14,6 +22,14 @@ on:
       - "**/*.py"
       - "pyproject.toml"
       - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - ".github/compatibility-matrix.json"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/compatibility-matrix.yml"
+      - "docs/operations/**"
+      - "scripts/compatibility_matrix.py"
+      - "tests/unit/test_compatibility_matrix_assets.py"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
