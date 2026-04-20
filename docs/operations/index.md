@@ -5,6 +5,8 @@ Operations documents are grouped under `docs/operations/`.
 Repository-level security reporting policy:
 
 - **[../../SECURITY.md](../../SECURITY.md)** - private vulnerability reporting path and response window
+- **[language-policy.md](./language-policy.md)** - filename-language rule and exemption list for internal / legacy documents
+- **[../internal-doc-language-policy.md](../internal-doc-language-policy.md)** - legacy mirror of the same internal-doc policy
 
 - **[guide.ko.md](./guide.ko.md)** - Korean operations guide
 - **[guide.en.md](./guide.en.md)** - English operations guide
@@ -22,6 +24,7 @@ Repository-level security reporting policy:
 Quick navigation:
 
 - For operational metrics and interpretation baselines, start with `guide.*.md`.
+- For internal / legacy filename-language rules and explicit exemptions, use `language-policy.md`.
 - For incident response, profile-based recommended settings, and tuning procedures, use `playbooks.md`.
 - For ordering/rebalance/DLQ/commit public contract freeze criteria, use `public-contract-v1.md`.
 - For OSS external messaging guardrails, use `oss-messaging-guardrails.md`.

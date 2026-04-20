@@ -423,9 +423,11 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 ## 📖 문서
 
--   **`prd_dev.md`**: 개발자를 위한 요약 문서. 프로젝트의 주요 기능, 아키텍처, 개발 방법론 등을 간결하게 설명합니다.
--   **`prd.md`**: 상세 설계 해설서. 각 컴포넌트의 의도, 기술 선정 이유, 인터페이스 정의 등 "왜"라는 질문에 대한 깊이 있는 답변을 제공하는 문서입니다.
--   **`docs/operations/playbooks.md`**: 운영 플레이북과 튜닝 가이드. 프로필별 권장 설정, 장애 대응, 모니터링/알람 기준, 튜닝 절차를 제공합니다.
+-   **[prd_dev.ko.md](./prd_dev.ko.md)**: 보존된 한국어 개발 명세 원문입니다. 영문 canonical entry는 [prd_dev.md](./prd_dev.md)입니다.
+-   **[prd.ko.md](./prd.ko.md)**: 보존된 한국어 설계 해설 원문입니다. 영문 canonical entry는 [prd.md](./prd.md)입니다.
+-   **[docs/operations/language-policy.md](./docs/operations/language-policy.md)**: internal/legacy 문서의 filename-language rule과 exemption 목록입니다.
+-   **[docs/internal-doc-language-policy.md](./docs/internal-doc-language-policy.md)**: 같은 정책을 legacy internal-doc 경로에서도 확인할 수 있는 미러 문서입니다.
+-   **[docs/operations/playbooks.md](./docs/operations/playbooks.md)**: 운영 플레이북과 튜닝 가이드. 프로필별 권장 설정, 장애 대응, 모니터링/알람 기준, 튜닝 절차를 제공합니다.
 
 ## 📊 모니터링 스택 (Prometheus + Grafana)
 

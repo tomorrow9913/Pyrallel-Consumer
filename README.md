@@ -307,9 +307,13 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 ## 📖 Documentation
 
-- `prd_dev.md`: concise developer-oriented summary
-- `prd.md`: full design rationale and architecture details
-- `docs/operations/playbooks.md`: ops playbook, tuning guide, incident response
+- [prd_dev.md](./prd_dev.md): canonical English entry for the developer-oriented PRD surface
+- [prd.md](./prd.md): canonical English entry for the design-rationale PRD surface
+- [prd_dev.ko.md](./prd_dev.ko.md): preserved Korean developer-spec source
+- [prd.ko.md](./prd.ko.md): preserved Korean design-rationale source
+- [docs/operations/language-policy.md](./docs/operations/language-policy.md): filename-language rule and explicit exemptions for internal/legacy docs
+- [docs/internal-doc-language-policy.md](./docs/internal-doc-language-policy.md): legacy internal-doc entry that mirrors the same rule
+- [docs/operations/playbooks.md](./docs/operations/playbooks.md): ops playbook, tuning guide, incident response
 
 ## 📊 Monitoring Stack (Prometheus + Grafana)
 

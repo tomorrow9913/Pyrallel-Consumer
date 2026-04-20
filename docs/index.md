@@ -14,8 +14,10 @@ This group includes:
 ## 2. Operations
 
 - **[../SECURITY.md](../SECURITY.md)** - private vulnerability reporting path and security response policy
+- **[internal-doc-language-policy.md](./internal-doc-language-policy.md)** - legacy internal-doc mirror for the filename-language rule and exemptions
 - **[operations/index.md](./operations/index.md)** - operations document entry point
 - **[operations/guide.ko.md](./operations/guide.ko.md)** - Korean operations guide
+- **[operations/language-policy.md](./operations/language-policy.md)** - filename-language rule and explicit exemptions for internal / legacy documents
 - **[operations/guide.en.md](./operations/guide.en.md)** - English operations guide
 - **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/playbooks.md](./operations/playbooks.md)** - operations playbooks and tuning procedures
