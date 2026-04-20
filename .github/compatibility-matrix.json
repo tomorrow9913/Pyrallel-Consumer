@@ -1,0 +1,24 @@
+{
+  "include": [
+    {
+      "name": "py312-kafka76-client2130",
+      "python-version": "3.12",
+      "kafka-image": "confluentinc/cp-kafka:7.6.0",
+      "client-version": "2.13.0",
+      "test-target": "tests/e2e/test_ordering.py::test_key_hash_ordering",
+      "client-label": "floor client 2.13.0",
+      "verification": "broker-backed E2E (`tests/e2e/test_ordering.py::test_key_hash_ordering`)",
+      "notes": "Pins the minimum supported `confluent-kafka` baseline on the primary Kafka image."
+    },
+    {
+      "name": "py313-kafka76-client-locked",
+      "python-version": "3.13",
+      "kafka-image": "confluentinc/cp-kafka:7.6.0",
+      "client-version": "locked",
+      "test-target": "tests/e2e/test_ordering.py::test_key_hash_ordering",
+      "client-label": "locked client",
+      "verification": "broker-backed E2E (`tests/e2e/test_ordering.py::test_key_hash_ordering`)",
+      "notes": "Uses the repository lockfile to validate the newest supported Python against the same broker baseline."
+    }
+  ]
+}

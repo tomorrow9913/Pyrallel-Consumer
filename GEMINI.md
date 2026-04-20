@@ -1,6 +1,10 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 4월 17일 금요일*
+*최종 업데이트: 2026년 4월 20일 월요일*
+
+## 최근 업데이트 (2026-04-20)
+- MQU-20 clean publish branch 검증 (2026-04-20 KST): clean worktree `.worktrees/mqu-20-compatibility-matrix`를 `origin/develop` 기준 `codex/mqu-20-compatibility-matrix` 브랜치로 만들고 MQU-20 compatibility patch만 적용했습니다. 검증은 `UV_CACHE_DIR=../.uv-cache uv run pytest tests/unit/test_compatibility_matrix_assets.py tests/unit/metrics/test_monitoring_assets.py -q` (`9 passed`), `UV_CACHE_DIR=../.uv-cache uv run python scripts/compatibility_matrix.py --check` (up to date), `UV_CACHE_DIR=../.uv-cache uv run ruff check scripts/compatibility_matrix.py tests/unit/test_compatibility_matrix_assets.py` (`All checks passed!`), `git diff --check` clean, `UV_CACHE_DIR=../.uv-cache PYRALLEL_E2E_REQUIRE_BROKER=1 uv run pytest tests/e2e/test_ordering.py::test_key_hash_ordering -q --maxfail=1` (`2 passed`)입니다.
+- MQU-20 GitHub #49 compatibility matrix 자동화 (2026-04-20 KST): `.github/compatibility-matrix.json`을 source-of-truth manifest로 추가하고, `.github/workflows/compatibility-matrix.yml`이 manifest를 `fromJSON(...)`으로 읽어 Python/client lane별 broker-backed E2E target(`tests/e2e/test_ordering.py::test_key_hash_ordering`)을 실행하도록 구성했습니다. `.github/e2e.compose.yml`은 `KAFKA_IMAGE` override를 지원합니다. `scripts/compatibility_matrix.py`와 `docs/operations/compatibility-matrix.md`로 사용자-facing compatibility 표를 manifest 기준으로 생성/검증하며, `release-verify.yml`도 `scripts/compatibility_matrix.py --check`를 실행해 릴리스 게이트에서 manifest/doc drift를 막습니다. 회귀 테스트는 `tests/unit/test_compatibility_matrix_assets.py`에 추가했습니다.
 
 ## 최근 업데이트 (2026-04-17)
 - Release gate evidence 문서 보강 (2026-04-17): QA 변경요청에 따라 `docs/operations/release-readiness.md`의 P0 구간에 `P0/E2E Gate (broker-backed release gate)` 라인을 추가했습니다. fresh evidence로 `e2e` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048`)와 `release-verify` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673`)를 고정 집계했고, `Run broker-backed E2E tests (release gate)` step success 확인 근거를 함께 명시했습니다.
