@@ -105,3 +105,68 @@ def test_generator_check_accepts_tracked_markdown() -> None:
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert "compatibility-matrix.md is up to date" in result.stdout
+
+
+def test_generator_supports_explicit_output_for_alternate_manifest(
+    tmp_path: Path,
+) -> None:
+    alternate_manifest = tmp_path / "alternate-matrix.json"
+    alternate_output = tmp_path / "alternate-matrix.md"
+    tracked_doc = REPO_ROOT / "docs" / "operations" / "compatibility-matrix.md"
+    tracked_before = tracked_doc.read_text(encoding="utf-8")
+    alternate_manifest.write_text(
+        json.dumps(
+            {
+                "include": [
+                    {
+                        "name": "py312-alt-client",
+                        "python-version": "3.12",
+                        "kafka-image": "confluentinc/cp-kafka:7.6.0",
+                        "client-version": "2.13.0",
+                        "test-target": "tests/e2e/test_ordering.py::test_key_hash_ordering",
+                        "client-label": "alternate client",
+                        "verification": "alternate verification",
+                        "notes": "Alternate generated output.",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/compatibility_matrix.py",
+            "--input",
+            str(alternate_manifest),
+            "--output",
+            str(alternate_output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "alternate client" in alternate_output.read_text(encoding="utf-8")
+    assert tracked_doc.read_text(encoding="utf-8") == tracked_before
+
+    check_result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/compatibility_matrix.py",
+            "--input",
+            str(alternate_manifest),
+            "--output",
+            str(alternate_output),
+            "--check",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert check_result.returncode == 0, check_result.stderr or check_result.stdout

@@ -65,6 +65,13 @@ def load_payload(input_path: Path) -> dict[str, object]:
     return json.loads(input_path.read_text(encoding="utf-8"))
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate or validate the compatibility matrix markdown."
@@ -76,6 +83,12 @@ def main() -> int:
         help="Path to the JSON source file.",
     )
     parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help="Path to the generated markdown file.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Exit non-zero when the generated markdown does not match the tracked file.",
@@ -85,23 +98,25 @@ def main() -> int:
     input_path = args.input
     payload = load_payload(input_path)
     rendered = render_markdown(payload)
-    output_path = DEFAULT_OUTPUT
+    output_path = args.output
 
     if args.check:
         if not output_path.exists():
             raise SystemExit(
-                "%s is missing; run scripts/compatibility_matrix.py" % output_path
+                "%s is missing; run scripts/compatibility_matrix.py"
+                % _display_path(output_path)
             )
         existing = output_path.read_text(encoding="utf-8")
         if existing != rendered + "\n":
             raise SystemExit(
-                "%s is out of date; run scripts/compatibility_matrix.py" % output_path
+                "%s is out of date; run scripts/compatibility_matrix.py"
+                % _display_path(output_path)
             )
-        print("%s is up to date" % output_path.relative_to(REPO_ROOT))
+        print("%s is up to date" % _display_path(output_path))
         return 0
 
     output_path.write_text(rendered + "\n", encoding="utf-8")
-    print("wrote %s" % output_path.relative_to(REPO_ROOT))
+    print("wrote %s" % _display_path(output_path))
     return 0
 
 
