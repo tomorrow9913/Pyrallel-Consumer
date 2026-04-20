@@ -446,6 +446,7 @@ docker compose up -d
 - 예시 쿼리: `consumer_processed_total`, `consumer_processing_latency_seconds_bucket`, `consumer_in_flight_count`.
 - process batch 관측 예시: `consumer_process_batch_flush_count{reason="timer"}`, `consumer_process_batch_avg_size`, `consumer_process_batch_buffered_age_seconds`.
 - process timing 분해 예시: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`.
+- 위 process-mode 메트릭의 해석 기준과 운영자 대응 흐름은 `docs/operations/guide.ko.md`, `docs/operations/guide.en.md`를 기준 문서로 사용하십시오.
 
 ## 🤝 기여하기
 

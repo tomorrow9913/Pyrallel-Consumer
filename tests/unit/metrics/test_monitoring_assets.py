@@ -59,6 +59,24 @@ def test_grafana_dashboard_includes_process_batch_panels() -> None:
     assert "consumer_process_batch_avg_worker_to_main_ipc_seconds" in expressions
 
 
+def test_operations_guides_use_regex_for_process_flush_reason_set() -> None:
+    guide_paths = [
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+    ]
+
+    for guide_path in guide_paths:
+        guide_text = guide_path.read_text(encoding="utf-8", errors="strict")
+        assert (
+            'consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}'
+            in guide_text
+        )
+        assert (
+            'consumer_process_batch_flush_count{reason="size|timer|close|demand"}'
+            not in guide_text
+        )
+
+
 def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> None:
     workflow_text = (
         REPO_ROOT / ".github" / "workflows" / "ci_monitoring.yml"
