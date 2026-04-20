@@ -5,13 +5,15 @@ Operations documents are grouped under `docs/operations/`.
 Repository-level security reporting policy:
 
 - **[../../SECURITY.md](../../SECURITY.md)** - private vulnerability reporting path and response window
+
 - **[language-policy.md](./language-policy.md)** - filename-language rule and exemption list for internal / legacy documents
 - **[../internal-doc-language-policy.md](../internal-doc-language-policy.md)** - legacy mirror of the same internal-doc policy
-
 - **[guide.ko.md](./guide.ko.md)** - Korean operations guide
 - **[guide.en.md](./guide.en.md)** - English operations guide
-- **[compatibility-matrix.md](./compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[playbooks.md](./playbooks.md)** - operations playbooks and tuning procedures
+- **[development-verification-workflow.md](./development-verification-workflow.md)** - canonical local setup, test, lint, build, and evidence checklist
+- **[stable-operations-evidence.md](./stable-operations-evidence.md)** - compact release-review reference for soak evidence and performance baselines
+- **[compatibility-matrix.md](./compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[public-contract-v1.md](./public-contract-v1.md)** - v1 public contract freeze criteria before stable promotion
 - **[oss-messaging-guardrails.md](./oss-messaging-guardrails.md)** - inbound-only OSS messaging guardrails (no outbound contribution asks)
 - **[wave-2-gate-cadence.md](./wave-2-gate-cadence.md)** - wave-2 start gate/cadence operations rules after MQU-4 closure
@@ -23,14 +25,16 @@ Repository-level security reporting policy:
 
 Quick navigation:
 
-- For operational metrics and interpretation baselines, start with `guide.*.md`.
 - For internal / legacy filename-language rules and explicit exemptions, use `language-policy.md`.
+- For operational metrics and interpretation baselines, start with `guide.*.md`.
 - For incident response, profile-based recommended settings, and tuning procedures, use `playbooks.md`.
+- For local development setup, fast validation, and evidence reporting, use `development-verification-workflow.md`.
+- For the quickest release-review entrypoint for soak evidence and fixed performance baselines, use `stable-operations-evidence.md`.
+- For exact automated Kafka/Python/client verification combinations, use `compatibility-matrix.md`.
 - For ordering/rebalance/DLQ/commit public contract freeze criteria, use `public-contract-v1.md`.
 - For OSS external messaging guardrails, use `oss-messaging-guardrails.md`.
 - For wave-2 resume conditions and follow-up cadence, use `wave-2-gate-cadence.md`.
 - For support scope and compatibility rules, use `support-policy.md`.
-- For exact automated Kafka/Python/client verification combinations, use `compatibility-matrix.md`.
 - For pre/post-promotion operations and recovery criteria, use `upgrade-rollback-guide.md`.
 - For branch strategy, version bump rules, and PyPI publish policy, use `release-versioning-policy.md`.
 - For pre-release checks and evidence requirements, use `release-readiness.md`.

@@ -16,11 +16,13 @@ This group includes:
 - **[../SECURITY.md](../SECURITY.md)** - private vulnerability reporting path and security response policy
 - **[internal-doc-language-policy.md](./internal-doc-language-policy.md)** - legacy internal-doc mirror for the filename-language rule and exemptions
 - **[operations/index.md](./operations/index.md)** - operations document entry point
-- **[operations/guide.ko.md](./operations/guide.ko.md)** - Korean operations guide
 - **[operations/language-policy.md](./operations/language-policy.md)** - filename-language rule and explicit exemptions for internal / legacy documents
+- **[operations/guide.ko.md](./operations/guide.ko.md)** - Korean operations guide
 - **[operations/guide.en.md](./operations/guide.en.md)** - English operations guide
-- **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/playbooks.md](./operations/playbooks.md)** - operations playbooks and tuning procedures
+- **[operations/development-verification-workflow.md](./operations/development-verification-workflow.md)** - canonical local development and verification commands
+- **[operations/stable-operations-evidence.md](./operations/stable-operations-evidence.md)** - release-review reference for soak evidence and performance baselines
+- **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/public-contract-v1.md](./operations/public-contract-v1.md)** - v1 ordering/rebalance/DLQ/commit public contract freeze
 - **[operations/oss-messaging-guardrails.md](./operations/oss-messaging-guardrails.md)** - inbound-only OSS messaging policy guardrails
 - **[operations/wave-2-gate-cadence.md](./operations/wave-2-gate-cadence.md)** - wave-2 resume gate/cadence rules after MQU-4

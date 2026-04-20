@@ -1,5 +1,9 @@
 # Operational Playbooks & Tuning
 
+For the compact release-review entrypoint that links the fixed benchmark
+thresholds, the latest soak evidence package, and the remaining P1/P2 boundary,
+see [`stable-operations-evidence.md`](./stable-operations-evidence.md).
+
 ## Quick Profiles
 - **Low Latency (p99 < 200ms)**: `ExecutionMode=async`, `max_in_flight=256-512`, `poll_batch_size=200-500`, `async_config.task_timeout_ms=500-1000`, `max_blocking_duration_ms=0`.
 - **High Throughput**: `ExecutionMode=process`, `process_count=cpu_count`, `poll_batch_size=1000-2000`, `max_in_flight=2_000+`, `process_config.batch_size=128-256`, `process_config.queue_size=4096`, `task_timeout_ms=5000`.
@@ -106,8 +110,7 @@ runtime bans.
 ## Test Matrix (perf regression gate)
 - **Async**: `max_in_flight={256,1024}`, `poll_batch_size={500,1000}` on I/O workload; record TPS/p99.
 - **Process**: `process_count={cpu_count/2, cpu_count}`, `process_config.batch_size={64,128}`, `queue_size=2048`; run CPU workload.
-- **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` (KEY_HASH/PARTITION + async/process) before stable promotion.
-- **Kafka-backed recovery gates**: run `tests/e2e/test_process_recovery.py::test_process_rebalance_keeps_commit_safe_while_work_is_inflight`, `tests/e2e/test_process_recovery.py::test_process_restart_preserves_offset_continuity`, `tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success`, `tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion`.
+- **Kafka-backed correctness**: run `tests/e2e/test_ordering.py` for both `async` and `process` execution modes, including KEY_HASH and PARTITION ordering paths, before stable promotion.
 - **Failure paths**: DLQ enabled with `dlq_payload_mode=metadata_only`, inject worker exceptions, assert commits + DLQ succeed.
 
 ## Soak / Long-Running Stability Notes

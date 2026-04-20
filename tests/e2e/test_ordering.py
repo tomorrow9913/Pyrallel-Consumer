@@ -175,10 +175,10 @@ def create_e2e_topic(kafka_admin_client: AdminClient):
 def base_kafka_config() -> KafkaConfig:
     """테스트용 기본 KafkaConfig 객체를 생성합니다 (고유 consumer group)."""
     return KafkaConfig(
-        BOOTSTRAP_SERVERS=[E2E_BOOTSTRAP_SERVERS],
-        CONSUMER_GROUP=f"e2e_test_{uuid.uuid4().hex[:8]}",
-        AUTO_OFFSET_RESET=E2E_AUTO_OFFSET_RESET,
-        ENABLE_AUTO_COMMIT=E2E_ENABLE_AUTO_COMMIT,
+        bootstrap_servers=[E2E_BOOTSTRAP_SERVERS],
+        consumer_group=f"e2e_test_{uuid.uuid4().hex[:8]}",
+        auto_offset_reset=E2E_AUTO_OFFSET_RESET,
+        enable_auto_commit=E2E_ENABLE_AUTO_COMMIT,
     )
 
 
@@ -529,7 +529,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
     verify_consumer = Consumer(
         {
             "bootstrap.servers": E2E_BOOTSTRAP_SERVERS,
-            "group.id": base_kafka_config.CONSUMER_GROUP,
+            "group.id": base_kafka_config.consumer_group,
         }
     )
     try:

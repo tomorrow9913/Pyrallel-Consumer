@@ -855,6 +855,76 @@ def test_run_benchmark_warns_for_tiny_partition_process_defaults(
     assert "--process-batch-size 1 --process-max-batch-wait-ms 0" in output
 
 
+def test_run_benchmark_auto_tunes_tiny_partition_strict_process_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    process_calls: list[tuple[int | None, int | None]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        if kwargs["mode"].value == "process":
+            process_calls.append(
+                (
+                    kwargs["process_batch_size"],
+                    kwargs["process_max_batch_wait_ms"],
+                )
+            )
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_baseline=True,
+            skip_async=True,
+            skip_process=False,
+            workloads=["sleep"],
+            order=["partition"],
+            strict_completion_monitor=["on"],
+            worker_sleep_ms=0.5,
+            process_batch_size=None,
+            process_max_batch_wait_ms=None,
+        ),
+        raw_argv=[
+            "--skip-baseline",
+            "--skip-async",
+            "--workloads",
+            "sleep",
+            "--order",
+            "partition",
+            "--strict-completion-monitor",
+            "on",
+        ],
+    )
+
+    output = capsys.readouterr().out
+    assert "Auto-tuning process micro-batch for strict partition run" in output
+    assert process_calls == [(1, 0)]
+
+
 def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,

@@ -10,7 +10,7 @@ This document verifies whether that policy is fully closed for stable promotion.
 
 ## How To Use
 
-- `P0`: Must be closed before declaring stable
+- `P0`: Must stay closed for stable-line governance
 - `P1`: Should be closed as much as possible before stable
 - `P2`: Post-stable maturity improvements
 
@@ -20,13 +20,12 @@ For each item, review all three dimensions below.
 - **Evidence**: what proves completion
 - **Owner hint**: where the work is mainly expected (docs/code area)
 
-## P0: Required Before Stable Promotion
+## P0: Stable-Line Must-Close Controls
 
 - [x] **Remove alpha metadata**
-  - What: `version`, classifiers, and README release policy must match a stable state.
-  - Evidence: alpha classifier removed in `pyproject.toml`, stable version (`1.0.0`) applied, and README release policy updated.
-  - Evidence link: GitHub [#33](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/33)
-  - Owner hint: `pyproject.toml`, `README.md`, `README.ko.md`
+  - What: `version`, classifiers, and release-facing policy wording must match a stable state.
+  - Evidence: remove alpha classifier in `pyproject.toml`, set stable version, align `README*`, `CHANGELOG.md`, and `SECURITY.md` with stable release-line wording.
+  - Owner hint: `pyproject.toml`, `uv.lock`, `README.md`, `README.ko.md`, `CHANGELOG.md`, `SECURITY.md`
 
 - [x] **Freeze core public contract**
   - What: define stable contract defaults for ordering guidance, DLQ payload default,
@@ -40,7 +39,6 @@ For each item, review all three dimensions below.
     async/process engines against a real Kafka broker.
   - Evidence: process-mode real-broker E2E passes in
     `tests/e2e/test_ordering.py` and `tests/e2e/test_process_recovery.py`.
-  - Evidence link: GitHub [#53](https://github.com/tomorrow9913/Pyrallel-Consumer/issues/53), `.github/workflows/e2e.yml` matrix gate (`ordering-kafka-backed`, `recovery-rebalance-restart`, `recovery-retry-dlq`)
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 
 - [x] **Fix broker-backed E2E as a release-blocking gate**
@@ -52,17 +50,17 @@ For each item, review all three dimensions below.
     socket-port checks.
   - Owner hint: `.github/workflows/release-verify.yml`, `.github/workflows/e2e.yml`, `tests/e2e/*`
 
-- [ ] **Strengthen CI quality gates**
+- [x] **Strengthen CI quality gates**
   - What: at minimum, lint/type/security/build/artifact checks should run
     automatically on PR and push.
-  - Evidence: GitHub Actions runs `ruff`, `mypy`, `bandit`, `uv build`, and `twine check`.
-  - Owner hint: `.github/workflows/ci.yml`, `pyproject.toml`
+  - Evidence: `.github/workflows/ci.yml` runs `ruff`, `mypy`, `bandit`, `uv build`, and `twine check` on push/PR for `main`/`develop` (path-filtered), and `.github/workflows/release-verify.yml` enforces the same artifact quality checks for release-facing refs.
+  - Owner hint: `.github/workflows/ci.yml`, `.github/workflows/release-verify.yml`, `pyproject.toml`
 
-- [ ] **Standardize release artifact validation**
+- [x] **Standardize release artifact validation**
   - What: clearly define which artifacts are validated so stale artifacts cannot
     contaminate release decisions.
-  - Evidence: release build procedure is documented and `twine check` targets only fresh artifacts.
-  - Owner hint: `CHANGELOG.md`, release workflow/commands, `GEMINI.md`
+  - Evidence: `release-verify` explicitly rebuilds from clean `dist/` (`rm -rf dist && uv build`), runs preflight checks for `pyproject.toml version == CHANGELOG latest heading == tag`, validates fresh versioned artifacts, and executes smoke install/import + `twine check`.
+  - Owner hint: `.github/workflows/release-verify.yml`, `CHANGELOG.md`, release workflow/commands, `GEMINI.md`
 
 - [x] **Document security contact path and responsibility**
   - What: document private security reporting channel and response expectations,
@@ -77,7 +75,9 @@ For each item, review all three dimensions below.
     offset/DLQ behavior under long-running processing.
   - Evidence: soak scenario docs + results, with repeatable commands/workflow.
     Pass/fail follows the fixed gates in `docs/operations/soak-restart-evidence.md`
-    (soak execution / recovery semantics / evidence completeness).
+    (soak execution / recovery semantics / evidence completeness). Use
+    `docs/operations/stable-operations-evidence.md` as the compact reference
+    surface for future release-review reuse.
   - Scope boundary: issue #37 closes the baseline policy and one template-aligned
     evidence package; remaining P1 work is repeated long-window coverage, while
     soak automation and broader operational hardening stay in P2.
@@ -109,8 +109,8 @@ For each item, review all three dimensions below.
 ## P2: Post-Stable Maturity Improvements
 
 - [ ] **Release automation**
-  - What: automate tag-based build, artifact validation, publish, and release-note generation.
-  - Evidence: repeatable release workflow works without manual publish.
+  - What: add dedicated protected publish automation so tag-based verification and publish run end-to-end without manual PyPI upload.
+  - Evidence: publish workflow exists in `.github/workflows/`, consumes verified artifacts, and completes without manual publishing steps.
   - Owner hint: `.github/workflows/`
 
 - [ ] **Support/operations SLO definition**
@@ -160,8 +160,7 @@ UV_CACHE_DIR=.uv-cache uv run ruff check .
 UV_CACHE_DIR=.uv-cache uv run mypy pyrallel_consumer
 UV_CACHE_DIR=.uv-cache uv run bandit -q -lll -r pyrallel_consumer
 UV_CACHE_DIR=.uv-cache uv build
-release_artifacts=()
-while IFS= read -r line; do release_artifacts+=("$line"); done < <(UV_CACHE_DIR=.uv-cache uv run python scripts/release_policy.py resolve-artifacts)
+release_artifacts=(dist/pyrallel_consumer-*)
 UV_CACHE_DIR=.uv-cache uv run twine check "${release_artifacts[@]}"
 ```
 
@@ -172,18 +171,22 @@ UV_CACHE_DIR=.uv-cache uv run twine check "${release_artifacts[@]}"
   - `release-verify` workflow run URL
   - `e2e` workflow run URL (same SHA or release-candidate SHA)
   - `tests/e2e` logs (especially ordering/retry/DLQ/rebalance/restart scenario passes)
+- Pinned broker-backed gate evidence (2026-04-17):
+  - `e2e` run: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840
+  - `e2e` artifact: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048
+  - `release-verify` run: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833
+  - `release-verify` artifact: https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673
 
 ## Current Assessment Snapshot
 
-- The current state is a **stable-line posture (`1.0.0`) with broker-backed
-  release gates**.
-- Beyond `key_hash`/`partition` ordering, real-broker E2E evidence covers
-  process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
-- The Kafka-backed gate is now scenario-aware, splitting ordering and recovery
-  coverage so failures surface by path rather than as a monolithic `tests/e2e`
-  run.
-- The remaining gaps are mostly P1/P2 operational maturity items, not alpha
-  metadata alignment.
+- The current state is best described as **stable metadata/policy aligned, with remaining release-gate hardening in progress**.
+- Beyond `key_hash`/`partition` ordering, real-broker E2E evidence now also
+  covers process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
+- The main blockers for further release hardening are dedicated publish
+  automation, long-window soak/restart coverage, and P2 operational maturity coverage.
+- This round secured real-broker evidence for process recovery paths; next rounds
+  should focus on replacing manual publish with protected automation and
+  accumulating repeatable long-window operations evidence.
 
 ## Type Ignore Inventory Snapshot
 
