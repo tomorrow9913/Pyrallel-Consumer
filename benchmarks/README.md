@@ -49,6 +49,7 @@ uv sync --group dev
   - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
+  - `--adaptive-concurrency off,on` (comma-separated subset for Pyrallel adaptive concurrency A/B comparison; defaults to `off`).
   - `--metrics-port`: expose Prometheus metrics on the host for the current benchmark process (defaults to `9091`; use `0` to disable).
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
@@ -78,6 +79,23 @@ uv sync --group dev
 - Benchmark results: console table + JSON summary (default `benchmarks/results/<timestamp>.json`).
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
+
+## Process Batch Advisor
+
+`benchmarks.process_batch_advisor` is an advisor-only PoC for process batch / IPC
+experiments. It reads an existing benchmark JSON summary with
+`process_batch_metrics` and emits next-run benchmark flags only.
+
+```bash
+uv run python -m benchmarks.process_batch_advisor benchmarks/results/<summary>.json
+uv run python -m benchmarks.process_batch_advisor benchmarks/results/<summary>.json --format json
+```
+
+The advisor may recommend benchmark-only follow-up flags such as
+`--process-batch-size`, `--process-max-batch-wait-ms`, `--process-flush-policy`,
+and `--process-demand-flush-min-residence-ms`. It must not recommend or mutate
+runtime `process_count` or `queue_size`; those remain research-review / CTO
+approval items.
 
 For the release-review reference that ties the benchmark baseline policy to the
 current soak evidence package, see
@@ -123,6 +141,7 @@ uv run python -m benchmarks.run_parallel_benchmark \
   --num-messages 50000 \
   --num-partitions 8 \
   --strict-completion-monitor on,off \
+  --adaptive-concurrency off,on \
   --metrics-port 9091
 ```
 

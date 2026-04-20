@@ -437,6 +437,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - `--skip-baseline`, `--skip-async`, `--skip-process` 플래그를 통해 특정 라운드를 건너뛸 수 있습니다.
 - `--workloads sleep,cpu` 형태로 워크로드 부분집합을, `--order key_hash,partition` 형태로 오더링 모드 부분집합을 한 번에 실행할 수 있습니다.
 - `--strict-completion-monitor on,off`를 사용하면 completion monitor 모드 비교 벤치마크를 한 번에 실행할 수 있습니다.
+- `--adaptive-concurrency off,on`을 사용하면 Pyrallel adaptive concurrency 비활성/활성 모드를 같은 벤치마크 매트릭스에서 비교할 수 있습니다.
 - 기본 동작으로 AdminClient를 사용해 벤치마크 토픽과 컨슈머 그룹을 삭제 후 재생성하여 이전 실행의 레그가 섞이지 않습니다. 클러스터 권한이 없거나 수동 제어가 필요한 경우 `--skip-reset` 플래그로 재설정을 비활성화할 수 있습니다.
 - 워커가 느려질 때는 `--timeout-sec` 값(기본 60초)을 늘려 async/process 라운드의 타임아웃을 조정할 수 있습니다.
 

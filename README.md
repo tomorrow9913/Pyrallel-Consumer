@@ -338,6 +338,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
 - Use `--strict-completion-monitor on,off` to compare the completion monitor modes in benchmark output.
+- Use `--adaptive-concurrency off,on` to compare Pyrallel adaptive concurrency disabled vs enabled in the same benchmark matrix.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
 
 ## 🧪 Run E2E Tests

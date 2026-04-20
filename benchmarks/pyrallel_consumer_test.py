@@ -238,6 +238,7 @@ def build_kafka_config(
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
     metrics_port: Optional[int] = None,
+    adaptive_concurrency_enabled: bool = False,
 ) -> KafkaConfig:
     effective_conf = dict(conf)
     if bootstrap_servers:
@@ -257,6 +258,9 @@ def build_kafka_config(
     kafka_config.parallel_consumer.execution.async_config.task_timeout_ms = 10000
     kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
         strict_completion_monitor_enabled
+    )
+    kafka_config.parallel_consumer.adaptive_concurrency.enabled = (
+        adaptive_concurrency_enabled
     )
     if process_batch_size is not None:
         kafka_config.parallel_consumer.execution.process_config.batch_size = (
@@ -301,6 +305,7 @@ async def run_pyrallel_consumer_test(
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
     metrics_port: Optional[int] = None,
+    adaptive_concurrency_enabled: bool = False,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
@@ -330,6 +335,7 @@ async def run_pyrallel_consumer_test(
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         metrics_port=metrics_port,
+        adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
     mode_value = ExecutionMode(execution_mode)
     ordering_mode_value = OrderingMode(ordering_mode)

@@ -54,6 +54,7 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "workloads": ["sleep"],
         "order": ["key_hash"],
         "strict_completion_monitor": ["on"],
+        "adaptive_concurrency": ["off"],
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
         "log_level": "WARNING",
@@ -250,6 +251,81 @@ def test_run_benchmark_expands_strict_completion_monitor_modes(
             "sleep-key_hash-pyrallel-async-strict-off",
             False,
             "demo-topic-sleep-key_hash-async-strict-off",
+        ),
+    ]
+
+
+def test_build_parser_accepts_adaptive_concurrency_matrix() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--adaptive-concurrency", "off,on"])
+
+    assert args.adaptive_concurrency == ["off", "on"]
+
+
+def test_run_benchmark_expands_adaptive_concurrency_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    async_calls: list[tuple[str, bool, str, str]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        async_calls.append(
+            (
+                kwargs["run_name"],
+                kwargs["adaptive_concurrency_enabled"],
+                kwargs["topic_name"],
+                kwargs["group_id"],
+            )
+        )
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(adaptive_concurrency=["off", "on"]),
+        raw_argv=["--adaptive-concurrency", "off,on"],
+    )
+
+    assert async_calls == [
+        (
+            "sleep-key_hash-pyrallel-async-adaptive-off",
+            False,
+            "demo-topic-sleep-key_hash-async-adaptive-off",
+            "async-group-sleep-key_hash-adaptive-off",
+        ),
+        (
+            "sleep-key_hash-pyrallel-async-adaptive-on",
+            True,
+            "demo-topic-sleep-key_hash-async-adaptive-on",
+            "async-group-sleep-key_hash-adaptive-on",
         ),
     ]
 
@@ -539,6 +615,14 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
     )
 
 
+def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
+    config = pyrallel_consumer_test.build_kafka_config(
+        adaptive_concurrency_enabled=True
+    )
+
+    assert config.parallel_consumer.adaptive_concurrency.enabled is True
+
+
 def test_build_kafka_config_enables_metrics_when_port_provided() -> None:
     config = pyrallel_consumer_test.build_kafka_config(metrics_port=9091)
 
@@ -648,6 +732,71 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
     assert captured["process_max_batch_wait_ms"] == 0
     assert captured["process_flush_policy"] == "demand"
     assert captured["process_demand_flush_min_residence_ms"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_passes_adaptive_concurrency_to_build_kafka_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakePoller:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(
+                partitions=[SimpleNamespace(tp=TopicPartition("demo", 0))]
+            )
+
+    class _FakeConsumer:
+        async def shutdown(self) -> None:
+            return None
+
+    def _fake_build_kafka_config(**kwargs):
+        captured.update(kwargs)
+        return pyrallel_consumer_test.KafkaConfig()
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "build_kafka_config", _fake_build_kafka_config
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "AsyncExecutionEngine",
+        lambda **_kwargs: _FakeConsumer(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "WorkManager",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "BrokerPoller",
+        lambda **_kwargs: _FakePoller(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+
+    await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=0,
+        timeout_sec=0,
+        execution_mode="async",
+        adaptive_concurrency_enabled=True,
+    )
+
+    assert captured["adaptive_concurrency_enabled"] is True
 
 
 @pytest.mark.asyncio
