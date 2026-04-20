@@ -19,6 +19,7 @@ See also:
 - `README.md`
 - `README.ko.md`
 - `SECURITY.md`
+- `docs/operations/compatibility-matrix.md`
 - `docs/operations/release-readiness.md`
 - `docs/operations/upgrade-rollback-guide.md`
 - `docs/operations/playbooks.md`
@@ -81,16 +82,18 @@ See also:
 The currently verified Kafka path is the repository's own local Docker /
 GitHub Actions-backed Kafka flow used by the E2E suite and monitoring smoke.
 
+The exact broker-backed combinations that are automated today live in
+`docs/operations/compatibility-matrix.md`.
+
 That means the strongest current confidence exists for:
 
 - the Kafka broker path exercised by `.github/e2e.compose.yml`
-- the `confluent-kafka` client range allowed by `pyproject.toml`
+- the Python/client lanes declared in the compatibility matrix workflow
 - runtime behavior covered by unit, integration, and Kafka-backed E2E tests
 
 ### What is best-effort
 
-The following are **best-effort** until a broader matrix is documented and
-automated:
+The following are **best-effort** until the matrix is widened and automated:
 
 - broker distributions not exercised by the repository's Docker / CI path
 - older client / broker combinations outside the currently tested path
