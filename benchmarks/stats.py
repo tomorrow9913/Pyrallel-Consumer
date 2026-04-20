@@ -167,6 +167,108 @@ def write_results_json(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "options": options or {},
+        "performance_improvements": _build_performance_improvements(results),
         "results": [result.to_dict() for result in results],
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _build_performance_improvements(
+    results: list[BenchmarkResult],
+) -> list[dict[str, Any]]:
+    adaptive_off: dict[tuple[str, str, str], BenchmarkResult] = {}
+    adaptive_on: list[BenchmarkResult] = []
+    baselines: dict[tuple[str, str], BenchmarkResult] = {}
+    pyrallel_results: dict[tuple[str, str], BenchmarkResult] = {}
+
+    for result in results:
+        workload_ordering_key = (result.workload, result.ordering)
+        if result.run_type == "baseline":
+            current_baseline = baselines.get(workload_ordering_key)
+            if current_baseline is None or (
+                result.throughput_tps > current_baseline.throughput_tps
+            ):
+                baselines[workload_ordering_key] = result
+            continue
+
+        current_pyrallel = pyrallel_results.get(workload_ordering_key)
+        if current_pyrallel is None or (
+            result.throughput_tps > current_pyrallel.throughput_tps
+        ):
+            pyrallel_results[workload_ordering_key] = result
+
+        adaptive_key = (result.workload, result.ordering, result.run_type)
+        if "-adaptive-off" in result.run_name:
+            adaptive_off[adaptive_key] = result
+        elif "-adaptive-on" in result.run_name:
+            adaptive_on.append(result)
+
+    improvements: list[dict[str, Any]] = []
+    for candidate in adaptive_on:
+        reference = adaptive_off.get(
+            (candidate.workload, candidate.ordering, candidate.run_type)
+        )
+        if reference is None:
+            continue
+        improvements.append(
+            _build_improvement_row(
+                comparison="adaptive_on_vs_off",
+                candidate=candidate,
+                reference=reference,
+            )
+        )
+
+    for workload_ordering_key, candidate in sorted(pyrallel_results.items()):
+        reference = baselines.get(workload_ordering_key)
+        if reference is None:
+            continue
+        improvements.append(
+            _build_improvement_row(
+                comparison="best_pyrallel_vs_baseline",
+                candidate=candidate,
+                reference=reference,
+            )
+        )
+
+    return improvements
+
+
+def _build_improvement_row(
+    *,
+    comparison: str,
+    candidate: BenchmarkResult,
+    reference: BenchmarkResult,
+) -> dict[str, Any]:
+    candidate_tps = float(candidate.throughput_tps)
+    reference_tps = float(reference.throughput_tps)
+    tps_delta = candidate_tps - reference_tps
+    if reference_tps > 0:
+        tps_delta_pct = (tps_delta / reference_tps) * 100
+        improvement_ratio = candidate_tps / reference_tps
+    else:
+        tps_delta_pct = None
+        improvement_ratio = None
+
+    return {
+        "comparison": comparison,
+        "workload": candidate.workload,
+        "ordering": candidate.ordering,
+        "run_type": candidate.run_type,
+        "candidate_run_name": candidate.run_name,
+        "reference_run_name": reference.run_name,
+        "candidate_throughput_tps": _round_metric(candidate_tps),
+        "reference_throughput_tps": _round_metric(reference_tps),
+        "throughput_tps_delta": _round_metric(tps_delta),
+        "throughput_tps_delta_pct": _round_optional_metric(tps_delta_pct),
+        "improvement_ratio": _round_optional_metric(improvement_ratio),
+    }
+
+
+def _round_metric(value: float) -> float:
+    return round(value, 6)
+
+
+def _round_optional_metric(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return _round_metric(value)

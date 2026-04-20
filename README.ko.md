@@ -433,6 +433,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 - 콘솔에는 각 러운드별 TPS / 평균 / P99 지연이 표 형태로 출력됩니다.
 - JSON 리포트는 기본적으로 `benchmarks/results/<UTC 타임스탬프>.json`에 저장됩니다.
+- JSON 리포트는 `performance_improvements` 항목에 adaptive on/off 비교와 best Pyrallel 대비 baseline 비교의 TPS delta, percent delta, ratio를 함께 기록합니다.
 - 인자 없이 실행하면 Textual TUI가 열려 워크로드/오더링/프로파일링 옵션을 대화형으로 선택할 수 있습니다.
 - `--skip-baseline`, `--skip-async`, `--skip-process` 플래그를 통해 특정 라운드를 건너뛸 수 있습니다.
 - `--workloads sleep,cpu` 형태로 워크로드 부분집합을, `--order key_hash,partition` 형태로 오더링 모드 부분집합을 한 번에 실행할 수 있습니다.

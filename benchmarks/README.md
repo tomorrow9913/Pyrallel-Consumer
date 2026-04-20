@@ -77,6 +77,9 @@ uv sync --group dev
 
 ## Outputs
 - Benchmark results: console table + JSON summary (default `benchmarks/results/<timestamp>.json`).
+- JSON summaries include `performance_improvements`, which reports TPS delta,
+  percent delta, and ratio for adaptive on/off pairs plus the best Pyrallel run
+  versus the matching baseline for each workload/order combination.
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
 

@@ -334,6 +334,9 @@ uv run python benchmarks/run_parallel_benchmark.py \
 ```
 
 - JSON report is saved to `benchmarks/results/<UTC timestamp>.json`.
+- JSON reports include `performance_improvements` entries with TPS delta,
+  percent delta, and ratio for adaptive on/off comparisons and best Pyrallel
+  versus baseline comparisons.
 - No flags: launches a Textual TUI so you can configure the benchmark interactively.
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
