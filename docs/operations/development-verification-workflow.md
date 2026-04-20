@@ -10,7 +10,7 @@ aliases so issue comments, release evidence, and handoff notes stay comparable.
 - Dependency manager: `uv`.
 - Current local tool availability verified on 2026-04-20:
   - `uv 0.10.2`
-  - `pytest 9.0.2`
+  - `pytest 9.0.3`
   - `ruff 0.15.8`
   - `mypy 1.19.1`
   - `bandit 1.9.3`

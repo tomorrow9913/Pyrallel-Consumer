@@ -170,7 +170,7 @@ class BrokerRuntimeSupport:
             blocking_offset = gaps[0].start if gaps else None
             durations = tracker.get_blocking_offset_durations()
             blocking_duration = (
-                durations.get(blocking_offset) if blocking_offset else None
+                durations.get(blocking_offset) if blocking_offset is not None else None
             )
             queued_count = sum(queue_sizes.get(tp, {}).values())
             partition_metrics_list.append(
