@@ -9,17 +9,19 @@ If you are looking for a **parallel consumer for Kafka in Python**, this project
 
 Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize parallelism while preserving ordering guarantees and data consistency.
 
-> **Release policy:** current published line is stable (`1.0.0`). Treat `main` as the active branch for stable patch/minor hardening and feature delivery under Semantic Versioning.
+> **Release policy:** current published version is stable (`1.0.0`). `main` is the stable-release branch; prerelease lines remain opt-in preview channels.
 
 ## Support / Compatibility Policy
 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
 - **Kafka:** the automated compatibility baseline currently covers the documented Python/client lanes on `confluentinc/cp-kafka:7.6.0` through broker-backed verification. Other broker distributions or older client/broker combinations remain best-effort. See [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md).
-- **Release support:** the latest stable line (`1.x`) is the actively maintained support target. Historical prerelease builds (`0.1.xa*`) are best-effort and receive no guaranteed fixes.
+- **Release-line support:** the latest stable minor is the active support target, the previous stable minor is security-fix-only, and prerelease lines remain best-effort.
 - **Policy detail:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
 - **Security reporting path:** see [`SECURITY.md`](./SECURITY.md).
+- **Public contract freeze:** see [`docs/operations/public-contract-v1.md`](./docs/operations/public-contract-v1.md) for the v1-stable ordering / rebalance / DLQ / commit contract surface.
 - **Upgrade/Rollback guide:** see [`docs/operations/upgrade-rollback-guide.md`](./docs/operations/upgrade-rollback-guide.md).
 - **Release incident runbook:** see [`docs/operations/playbooks.md`](./docs/operations/playbooks.md).
+- **Stable operations evidence reference:** see [`docs/operations/stable-operations-evidence.md`](./docs/operations/stable-operations-evidence.md).
 
 ## 🌟 Key Features
 
@@ -64,6 +66,21 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
+
+### Runtime Snapshot API
+
+For operator diagnostics outside Prometheus scraping, the facade also exposes
+`PyrallelConsumer.get_runtime_snapshot()`. The snapshot is a read-only structured
+projection of existing runtime state and includes:
+
+- queue summary (`total_in_flight`, `total_queued`, live `max_in_flight`, configured ceiling, pause/rebalance state, ordering mode)
+- retry policy snapshot (max retries and backoff settings)
+- DLQ runtime status (enabled flag, topic, payload mode, message-cache usage)
+- per-partition assignment/runtime state (epoch, committed/fetched offsets, gaps, blocking offset age, queue depth, in-flight count, minimum in-flight offset)
+
+If `adaptive_concurrency.enabled=true`, `execution.max_in_flight` remains the
+configured ceiling while `runtime_snapshot.queue.max_in_flight` reflects the
+live control-plane limit after adaptive adjustments.
 
 ## 📊 Benchmark Snapshot (profiling OFF)
 
@@ -163,6 +180,9 @@ python -m build
 
 ### Env-based Config (`pydantic-settings`)
 
+Python constructor arguments and attributes use lowercase `snake_case`.
+Environment variables remain uppercase `KAFKA_*` / `PARALLEL_CONSUMER_*`.
+
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
@@ -205,6 +225,20 @@ message cache only for final DLQ publishing. If an entry is evicted before the
 failure reaches DLQ, Pyrallel Consumer degrades to metadata-only DLQ publish
 instead of retaining the offset indefinitely.
 
+### Poison-message circuit breaker (`ParallelConsumerConfig`)
+
+The poison-message circuit breaker is opt-in and scoped to `topic-partition + key`.
+When enabled, repeated final failures for the same key open a cooldown window.
+Queued messages for that key are force-completed as failures during the cooldown,
+so they flow through the existing DLQ-or-skip completion path without another
+worker execution attempt.
+
+| Env | Default | Description |
+| --- | --- | --- |
+| `PARALLEL_CONSUMER_POISON_MESSAGE__ENABLED` | `false` | Enable keyed poison-message isolation |
+| `PARALLEL_CONSUMER_POISON_MESSAGE__FAILURE_THRESHOLD` | `3` | Final failures for the same partition/key before opening the circuit |
+| `PARALLEL_CONSUMER_POISON_MESSAGE__COOLDOWN_MS` | `30000` | Cooldown window for the open partition/key circuit |
+
 ## 💡 Usage
 
 ```python
@@ -214,19 +248,32 @@ from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 config = KafkaConfig()
 config.dlq_enabled = True
-config.DLQ_TOPIC_SUFFIX = ".failed"
+config.dlq_topic_suffix = ".failed"
 config.metrics.enabled = True
 config.metrics.port = 9091
 config.parallel_consumer.ordering_mode = "key_hash"  # or "partition" / "unordered"
 config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
 config.parallel_consumer.execution.max_retries = 5
 config.parallel_consumer.execution.retry_backoff_ms = 2000
+config.parallel_consumer.poison_message.enabled = True
+config.parallel_consumer.poison_message.failure_threshold = 3
+config.parallel_consumer.poison_message.cooldown_ms = 30000
 
 async def worker(item: WorkItem):
     ...
 
 consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
+
+runtime_snapshot = consumer.get_runtime_snapshot()
+# runtime_snapshot.queue.total_in_flight
+# runtime_snapshot.partitions[0].blocking_offset
+# runtime_snapshot.poison_message.open_circuit_count
 ```
+
+Canonical Python config access uses lowercase snake_case attributes such as
+`config.bootstrap_servers` and `config.dlq_topic_suffix`. Existing uppercase
+attributes remain available as backward-compatible aliases, while environment
+variables stay on the existing `KAFKA_*` / `PARALLEL_CONSUMER_*` names.
 
 Ordering modes:
 - `key_hash` (default): preserve order per message key while allowing parallelism across keys
@@ -239,6 +286,23 @@ control process concurrency.
 For process mode tuning, use
 `config.parallel_consumer.execution.process_config.process_count` rather than
 `worker_pool_size`.
+
+Adaptive concurrency controls (opt-in):
+- `adaptive_concurrency.enabled`: enables control-plane auto-tuning of the live `max_in_flight` limit.
+- `adaptive_concurrency.min_in_flight`: lower guardrail for the live limit. `0` means "auto" and resolves to roughly 25% of the configured ceiling.
+- `adaptive_concurrency.scale_up_step` / `scale_down_step`: how many slots to add or remove per adjustment.
+- `adaptive_concurrency.cooldown_ms`: minimum wait between adjustments to avoid oscillation.
+
+When adaptive concurrency is enabled, `execution.max_in_flight` stays the hard
+ceiling. The control plane only adjusts the effective live limit reported by
+`get_runtime_snapshot().queue.max_in_flight`; it does not reconfigure async
+semaphores, process counts, or other engine-specific internals at runtime.
+
+Shutdown policy controls:
+- `shutdown_policy`: `graceful` (default) stops new fetches, waits for bounded drain, then escalates to cancellation / worker termination if the timeout expires. `abort` skips the drain window and goes straight to the forced-abort path.
+- `consumer_task_stop_timeout_ms`: how long `BrokerPoller.stop()` waits for the consumer loop to exit after fetches are halted.
+- `shutdown_drain_timeout_ms`: shared drain window before async task cancellation or process escalation. Async mode can still fine-tune its legacy path with `async_config.shutdown_grace_timeout_ms` when no shared override is set explicitly.
+- `process_config.worker_join_timeout_ms`: additional process-mode join timeout after the shared drain window has elapsed.
 
 For detailed runnable patterns, see [`examples/`](./examples/).
 

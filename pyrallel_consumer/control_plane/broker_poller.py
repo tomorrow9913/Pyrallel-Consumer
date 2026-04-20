@@ -4,6 +4,7 @@
 import asyncio
 import inspect
 import random
+import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
@@ -13,27 +14,28 @@ from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
-from ..config import KafkaConfig
+from ..config import AdaptiveBackpressureConfig, AdaptiveConcurrencyConfig, KafkaConfig
 from ..dto import (
     CompletionEvent,
     DLQPayloadMode,
     OrderingMode,
     ProcessBatchMetrics,
+    RuntimeSnapshot,
     SystemMetrics,
 )
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from ..utils.validation import validate_topic_name
+from .adaptive_backpressure import AdaptiveBackpressureController
+from .adaptive_concurrency import (
+    AdaptiveConcurrencyController,
+    AdaptiveConcurrencySample,
+)
 from .broker_completion_support import BrokerCompletionSupport
 from .broker_dispatch_support import BrokerDispatchSupport
 from .broker_rebalance_support import BrokerRebalanceSupport
 from .broker_runtime_support import BrokerRuntimeSupport
-from .broker_support import (
-    BrokerCommitPlanner,
-    BrokerCommitSupport,
-    BrokerDrainSupport,
-    DlqCacheSupport,
-)
+from .broker_support import BrokerCommitPlanner, DlqCacheSupport
 from .broker_task_lifecycle_support import BrokerTaskLifecycleSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
@@ -79,6 +81,13 @@ class BrokerPoller:
             config_ordering_mode = OrderingMode(config_ordering_mode)
         if not isinstance(config_ordering_mode, OrderingMode):
             config_ordering_mode = OrderingMode.KEY_HASH
+        raw_configured_max_in_flight = getattr(pc_conf.execution, "max_in_flight", 1000)
+        if isinstance(raw_configured_max_in_flight, bool) or not isinstance(
+            raw_configured_max_in_flight,
+            (int, float),
+        ):
+            raw_configured_max_in_flight = 1000
+        configured_max_in_flight = max(1, int(raw_configured_max_in_flight))
         get_ordering_mode = getattr(work_manager, "get_ordering_mode", None)
         injected_ordering_mode = (
             get_ordering_mode() if callable(get_ordering_mode) else None
@@ -104,7 +113,9 @@ class BrokerPoller:
         self._commit_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
-        self._consumer_task_stop_timeout_seconds = 5.0
+        self._consumer_task_stop_timeout_seconds = (
+            pc_conf.execution.consumer_task_stop_timeout_ms / 1000.0
+        )
         self._fatal_error: Optional[Exception] = None
 
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
@@ -117,25 +128,21 @@ class BrokerPoller:
             metadata_encoder=self._metadata_encoder,
             max_completed_offsets=self.MAX_COMPLETED_OFFSETS_FOR_METADATA,
         )
-        self._commit_support = BrokerCommitSupport(
-            commit_planner=self._commit_planner,
-            logger=logger,
-        )
-        self._drain_support = BrokerDrainSupport()
         self._dlq_cache_support = DlqCacheSupport()
-        poison_message_config = getattr(pc_conf, "poison_message", None)
+        self._poison_message_config = getattr(pc_conf, "poison_message", None)
         poison_message_circuit = None
-        if poison_message_config is not None:
+        if self._poison_message_config is not None:
             poison_message_circuit = PoisonMessageCircuitBreaker(
-                enabled=bool(getattr(poison_message_config, "enabled", False)),
+                enabled=bool(getattr(self._poison_message_config, "enabled", False)),
                 failure_threshold=int(
-                    getattr(poison_message_config, "failure_threshold", 3)
+                    getattr(self._poison_message_config, "failure_threshold", 3)
                 ),
-                cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
+                cooldown_ms=int(getattr(self._poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=pc_conf.execution.max_retries,
             )
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
+            max_in_flight_messages=configured_max_in_flight,
             ordering_mode=self.ORDERING_MODE,
             blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
             max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
@@ -151,11 +158,31 @@ class BrokerPoller:
             getattr(pc_conf, "max_blocking_duration_ms", 0) or 0
         )
 
-        self.MAX_IN_FLIGHT_MESSAGES = pc_conf.execution.max_in_flight
+        self._configured_max_in_flight_messages = configured_max_in_flight
+        self.MAX_IN_FLIGHT_MESSAGES = self._configured_max_in_flight_messages
         self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = max(
             1, int(self.MAX_IN_FLIGHT_MESSAGES * 0.7)
         )
         self._is_paused = False
+        adaptive_backpressure_config = self._coerce_adaptive_backpressure_config(
+            getattr(pc_conf, "adaptive_backpressure", None)
+        )
+        self._adaptive_backpressure_controller = AdaptiveBackpressureController(
+            configured_max_in_flight=self._configured_max_in_flight_messages,
+            config=adaptive_backpressure_config,
+        )
+        adaptive_concurrency_config = self._coerce_adaptive_concurrency_config(
+            pc_conf,
+            "adaptive_concurrency",
+        )
+        self._adaptive_concurrency_controller = AdaptiveConcurrencyController(
+            adaptive_concurrency_config,
+            configured_max_in_flight=self._configured_max_in_flight_messages,
+        )
+        self._set_runtime_max_in_flight(
+            self.MAX_IN_FLIGHT_MESSAGES,
+            log_change=False,
+        )
 
         self._message_cache: (
             "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
@@ -194,6 +221,87 @@ class BrokerPoller:
         )
 
     # ------------------------------------------------------------------
+    def _shutdown_policy(self) -> str:
+        return str(
+            getattr(
+                self._kafka_config.parallel_consumer.execution,
+                "shutdown_policy",
+                "graceful",
+            )
+        )
+
+    def _shutdown_drain_timeout_seconds(self) -> float:
+        execution_config = self._kafka_config.parallel_consumer.execution
+        resolve_timeout = getattr(
+            execution_config, "resolve_shutdown_drain_timeout_ms", None
+        )
+        if callable(resolve_timeout):
+            return max(0.0, float(resolve_timeout()) / 1000.0)
+        timeout_ms = getattr(execution_config, "shutdown_drain_timeout_ms", 0)
+        return max(0.0, float(timeout_ms) / 1000.0)
+
+    @staticmethod
+    def _coerce_adaptive_backpressure_config(
+        raw_config: object,
+    ) -> AdaptiveBackpressureConfig:
+        def _bool(name: str, default: bool) -> bool:
+            value = getattr(raw_config, name, default)
+            return value if isinstance(value, bool) else default
+
+        def _int(name: str, default: int) -> int:
+            value = getattr(raw_config, name, default)
+            if isinstance(value, bool):
+                return default
+            if isinstance(value, (int, float)):
+                return int(value)
+            return default
+
+        def _float(name: str, default: float) -> float:
+            value = getattr(raw_config, name, default)
+            if isinstance(value, bool):
+                return default
+            if isinstance(value, (int, float)):
+                return float(value)
+            return default
+
+        return AdaptiveBackpressureConfig(
+            enabled=_bool("enabled", False),
+            min_in_flight=_int("min_in_flight", 1),
+            scale_up_step=_int("scale_up_step", 16),
+            scale_down_step=_int("scale_down_step", 16),
+            cooldown_ms=_int("cooldown_ms", 1000),
+            lag_scale_up_threshold=_int("lag_scale_up_threshold", 0),
+            low_latency_threshold_ms=_float("low_latency_threshold_ms", 25.0),
+            high_latency_threshold_ms=_float("high_latency_threshold_ms", 100.0),
+        )
+
+    @staticmethod
+    def _coerce_adaptive_concurrency_config(
+        raw_parent: object,
+        attribute_name: str,
+    ) -> AdaptiveConcurrencyConfig:
+        raw_config = getattr(raw_parent, attribute_name, None)
+
+        def _bool(name: str, default: bool) -> bool:
+            value = getattr(raw_config, name, default)
+            return value if isinstance(value, bool) else default
+
+        def _int(name: str, default: int) -> int:
+            value = getattr(raw_config, name, default)
+            if isinstance(value, bool):
+                return default
+            if isinstance(value, (int, float)):
+                return int(value)
+            return default
+
+        return AdaptiveConcurrencyConfig(
+            enabled=_bool("enabled", False),
+            min_in_flight=_int("min_in_flight", 0),
+            scale_up_step=_int("scale_up_step", 32),
+            scale_down_step=_int("scale_down_step", 64),
+            cooldown_ms=_int("cooldown_ms", 1000),
+        )
+
     async def _get_consume_timeout_seconds(self) -> float:
         total_in_flight = self._work_manager.get_total_in_flight_count()
         total_queued = await self._get_total_queued_messages()
@@ -405,12 +513,16 @@ class BrokerPoller:
             self._consumer_task = None
 
     async def _drain_completion_events_once(self) -> bool:
-        return await self._drain_support.drain_completion_events_once(
-            poll_completed_events=self._work_manager.poll_completed_events,
-            handle_blocking_timeouts=self._handle_blocking_timeouts,
-            process_completed_events=self._process_completed_events,
-            schedule=self._work_manager.schedule,
-        )
+        completed_events = await self._work_manager.poll_completed_events()
+        timeout_events = await self._handle_blocking_timeouts()
+        if timeout_events:
+            completed_events.extend(timeout_events)
+        if not completed_events:
+            return False
+
+        await self._process_completed_events(completed_events)
+        await self._work_manager.schedule()
+        return True
 
     async def _run_completion_monitor(self) -> None:
         timeout_seconds = self._idle_consume_timeout_seconds
@@ -440,12 +552,13 @@ class BrokerPoller:
             raise
 
     async def _commit_ready_offsets(self) -> None:
-        await self._commit_support.commit_ready_offsets(
-            commit_lock=self._commit_lock,
-            control_lock=self._control_lock,
-            build_commit_candidates=self._make_dispatch_support().build_commit_candidates,
-            commit_offsets=self._commit_offsets,
-        )
+        async with self._commit_lock:
+            async with self._control_lock:
+                commits_to_make = (
+                    self._make_dispatch_support().build_commit_candidates()
+                )
+            if commits_to_make:
+                await self._commit_offsets(commits_to_make)
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
@@ -492,14 +605,58 @@ class BrokerPoller:
         """
         if self.consumer is None:
             return
-        await self._commit_support.commit_offsets(
-            consumer=self.consumer,
-            offset_trackers=self._offset_trackers,
-            control_lock=self._control_lock,
-            commits_to_make=commits_to_make,
+
+        async with self._control_lock:
+            tracked_commits: list[tuple[DtoTopicPartition, int]] = []
+            tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
+            for tp, safe_offset in commits_to_make:
+                tracker = self._offset_trackers.get(tp)
+                if tracker is None:
+                    logger.debug(
+                        "Skipping commit candidate for untracked partition %s", tp
+                    )
+                    continue
+                tracked_commits.append((tp, safe_offset))
+                tracker_snapshot[tp] = tracker
+
+        if not tracked_commits:
+            return
+
+        offsets_to_commit = self._commit_planner.build_offsets_to_commit(
+            commits_to_make=tracked_commits,
+            trackers=tracker_snapshot,
             strategy=self._rebalance_state_strategy(),
-            to_thread=asyncio.to_thread,
         )
+
+        max_attempts = 2  # 1 initial + 1 retry
+        for attempt in range(max_attempts):
+            try:
+                await asyncio.to_thread(
+                    self.consumer.commit,
+                    offsets=offsets_to_commit,
+                    asynchronous=False,
+                )
+                async with self._control_lock:
+                    for tp, safe_offset in tracked_commits:
+                        tracker = self._offset_trackers.get(tp)
+                        if tracker is None:
+                            continue
+                        tracker.commit_through(safe_offset)
+                return
+            except KafkaException as exc:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "Commit failed (attempt %d/%d), retrying: %s",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                else:
+                    logger.error(
+                        "Commit failed after %d attempts, skipping: %s",
+                        max_attempts,
+                        exc,
+                    )
 
     def _get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
@@ -532,11 +689,81 @@ class BrokerPoller:
     def _log_partition_diagnostics(self) -> None:
         self._make_runtime_support().log_partition_diagnostics()
 
+    def _get_total_true_lag(self) -> int:
+        total_true_lag = 0
+        for tracker in self._offset_trackers.values():
+            last_fetched_offset = int(getattr(tracker, "last_fetched_offset", -1))
+            last_committed_offset = int(getattr(tracker, "last_committed_offset", -1))
+            total_true_lag += max(0, last_fetched_offset - last_committed_offset)
+        return total_true_lag
+
+    def _set_runtime_max_in_flight(
+        self,
+        value: int,
+        *,
+        log_change: bool = True,
+    ) -> None:
+        new_value = max(
+            1,
+            min(self._configured_max_in_flight_messages, int(value)),
+        )
+        old_value = self.MAX_IN_FLIGHT_MESSAGES
+        self.MAX_IN_FLIGHT_MESSAGES = new_value
+        self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = max(1, int(new_value * 0.7))
+        if old_value != new_value:
+            set_max_in_flight_messages = getattr(
+                self._work_manager,
+                "set_max_in_flight_messages",
+                None,
+            )
+            if callable(set_max_in_flight_messages):
+                set_max_in_flight_messages(new_value)
+        if log_change and old_value != new_value:
+            logger.info(
+                "Adaptive concurrency adjusted max_in_flight from %d to %d",
+                old_value,
+                new_value,
+            )
+
+    def _maybe_adjust_adaptive_backpressure(self, total_queued: int) -> None:
+        if not self._adaptive_backpressure_controller.enabled:
+            return
+        get_latency = getattr(
+            self._work_manager, "get_average_completion_latency_seconds", None
+        )
+        avg_completion_latency = get_latency() if callable(get_latency) else None
+        new_limit = self._adaptive_backpressure_controller.evaluate(
+            total_true_lag=self._get_total_true_lag(),
+            total_queued=total_queued,
+            avg_completion_latency_seconds=avg_completion_latency,
+            is_paused=self._is_paused,
+        )
+        if new_limit == self.MAX_IN_FLIGHT_MESSAGES:
+            return
+        self._set_runtime_max_in_flight(new_limit)
+
+    def _maybe_adjust_adaptive_concurrency(self, total_queued: int) -> None:
+        new_limit = self._adaptive_concurrency_controller.evaluate(
+            AdaptiveConcurrencySample(
+                current_limit=self.MAX_IN_FLIGHT_MESSAGES,
+                total_in_flight=self._work_manager.get_total_in_flight_count(),
+                total_queued=total_queued,
+                total_true_lag=self._get_total_true_lag(),
+                is_paused=self._is_paused,
+                queue_max_messages=self.QUEUE_MAX_MESSAGES,
+            )
+        )
+        if new_limit is None:
+            return
+        self._set_runtime_max_in_flight(new_limit)
+
     async def _check_backpressure(self) -> None:
         if self.consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
         total_queued = await self._get_total_queued_messages()
+        self._maybe_adjust_adaptive_backpressure(total_queued)
+        self._maybe_adjust_adaptive_concurrency(total_queued)
         self._is_paused = self._make_runtime_support().check_backpressure(
             total_queued=total_queued
         )
@@ -685,7 +912,8 @@ class BrokerPoller:
             if self._shutdown_event.is_set():
                 self._raise_if_failed()
             return
-        logger.debug("Shutdown signal received")
+        shutdown_policy = self._shutdown_policy()
+        logger.debug("Shutdown signal received with policy=%s", shutdown_policy)
         self._running = False
         if self._consumer_task is not None:
             consumer_task = self._consumer_task
@@ -698,7 +926,55 @@ class BrokerPoller:
             )
             self._consumer_task = None
         self._raise_if_failed()
+        if shutdown_policy == "graceful":
+            await self._drain_shutdown_work(
+                timeout_seconds=self._shutdown_drain_timeout_seconds()
+            )
         logger.debug("BrokerPoller stopped")
+
+    async def _drain_shutdown_work(self, *, timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+
+        while True:
+            async with self._control_lock:
+                await self._work_manager.schedule()
+                drained_completion = await self._drain_completion_events_once()
+
+            if drained_completion:
+                await self._commit_ready_offsets()
+
+            total_in_flight = self._work_manager.get_total_in_flight_count()
+            total_queued = await self._get_total_queued_messages()
+            if total_in_flight <= 0 and total_queued <= 0:
+                await self._commit_ready_offsets()
+                logger.debug(
+                    "Graceful shutdown drain completed with in_flight=%d queued=%d",
+                    total_in_flight,
+                    total_queued,
+                )
+                return True
+
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                logger.warning(
+                    "Graceful shutdown drain timed out after %.3fs; continuing with forced abort path (in_flight=%d queued=%d)",
+                    max(0.0, timeout_seconds),
+                    total_in_flight,
+                    total_queued,
+                )
+                return False
+
+            if total_in_flight > 0:
+                has_completion = await self._execution_engine.wait_for_completion(
+                    timeout_seconds=min(
+                        remaining_seconds,
+                        self._idle_consume_timeout_seconds,
+                    ),
+                )
+                if has_completion:
+                    continue
+            else:
+                await asyncio.sleep(min(remaining_seconds, 0.01))
 
     async def wait_closed(self) -> None:
         if not self._running and self._consumer_task is None:
@@ -725,11 +1001,43 @@ class BrokerPoller:
             ),
         )
 
+    def get_runtime_snapshot(self) -> RuntimeSnapshot:
+        return self._make_runtime_support().build_runtime_snapshot()
+
     def _make_runtime_support(self) -> BrokerRuntimeSupport:
+        adaptive_backpressure_snapshot = None
+        if self._adaptive_backpressure_controller.enabled:
+            get_latency = getattr(
+                self._work_manager, "get_average_completion_latency_seconds", None
+            )
+            avg_completion_latency = get_latency() if callable(get_latency) else None
+            adaptive_backpressure_snapshot = (
+                self._adaptive_backpressure_controller.build_runtime_snapshot(
+                    avg_completion_latency_seconds=avg_completion_latency
+                )
+            )
+        adaptive_concurrency_snapshot = None
+        if self._adaptive_concurrency_controller.enabled:
+            adaptive_concurrency_snapshot = (
+                self._adaptive_concurrency_controller.build_runtime_snapshot(
+                    effective_max_in_flight=self.MAX_IN_FLIGHT_MESSAGES
+                )
+            )
         return BrokerRuntimeSupport(
             work_manager=self._work_manager,
             offset_trackers=self._offset_trackers,
             consumer=self.consumer,
+            execution_engine=self._execution_engine,
+            execution_config=self._kafka_config.parallel_consumer.execution,
+            consume_topic=self._consume_topic,
+            ordering_mode=self.ORDERING_MODE,
+            dlq_enabled=bool(getattr(self._kafka_config, "dlq_enabled", False)),
+            dlq_topic_suffix=str(getattr(self._kafka_config, "DLQ_TOPIC_SUFFIX", "")),
+            dlq_payload_mode=getattr(
+                self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
+            ),
+            message_cache_size_bytes=self._message_cache_size_bytes,
+            message_cache_entry_count=len(self._message_cache),
             max_in_flight_messages=self.MAX_IN_FLIGHT_MESSAGES,
             min_in_flight_messages_to_resume=self.MIN_IN_FLIGHT_MESSAGES_TO_RESUME,
             queue_max_messages=self.QUEUE_MAX_MESSAGES,
@@ -737,6 +1045,15 @@ class BrokerPoller:
             is_paused=self._is_paused,
             blocking_warn_seconds=self._blocking_warn_seconds,
             logger=logger,
+            configured_max_in_flight_messages=self._configured_max_in_flight_messages,
+            adaptive_backpressure=adaptive_backpressure_snapshot,
+            adaptive_concurrency=adaptive_concurrency_snapshot,
+            poison_message_config=self._poison_message_config,
+            poison_message_open_circuit_count=(
+                self._work_manager.get_poison_message_open_circuit_count()
+                if hasattr(self._work_manager, "get_poison_message_open_circuit_count")
+                else 0
+            ),
         )
 
     def _make_task_lifecycle_support(self) -> BrokerTaskLifecycleSupport:

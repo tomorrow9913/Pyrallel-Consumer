@@ -99,6 +99,126 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
 
 
+@pytest.mark.asyncio
+async def test_check_backpressure_updates_effective_inflight_limit_when_adaptive_enabled(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 100
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.enabled = True
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.min_in_flight = 40
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.scale_down_step = 20
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.cooldown_ms = 0
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.high_latency_threshold_ms = 50.0
+
+    work_manager = MagicMock()
+    work_manager.get_total_in_flight_count.return_value = 30
+    work_manager.get_total_queued_messages.return_value = 0
+    work_manager.get_virtual_queue_sizes.return_value = {}
+    work_manager.get_average_completion_latency_seconds.return_value = 0.075
+    work_manager.set_max_in_flight_messages.return_value = None
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=work_manager,
+    )
+    poller.consumer = mock_consumer
+
+    await poller._check_backpressure()
+
+    assert poller.MAX_IN_FLIGHT_MESSAGES == 80
+    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 56
+    work_manager.set_max_in_flight_messages.assert_called_once_with(80)
+
+
+@pytest.mark.asyncio
+async def test_broker_poller_adapts_runtime_inflight_limit_when_enabled(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 128
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.enabled = True
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.min_in_flight = 32
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.scale_up_step = 16
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.scale_down_step = 24
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.cooldown_ms = 0
+
+    mock_work_manager.get_total_in_flight_count.return_value = 64
+    mock_work_manager.get_total_queued_messages.return_value = 0
+    mock_work_manager.get_virtual_queue_sizes.return_value = {}
+    mock_work_manager.is_rebalancing.return_value = False
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+    poller.consumer = mock_consumer
+    tracker = MagicMock()
+    tracker.last_fetched_offset = 320
+    tracker.last_committed_offset = 0
+    poller._offset_trackers = {DtoTopicPartition("test-topic", 0): tracker}
+    poller._set_runtime_max_in_flight(64, log_change=False)
+
+    await poller._check_backpressure()
+
+    assert poller.MAX_IN_FLIGHT_MESSAGES == 80
+    assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 56
+    assert mock_work_manager.set_max_in_flight_messages.call_args_list[-1].args == (80,)
+
+
+def test_broker_poller_runtime_snapshot_exposes_adaptive_concurrency_when_enabled(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_work_manager = MagicMock()
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 128
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.enabled = True
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.min_in_flight = 32
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.scale_up_step = 16
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.scale_down_step = 24
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.cooldown_ms = 500
+
+    mock_work_manager.get_total_in_flight_count.return_value = 12
+    mock_work_manager.get_total_queued_messages.return_value = 3
+    mock_work_manager.get_virtual_queue_sizes.return_value = {}
+    mock_work_manager.get_in_flight_counts.return_value = {}
+    mock_work_manager.is_rebalancing.return_value = False
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=mock_work_manager,
+    )
+    poller._set_runtime_max_in_flight(80, log_change=False)
+
+    snapshot = poller.get_runtime_snapshot()
+
+    assert snapshot.adaptive_concurrency is not None
+    assert snapshot.adaptive_concurrency.configured_max_in_flight == 128
+    assert snapshot.adaptive_concurrency.effective_max_in_flight == 80
+    assert snapshot.adaptive_concurrency.min_in_flight == 32
+    assert snapshot.adaptive_concurrency.scale_up_step == 16
+    assert snapshot.adaptive_concurrency.scale_down_step == 24
+    assert snapshot.adaptive_concurrency.cooldown_ms == 500
+
+
+def test_broker_poller_uses_configured_consumer_task_stop_timeout(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.consumer_task_stop_timeout_ms = 1234
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+    )
+
+    assert poller._consumer_task_stop_timeout_seconds == pytest.approx(1.234)
+
+
 def test_broker_poller_syncs_ordering_mode_from_injected_work_manager(
     mock_kafka_config, mock_execution_engine
 ):
@@ -853,16 +973,21 @@ async def test_start_skips_completion_monitor_when_disabled(
         created_tasks.append((name, task))
         return task
 
-    with patch(
-        "pyrallel_consumer.control_plane.broker_poller.Producer",
-        return_value=MagicMock(),
-    ) as mock_producer, patch(
-        "pyrallel_consumer.control_plane.broker_poller.AdminClient",
-        return_value=MagicMock(),
-    ) as mock_admin, patch(
-        "pyrallel_consumer.control_plane.broker_poller.Consumer",
-        return_value=MagicMock(),
-    ) as mock_consumer_ctor, patch("asyncio.create_task", side_effect=fake_create_task):
+    with (
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Producer",
+            return_value=MagicMock(),
+        ) as mock_producer,
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.AdminClient",
+            return_value=MagicMock(),
+        ) as mock_admin,
+        patch(
+            "pyrallel_consumer.control_plane.broker_poller.Consumer",
+            return_value=MagicMock(),
+        ) as mock_consumer_ctor,
+        patch("asyncio.create_task", side_effect=fake_create_task),
+    ):
         await broker_poller.start()
 
     assert broker_poller._running is True
@@ -882,9 +1007,10 @@ async def test_stop_cancels_consumer_task_after_timeout(broker_poller):
     broker_poller._consumer_task = timed_out_task
     broker_poller._shutdown_event.set()
 
-    with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError), patch(
-        "asyncio.gather", new=AsyncMock()
-    ) as gather_mock:
+    with (
+        patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        patch("asyncio.gather", new=AsyncMock()) as gather_mock,
+    ):
         await broker_poller.stop()
 
     timed_out_task.cancel.assert_called_once_with()

@@ -16,17 +16,19 @@
 
 Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병렬성을 극대화하면서도 데이터 정합성과 순서 보장을 유지하도록 설계되었습니다.
 
-> **릴리즈 정책:** 현재 배포 라인은 stable(`1.0.0`)입니다. `main` 브랜치는 Semantic Versioning 기준의 stable 패치/마이너 안정화 및 기능 개발 브랜치로 운영합니다.
+> **릴리즈 정책:** 현재 배포 버전은 stable(`1.0.0`)입니다. `main` 브랜치는 stable 릴리즈 브랜치이며, prerelease 라인은 opt-in preview 채널로 운영됩니다.
 
 ## 지원 / 호환성 정책
 
 - **Python:** 현재 패키지 메타데이터 기준 지원 대상은 `>=3.12`이며, 배포 classifier는 Python `3.12`, `3.13`을 명시합니다.
 - **Kafka:** 현재 자동화된 호환성 baseline은 `confluentinc/cp-kafka:7.6.0` 위에서 문서화된 Python/client lane을 broker-backed 검증으로 확인합니다. 그 외 브로커 배포판이나 더 오래된 client/broker 조합은 best-effort이며, 자세한 표는 [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md)를 참고하세요.
-- **릴리즈 지원:** 최신 stable 라인(`1.x`)을 적극 유지보수 대상으로 삼습니다. 과거 prerelease 빌드(`0.1.xa*`)는 best-effort 범위이며 수정 보장을 제공하지 않습니다.
+- **릴리즈 라인 지원:** 최신 stable minor를 active support 대상으로, 직전 stable minor를 security-fix-only 대상으로 운영하며, prerelease 라인은 best-effort입니다.
 - **정책 상세:** [`docs/operations/support-policy.md`](./docs/operations/support-policy.md)를 참고하세요.
 - **보안 제보 경로:** [`SECURITY.md`](./SECURITY.md)를 참고하세요.
+- **Public contract freeze:** [`docs/operations/public-contract-v1.md`](./docs/operations/public-contract-v1.md)에서 stable v1 기준의 ordering / rebalance / DLQ / commit contract surface를 확인할 수 있습니다.
 - **업그레이드/롤백 가이드:** [`docs/operations/upgrade-rollback-guide.md`](./docs/operations/upgrade-rollback-guide.md)를 참고하세요.
 - **릴리즈 인시던트 런북:** [`docs/operations/playbooks.md`](./docs/operations/playbooks.md)를 참고하세요.
+- **stable operations evidence reference:** [`docs/operations/stable-operations-evidence.md`](./docs/operations/stable-operations-evidence.md)를 참고하세요.
 
 ## 🌟 주요 특징
 
@@ -71,6 +73,21 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | 평균 worker-to-main IPC 시간 |
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
+
+### Runtime Snapshot API
+
+Prometheus scrape 외에 운영자가 즉시 구조화된 런타임 상태를 확인할 수 있도록,
+퍼사드는 `PyrallelConsumer.get_runtime_snapshot()`도 제공합니다. 이 snapshot은
+기존 runtime state를 읽기 전용으로 투영하며 다음 정보를 담습니다.
+
+- queue 요약 (`total_in_flight`, `total_queued`, live `max_in_flight`, configured ceiling, pause/rebalance 상태, ordering mode)
+- retry 정책 snapshot (최대 재시도 횟수와 backoff 설정)
+- DLQ runtime 상태 (활성화 여부, 토픽, payload mode, message cache 사용량)
+- 파티션별 assignment/runtime 상태 (epoch, committed/fetched offset, gaps, blocking offset age, queue depth, in-flight count, 최소 in-flight offset)
+
+`adaptive_concurrency.enabled=true`이면 `execution.max_in_flight`는 설정된
+ceiling으로 유지되고, 실제 런타임에서 적용 중인 control-plane 한도는
+`runtime_snapshot.queue.max_in_flight`로 확인합니다.
 
 ## 📊 벤치마크 샘플 (프로파일 OFF)
 
@@ -242,7 +259,7 @@ DLQ 토픽으로 전송되는 메시지는 다음 헤더를 포함합니다:
 
 ### 재시도 & DLQ 설정 (요약)
 - `KafkaConfig.dlq_enabled` (기본 `True`): 실패 메시지를 DLQ로 발행할지 여부
-- `KafkaConfig.DLQ_TOPIC_SUFFIX` (기본 `.dlq`): DLQ 토픽 접미사 (`<원본토픽><접미사>`)
+- `KafkaConfig.dlq_topic_suffix` (기본 `.dlq`): DLQ 토픽 접미사 (`<원본토픽><접미사>`)
 - `ExecutionConfig.max_retries` (기본 `3`): 워커 실행 재시도 횟수
 - `ExecutionConfig.retry_backoff_ms` (기본 `1000`): 재시도 대기 시작값(ms)
 - `ExecutionConfig.exponential_backoff` (기본 `True`): 지수 백오프 사용 여부
@@ -266,7 +283,7 @@ from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 config = KafkaConfig()
 config.dlq_enabled = True
-config.DLQ_TOPIC_SUFFIX = ".failed"
+config.dlq_topic_suffix = ".failed"
 config.metrics.enabled = True
 config.metrics.port = 9091
 config.parallel_consumer.ordering_mode = "key_hash"  # 또는 "partition" / "unordered"
@@ -278,7 +295,16 @@ async def worker(item: WorkItem):
     ...
 
 consumer = PyrallelConsumer(config=config, worker=worker, topic="orders")
+
+runtime_snapshot = consumer.get_runtime_snapshot()
+# runtime_snapshot.queue.total_in_flight
+# runtime_snapshot.partitions[0].blocking_offset
 ```
+
+Python 코드에서의 canonical config access는 `config.bootstrap_servers`,
+`config.consumer_group`, `config.dlq_topic_suffix` 같은 lowercase
+snake_case 속성입니다. 기존 대문자 속성은 하위 호환 alias로 유지되며,
+환경 변수 이름은 계속 기존 `KAFKA_*` / `PARALLEL_CONSUMER_*` 규칙을 사용합니다.
 
 정렬 모드:
 - `key_hash` (기본값): 동일 key 내 순서를 보장하면서 key 간 병렬성을 허용
@@ -291,6 +317,22 @@ process 워커 수를 뜻하지 않습니다.
 process 모드 튜닝은 `worker_pool_size`보다
 `config.parallel_consumer.execution.process_config.process_count`를 기준으로
 조정하는 편이 맞습니다.
+
+Adaptive concurrency 제어 (opt-in):
+- `adaptive_concurrency.enabled`: control-plane이 live `max_in_flight` 상한을 자동 조정합니다.
+- `adaptive_concurrency.min_in_flight`: live limit의 하한 guardrail입니다. `0`이면 자동값으로 해석되며 configured ceiling의 대략 25%를 사용합니다.
+- `adaptive_concurrency.scale_up_step` / `scale_down_step`: 한 번 조정할 때 늘리거나 줄이는 슬롯 수입니다.
+- `adaptive_concurrency.cooldown_ms`: 조정 사이의 최소 대기 시간으로, limit 진동을 줄입니다.
+
+Adaptive concurrency를 켜도 `execution.max_in_flight`는 여전히 hard ceiling입니다.
+control plane은 `get_runtime_snapshot().queue.max_in_flight`에 보이는 effective live
+limit만 바꾸며, async semaphore나 process count 같은 engine 내부는 런타임에 재구성하지 않습니다.
+
+종료 정책 제어:
+- `shutdown_policy`: 기본값 `graceful`. 새 fetch를 멈춘 뒤 bounded drain을 시도하고, 제한 시간을 넘기면 cancel / worker terminate 경로로 escalate합니다. `abort`는 drain window를 건너뛰고 즉시 forced-abort 경로로 이동합니다.
+- `consumer_task_stop_timeout_ms`: fetch 중단 후 `BrokerPoller.stop()`이 consumer loop 종료를 기다리는 최대 시간입니다.
+- `shutdown_drain_timeout_ms`: async/process 공통 drain window입니다. 명시적으로 override하지 않으면 async 모드는 기존 `async_config.shutdown_grace_timeout_ms`도 그대로 사용할 수 있습니다.
+- `process_config.worker_join_timeout_ms`: 공통 drain window 이후 process 모드에서 남은 worker를 join/terminate 하는 추가 제한 시간입니다.
 
 ### 🏁 빠른 시작 (선택) — DLQ 설정 포함 예제
 
@@ -310,12 +352,12 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
 
 config = KafkaConfig(
-    BOOTSTRAP_SERVERS=["localhost:9092"],
-    CONSUMER_GROUP="demo-group",
-    AUTO_OFFSET_RESET="earliest",
+    bootstrap_servers=["localhost:9092"],
+    consumer_group="demo-group",
+    auto_offset_reset="earliest",
 )
 config.dlq_enabled = True
-config.DLQ_TOPIC_SUFFIX = ".failed"
+config.dlq_topic_suffix = ".failed"
 config.parallel_consumer.execution.mode = ExecutionMode.ASYNC  # 또는 PROCESS
 config.parallel_consumer.execution.max_in_flight = 512
 config.parallel_consumer.execution.max_retries = 5
@@ -354,6 +396,12 @@ asyncio.run(main())
 - I/O 바운드: `ExecutionMode.ASYNC`, async 워커 사용
 - CPU 바운드: `ExecutionMode.PROCESS`, picklable sync 워커 사용
 - 동시 처리량: `max_in_flight`를 먼저 조정하고, process 모드에서는 `process_count`를 함께 조정
+
+shutdown 정책 제어:
+- `shutdown_policy`: 기본값 `graceful`. 새 fetch를 멈춘 뒤 bounded drain을 시도하고, 제한 시간을 넘기면 cancel / worker terminate 경로로 escalate합니다. `abort`는 drain window를 건너뛰고 즉시 forced-abort 경로로 이동합니다.
+- `consumer_task_stop_timeout_ms`: fetch 중단 후 `BrokerPoller.stop()`이 consumer loop 종료를 기다리는 최대 시간입니다.
+- `shutdown_drain_timeout_ms`: async/process 공통 drain window입니다. 명시적으로 override하지 않으면 async 모드는 기존 `async_config.shutdown_grace_timeout_ms`도 그대로 사용할 수 있습니다.
+- `process_config.worker_join_timeout_ms`: 공통 drain window 이후 process 모드에서 각 worker join을 기다리는 추가 시간입니다.
 
 For detailed examples including async mode, process mode, configuration tuning, and graceful shutdown patterns, see the **[`examples/`](./examples/)** directory.
 
