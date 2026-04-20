@@ -14,6 +14,23 @@ def test_parallel_consumer_config_defaults():
     assert config.max_blocking_duration_ms == 0
     assert config.ordering_mode == OrderingMode.KEY_HASH
     assert config.strict_completion_monitor_enabled is True
+    assert config.poison_message.enabled is False
+    assert config.poison_message.failure_threshold == 3
+    assert config.poison_message.cooldown_ms == 30000
+
+
+def test_parallel_consumer_config_poison_message_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_POISON_MESSAGE__ENABLED", "true")
+    monkeypatch.setenv("PARALLEL_CONSUMER_POISON_MESSAGE__FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("PARALLEL_CONSUMER_POISON_MESSAGE__COOLDOWN_MS", "7500")
+
+    config = ParallelConsumerConfig()
+
+    assert config.poison_message.enabled is True
+    assert config.poison_message.failure_threshold == 2
+    assert config.poison_message.cooldown_ms == 7500
 
 
 def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None:

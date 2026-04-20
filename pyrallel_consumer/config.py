@@ -50,6 +50,18 @@ class MetricsConfig(BaseSettings):
     port: int = 9091
 
 
+class PoisonMessageConfig(BaseSettings):
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    failure_threshold: int = Field(default=3, gt=0)
+    cooldown_ms: int = Field(default=30000, ge=0)
+
+
 class ExecutionConfig(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="EXECUTION_",
@@ -104,6 +116,7 @@ class ParallelConsumerConfig(BaseSettings):
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     strict_completion_monitor_enabled: bool = True
+    poison_message: PoisonMessageConfig = PoisonMessageConfig()
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"

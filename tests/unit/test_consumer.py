@@ -46,12 +46,14 @@ class _DummyWorkManager:
         metrics_exporter=None,
         ordering_mode=None,
         max_revoke_grace_ms=None,
+        poison_message_circuit=None,
     ):
         self.execution_engine = execution_engine
         self.max_in_flight_messages = max_in_flight_messages
         self.metrics_exporter = metrics_exporter
         self.ordering_mode = ordering_mode
         self.max_revoke_grace_ms = max_revoke_grace_ms
+        self.poison_message_circuit = poison_message_circuit
 
     def set_metrics_exporter(self, metrics_exporter) -> None:
         self.metrics_exporter = metrics_exporter
@@ -108,6 +110,7 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
         metrics_exporter=None,
         ordering_mode=None,
         max_revoke_grace_ms=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -116,6 +119,7 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
             metrics_exporter=metrics_exporter,
             ordering_mode=ordering_mode,
             max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
         )
         return dummy_work_manager
 
@@ -153,6 +157,8 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
         dummy_work_manager.max_revoke_grace_ms
         == consumer.config.parallel_consumer.execution.max_revoke_grace_ms
     )
+    assert dummy_work_manager.poison_message_circuit is not None
+    assert dummy_work_manager.poison_message_circuit.enabled is False
     assert dummy_work_manager.metrics_exporter is None
 
     await consumer.start()
@@ -163,6 +169,66 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     assert dummy_poller.stopped is True
     assert dummy_engine.shutdown_called is True
     assert dummy_poller.metrics.source == "dummy"
+
+
+def test_pyrallel_consumer_wires_poison_message_circuit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_work_manager = None
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        metrics_exporter=None,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        poison_message_circuit=None,
+    ):
+        nonlocal dummy_work_manager
+        dummy_work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+        )
+        return dummy_work_manager
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        return _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    config = KafkaConfig(_env_file=None)
+    config.parallel_consumer.poison_message.enabled = True
+    config.parallel_consumer.poison_message.failure_threshold = 2
+    config.parallel_consumer.poison_message.cooldown_ms = 7500
+    config.parallel_consumer.execution.max_retries = 4
+
+    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    assert dummy_work_manager is not None
+    circuit = dummy_work_manager.poison_message_circuit
+    assert circuit is not None
+    assert circuit.enabled is True
+    assert circuit.failure_threshold == 2
+    assert circuit.cooldown_ms == 7500
 
 
 @pytest.mark.asyncio
@@ -183,6 +249,7 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         metrics_exporter=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -256,6 +323,7 @@ async def test_pyrallel_consumer_creates_exporter_on_start_not_init(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         metrics_exporter=None,
+        poison_message_circuit=None,
     ):
         return _DummyWorkManager(
             execution_engine=execution_engine,
@@ -318,6 +386,7 @@ async def test_pyrallel_consumer_metrics_cleanup_on_start_failure(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         metrics_exporter=None,
+        poison_message_circuit=None,
     ):
         manager = _DummyWorkManager(
             execution_engine=execution_engine,
@@ -380,6 +449,7 @@ async def test_pyrallel_consumer_stop_updates_metrics_even_when_poller_stop_fail
         ordering_mode=None,
         max_revoke_grace_ms=None,
         metrics_exporter=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -446,6 +516,7 @@ async def test_pyrallel_consumer_uses_configured_ordering_mode(
         metrics_exporter=None,
         ordering_mode=None,
         max_revoke_grace_ms=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -498,6 +569,7 @@ async def test_pyrallel_consumer_stop_still_shuts_down_engine_on_poller_failure(
         metrics_exporter=None,
         ordering_mode=None,
         max_revoke_grace_ms=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -552,6 +624,7 @@ async def test_pyrallel_consumer_wait_closed_is_passive(monkeypatch: MonkeyPatch
         metrics_exporter=None,
         ordering_mode=None,
         max_revoke_grace_ms=None,
+        poison_message_circuit=None,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(

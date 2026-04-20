@@ -4,6 +4,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsumerConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
+from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import SystemMetrics, WorkItem
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
@@ -99,11 +100,23 @@ class PyrallelConsumer:
 
         # 2. Create Work Manager
         ordering_mode = parallel_config.ordering_mode
+        poison_message_config = getattr(parallel_config, "poison_message", None)
+        poison_message_circuit = None
+        if poison_message_config is not None:
+            poison_message_circuit = PoisonMessageCircuitBreaker(
+                enabled=bool(getattr(poison_message_config, "enabled", False)),
+                failure_threshold=int(
+                    getattr(poison_message_config, "failure_threshold", 3)
+                ),
+                cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
+                forced_failure_attempt=execution_config.max_retries,
+            )
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
             ordering_mode=ordering_mode,
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
         )
 
         # 3. Create Broker Poller (The main loop)

@@ -75,18 +75,42 @@ def mock_work_manager():
 
     completion_queue = asyncio.Queue()
     wm.submitted_messages = []
+    poison_key_unset = object()
 
-    async def submit_message_side_effect(tp, offset, epoch, key, payload):
+    async def submit_message_side_effect(
+        tp,
+        offset,
+        epoch,
+        key,
+        payload,
+        poison_key=poison_key_unset,
+    ):
         work_item_id = str(uuid.uuid4())
+        work_item_kwargs = {}
+        if poison_key is not poison_key_unset:
+            work_item_kwargs["poison_key"] = poison_key
         work_item = WorkItem(
-            id=work_item_id, tp=tp, offset=offset, epoch=epoch, key=key, payload=payload
+            id=work_item_id,
+            tp=tp,
+            offset=offset,
+            epoch=epoch,
+            key=key,
+            payload=payload,
+            **work_item_kwargs,
         )
         wm.submitted_messages.append(work_item)
 
     async def submit_message_batch_side_effect(grouped_messages):
         for (tp, key), messages in grouped_messages.items():
-            for offset, epoch, payload in messages:
-                await submit_message_side_effect(tp, offset, epoch, key, payload)
+            for message in messages:
+                if len(message) == 3:
+                    offset, epoch, payload = message
+                    poison_key = key
+                else:
+                    offset, epoch, payload, poison_key = message
+                await submit_message_side_effect(
+                    tp, offset, epoch, key, payload, poison_key
+                )
 
     async def poll_completed_events_side_effect():
         if completion_queue.empty():
@@ -292,6 +316,9 @@ async def test_run_consumer_loop_basic_flow(
     )
     assert submitted_item.offset == original_msg.offset()
     assert submitted_item.epoch == mock_offset_tracker_instance.get_current_epoch()
+    assert submitted_item.key == original_msg.key()
+    assert submitted_item.payload == original_msg.value()
+    assert submitted_item.poison_key == original_msg.key()
 
     assert mock_work_manager.schedule.call_count >= 1
     assert mock_work_manager.poll_completed_events.call_count >= 1
