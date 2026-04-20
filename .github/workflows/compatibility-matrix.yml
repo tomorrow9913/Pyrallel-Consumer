@@ -1,0 +1,137 @@
+name: compatibility-matrix
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - "docs/operations/**"
+      - ".github/e2e.compose.yml"
+      - ".github/compatibility-matrix.json"
+      - "scripts/compatibility_matrix.py"
+      - ".github/workflows/compatibility-matrix.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - "docs/operations/**"
+      - ".github/e2e.compose.yml"
+      - ".github/compatibility-matrix.json"
+      - "scripts/compatibility_matrix.py"
+      - ".github/workflows/compatibility-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check generated compatibility docs
+        run: |
+          python3 scripts/compatibility_matrix.py --check
+      - id: load
+        name: Load compatibility matrix manifest
+        run: |
+          matrix_json="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path(".github/compatibility-matrix.json").read_text(encoding="utf-8")
+          )
+          print(json.dumps(manifest))
+          PY
+          )"
+          echo "matrix=${matrix_json}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Pin compatibility client baseline
+        if: ${{ matrix.client-version != 'locked' }}
+        run: |
+          uv pip install --python .venv/bin/python "confluent-kafka==${{ matrix.client-version }}"
+      - name: Start Kafka for compatibility verification
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+          KAFKA_IMAGE: ${{ matrix.kafka-image }}
+        run: |
+          docker compose -f .github/e2e.compose.yml up -d kafka-1
+      - name: Wait for Kafka metadata readiness
+        run: |
+          .venv/bin/python - <<'PY'
+          import time
+
+          from confluent_kafka.admin import AdminClient
+
+          client = AdminClient({"bootstrap.servers": "127.0.0.1:9092"})
+          deadline = time.time() + 90
+          while time.time() < deadline:
+              try:
+                  metadata = client.list_topics(timeout=5)
+                  if getattr(metadata, "brokers", None):
+                      raise SystemExit(0)
+              except Exception:
+                  time.sleep(1)
+          raise SystemExit(
+              "Kafka did not become metadata-ready on localhost:9092 within 90 seconds"
+          )
+          PY
+      - name: Run broker-backed compatibility verification
+        env:
+          PYRALLEL_E2E_REQUIRE_BROKER: "1"
+        run: |
+          mkdir -p .artifacts
+          .venv/bin/python -m pytest "${{ matrix.test-target }}" -q --maxfail=1 --junitxml=".artifacts/${{ matrix.name }}-junit.xml"
+      - name: Append compatibility summary
+        if: always()
+        run: |
+          {
+            echo "| Python | Kafka image | Client | Verification |"
+            echo "| --- | --- | --- | --- |"
+            echo "| ${{ matrix.python-version }} | ${{ matrix.kafka-image }} | ${{ matrix.client-version }} | ${{ matrix.test-target }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-${{ matrix.name }}-${{ github.run_id }}
+          path: |
+            .artifacts/${{ matrix.name }}-junit.xml
+            docs/operations/compatibility-matrix.md
+      - name: Stop Kafka
+        if: always()
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+          KAFKA_IMAGE: ${{ matrix.kafka-image }}
+        run: |
+          docker compose -f .github/e2e.compose.yml down

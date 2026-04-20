@@ -14,7 +14,7 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 ## Support / Compatibility Policy
 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
-- **Kafka:** the actively verified broker path today is the local Docker / CI-backed Kafka flow used by the project's E2E suite. Treat other broker distributions or older client/broker combinations as best-effort until a broader compatibility matrix is documented and automated.
+- **Kafka:** the automated compatibility baseline currently covers the documented Python/client lanes on `confluentinc/cp-kafka:7.6.0` through broker-backed verification. Other broker distributions or older client/broker combinations remain best-effort. See [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md).
 - **Release support:** the latest stable line (`1.x`) is the actively maintained support target. Historical prerelease builds (`0.1.xa*`) are best-effort and receive no guaranteed fixes.
 - **Policy detail:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
 - **Security reporting path:** see [`SECURITY.md`](./SECURITY.md).
@@ -50,6 +50,18 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | Time blocked by oldest offset/task |
 | `consumer_backpressure_active` | Gauge | – | Backpressure status (1=paused) |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | Kafka commit metadata payload size |
+| `consumer_process_batch_flush_count` | Gauge | `reason` | Process-mode batch flush count by `size`, `timer`, `close`, or `demand` |
+| `consumer_process_batch_avg_size` | Gauge | – | Average process-mode batch size |
+| `consumer_process_batch_last_size` | Gauge | – | Most recent process-mode batch size |
+| `consumer_process_batch_last_wait_seconds` | Gauge | – | Wait time before the most recent process-mode batch flush |
+| `consumer_process_batch_buffered_items` | Gauge | – | Items currently waiting in the process-mode batch buffer |
+| `consumer_process_batch_buffered_age_seconds` | Gauge | – | Age of the current process-mode batch buffer |
+| `consumer_process_batch_last_main_to_worker_ipc_seconds` | Gauge | – | Most recent main-to-worker IPC time |
+| `consumer_process_batch_avg_main_to_worker_ipc_seconds` | Gauge | – | Average main-to-worker IPC time |
+| `consumer_process_batch_last_worker_exec_seconds` | Gauge | – | Most recent worker execution time |
+| `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | Average worker execution time |
+| `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | Most recent worker-to-main IPC time |
+| `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
 
@@ -336,10 +348,20 @@ docker compose up -d
 - `consumer_in_flight_count`
 - `consumer_process_batch_flush_count{reason="timer"}`
 - `consumer_process_batch_avg_size`
+- `consumer_process_batch_last_size`
+- `consumer_process_batch_last_wait_seconds`
+- `consumer_process_batch_buffered_items`
 - `consumer_process_batch_buffered_age_seconds`
+- `consumer_process_batch_last_main_to_worker_ipc_seconds`
 - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
+- `consumer_process_batch_last_worker_exec_seconds`
 - `consumer_process_batch_avg_worker_exec_seconds`
+- `consumer_process_batch_last_worker_to_main_ipc_seconds`
 - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
+
+Interpretation and operator actions for these metrics live in:
+- `docs/operations/guide.en.md`
+- `docs/operations/guide.ko.md`
 
 ## 🤝 Contributing
 

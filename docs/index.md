@@ -17,6 +17,7 @@ This group includes:
 - **[operations/index.md](./operations/index.md)** - operations document entry point
 - **[operations/guide.ko.md](./operations/guide.ko.md)** - Korean operations guide
 - **[operations/guide.en.md](./operations/guide.en.md)** - English operations guide
+- **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/playbooks.md](./operations/playbooks.md)** - operations playbooks and tuning procedures
 - **[operations/public-contract-v1.md](./operations/public-contract-v1.md)** - v1 ordering/rebalance/DLQ/commit public contract freeze
 - **[operations/oss-messaging-guardrails.md](./operations/oss-messaging-guardrails.md)** - inbound-only OSS messaging policy guardrails
