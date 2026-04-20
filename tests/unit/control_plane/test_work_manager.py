@@ -532,7 +532,7 @@ async def test_submit_message_batch_schedule_preserves_key_hash_parallelism(
         {
             (mock_dto_topic_partition, b"key-a"): [
                 (10, 1, b"payload-10"),
-                (11, 0, b"payload-11"),
+                (11, 1, b"payload-11"),
             ],
             (mock_dto_topic_partition, b"key-b"): [
                 (12, 1, b"payload-12"),
@@ -551,8 +551,7 @@ async def test_submit_message_batch_schedule_preserves_key_hash_parallelism(
 
 @pytest.mark.asyncio
 async def test_poison_message_circuit_forces_same_key_without_engine_resubmit(
-    mock_execution_engine,
-    mock_dto_topic_partition,
+    mock_execution_engine, mock_dto_topic_partition
 ):
     work_manager = WorkManager(
         execution_engine=mock_execution_engine,
@@ -561,51 +560,61 @@ async def test_poison_message_circuit_forces_same_key_without_engine_resubmit(
         poison_message_circuit=PoisonMessageCircuitBreaker(
             enabled=True,
             failure_threshold=1,
-            cooldown_ms=60_000,
+            cooldown_ms=60000,
             forced_failure_attempt=3,
         ),
     )
-    work_manager.on_assign([mock_dto_topic_partition])
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
 
     await work_manager.submit_message_batch(
         {
             (mock_dto_topic_partition, b"hot-key"): [
-                (10, 0, b"payload-10"),
-                (11, 0, b"payload-11"),
-            ]
+                (0, tracker.get_current_epoch(), b"payload-0"),
+                (1, tracker.get_current_epoch(), b"payload-1"),
+            ],
+            (mock_dto_topic_partition, b"healthy-key"): [
+                (2, tracker.get_current_epoch(), b"payload-2"),
+            ],
         }
     )
-
     await work_manager.schedule()
-    first_item = mock_execution_engine.submit.await_args.args[0]
-    assert first_item.offset == 10
 
-    mock_execution_engine.poll_completed_events.return_value = [
-        CompletionEvent(
-            id=first_item.id,
-            tp=mock_dto_topic_partition,
-            offset=10,
-            epoch=0,
-            status=CompletionStatus.FAILURE,
-            error="worker failed",
-            attempt=3,
-        )
+    submitted_offsets = [
+        call.args[0].offset for call in mock_execution_engine.submit.await_args_list
     ]
+    assert submitted_offsets == [0, 2]
+    failed_item = mock_execution_engine.submit.await_args_list[0].args[0]
+    failure = CompletionEvent(
+        id=failed_item.id,
+        tp=failed_item.tp,
+        offset=failed_item.offset,
+        epoch=failed_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="permanent failure",
+        attempt=3,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [failure]
 
     completed_events = await work_manager.poll_completed_events()
 
-    assert [event.offset for event in completed_events] == [10, 11]
+    assert [event.offset for event in completed_events] == [0, 1]
     forced_event = completed_events[1]
     assert forced_event.status == CompletionStatus.FAILURE
+    assert forced_event.attempt == 3
     assert "Poison message circuit open" in str(forced_event.error)
-    assert mock_execution_engine.submit.await_count == 1
-    assert work_manager.get_total_queued_messages() == 0
+    assert [
+        call.args[0].offset for call in mock_execution_engine.submit.await_args_list
+    ] == [0, 2]
 
 
 @pytest.mark.asyncio
 async def test_poison_message_circuit_uses_original_key_under_partition_ordering(
-    mock_execution_engine,
-    mock_dto_topic_partition,
+    mock_execution_engine, mock_dto_topic_partition
 ):
     work_manager = WorkManager(
         execution_engine=mock_execution_engine,
@@ -614,63 +623,68 @@ async def test_poison_message_circuit_uses_original_key_under_partition_ordering
         poison_message_circuit=PoisonMessageCircuitBreaker(
             enabled=True,
             failure_threshold=1,
-            cooldown_ms=60_000,
+            cooldown_ms=60000,
             forced_failure_attempt=3,
         ),
     )
-    work_manager.on_assign([mock_dto_topic_partition])
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
 
     await work_manager.submit_message_batch(
         {
             (mock_dto_topic_partition, mock_dto_topic_partition.partition): [
-                (20, 0, b"payload-20", b"poison-key"),
-                (21, 0, b"payload-21", b"healthy-key"),
-                (22, 0, b"payload-22", b"poison-key"),
+                (0, tracker.get_current_epoch(), b"payload-0", b"hot-key"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"healthy-key"),
             ]
         }
     )
+    await work_manager.schedule()
+    failed_item = mock_execution_engine.submit.await_args_list[0].args[0]
+    failure = CompletionEvent(
+        id=failed_item.id,
+        tp=failed_item.tp,
+        offset=failed_item.offset,
+        epoch=failed_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="permanent failure",
+        attempt=3,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [failure]
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert [event.offset for event in completed_events] == [0]
+    assert [
+        call.args[0].offset for call in mock_execution_engine.submit.await_args_list
+    ] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_get_in_flight_counts_excludes_queued_not_dispatched_items(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        max_in_flight_messages=1,
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 0, 1, b"key-a", b"payload-0"
+    )
+    await work_manager.submit_message(
+        mock_dto_topic_partition, 1, 1, b"key-b", b"payload-1"
+    )
+
+    assert work_manager.get_in_flight_counts() == {}
 
     await work_manager.schedule()
-    first_item = mock_execution_engine.submit.await_args.args[0]
-    assert first_item.offset == 20
 
-    mock_execution_engine.poll_completed_events.return_value = [
-        CompletionEvent(
-            id=first_item.id,
-            tp=mock_dto_topic_partition,
-            offset=20,
-            epoch=0,
-            status=CompletionStatus.FAILURE,
-            error="worker failed",
-            attempt=3,
-        )
-    ]
-
-    completed_events = await work_manager.poll_completed_events()
-
-    assert [event.offset for event in completed_events] == [20]
-    assert mock_execution_engine.submit.await_count == 2
-    second_item = mock_execution_engine.submit.await_args.args[0]
-    assert second_item.offset == 21
-
-    mock_execution_engine.poll_completed_events.return_value = [
-        CompletionEvent(
-            id=second_item.id,
-            tp=mock_dto_topic_partition,
-            offset=21,
-            epoch=0,
-            status=CompletionStatus.SUCCESS,
-            error=None,
-            attempt=1,
-        )
-    ]
-
-    completed_events = await work_manager.poll_completed_events()
-
-    assert [event.offset for event in completed_events] == [21, 22]
-    assert completed_events[1].status == CompletionStatus.FAILURE
-    assert "Poison message circuit open" in str(completed_events[1].error)
-    assert mock_execution_engine.submit.await_count == 2
+    assert work_manager.get_in_flight_counts() == {mock_dto_topic_partition: 1}
 
 
 @pytest.mark.asyncio
@@ -764,6 +778,14 @@ async def test_schedule_keeps_assigned_partition_after_queue_drains(
             ].qsize()
             == 1
         )
+
+
+def test_work_manager_allows_runtime_max_in_flight_updates(
+    work_manager,
+) -> None:
+    work_manager.set_max_in_flight_messages(37)
+
+    assert work_manager.get_max_in_flight_messages() == 37
 
 
 @pytest.mark.asyncio

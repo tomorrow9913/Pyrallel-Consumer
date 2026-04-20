@@ -167,6 +167,13 @@ class ProcessBatchMetrics:
         last_flush_wait_seconds (float): Wait time of the most recent flushed batch
         buffered_items (int): Number of currently buffered items
         buffered_age_seconds (float): Age of current buffer since first item
+        demand_flush_count (int): Number of demand-triggered flushes
+        last_main_to_worker_ipc_seconds (float): Most recent main-to-worker IPC time
+        avg_main_to_worker_ipc_seconds (float): Average main-to-worker IPC time
+        last_worker_exec_seconds (float): Most recent worker execution time
+        avg_worker_exec_seconds (float): Average worker execution time
+        last_worker_to_main_ipc_seconds (float): Most recent worker-to-main IPC time
+        avg_worker_to_main_ipc_seconds (float): Average worker-to-main IPC time
     """
 
     size_flush_count: int
@@ -223,3 +230,92 @@ class SystemMetrics:
     is_paused: bool
     partitions: list[PartitionMetrics]
     process_batch_metrics: Optional[ProcessBatchMetrics] = None
+
+
+@dataclass(frozen=True)
+class QueueRuntimeSnapshot:
+    total_in_flight: int
+    total_queued: int
+    max_in_flight: int
+    is_paused: bool
+    is_rebalancing: bool
+    ordering_mode: OrderingMode
+    configured_max_in_flight: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class AdaptiveConcurrencyRuntimeSnapshot:
+    configured_max_in_flight: int
+    effective_max_in_flight: int
+    min_in_flight: int
+    scale_up_step: int
+    scale_down_step: int
+    cooldown_ms: int
+
+
+@dataclass(frozen=True)
+class AdaptiveBackpressureSnapshot:
+    configured_max_in_flight: int
+    effective_max_in_flight: int
+    min_in_flight: int
+    scale_up_step: int
+    scale_down_step: int
+    cooldown_ms: int
+    lag_scale_up_threshold: int
+    low_latency_threshold_ms: float
+    high_latency_threshold_ms: float
+    last_decision: str
+    avg_completion_latency_seconds: Optional[float]
+
+
+@dataclass(frozen=True)
+class RetryPolicySnapshot:
+    max_retries: int
+    retry_backoff_ms: int
+    exponential_backoff: bool
+    max_retry_backoff_ms: int
+    retry_jitter_ms: int
+
+
+@dataclass(frozen=True)
+class DlqRuntimeSnapshot:
+    enabled: bool
+    topic: str
+    payload_mode: DLQPayloadMode
+    message_cache_size_bytes: int
+    message_cache_entry_count: int
+
+
+@dataclass(frozen=True)
+class PoisonMessageRuntimeSnapshot:
+    enabled: bool
+    failure_threshold: int
+    cooldown_ms: int
+    open_circuit_count: int
+
+
+@dataclass(frozen=True)
+class PartitionRuntimeSnapshot:
+    tp: TopicPartition
+    current_epoch: int
+    last_committed_offset: int
+    last_fetched_offset: int
+    true_lag: int
+    gaps: list[OffsetRange]
+    blocking_offset: Optional[int]
+    blocking_duration_sec: Optional[float]
+    queued_count: int
+    in_flight_count: int
+    min_in_flight_offset: Optional[int]
+
+
+@dataclass(frozen=True)
+class RuntimeSnapshot:
+    queue: QueueRuntimeSnapshot
+    retry: RetryPolicySnapshot
+    dlq: DlqRuntimeSnapshot
+    partitions: list[PartitionRuntimeSnapshot]
+    adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot] = None
+    adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot] = None
+    process_batch_metrics: Optional[ProcessBatchMetrics] = None
+    poison_message: Optional[PoisonMessageRuntimeSnapshot] = None

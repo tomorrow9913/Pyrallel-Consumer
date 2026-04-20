@@ -6,7 +6,13 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import OffsetRange, ProcessBatchMetrics, SystemMetrics
+from pyrallel_consumer.dto import (
+    DLQPayloadMode,
+    OffsetRange,
+    OrderingMode,
+    ProcessBatchMetrics,
+    SystemMetrics,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
@@ -212,3 +218,68 @@ class TestBrokerPollerMetrics:
         assert metrics.process_batch_metrics is not None
         assert metrics.process_batch_metrics.size_flush_count == 3
         assert metrics.process_batch_metrics.buffered_items == 1
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_snapshot_projects_runtime_state(
+        self, broker_poller_with_mocks, mock_work_manager, mock_offset_tracker
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+        mock_offset_tracker.last_fetched_offset = 100
+        mock_offset_tracker.last_committed_offset = 90
+        mock_offset_tracker.get_current_epoch.return_value = 2
+        mock_offset_tracker.get_gaps.return_value = [OffsetRange(91, 95)]
+        mock_offset_tracker.get_blocking_offset_durations.return_value = {91: 1.25}
+        broker_poller_with_mocks._offset_trackers[tp] = mock_offset_tracker
+
+        mock_work_manager.get_total_in_flight_count.return_value = 6
+        mock_work_manager.get_total_queued_messages.return_value = 4
+        mock_work_manager.get_virtual_queue_sizes.return_value = {tp: {"keyA": 4}}
+        mock_work_manager.get_in_flight_counts.return_value = {tp: 2}
+        mock_work_manager.is_rebalancing.return_value = False
+
+        process_metrics = ProcessBatchMetrics(
+            size_flush_count=3,
+            timer_flush_count=2,
+            close_flush_count=1,
+            total_flushed_items=12,
+            last_flush_size=4,
+            last_flush_wait_seconds=0.05,
+            buffered_items=1,
+            buffered_age_seconds=0.2,
+        )
+        broker_poller_with_mocks._execution_engine.get_runtime_metrics.return_value = (
+            process_metrics
+        )
+        broker_poller_with_mocks._execution_engine.get_min_inflight_offset.return_value = 92
+        broker_poller_with_mocks._message_cache_size_bytes = 64
+        broker_poller_with_mocks._message_cache = {(tp, 91): (b"k", b"v")}
+        broker_poller_with_mocks.ORDERING_MODE = OrderingMode.PARTITION
+        broker_poller_with_mocks._kafka_config.dlq_enabled = True
+        broker_poller_with_mocks._kafka_config.DLQ_TOPIC_SUFFIX = ".dlq"
+        broker_poller_with_mocks._kafka_config.dlq_payload_mode = (
+            DLQPayloadMode.METADATA_ONLY
+        )
+
+        snapshot = broker_poller_with_mocks.get_runtime_snapshot()
+
+        assert snapshot.queue.total_in_flight == 6
+        assert snapshot.queue.total_queued == 4
+        assert snapshot.queue.max_in_flight == 100
+        assert snapshot.queue.configured_max_in_flight == 100
+        assert snapshot.queue.ordering_mode == OrderingMode.PARTITION
+        assert snapshot.adaptive_concurrency is None
+        assert snapshot.retry.max_retries == (
+            broker_poller_with_mocks._kafka_config.parallel_consumer.execution.max_retries
+        )
+        assert snapshot.dlq.enabled is True
+        assert snapshot.dlq.topic == "test-topic.dlq"
+        assert snapshot.dlq.payload_mode == DLQPayloadMode.METADATA_ONLY
+        assert snapshot.dlq.message_cache_size_bytes == 64
+        assert snapshot.dlq.message_cache_entry_count == 1
+        assert snapshot.process_batch_metrics == process_metrics
+        assert len(snapshot.partitions) == 1
+        partition = snapshot.partitions[0]
+        assert partition.current_epoch == 2
+        assert partition.blocking_offset == 91
+        assert partition.in_flight_count == 2
+        assert partition.min_in_flight_offset == 92
