@@ -59,6 +59,9 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | Blocking offset이 막고 있는 시간 |
 | `consumer_backpressure_active` | Gauge | – | Backpressure 동작 여부 (1=Pause) |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | Kafka 커밋 메타데이터 페이로드 크기 |
+| `consumer_resource_signal_status` | Gauge | `status` | resource signal 상태를 고정 one-hot label로 표시: `available`, `unavailable`, `stale`, `first_sample_pending` |
+| `consumer_resource_cpu_utilization_ratio` | Gauge | – | 최신 resource-signal CPU 사용률 비율. fail-open 상태에서는 `0` |
+| `consumer_resource_memory_utilization_ratio` | Gauge | – | 최신 resource-signal memory 사용률 비율. fail-open 상태에서는 `0` |
 | `consumer_process_batch_flush_count` | Gauge | `reason` | process-mode batch flush 이유별 누적 수 (`size`, `timer`, `close`, `demand`) |
 | `consumer_process_batch_avg_size` | Gauge | – | process-mode 평균 batch 크기 |
 | `consumer_process_batch_last_size` | Gauge | – | 최근 process-mode batch 크기 |

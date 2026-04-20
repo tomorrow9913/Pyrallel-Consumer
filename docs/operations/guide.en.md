@@ -26,7 +26,18 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: Represents the current system load.
 - **Tip**: When this value reaches the `max_in_flight` setting, **Backpressure** activates, and Kafka consumption is `Paused`.
 
-### 1.5. Process Batch Flush Count
+### 1.5. Resource Signals
+- **Prometheus queries**:
+    - `consumer_resource_signal_status{status="available"}`
+    - `consumer_resource_signal_status{status="unavailable"}`
+    - `consumer_resource_signal_status{status="stale"}`
+    - `consumer_resource_signal_status{status="first_sample_pending"}`
+    - `consumer_resource_cpu_utilization_ratio`
+    - `consumer_resource_memory_utilization_ratio`
+- **Meaning**: Resource signal gauges are advisory inputs for tuning experiments. The status gauge uses fixed labels only; no dynamic `provider` label is exported.
+- **Tip**: Treat `unavailable`, `stale`, and `first_sample_pending` as fail-open states. They should explain why resource-aware tuning is inactive, not force a lower concurrency limit.
+
+### 1.6. Process Batch Flush Count
 - **Prometheus query**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **Meaning**:
     - `size`: batches are reaching the configured batch size and flushing efficiently.
@@ -37,7 +48,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - If `timer` dominates and `consumer_process_batch_avg_size` stays low, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` only if the latency budget allows it.
     - If `demand` keeps growing, the workload is spending more time on latency-first forced flushes than on full batches. Revisit `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, and ordering skew together.
 
-### 1.6. Process Batch Buffer Health
+### 1.7. Process Batch Buffer Health
 - **Prometheus queries**:
     - `consumer_process_batch_avg_size`
     - `consumer_process_batch_last_size`
@@ -52,7 +63,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - If `buffered_items` and `buffered_age_seconds` rise together, the bottleneck is before worker execution, in the batching handoff path. Interpret them together with `consumer_in_flight_count`, `consumer_backpressure_active`, and `consumer_internal_queue_depth`.
     - If `last_size` stays around 1-2 while `last_wait_seconds` keeps climbing, the producer rate is sparse or the batch policy is oversized for this workload.
 
-### 1.7. IPC / Worker Timing Split
+### 1.8. IPC / Worker Timing Split
 - **Prometheus queries**:
     - `consumer_process_batch_last_main_to_worker_ipc_seconds`
     - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
@@ -69,7 +80,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - High `worker_exec` alone points to CPU saturation or slow handler logic; tune `process_count`, optimize the worker, or tighten timeout/DLQ policy.
     - High `worker_to_main` with rising `buffered_items` or `consumer_in_flight_count` suggests completion drain is lagging. Check main-process load, completion polling cadence, and overly chatty logging/metrics loops.
 
-### 1.8. Engine Capability Boundary
+### 1.9. Engine Capability Boundary
 - **Definition**: The control plane only depends on the shared execution-engine contract.
 - **Meaning**: Process-only safety data such as minimum in-flight offsets should be exposed as an optional engine capability, not by branching on a concrete engine class inside `BrokerPoller`.
 - **Tip**: When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.

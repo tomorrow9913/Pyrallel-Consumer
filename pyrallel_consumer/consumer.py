@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsumerConfig
@@ -9,6 +10,10 @@ from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import SystemMetrics, WorkItem
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
+from pyrallel_consumer.resource_signals import (
+    NullResourceSignalProvider,
+    ResourceSignalProvider,
+)
 
 _PROMETHEUS_EXPORTERS: dict[int, PrometheusMetricsExporter] = {}
 _PROMETHEUS_EXPORTER_REFCOUNTS: dict[int, int] = {}
@@ -65,6 +70,7 @@ class PyrallelConsumer:
         config: KafkaConfig,
         worker: Union[Callable[[WorkItem], Awaitable[Any]], Callable[[WorkItem], Any]],
         topic: str,
+        resource_signal_provider: Optional[ResourceSignalProvider] = None,
     ):
         """
         Initialize the Pyrallel Consumer.
@@ -79,6 +85,9 @@ class PyrallelConsumer:
         self._logger = logging.getLogger(__name__)
         self.config = config
         self._topic = topic
+        self._resource_signal_provider = (
+            resource_signal_provider or NullResourceSignalProvider()
+        )
 
         metrics_config = getattr(self.config, "metrics", None)
         if metrics_config is None:
@@ -130,7 +139,13 @@ class PyrallelConsumer:
     def _publish_metrics_snapshot(self) -> None:
         if self._metrics_exporter is None:
             return
-        self._metrics_exporter.update_from_system_metrics(self._poller.get_metrics())
+        metrics = self._poller.get_metrics()
+        resource_signal = self._resource_signal_provider.snapshot()
+        try:
+            metrics = replace(metrics, resource_signal=resource_signal)
+        except TypeError:
+            setattr(metrics, "resource_signal", resource_signal)
+        self._metrics_exporter.update_from_system_metrics(metrics)
 
     async def start(self) -> None:
         """
