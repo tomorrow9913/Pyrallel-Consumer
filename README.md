@@ -50,6 +50,18 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | Time blocked by oldest offset/task |
 | `consumer_backpressure_active` | Gauge | – | Backpressure status (1=paused) |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | Kafka commit metadata payload size |
+| `consumer_process_batch_flush_count` | Gauge | `reason` | Process-mode batch flush count by `size`, `timer`, `close`, or `demand` |
+| `consumer_process_batch_avg_size` | Gauge | – | Average process-mode batch size |
+| `consumer_process_batch_last_size` | Gauge | – | Most recent process-mode batch size |
+| `consumer_process_batch_last_wait_seconds` | Gauge | – | Wait time before the most recent process-mode batch flush |
+| `consumer_process_batch_buffered_items` | Gauge | – | Items currently waiting in the process-mode batch buffer |
+| `consumer_process_batch_buffered_age_seconds` | Gauge | – | Age of the current process-mode batch buffer |
+| `consumer_process_batch_last_main_to_worker_ipc_seconds` | Gauge | – | Most recent main-to-worker IPC time |
+| `consumer_process_batch_avg_main_to_worker_ipc_seconds` | Gauge | – | Average main-to-worker IPC time |
+| `consumer_process_batch_last_worker_exec_seconds` | Gauge | – | Most recent worker execution time |
+| `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | Average worker execution time |
+| `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | Most recent worker-to-main IPC time |
+| `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
 
@@ -336,9 +348,15 @@ docker compose up -d
 - `consumer_in_flight_count`
 - `consumer_process_batch_flush_count{reason="timer"}`
 - `consumer_process_batch_avg_size`
+- `consumer_process_batch_last_size`
+- `consumer_process_batch_last_wait_seconds`
+- `consumer_process_batch_buffered_items`
 - `consumer_process_batch_buffered_age_seconds`
+- `consumer_process_batch_last_main_to_worker_ipc_seconds`
 - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
+- `consumer_process_batch_last_worker_exec_seconds`
 - `consumer_process_batch_avg_worker_exec_seconds`
+- `consumer_process_batch_last_worker_to_main_ipc_seconds`
 - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
 
 Interpretation and operator actions for these metrics live in:

@@ -1,6 +1,9 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 4월 17일 금요일*
+*최종 업데이트: 2026년 4월 20일 월요일*
+
+## 최근 업데이트 (2026-04-20)
+- MQU-19 GitHub #55 process-mode metrics 운영 문서 clean PR 준비 (2026-04-20 KST): `origin/develop` 기준 독립 worktree에서 process-mode batch/IPC/worker timing 운영 문서를 보강했습니다. `README.md`/`README.ko.md` Core Metrics 표와 예시 쿼리에 `consumer_process_batch_*` exporter gauge 12개를 명시했고, `docs/operations/guide.en.md`/`guide.ko.md`의 flush reason PromQL을 regex matcher(`reason=~"size|timer|close|demand"`)로 정정했습니다. 또한 비노출 축약 이름(`worker_to_main_ipc_seconds`, `total_in_flight`)을 실제 Prometheus metric 이름(`consumer_process_batch_*`, `consumer_in_flight_count`)으로 교체하고, `tests/unit/test_operations_evidence_assets.py`로 문서 metric inventory 회귀 테스트를 추가했습니다.
 
 ## 최근 업데이트 (2026-04-17)
 - Release gate evidence 문서 보강 (2026-04-17): QA 변경요청에 따라 `docs/operations/release-readiness.md`의 P0 구간에 `P0/E2E Gate (broker-backed release gate)` 라인을 추가했습니다. fresh evidence로 `e2e` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048`)와 `release-verify` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673`)를 고정 집계했고, `Run broker-backed E2E tests (release gate)` step success 확인 근거를 함께 명시했습니다.
