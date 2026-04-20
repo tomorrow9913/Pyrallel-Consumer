@@ -1,25 +1,21 @@
 # Ordered Work Scheduling Index
 
-이 문서는 `ordered-work-scheduling` subfeature의 목차다.
-이 subfeature는 `WorkManager`가 ordering mode를 해석하고 virtual queue를 운영하며, blocking offset 우선 스케줄링을 수행하는 구간을 다룬다.
+This index is the canonical English entry for the subfeature document set.
+For the preserved Korean source text, see [00-index.ko.md](./00-index.ko.md).
 
-## 이 subfeature가 답하는 질문
+## Subfeature summary
 
-- key/partition/unordered 세 모드는 정확히 어떻게 다른가
-- 왜 virtual partition queue가 필요한가
-- 어떤 기준으로 runnable queue를 고르고 starvation을 막는가
-- WorkManager는 어디까지 알고, execution engine 내부는 어디서부터 모르는가
+`ordered-work-scheduling` covers ordering modes, virtual queues, runnable selection, blocking-offset priority, and starvation protection. It belongs to the same blueprint family as the companion documents listed below.
 
-## 문서 역할
+## Focus areas
 
-| 문서 | 역할 |
-| --- | --- |
-| [01-requirements.md](./01-requirements.md) | ordering-aware scheduling의 책임과 acceptance 기준 |
-| [02-architecture.md](./02-architecture.md) | queue topology, runnable selection, blocking-first policy |
-| [03-design.md](./03-design.md) | ordering mode별 계약, `WorkItem` 사용 규칙, queue state shape |
+- Virtual partition and ordering-mode interpretation.
+- Blocking-offset-first scheduling inside `WorkManager`.
+- Backpressure-aware queue management without leaking engine internals.
 
-## 빠른 읽기 분기
+## Companion documents
 
-- ordering mode의 사용자-facing 의미가 궁금하면 `03-design.md`
-- `WorkManager` 내부 queue topology가 궁금하면 `02-architecture.md`
-- scheduling 책임 범위가 궁금하면 `01-requirements.md`
+- [00-index.md](./00-index.md)
+- [01-requirements.md](./01-requirements.md)
+- [02-architecture.md](./02-architecture.md)
+- [03-design.md](./03-design.md)

@@ -1,25 +1,21 @@
 # Benchmark Runtime Index
 
-이 문서는 `benchmark-runtime` subfeature의 목차다.
-이 subfeature는 baseline/async/process 비교 벤치마크, TUI, profiling, 결과 해석 규칙을 다룬다.
+This index is the canonical English entry for the subfeature document set.
+For the preserved Korean source text, see [00-index.ko.md](./00-index.ko.md).
 
-## 이 subfeature가 답하는 질문
+## Subfeature summary
 
-- benchmark는 어떤 모드와 workload를 비교하는가
-- CLI와 TUI는 어떻게 역할을 나누는가
-- profiling은 어떤 도구를 어떤 모드에서 쓰는가
-- TPS와 per-message latency는 어떻게 해석해야 하는가
+`benchmark-runtime` covers baseline vs async vs process benchmark tooling, profiling hooks, and reproducible result summaries. It belongs to the same blueprint family as the companion documents listed below.
 
-## 문서 역할
+## Focus areas
 
-| 문서 | 역할 |
-| --- | --- |
-| [01-requirements.md](./01-requirements.md) | benchmark surface의 책임과 acceptance 기준 |
-| [02-architecture.md](./02-architecture.md) | runner, producer, baseline, pyrallel engine, stats, TUI 관계 |
-| [03-design.md](./03-design.md) | 핵심 CLI 옵션, workload semantics, outputs, 해석 규칙 |
+- Comparable throughput and latency measurement across runtime modes.
+- CLI and TUI benchmarking entry points.
+- Profiling support, artifact handling, and result interpretation.
 
-## 빠른 읽기 분기
+## Companion documents
 
-- CLI 옵션과 workload 의미를 보려면 `03-design.md`
-- benchmark orchestration 구조를 보려면 `02-architecture.md`
-- 이 subfeature의 범위를 먼저 알고 싶으면 `01-requirements.md`
+- [00-index.md](./00-index.md)
+- [01-requirements.md](./01-requirements.md)
+- [02-architecture.md](./02-architecture.md)
+- [03-design.md](./03-design.md)
