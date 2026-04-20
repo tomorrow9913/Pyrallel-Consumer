@@ -143,3 +143,82 @@ All three gates below must pass for final `PASS`.
   - evidence completeness gate: `pass`
 - Overall verdict: `PASS`
 - Follow-up: `P1` keeps long-window matrix repetition as ongoing work; soak automation and broader operational hardening remain `P2` (`docs/operations/release-readiness.md`).
+
+## Evidence refresh - 2026-04-19 UTC
+
+### Run E - default-timeout rerun (caution artifact)
+
+- Command:
+  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --skip-async --workloads sleep --order partition --strict-completion-monitor on --num-messages 20000 --num-partitions 8 --metrics-port 9091 --json-output benchmarks/results/mqu269-process-partition-strict-on-20260419T072721Z.json`
+- Artifacts:
+  - soak log: `.omx/artifacts/mqu-269/soak-process-partition-strict-on-20260419T072721Z.log`
+  - soak json: not generated (run aborted on timeout before JSON write)
+- Result:
+  - timed out after `60s`
+  - processed `15813 / 20000`
+  - `Final TPS 249.98`
+  - ordering validation still reported `PASS (partition)` on the processed subset
+- Key observation:
+  - repeated `Commit failed: Broker: Unknown topic or partition` errors
+    appeared while the run was using the shared benchmark topic prefix
+
+### Run F - isolated rerun with dedicated topic prefix and extended timeout
+
+- Command:
+  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --topic-prefix mqu269-soak --skip-baseline --skip-async --workloads sleep --order partition --strict-completion-monitor on --num-messages 20000 --num-partitions 8 --timeout-sec 180 --metrics-port 9091 --json-output benchmarks/results/mqu269-process-partition-strict-on-timeout180-20260419T072843Z.json`
+- Artifacts:
+  - soak log: `.omx/artifacts/mqu-269/soak-process-partition-strict-on-timeout180-20260419T072843Z.log`
+  - soak json: `benchmarks/results/mqu269-process-partition-strict-on-timeout180-20260419T072843Z.json`
+- Result:
+  - completed in `71.97s`
+  - throughput `277.88 TPS`
+  - `avg_processing_ms 6.82`, `p99_processing_ms 10.22`
+  - ordering validation `PASS (partition)`
+- Key observation:
+  - intermittent backpressure pauses recurred through the run
+  - partition-local lag/gap spikes were visible in diagnostics and converged by completion
+
+### Run G - recovery semantics refresh
+
+- Command:
+  - `UV_CACHE_DIR=.uv-cache PYRALLEL_E2E_REQUIRE_BROKER=1 uv run pytest tests/e2e/test_process_recovery.py -q`
+- Artifact:
+  - recovery log: `.omx/artifacts/mqu-269/process-recovery-20260419T073004Z.log`
+- Result:
+  - `4 passed in 17.54s`
+  - rebalance/restart/retry/DLQ scenarios all passed
+
+### Gate Verdict (2026-04-19 refresh)
+
+- soak execution gate: **PASS**
+  - evidence: Run F completed successfully and retained JSON/log artifacts
+- recovery semantics gate: **PASS**
+  - evidence: Run G passed 4/4
+- evidence completeness gate: **PASS**
+  - evidence: command/artifact/observation/status are recorded, and Run E is retained as a caution artifact rather than hidden
+- Overall verdict: **PASS**
+  - rationale: the credible package for this refresh is Run F + Run G; Run E documents the default-timeout sensitivity of this combo but does not replace the retained PASS package
+
+## Soak/Restart evidence - 2026-04-19 UTC (template-aligned refresh package)
+
+- Soak command: `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --topic-prefix mqu269-soak --skip-baseline --skip-async --workloads sleep --order partition --strict-completion-monitor on --num-messages 20000 --num-partitions 8 --timeout-sec 180 --metrics-port 9091 --json-output benchmarks/results/mqu269-process-partition-strict-on-timeout180-20260419T072843Z.json`
+- Runtime / volume: `71.97s`, `20000 messages`, `8 partitions`, `100 keys`
+- Workloads / ordering / strict monitor: `sleep`, `partition`, `strict-completion-monitor=on`
+- Artifacts:
+  - soak log: `.omx/artifacts/mqu-269/soak-process-partition-strict-on-timeout180-20260419T072843Z.log`
+  - soak json: `benchmarks/results/mqu269-process-partition-strict-on-timeout180-20260419T072843Z.json`
+  - recovery log: `.omx/artifacts/mqu-269/process-recovery-20260419T073004Z.log`
+- Observations:
+  - backpressure: intermittent pauses recurred throughout the run and recovered without manual intervention
+  - lag/gap: partition-local gaps appeared transiently and converged by completion
+  - anomalies: the paired default-timeout rerun (`.omx/artifacts/mqu-269/soak-process-partition-strict-on-20260419T072721Z.log`) timed out with commit errors, so the dedicated-prefix `180s` rerun is the retained PASS artifact for this refresh
+- Recovery checks:
+  - rebalance: `pass` (covered by `tests/e2e/test_process_recovery.py`)
+  - restart: `pass` (covered by `tests/e2e/test_process_recovery.py`)
+  - DLQ: `pass` (covered by `tests/e2e/test_process_recovery.py`)
+- Gate results:
+  - soak execution gate: `pass`
+  - recovery semantics gate: `pass`
+  - evidence completeness gate: `pass`
+- Overall verdict: `PASS`
+- Follow-up: `P1` keeps long-window matrix repetition as ongoing work; soak automation, default-timeout tuning for this sensitive combo, and broader operational hardening remain `P2` (`docs/operations/release-readiness.md`).

@@ -79,6 +79,10 @@ uv sync --group dev
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
 
+For the release-review reference that ties the benchmark baseline policy to the
+current soak evidence package, see
+[`docs/operations/stable-operations-evidence.md`](../docs/operations/stable-operations-evidence.md).
+
 
 ## Recent sample results (no profiling, 4 partitions, 2000 msgs, 100 keys)
 - Workload `sleep` (5ms): baseline 159.69 TPS; async 2206.35 TPS; process 910.04 TPS.
@@ -129,6 +133,9 @@ uv run pytest tests/e2e/test_process_recovery.py -q
 ```
 
 These notes are the minimum evidence trail for the remaining soak / long-running stability checklist item in release-readiness tracking.
+
+For the fixed pass/fail gate and the latest template-aligned evidence package,
+use [`docs/operations/soak-restart-evidence.md`](../docs/operations/soak-restart-evidence.md).
 
 ## Interpreting TPS vs per-message latency
 

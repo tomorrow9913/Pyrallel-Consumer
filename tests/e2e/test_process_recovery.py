@@ -283,13 +283,13 @@ def _topic_name(prefix: str) -> str:
 
 def _build_kafka_config(group_id: str) -> KafkaConfig:
     kafka_config = KafkaConfig(
-        BOOTSTRAP_SERVERS=[BOOTSTRAP_SERVERS],
-        CONSUMER_GROUP=group_id,
-        AUTO_OFFSET_RESET=E2E_CONF["auto.offset.reset"],
-        ENABLE_AUTO_COMMIT=E2E_CONF["enable.auto.commit"],
+        bootstrap_servers=[BOOTSTRAP_SERVERS],
+        consumer_group=group_id,
+        auto_offset_reset=E2E_CONF["auto.offset.reset"],
+        enable_auto_commit=E2E_CONF["enable.auto.commit"],
     )
     kafka_config.dlq_enabled = True
-    kafka_config.DLQ_TOPIC_SUFFIX = DLQ_SUFFIX
+    kafka_config.dlq_topic_suffix = DLQ_SUFFIX
     kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
     return kafka_config
 
@@ -482,20 +482,24 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
 
             release_event.set()
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="rebalance scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="rebalance scenario never committed the final safe offset",
             )
@@ -552,6 +556,9 @@ async def test_process_restart_preserves_offset_continuity() -> None:
 
         first_config = _build_kafka_config(group_id)
         second_config = _build_kafka_config(group_id)
+        # Keep the first runtime from buffering the whole partition before restart.
+        first_config.parallel_consumer.poll_batch_size = 1
+        second_config.parallel_consumer.poll_batch_size = 1
         first_poller, first_engine = _build_process_runtime(
             topic=topic,
             kafka_config=first_config,
@@ -568,20 +575,24 @@ async def test_process_restart_preserves_offset_continuity() -> None:
         await first_poller.start()
         try:
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[1] == "first"
-                    }
-                )
-                >= restart_after_commit,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[1] == "first"
+                        }
+                    )
+                    >= restart_after_commit
+                ),
                 timeout_seconds=30,
                 message="first poller did not process the expected pre-restart subset",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                >= restart_after_commit,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    >= restart_after_commit
+                ),
                 timeout_seconds=15,
                 message="committed offset did not advance before restart",
             )
@@ -595,32 +606,38 @@ async def test_process_restart_preserves_offset_continuity() -> None:
         await second_poller.start()
         try:
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[1] == "second"
-                    }
-                )
-                >= 1,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[1] == "second"
+                        }
+                    )
+                    >= 1
+                ),
                 timeout_seconds=30,
                 message="second poller did not process any post-restart work",
             )
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="restart scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="restart scenario never committed the final safe offset",
             )
@@ -724,20 +741,24 @@ async def test_process_retry_path_commits_only_after_success() -> None:
 
             success_release_event.set()
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="retry scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="retry scenario never committed the final safe offset",
             )
@@ -805,14 +826,18 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
         await poller.start()
         try:
             await _wait_until(
-                lambda: int(attempt_counts.get(target_key, 0))
-                >= kafka_config.parallel_consumer.execution.max_retries,
+                lambda: (
+                    int(attempt_counts.get(target_key, 0))
+                    >= kafka_config.parallel_consumer.execution.max_retries
+                ),
                 timeout_seconds=20,
                 message="dlq scenario never exhausted the configured retry count",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=20,
                 message="dlq scenario never committed the final safe offset",
             )

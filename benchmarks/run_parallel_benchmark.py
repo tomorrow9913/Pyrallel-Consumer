@@ -792,6 +792,39 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
     )
 
 
+def _resolve_effective_process_batching(
+    args: argparse.Namespace,
+) -> tuple[int | None, int | None]:
+    process_batch_size = args.process_batch_size
+    process_max_batch_wait_ms = args.process_max_batch_wait_ms
+
+    if args.skip_process:
+        return process_batch_size, process_max_batch_wait_ms
+    if "sleep" not in args.workloads:
+        return process_batch_size, process_max_batch_wait_ms
+    if "partition" not in args.order:
+        return process_batch_size, process_max_batch_wait_ms
+    if "on" not in args.strict_completion_monitor:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.worker_sleep_ms > 0.5:
+        return process_batch_size, process_max_batch_wait_ms
+    if process_batch_size is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if process_max_batch_wait_ms is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.process_flush_policy is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.process_demand_flush_min_residence_ms is not None:
+        return process_batch_size, process_max_batch_wait_ms
+
+    print(
+        "[info] Auto-tuning process micro-batch for strict partition run: "
+        "process_batch_size=1, process_max_batch_wait_ms=0",
+        flush=True,
+    )
+    return 1, 0
+
+
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
@@ -820,6 +853,10 @@ def run_benchmark(
     profile_dir = Path(args.profile_dir)
 
     _warn_on_tiny_partition_process_defaults(args)
+    (
+        effective_process_batch_size,
+        effective_process_max_batch_wait_ms,
+    ) = _resolve_effective_process_batching(args)
 
     results: List[BenchmarkResult] = []
 
@@ -922,9 +959,9 @@ def run_benchmark(
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
-                                    process_batch_size=args.process_batch_size,
+                                    process_batch_size=effective_process_batch_size,
                                     process_max_batch_wait_ms=(
-                                        args.process_max_batch_wait_ms
+                                        effective_process_max_batch_wait_ms
                                     ),
                                     process_flush_policy=args.process_flush_policy,
                                     process_demand_flush_min_residence_ms=(
@@ -975,9 +1012,9 @@ def run_benchmark(
                                 strict_completion_monitor_enabled=(
                                     strict_completion_monitor_enabled
                                 ),
-                                process_batch_size=args.process_batch_size,
+                                process_batch_size=effective_process_batch_size,
                                 process_max_batch_wait_ms=(
-                                    args.process_max_batch_wait_ms
+                                    effective_process_max_batch_wait_ms
                                 ),
                                 process_flush_policy=args.process_flush_policy,
                                 process_demand_flush_min_residence_ms=(
@@ -1003,6 +1040,8 @@ def run_benchmark(
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_path = f"benchmarks/results/{timestamp}.json"
     options = {k: v for k, v in vars(args).items()}
+    options["effective_process_batch_size"] = effective_process_batch_size
+    options["effective_process_max_batch_wait_ms"] = effective_process_max_batch_wait_ms
     write_results_json(results, Path(output_path), options=options)
     print(f"\nJSON summary written to {output_path}")
 

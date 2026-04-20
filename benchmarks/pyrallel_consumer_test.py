@@ -246,11 +246,11 @@ def build_kafka_config(
         effective_conf["group.id"] = consumer_group
 
     kafka_config = KafkaConfig(
-        BOOTSTRAP_SERVERS=[effective_conf["bootstrap.servers"]],
-        CONSUMER_GROUP=effective_conf["group.id"],
-        AUTO_OFFSET_RESET=effective_conf["auto.offset.reset"],
-        ENABLE_AUTO_COMMIT=effective_conf["enable.auto.commit"],
-        SESSION_TIMEOUT_MS=effective_conf["session.timeout.ms"],
+        bootstrap_servers=[effective_conf["bootstrap.servers"]],
+        consumer_group=effective_conf["group.id"],
+        auto_offset_reset=effective_conf["auto.offset.reset"],
+        enable_auto_commit=effective_conf["enable.auto.commit"],
+        session_timeout_ms=effective_conf["session.timeout.ms"],
     )
 
     kafka_config.parallel_consumer.execution.max_in_flight = 2000
