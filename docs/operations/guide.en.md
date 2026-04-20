@@ -27,7 +27,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Tip**: When this value reaches the `max_in_flight` setting, **Backpressure** activates, and Kafka consumption is `Paused`.
 
 ### 1.5. Process Batch Flush Count
-- **Prometheus query**: `consumer_process_batch_flush_count{reason="size|timer|close|demand"}`
+- **Prometheus query**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **Meaning**:
     - `size`: batches are reaching the configured batch size and flushing efficiently.
     - `timer`: input is sparse or `max_batch_wait_ms` is expiring before the batch fills.

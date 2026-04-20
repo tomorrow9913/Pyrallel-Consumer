@@ -1,6 +1,9 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 4월 17일 금요일*
+*최종 업데이트: 2026년 4월 20일 월요일*
+
+## 최근 업데이트 (2026-04-20)
+- PR #60 post-merge Codex review 후속 수정 (2026-04-20 KST): PR #60이 merge된 뒤 생성된 Codex review comment를 확인했고, `consumer_process_batch_flush_count{reason="size|timer|close|demand"}`가 PromQL exact-match라 정상 배포에서 빈 결과를 반환한다는 지적이 기술적으로 맞음을 검증했습니다. `docs/operations/guide.en.md`와 `docs/operations/guide.ko.md`의 process batch flush reason set 쿼리를 regex match(`reason=~"size|timer|close|demand"`)로 수정했고, `tests/unit/metrics/test_monitoring_assets.py::test_operations_guides_use_regex_for_process_flush_reason_set`로 영어/한국어 운영 가이드가 같은 계약을 유지하도록 고정했습니다. Copilot follow-up으로 한국어 가이드 파일을 읽는 테스트에는 `encoding="utf-8", errors="strict"`를 명시해 non-UTF-8 locale에서도 deterministic하게 실패/통과하도록 보강했습니다.
 
 ## 최근 업데이트 (2026-04-17)
 - Release gate evidence 문서 보강 (2026-04-17): QA 변경요청에 따라 `docs/operations/release-readiness.md`의 P0 구간에 `P0/E2E Gate (broker-backed release gate)` 라인을 추가했습니다. fresh evidence로 `e2e` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725840/artifacts/6488389048`)와 `release-verify` run/artifact(`https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833`, `https://github.com/tomorrow9913/Pyrallel-Consumer/actions/runs/24546725833/artifacts/6488394673`)를 고정 집계했고, `Run broker-backed E2E tests (release gate)` step success 확인 근거를 함께 명시했습니다.
