@@ -27,7 +27,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **운영 팁**: 이 값이 `max_in_flight` 설정값에 도달하면 **Backpressure**가 동작하여 Kafka 소비를 일시 중지(`Pause`)합니다.
 
 ### 1.5. Process Batch Flush Count (process 배치 flush 이유)
-- **Prometheus 쿼리**: `consumer_process_batch_flush_count{reason="size|timer|close|demand"}`
+- **Prometheus 쿼리**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **의미**:
     - `size`: 배치 크기가 설정값에 도달해 정상적으로 묶여 전송되었습니다.
     - `timer`: 입력이 느리거나 `max_batch_wait_ms`가 먼저 도달해 작은 배치가 자주 전송되고 있습니다.
