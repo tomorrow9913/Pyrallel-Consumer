@@ -7,11 +7,18 @@ import msgpack
 import pytest
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
-from pyrallel_consumer.dto import CompletionStatus, ExecutionMode, TopicPartition
+from pyrallel_consumer.dto import (
+    CompletionStatus,
+    ExecutionMode,
+    TopicPartition,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
     _completion_event_to_dict,
+    _work_item_from_dict,
+    _work_item_to_dict,
 )
 
 
@@ -28,6 +35,22 @@ async def _async_worker(_item) -> None:
 
 def _sync_worker(_item) -> None:
     return None
+
+
+def test_process_work_item_serialization_preserves_poison_key() -> None:
+    item = WorkItem(
+        id="work-1",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=3,
+        key=1,
+        payload=b"payload",
+        poison_key=b"original-key",
+    )
+
+    decoded = _work_item_from_dict(_work_item_to_dict(item))
+
+    assert decoded.poison_key == b"original-key"
 
 
 def test_ensure_workers_alive_does_not_requeue_timed_out_work(

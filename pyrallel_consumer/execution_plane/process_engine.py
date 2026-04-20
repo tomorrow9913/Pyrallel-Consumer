@@ -20,6 +20,7 @@ import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
+    WORK_ITEM_POISON_KEY_UNSET,
     CompletionEvent,
     CompletionStatus,
     ProcessBatchMetrics,
@@ -42,7 +43,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
-    return {
+    payload: SerializedWorkItem = {
         "id": item.id,
         "topic": item.tp.topic,
         "partition": item.tp.partition,
@@ -52,6 +53,9 @@ def _work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
         "payload": item.payload,
         "requeue_attempts": item.requeue_attempts,
     }
+    if item.poison_key is not WORK_ITEM_POISON_KEY_UNSET:
+        payload["poison_key"] = item.poison_key
+    return payload
 
 
 def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
@@ -63,6 +67,7 @@ def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
         key=payload.get("key"),
         payload=payload.get("payload"),
         requeue_attempts=payload.get("requeue_attempts", 0),
+        poison_key=payload.get("poison_key", WORK_ITEM_POISON_KEY_UNSET),
     )
 
 

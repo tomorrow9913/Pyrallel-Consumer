@@ -83,8 +83,8 @@ async def test_dispatch_messages_groups_ordered_messages_and_uses_bulk_submit() 
     assert submit_grouped_messages.await_args is not None
     grouped_messages = submit_grouped_messages.await_args.args[0]
     assert grouped_messages == {
-        (tp, b"key-a"): [(0, 3, b"payload-a")],
-        (tp, b"key-b"): [(1, 3, b"payload-b")],
+        (tp, b"key-a"): [(0, 3, b"payload-a", b"key-a")],
+        (tp, b"key-b"): [(1, 3, b"payload-b", b"key-b")],
     }
     assert cache_message_for_dlq.call_count == 2
 

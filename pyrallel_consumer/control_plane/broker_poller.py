@@ -37,6 +37,7 @@ from .broker_support import (
 from .broker_task_lifecycle_support import BrokerTaskLifecycleSupport
 from .metadata_encoder import MetadataEncoder
 from .offset_tracker import OffsetTracker
+from .poison_message import PoisonMessageCircuitBreaker
 from .work_manager import WorkManager
 
 logger = LogManager.get_logger(__name__)
@@ -122,11 +123,23 @@ class BrokerPoller:
         )
         self._drain_support = BrokerDrainSupport()
         self._dlq_cache_support = DlqCacheSupport()
+        poison_message_config = getattr(pc_conf, "poison_message", None)
+        poison_message_circuit = None
+        if poison_message_config is not None:
+            poison_message_circuit = PoisonMessageCircuitBreaker(
+                enabled=bool(getattr(poison_message_config, "enabled", False)),
+                failure_threshold=int(
+                    getattr(poison_message_config, "failure_threshold", 3)
+                ),
+                cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
+                forced_failure_attempt=pc_conf.execution.max_retries,
+            )
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             ordering_mode=self.ORDERING_MODE,
             blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
             max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
         )
 
         self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
@@ -552,7 +565,7 @@ class BrokerPoller:
     async def _submit_grouped_messages(
         self,
         grouped_messages: Dict[
-            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
+            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]
         ],
     ) -> None:
         if not grouped_messages:
@@ -564,7 +577,7 @@ class BrokerPoller:
             return
 
         for (tp, key), messages in grouped_messages.items():
-            for offset, epoch, payload in messages:
+            for offset, epoch, payload, _poison_key in messages:
                 await self._work_manager.submit_message(
                     tp=tp,
                     offset=offset,

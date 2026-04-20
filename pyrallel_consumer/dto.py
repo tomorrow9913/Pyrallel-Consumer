@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+WORK_ITEM_POISON_KEY_UNSET = object()
+
 
 # --- Completion ---
 class CompletionStatus(Enum):
@@ -87,6 +89,7 @@ class WorkItem:
         key (Any): 가상 파티셔닝을 위한 메시지 키
         payload (Any): 실제 메시지 페이로드
         requeue_attempts (int): process worker 재큐 시도 횟수
+        poison_key (Any): poison-message circuit 식별용 원본 메시지 키
     """
 
     id: str
@@ -96,6 +99,7 @@ class WorkItem:
     key: Any  # Message key for virtual partitioning
     payload: Any  # The actual message payload
     requeue_attempts: int = 0
+    poison_key: Any = WORK_ITEM_POISON_KEY_UNSET
 
 
 # --- Process Execution ---

@@ -17,7 +17,7 @@ class BrokerDispatchSupport:
         cache_message_for_dlq: Callable[..., None],
         submit_message: Callable[..., Awaitable[None]],
         submit_grouped_messages: Callable[
-            [dict[tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]]],
+            [dict[tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]]],
             Awaitable[None],
         ],
         get_min_inflight_offset: Callable[[DtoTopicPartition], int | None],
@@ -33,7 +33,7 @@ class BrokerDispatchSupport:
 
     async def dispatch_messages(self, messages: list[Message]) -> None:
         grouped_messages: dict[
-            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]
+            tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]
         ] = {}
 
         for msg in messages:
@@ -84,6 +84,7 @@ class BrokerDispatchSupport:
                         offset_val,
                         tracker.get_current_epoch(),
                         msg.value(),
+                        msg.key(),
                     )
                 )
 
