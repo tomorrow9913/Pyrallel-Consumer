@@ -47,7 +47,9 @@ def test_compatibility_workflow_uses_manifest_and_generated_docs() -> None:
     assert "fromJSON(needs.plan.outputs.matrix)" in workflow_text
     assert "scripts/compatibility_matrix.py --check" in workflow_text
     assert "KAFKA_IMAGE: ${{ matrix.kafka-image }}" in workflow_text
-    assert 'uv run pytest "${{ matrix.test-target }}" -q --maxfail=1' in workflow_text
+    assert ".venv/bin/python -m pytest" in workflow_text
+    assert 'uv run pytest "${{ matrix.test-target }}"' not in workflow_text
+    assert "uv run python - <<'PY'" not in workflow_text
     assert "docs/operations/compatibility-matrix.md" in workflow_text
 
 
