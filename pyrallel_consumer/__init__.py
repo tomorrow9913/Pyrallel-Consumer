@@ -15,10 +15,16 @@ from pyrallel_consumer.dto import (
     OrderingMode,
     PartitionRuntimeSnapshot,
     QueueRuntimeSnapshot,
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
     RetryPolicySnapshot,
     RuntimeSnapshot,
     SystemMetrics,
     WorkItem,
+)
+from pyrallel_consumer.resource_signals import (
+    NullResourceSignalProvider,
+    ResourceSignalProvider,
 )
 
 __all__ = [
@@ -35,9 +41,13 @@ __all__ = [
     "PartitionRuntimeSnapshot",
     "PyrallelConsumer",
     "QueueRuntimeSnapshot",
+    "ResourceSignalProvider",
+    "ResourceSignalSnapshot",
+    "ResourceSignalStatus",
     "RetryPolicySnapshot",
     "RuntimeSnapshot",
     "SystemMetrics",
     "WorkItem",
     "DlqRuntimeSnapshot",
+    "NullResourceSignalProvider",
 ]

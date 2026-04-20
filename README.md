@@ -52,6 +52,9 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | Time blocked by oldest offset/task |
 | `consumer_backpressure_active` | Gauge | – | Backpressure status (1=paused) |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | Kafka commit metadata payload size |
+| `consumer_resource_signal_status` | Gauge | `status` | Resource signal state as fixed one-hot labels: `available`, `unavailable`, `stale`, `first_sample_pending` |
+| `consumer_resource_cpu_utilization_ratio` | Gauge | – | Latest resource-signal CPU utilization ratio, or `0` when fail-open |
+| `consumer_resource_memory_utilization_ratio` | Gauge | – | Latest resource-signal memory utilization ratio, or `0` when fail-open |
 | `consumer_process_batch_flush_count` | Gauge | `reason` | Process-mode batch flush count by `size`, `timer`, `close`, or `demand` |
 | `consumer_process_batch_avg_size` | Gauge | – | Average process-mode batch size |
 | `consumer_process_batch_last_size` | Gauge | – | Most recent process-mode batch size |

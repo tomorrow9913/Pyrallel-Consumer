@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 release_policy = importlib.import_module("scripts.release_policy")
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-pypi.yml"
+RELEASE_VERIFY_WORKFLOW = ROOT / ".github" / "workflows" / "release-verify.yml"
 
 
 def test_classify_branch_kinds() -> None:
@@ -266,3 +267,14 @@ def test_publish_workflow_uses_release_policy_and_trusted_publishing() -> None:
     assert "resolve-artifacts --write-github-output" in text
     assert "id-token: write" in text
     assert "pypa/gh-action-pypi-publish@release/v1" in text
+
+
+def test_release_verify_runs_policy_preflight_and_smoke_install() -> None:
+    text = RELEASE_VERIFY_WORKFLOW.read_text()
+
+    assert "scripts.release_policy" in text
+    assert "validate_branch_version" in text
+    assert "validate_tag_version" in text
+    assert "resolve-artifacts --write-github-output" in text
+    assert "Smoke install/import from built wheel" in text
+    assert "pip install dist/pyrallel_consumer-*.whl" in text

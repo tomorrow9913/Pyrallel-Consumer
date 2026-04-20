@@ -193,6 +193,33 @@ class ProcessBatchMetrics:
     avg_worker_to_main_ipc_seconds: float = 0.0
 
 
+class ResourceSignalStatus(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    STALE = "stale"
+    FIRST_SAMPLE_PENDING = "first_sample_pending"
+
+
+@dataclass(frozen=True)
+class ResourceSignalSnapshot:
+    """
+    Host resource signal snapshot for future adaptive tuning decisions.
+
+    Non-available states are intentionally fail-open: they must not constrain
+    concurrency or backpressure decisions.
+    """
+
+    status: ResourceSignalStatus
+    cpu_utilization: Optional[float] = None
+    memory_utilization: Optional[float] = None
+    sampled_at_monotonic_seconds: Optional[float] = None
+    stale_after_seconds: Optional[float] = None
+
+    @property
+    def is_actionable_for_tuning(self) -> bool:
+        return self.status == ResourceSignalStatus.AVAILABLE
+
+
 @dataclass(frozen=True)
 class PartitionMetrics:
     """
@@ -230,6 +257,7 @@ class SystemMetrics:
     is_paused: bool
     partitions: list[PartitionMetrics]
     process_batch_metrics: Optional[ProcessBatchMetrics] = None
+    resource_signal: Optional[ResourceSignalSnapshot] = None
 
 
 @dataclass(frozen=True)

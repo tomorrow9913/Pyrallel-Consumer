@@ -26,7 +26,18 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 시스템 부하 상태를 나타냅니다.
 - **운영 팁**: 이 값이 `max_in_flight` 설정값에 도달하면 **Backpressure**가 동작하여 Kafka 소비를 일시 중지(`Pause`)합니다.
 
-### 1.5. Process Batch Flush Count (process 배치 flush 이유)
+### 1.5. Resource Signals (리소스 신호)
+- **Prometheus 쿼리**:
+    - `consumer_resource_signal_status{status="available"}`
+    - `consumer_resource_signal_status{status="unavailable"}`
+    - `consumer_resource_signal_status{status="stale"}`
+    - `consumer_resource_signal_status{status="first_sample_pending"}`
+    - `consumer_resource_cpu_utilization_ratio`
+    - `consumer_resource_memory_utilization_ratio`
+- **의미**: resource signal 지표는 튜닝 실험용 advisory input입니다. status gauge는 고정 label만 사용하며 동적 `provider` label은 노출하지 않습니다.
+- **운영 팁**: `unavailable`, `stale`, `first_sample_pending`은 fail-open 상태입니다. 이 값들은 resource-aware tuning이 비활성인 이유를 설명해야 하며, 자체적으로 concurrency limit를 낮추면 안 됩니다.
+
+### 1.6. Process Batch Flush Count (process 배치 flush 이유)
 - **Prometheus 쿼리**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **의미**:
     - `size`: 배치 크기가 설정값에 도달해 정상적으로 묶여 전송되었습니다.
@@ -37,7 +48,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `timer` 비중이 높고 `consumer_process_batch_avg_size`가 낮으면 batching 효율이 떨어진 상태입니다. 지연 예산이 허용하면 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리는 쪽을 검토하십시오.
     - `demand`가 계속 증가하면 latency-first 강제 flush가 많다는 뜻입니다. `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, ordering skew를 함께 확인하십시오.
 
-### 1.6. Process Batch Buffer Health (버퍼 적체 상태)
+### 1.7. Process Batch Buffer Health (버퍼 적체 상태)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_avg_size`
     - `consumer_process_batch_last_size`
@@ -52,7 +63,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `buffered_items`와 `buffered_age_seconds`가 같이 증가하면 process-mode 진입 이전(main thread batching 단계)에서 적체가 발생한 것입니다. `queue_size`만 보기보다 `consumer_in_flight_count`, `consumer_backpressure_active`, `consumer_internal_queue_depth`와 함께 해석하십시오.
     - `last_size`가 계속 1~2 수준이고 `last_wait_seconds`만 늘어나면 producer 입력이 듬성듬성하거나, 배치 정책이 현재 workload에 비해 과하게 큽니다.
 
-### 1.7. IPC / Worker Timing Split (IPC와 워커 실행 시간 분해)
+### 1.8. IPC / Worker Timing Split (IPC와 워커 실행 시간 분해)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_last_main_to_worker_ipc_seconds`
     - `consumer_process_batch_avg_main_to_worker_ipc_seconds`
@@ -69,7 +80,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `worker_exec`만 높으면 CPU saturation 또는 느린 사용자 로직 문제입니다. `process_count` 증설, worker 최적화, timeout/DLQ 정책 점검이 우선입니다.
     - `worker_to_main`이 높고 `buffered_items`나 `consumer_in_flight_count`도 높으면 completion drain이 밀리고 있을 가능성이 큽니다. main process 부하, completion polling cadence, 과도한 로그/metrics 갱신 빈도를 확인하십시오.
 
-### 1.8. Engine Capability Boundary (엔진 capability 경계)
+### 1.9. Engine Capability Boundary (엔진 capability 경계)
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
 - **의미**: 최소 in-flight offset 같은 Process 전용 안전 정보는 `BrokerPoller` 내부의 구체 클래스 분기 대신, 선택적 엔진 capability로 노출되어야 합니다.
 - **운영 팁**: 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.

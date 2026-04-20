@@ -19,6 +19,12 @@ PROCESS_MODE_METRICS = [
     "consumer_process_batch_avg_worker_to_main_ipc_seconds",
 ]
 
+RESOURCE_SIGNAL_METRICS = [
+    "consumer_resource_signal_status",
+    "consumer_resource_cpu_utilization_ratio",
+    "consumer_resource_memory_utilization_ratio",
+]
+
 
 def test_stable_operations_evidence_reference_is_linked_from_entrypoints() -> None:
     reference_doc = REPO_ROOT / "docs" / "operations" / "stable-operations-evidence.md"
@@ -98,3 +104,24 @@ def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
         )
         assert "`worker_to_main_ipc_seconds`" not in text
         assert "`total_in_flight` suggests" not in text
+
+
+def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> None:
+    docs = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.ko.md",
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+    ]
+
+    for path in docs:
+        text = path.read_text()
+        for metric in RESOURCE_SIGNAL_METRICS:
+            assert (
+                metric in text
+            ), f"{metric} missing from {path.relative_to(REPO_ROOT)}"
+
+    for path in docs:
+        text = path.read_text()
+        assert "first_sample_pending" in text
+        assert "consumer_resource_signal_status{provider" not in text

@@ -53,6 +53,40 @@ def test_build_system_metrics_projects_lag_gaps_and_queue_sizes() -> None:
     assert partition_metrics.queued_count == 5
 
 
+def test_build_system_metrics_preserves_zero_blocking_offset_duration() -> None:
+    from pyrallel_consumer.control_plane.broker_runtime_support import (
+        BrokerRuntimeSupport,
+    )
+
+    tp = DtoTopicPartition("test-topic", 0)
+    tracker = MagicMock()
+    tracker.last_fetched_offset = 10
+    tracker.last_committed_offset = -1
+    tracker.get_gaps.return_value = [OffsetRange(0, 0)]
+    tracker.get_blocking_offset_durations.return_value = {0: 2.5}
+    work_manager = MagicMock()
+    work_manager.get_total_in_flight_count.return_value = 1
+    work_manager.get_virtual_queue_sizes.return_value = {tp: {"key": 1}}
+
+    support = BrokerRuntimeSupport(
+        work_manager=work_manager,
+        offset_trackers={tp: tracker},
+        consumer=None,
+        max_in_flight_messages=100,
+        min_in_flight_messages_to_resume=70,
+        queue_max_messages=0,
+        queue_resume_threshold=0,
+        is_paused=False,
+        blocking_warn_seconds=5.0,
+        logger=MagicMock(),
+    )
+
+    metrics = support.build_system_metrics()
+
+    assert metrics.partitions[0].blocking_offset == 0
+    assert metrics.partitions[0].blocking_duration_sec == 2.5
+
+
 def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None:
     from pyrallel_consumer.control_plane.broker_runtime_support import (
         BrokerRuntimeSupport,

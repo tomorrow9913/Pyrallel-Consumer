@@ -3,10 +3,16 @@ name: release-verify
 on:
   push:
     branches: [main, 'release/**', 'hotfix/**']
+    tags: ['v*']
     paths:
       - "**/*.py"
       - "pyproject.toml"
       - "uv.lock"
+      - "CHANGELOG.md"
+      - "README.md"
+      - "README.ko.md"
+      - "SECURITY.md"
+      - "docs/operations/**"
       - "docker-compose.yml"
       - ".github/compatibility-matrix.json"
       - ".github/e2e.compose.yml"
@@ -14,6 +20,7 @@ on:
       - ".github/workflows/release-verify.yml"
       - ".github/workflows/e2e.yml"
       - "scripts/compatibility_matrix.py"
+      - "scripts/release_policy.py"
   workflow_dispatch:
 
 permissions:
@@ -87,9 +94,67 @@ jobs:
         run: |
           rm -rf dist
           uv build
+      - name: Run release policy preflight
+        id: release_artifacts
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          uv run python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          from scripts.release_policy import (
+              validate_branch_version,
+              validate_tag_version,
+          )
+
+          ref_name = "${{ github.ref_name }}"
+          ref_type = "${{ github.ref_type }}"
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"][
+              "version"
+          ]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          headings = re.findall(r"^## \\[([^\\]]+)\\]", changelog, flags=re.MULTILINE)
+          concrete = [heading for heading in headings if heading.lower() != "unreleased"]
+          if not concrete:
+              raise SystemExit("CHANGELOG.md must contain a concrete release heading")
+          if concrete[0] != version:
+              raise SystemExit(
+                  "CHANGELOG latest heading %r != pyproject version %r"
+                  % (concrete[0], version)
+              )
+
+          if ref_type == "tag":
+              if not validate_tag_version(ref_name, version):
+                  raise SystemExit(
+                      "Tag/version policy mismatch: tag=%r version=%r"
+                      % (ref_name, version)
+                  )
+          elif not validate_branch_version(ref_name, version):
+              raise SystemExit(
+                  "Branch/version policy mismatch: branch=%r version=%r"
+                  % (ref_name, version)
+              )
+          PY
+          uv run python scripts/release_policy.py resolve-artifacts --write-github-output
+      - name: Smoke install/import from built wheel
+        run: |
+          python -m venv /tmp/release-smoke-venv
+          source /tmp/release-smoke-venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install dist/pyrallel_consumer-*.whl
+          python - <<'PY'
+          import pyrallel_consumer
+
+          print("smoke import ok: %s" % pyrallel_consumer.__name__)
+          PY
       - name: Check distribution metadata
         run: |
-          uv run twine check dist/pyrallel_consumer-*
+          uv run twine check \
+            "${{ steps.release_artifacts.outputs.sdist_path }}" \
+            "${{ steps.release_artifacts.outputs.wheel_path }}"
       - name: Upload broker-backed E2E report
         if: always()
         uses: actions/upload-artifact@v4

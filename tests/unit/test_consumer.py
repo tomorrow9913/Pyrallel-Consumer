@@ -6,7 +6,11 @@ from _pytest.monkeypatch import MonkeyPatch
 
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
-from pyrallel_consumer.dto import OrderingMode
+from pyrallel_consumer.dto import (
+    OrderingMode,
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
+)
 
 
 class _DummyEngine:
@@ -81,6 +85,15 @@ class _DummyPoller:
 
     def get_metrics(self):
         return self.metrics
+
+
+class _DummyResourceSignalProvider:
+    def snapshot(self) -> ResourceSignalSnapshot:
+        return ResourceSignalSnapshot(
+            status=ResourceSignalStatus.AVAILABLE,
+            cpu_utilization=0.25,
+            memory_utilization=0.5,
+        )
 
 
 class _FailingStopPoller(_DummyPoller):
@@ -307,6 +320,74 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
     assert dummy_work_manager.metrics_exporter is None
     assert consumer._metrics_exporter is None
     assert consumer._metrics_task is None
+
+
+@pytest.mark.asyncio
+async def test_pyrallel_consumer_publishes_resource_signal_snapshot(
+    monkeypatch: MonkeyPatch,
+):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        metrics_exporter=None,
+        poison_message_circuit=None,
+    ):
+        return _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+        )
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        return _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.PrometheusMetricsExporter",
+        _DummyPrometheusExporter,
+    )
+
+    config = KafkaConfig()
+    config.metrics.enabled = True
+    config.metrics.port = 9921
+
+    consumer = PyrallelConsumer(
+        config=config,
+        worker=lambda _: None,
+        topic="demo",
+        resource_signal_provider=_DummyResourceSignalProvider(),
+    )
+
+    await consumer.start()
+    await consumer.stop()
+
+    exporter = _DummyPrometheusExporter.instances[-1]
+    assert exporter.system_metrics_updates[0].resource_signal is not None
+    assert (
+        exporter.system_metrics_updates[0].resource_signal.status
+        == ResourceSignalStatus.AVAILABLE
+    )
+    assert exporter.system_metrics_updates[0].resource_signal.cpu_utilization == 0.25
 
 
 @pytest.mark.asyncio

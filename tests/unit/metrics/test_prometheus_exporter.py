@@ -8,6 +8,8 @@ from pyrallel_consumer.dto import (  # noqa: E402
     CompletionStatus,
     PartitionMetrics,
     ProcessBatchMetrics,
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
 )
@@ -52,6 +54,11 @@ def test_exporter_updates_metrics_and_observes_completion():
             _make_partition_metrics("topic-a", 0),
             _make_partition_metrics("topic-b", 1),
         ],
+        resource_signal=ResourceSignalSnapshot(
+            status=ResourceSignalStatus.AVAILABLE,
+            cpu_utilization=0.62,
+            memory_utilization=0.71,
+        ),
         process_batch_metrics=ProcessBatchMetrics(
             size_flush_count=3,
             timer_flush_count=2,
@@ -74,6 +81,16 @@ def test_exporter_updates_metrics_and_observes_completion():
 
     assert exporter._in_flight_gauge._value.get() == 5
     assert exporter._backpressure_gauge._value.get() == 1
+    assert (
+        exporter._resource_signal_status_gauge.labels(status="available")._value.get()
+        == 1
+    )
+    assert (
+        exporter._resource_signal_status_gauge.labels(status="unavailable")._value.get()
+        == 0
+    )
+    assert exporter._resource_cpu_utilization_gauge._value.get() == 0.62
+    assert exporter._resource_memory_utilization_gauge._value.get() == 0.71
 
     lag = exporter._lag_gauge.labels("topic-a", "0")._value.get()
     gaps = exporter._gap_gauge.labels("topic-b", "1")._value.get()
@@ -124,6 +141,24 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert processed == 1
     assert pytest.approx(latency_sum, rel=1e-6) == 0.12
     assert metadata_size == 42
+
+
+def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.update_from_system_metrics(
+        SystemMetrics(total_in_flight=0, is_paused=False, partitions=[])
+    )
+
+    assert (
+        exporter._resource_signal_status_gauge.labels(status="unavailable")._value.get()
+        == 1
+    )
+    assert exporter._resource_cpu_utilization_gauge._value.get() == 0
+    assert exporter._resource_memory_utilization_gauge._value.get() == 0
 
 
 def test_exporter_closes_http_server_when_enabled(monkeypatch):
