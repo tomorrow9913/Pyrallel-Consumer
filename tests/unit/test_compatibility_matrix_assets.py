@@ -99,6 +99,7 @@ def test_operations_docs_publish_verified_compatibility_rows() -> None:
 def test_support_policy_matches_stable_package_metadata() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text()
     readme = (REPO_ROOT / "README.md").read_text()
+    readme_ko = (REPO_ROOT / "README.ko.md").read_text()
     support_policy = (
         REPO_ROOT / "docs" / "operations" / "support-policy.md"
     ).read_text()
@@ -106,6 +107,8 @@ def test_support_policy_matches_stable_package_metadata() -> None:
     assert "Development Status :: 5 - Production/Stable" in pyproject
     assert 'version = "1.0.0"' in pyproject
     assert "current published version is stable (`1.0.0`)" in readme
+    assert "현재 배포 버전은 stable(`1.0.0`)" in readme_ko
+    assert "prerelease 라인은 best-effort" in readme_ko
     assert "currently published as a **stable `1.0.0`** package" in support_policy
     assert (
         "currently published as a **prerelease / alpha** package" not in support_policy
