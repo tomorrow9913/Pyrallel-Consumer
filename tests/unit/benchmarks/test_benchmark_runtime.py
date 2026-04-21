@@ -1074,6 +1074,77 @@ def test_run_benchmark_auto_tunes_tiny_partition_strict_process_defaults(
     assert process_calls == [(1, 0)]
 
 
+def test_run_benchmark_resolves_process_batching_per_strict_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    process_calls: list[tuple[str, int | None, int | None]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        if kwargs["mode"].value == "process":
+            process_calls.append(
+                (
+                    kwargs["run_name"],
+                    kwargs["process_batch_size"],
+                    kwargs["process_max_batch_wait_ms"],
+                )
+            )
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_baseline=True,
+            skip_async=True,
+            skip_process=False,
+            workloads=["sleep"],
+            order=["partition"],
+            strict_completion_monitor=["on", "off"],
+            worker_sleep_ms=0.5,
+            process_batch_size=None,
+            process_max_batch_wait_ms=None,
+        ),
+        raw_argv=[
+            "--skip-baseline",
+            "--skip-async",
+            "--workloads",
+            "sleep",
+            "--order",
+            "partition",
+            "--strict-completion-monitor",
+            "on,off",
+        ],
+    )
+
+    assert process_calls == [
+        ("sleep-partition-pyrallel-process-strict-on", 1, 0),
+        ("sleep-partition-pyrallel-process-strict-off", None, None),
+    ]
+
+
 def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,

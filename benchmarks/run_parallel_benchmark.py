@@ -807,6 +807,8 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
 
 def _resolve_effective_process_batching(
     args: argparse.Namespace,
+    *,
+    strict_completion_monitor_enabled: bool | None = None,
 ) -> tuple[int | None, int | None]:
     process_batch_size = args.process_batch_size
     process_max_batch_wait_ms = args.process_max_batch_wait_ms
@@ -817,7 +819,9 @@ def _resolve_effective_process_batching(
         return process_batch_size, process_max_batch_wait_ms
     if "partition" not in args.order:
         return process_batch_size, process_max_batch_wait_ms
-    if "on" not in args.strict_completion_monitor:
+    if strict_completion_monitor_enabled is None:
+        strict_completion_monitor_enabled = "on" in args.strict_completion_monitor
+    if not strict_completion_monitor_enabled:
         return process_batch_size, process_max_batch_wait_ms
     if args.worker_sleep_ms > 0.5:
         return process_batch_size, process_max_batch_wait_ms
@@ -867,10 +871,6 @@ def run_benchmark(
     profile_dir = Path(args.profile_dir)
 
     _warn_on_tiny_partition_process_defaults(args)
-    (
-        effective_process_batch_size,
-        effective_process_max_batch_wait_ms,
-    ) = _resolve_effective_process_batching(args)
 
     results: List[BenchmarkResult] = []
 
@@ -930,6 +930,15 @@ def run_benchmark(
                 async_results: List[BenchmarkResult] = []
                 for strict_monitor_mode in strict_monitor_modes:
                     strict_completion_monitor_enabled = strict_monitor_mode == "on"
+                    (
+                        effective_process_batch_size,
+                        effective_process_max_batch_wait_ms,
+                    ) = _resolve_effective_process_batching(
+                        args,
+                        strict_completion_monitor_enabled=(
+                            strict_completion_monitor_enabled
+                        ),
+                    )
                     strict_suffix = ""
                     if len(strict_monitor_modes) > 1 or strict_monitor_mode != "on":
                         strict_suffix = "-strict-%s" % strict_monitor_mode
@@ -1087,8 +1096,6 @@ def run_benchmark(
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_path = f"benchmarks/results/{timestamp}.json"
     options = {k: v for k, v in vars(args).items()}
-    options["effective_process_batch_size"] = effective_process_batch_size
-    options["effective_process_max_batch_wait_ms"] = effective_process_max_batch_wait_ms
     write_results_json(results, Path(output_path), options=options)
     print(f"\nJSON summary written to {output_path}")
 
