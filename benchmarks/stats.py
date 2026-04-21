@@ -176,7 +176,7 @@ def write_results_json(
 def _build_performance_improvements(
     results: list[BenchmarkResult],
 ) -> list[dict[str, Any]]:
-    adaptive_off: dict[tuple[str, str, str], BenchmarkResult] = {}
+    adaptive_off: dict[str, BenchmarkResult] = {}
     adaptive_on: list[BenchmarkResult] = []
     baselines: dict[tuple[str, str], BenchmarkResult] = {}
     pyrallel_results: dict[tuple[str, str], BenchmarkResult] = {}
@@ -197,17 +197,14 @@ def _build_performance_improvements(
         ):
             pyrallel_results[workload_ordering_key] = result
 
-        adaptive_key = (result.workload, result.ordering, result.run_type)
         if "-adaptive-off" in result.run_name:
-            adaptive_off[adaptive_key] = result
+            adaptive_off[_adaptive_comparison_key(result)] = result
         elif "-adaptive-on" in result.run_name:
             adaptive_on.append(result)
 
     improvements: list[dict[str, Any]] = []
     for candidate in adaptive_on:
-        reference = adaptive_off.get(
-            (candidate.workload, candidate.ordering, candidate.run_type)
-        )
+        reference = adaptive_off.get(_adaptive_comparison_key(candidate))
         if reference is None:
             continue
         improvements.append(
@@ -231,6 +228,12 @@ def _build_performance_improvements(
         )
 
     return improvements
+
+
+def _adaptive_comparison_key(result: BenchmarkResult) -> str:
+    return result.run_name.replace("-adaptive-on", "-adaptive").replace(
+        "-adaptive-off", "-adaptive"
+    )
 
 
 def _build_improvement_row(

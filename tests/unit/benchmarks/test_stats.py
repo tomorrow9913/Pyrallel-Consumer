@@ -173,3 +173,72 @@ def test_write_results_json_marks_improvement_percent_unknown_for_zero_reference
     assert analysis["throughput_tps_delta"] == 10.0
     assert analysis["throughput_tps_delta_pct"] is None
     assert analysis["improvement_ratio"] is None
+
+
+def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
+    output_path = tmp_path / "summary.json"
+
+    write_results_json(
+        [
+            BenchmarkResult(
+                run_name="sleep-key_hash-pyrallel-async-strict-on-adaptive-off",
+                run_type="async",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-async-strict-on-adaptive-off",
+                messages_processed=100,
+                total_time_sec=2.0,
+                throughput_tps=50.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            ),
+            BenchmarkResult(
+                run_name="sleep-key_hash-pyrallel-async-strict-off-adaptive-off",
+                run_type="async",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-async-strict-off-adaptive-off",
+                messages_processed=100,
+                total_time_sec=1.0,
+                throughput_tps=100.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            ),
+            BenchmarkResult(
+                run_name="sleep-key_hash-pyrallel-async-strict-on-adaptive-on",
+                run_type="async",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-async-strict-on-adaptive-on",
+                messages_processed=100,
+                total_time_sec=1.0,
+                throughput_tps=75.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            ),
+        ],
+        output_path,
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    adaptive_analysis = [
+        row
+        for row in payload["performance_improvements"]
+        if row["comparison"] == "adaptive_on_vs_off"
+    ]
+
+    assert adaptive_analysis == [
+        {
+            "comparison": "adaptive_on_vs_off",
+            "workload": "sleep",
+            "ordering": "key_hash",
+            "run_type": "async",
+            "candidate_run_name": "sleep-key_hash-pyrallel-async-strict-on-adaptive-on",
+            "reference_run_name": "sleep-key_hash-pyrallel-async-strict-on-adaptive-off",
+            "candidate_throughput_tps": 75.0,
+            "reference_throughput_tps": 50.0,
+            "throughput_tps_delta": 25.0,
+            "throughput_tps_delta_pct": 50.0,
+            "improvement_ratio": 1.5,
+        }
+    ]

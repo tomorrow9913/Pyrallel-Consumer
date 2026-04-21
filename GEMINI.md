@@ -1013,3 +1013,8 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 - TDD(red): added `tests/unit/test_release_policy.py::test_validate_branch_version_does_not_use_optimized_assert_guards` to reject optimized-away `assert match is not None` guards in `scripts/release_policy.py`. Focused run failed as expected while release/hotfix guards still used `assert`.
 - Green: replaced release/hotfix branch `assert match is not None` guards with explicit `PolicyError` raises so release-policy validation remains deterministic under `python -O`. Verification: `pytest tests/unit/test_release_policy.py -q` -> 34 passed; `ruff check scripts/release_policy.py tests/unit/test_release_policy.py` -> pass; `python -O scripts/release_policy.py validate-branch-version --branch release/0.3 --version 0.3.0rc1` and hotfix equivalent -> OK.
+
+### 5.33 PR #84 adaptive benchmark baseline key fix (2026-04-21)
+
+- TDD(red): added `tests/unit/benchmarks/test_stats.py::test_adaptive_improvements_match_full_run_variant_key` to prove adaptive-on runs compare against the matching adaptive-off full variant (e.g. strict monitor on/off) rather than the last off result sharing only workload/ordering/run_type. Focused run failed with the strict-off baseline incorrectly selected.
+- Green: `benchmarks/stats.py` now indexes adaptive on/off comparisons by a normalized full `run_name` variant key with only the adaptive suffix collapsed, preserving other variant toggles. Verification: `pytest tests/unit/benchmarks/test_stats.py -q` -> 5 passed; `ruff check benchmarks/stats.py tests/unit/benchmarks/test_stats.py` -> pass.
