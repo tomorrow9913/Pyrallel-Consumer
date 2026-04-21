@@ -121,3 +121,43 @@ def test_controller_holds_when_disabled_or_in_cooldown() -> None:
     assert first_limit == 90
     assert second_limit == 90
     assert controller.last_decision == "cooldown"
+
+
+def test_controller_does_not_start_cooldown_for_noop_scale_up_at_max() -> None:
+    controller = AdaptiveBackpressureController(
+        configured_max_in_flight=100,
+        config=AdaptiveBackpressureConfig(
+            enabled=True,
+            min_in_flight=20,
+            scale_up_step=10,
+            scale_down_step=25,
+            cooldown_ms=10_000,
+            lag_scale_up_threshold=0,
+            low_latency_threshold_ms=25.0,
+            high_latency_threshold_ms=75.0,
+        ),
+    )
+
+    assert (
+        controller.evaluate(
+            total_true_lag=0,
+            total_queued=0,
+            avg_completion_latency_seconds=0.005,
+            is_paused=False,
+            now_monotonic=10.0,
+        )
+        == 100
+    )
+    assert controller.last_decision == "hold"
+
+    assert (
+        controller.evaluate(
+            total_true_lag=0,
+            total_queued=0,
+            avg_completion_latency_seconds=0.100,
+            is_paused=False,
+            now_monotonic=11.0,
+        )
+        == 75
+    )
+    assert controller.last_decision == "scale_down"

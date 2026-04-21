@@ -72,21 +72,29 @@ class AdaptiveBackpressureController:
         )
 
         if should_scale_down:
-            self._effective_max_in_flight = max(
+            next_limit = max(
                 self._min_in_flight,
                 self._effective_max_in_flight - int(self._config.scale_down_step),
             )
-            self._last_adjusted_at = now
-            self.last_decision = "scale_down"
+            if next_limit != self._effective_max_in_flight:
+                self._effective_max_in_flight = next_limit
+                self._last_adjusted_at = now
+                self.last_decision = "scale_down"
+            else:
+                self.last_decision = "hold"
             return self._effective_max_in_flight
 
         if should_scale_up:
-            self._effective_max_in_flight = min(
+            next_limit = min(
                 self._configured_max_in_flight,
                 self._effective_max_in_flight + int(self._config.scale_up_step),
             )
-            self._last_adjusted_at = now
-            self.last_decision = "scale_up"
+            if next_limit != self._effective_max_in_flight:
+                self._effective_max_in_flight = next_limit
+                self._last_adjusted_at = now
+                self.last_decision = "scale_up"
+            else:
+                self.last_decision = "hold"
             return self._effective_max_in_flight
 
         self.last_decision = "hold"

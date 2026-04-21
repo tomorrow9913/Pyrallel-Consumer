@@ -1018,3 +1018,10 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 - TDD(red): added `tests/unit/benchmarks/test_stats.py::test_adaptive_improvements_match_full_run_variant_key` to prove adaptive-on runs compare against the matching adaptive-off full variant (e.g. strict monitor on/off) rather than the last off result sharing only workload/ordering/run_type. Focused run failed with the strict-off baseline incorrectly selected.
 - Green: `benchmarks/stats.py` now indexes adaptive on/off comparisons by a normalized full `run_name` variant key with only the adaptive suffix collapsed, preserving other variant toggles. Verification: `pytest tests/unit/benchmarks/test_stats.py -q` -> 5 passed; `ruff check benchmarks/stats.py tests/unit/benchmarks/test_stats.py` -> pass.
+
+### 5.34 PR #84 adaptive/backpressure benchmark feedback fixes (2026-04-21)
+
+- TDD(red): added `tests/unit/control_plane/test_adaptive_backpressure_controller.py::test_controller_does_not_start_cooldown_for_noop_scale_up_at_max` to prove a maxed-out no-op scale-up must not start cooldown. Focused run failed with `last_decision == "scale_up"`.
+- Green: `AdaptiveBackpressureController.evaluate()` now updates cooldown/decision only when scale up/down changes the effective limit; no-op scale decisions hold. Focused controller tests -> 4 passed.
+- TDD(red): added `tests/unit/benchmarks/test_benchmark_runtime.py::test_run_benchmark_resolves_process_batching_per_strict_mode` to prove strict-on process auto-tuning does not leak into strict-off runs. Focused run failed because strict-off received `(1, 0)`.
+- Green: `run_parallel_benchmark` now resolves effective process batching per strict monitor mode, preserving strict-off defaults while keeping strict-on auto-tuning. Focused benchmark/controller verification -> 6 passed; ruff on changed files -> pass.
