@@ -109,10 +109,12 @@ class BrokerPoller:
 
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._stop_lock = asyncio.Lock()
         self._control_lock = asyncio.Lock()
         self._commit_lock = asyncio.Lock()
         self._completion_monitor_task: Optional[asyncio.Task[None]] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
+        self._defer_consumer_cleanup_for_stop = False
         self._consumer_task_stop_timeout_seconds = (
             pc_conf.execution.consumer_task_stop_timeout_ms / 1000.0
         )
@@ -508,7 +510,8 @@ class BrokerPoller:
                     self._completion_monitor_task, return_exceptions=True
                 )
                 self._completion_monitor_task = None
-            await self._cleanup()
+            if not self._defer_consumer_cleanup_for_stop:
+                await self._cleanup()
             self._shutdown_event.set()
             self._consumer_task = None
 
@@ -908,29 +911,38 @@ class BrokerPoller:
             raise
 
     async def stop(self) -> None:
-        if not self._running and self._consumer_task is None:
-            if self._shutdown_event.is_set():
+        async with self._stop_lock:
+            if not self._running and self._consumer_task is None:
+                if self._shutdown_event.is_set():
+                    self._raise_if_failed()
+                return
+            shutdown_policy = self._shutdown_policy()
+            logger.debug("Shutdown signal received with policy=%s", shutdown_policy)
+            self._running = False
+            cleanup_after_drain = False
+            try:
+                if self._consumer_task is not None:
+                    consumer_task = self._consumer_task
+                    cleanup_after_drain = shutdown_policy == "graceful"
+                    self._defer_consumer_cleanup_for_stop = cleanup_after_drain
+                    await self._make_task_lifecycle_support().stop_runtime(
+                        consumer_task=consumer_task,
+                        shutdown_event=self._shutdown_event,
+                        timeout_seconds=self._consumer_task_stop_timeout_seconds,
+                        wait_for=asyncio.wait_for,
+                        gather=asyncio.gather,
+                    )
+                    self._consumer_task = None
                 self._raise_if_failed()
-            return
-        shutdown_policy = self._shutdown_policy()
-        logger.debug("Shutdown signal received with policy=%s", shutdown_policy)
-        self._running = False
-        if self._consumer_task is not None:
-            consumer_task = self._consumer_task
-            await self._make_task_lifecycle_support().stop_runtime(
-                consumer_task=consumer_task,
-                shutdown_event=self._shutdown_event,
-                timeout_seconds=self._consumer_task_stop_timeout_seconds,
-                wait_for=asyncio.wait_for,
-                gather=asyncio.gather,
-            )
-            self._consumer_task = None
-        self._raise_if_failed()
-        if shutdown_policy == "graceful":
-            await self._drain_shutdown_work(
-                timeout_seconds=self._shutdown_drain_timeout_seconds()
-            )
-        logger.debug("BrokerPoller stopped")
+                if shutdown_policy == "graceful":
+                    await self._drain_shutdown_work(
+                        timeout_seconds=self._shutdown_drain_timeout_seconds()
+                    )
+            finally:
+                if cleanup_after_drain:
+                    self._defer_consumer_cleanup_for_stop = False
+                    await self._cleanup()
+            logger.debug("BrokerPoller stopped")
 
     async def _drain_shutdown_work(self, *, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
