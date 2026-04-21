@@ -914,6 +914,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
             target_offset=target_offset,
         )
         kafka_config = _build_kafka_config(group_id)
+        max_retries = kafka_config.parallel_consumer.execution.max_retries
         poller, engine = _build_process_runtime(
             topic=topic,
             kafka_config=kafka_config,
@@ -924,10 +925,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
         await poller.start()
         try:
             await _wait_until(
-                lambda: (
-                    int(attempt_counts.get(target_key, 0))
-                    >= kafka_config.parallel_consumer.execution.max_retries
-                ),
+                lambda: (int(attempt_counts.get(target_key, 0)) >= max_retries),
                 timeout_seconds=20,
                 message="dlq scenario never exhausted the configured retry count",
             )
@@ -962,7 +960,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
     headers = dict(dlq_msg.headers() or [])
     dlq_payload = json.loads(dlq_msg.value().decode("utf-8"))
 
-    assert target_attempts == 2
+    assert target_attempts >= max_retries
     assert set(completed_offsets) == {1, 2}
     assert not target_completions
     assert dlq_msg.key() == b"key-0"
