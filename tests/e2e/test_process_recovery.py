@@ -529,6 +529,104 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
 
 
 @pytest.mark.asyncio
+async def test_process_graceful_stop_drains_inflight_before_close() -> None:
+    _require_kafka()
+    topic = _topic_name("process-recovery-stop-drain")
+    group_id = _topic_name("process-recovery-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 3
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    all_entries = []
+    final_committed_offset = -1001
+    stop_task: asyncio.Task[None] | None = None
+    with Manager() as manager:
+        shared_results = manager.list()
+        started_event = manager.Event()
+        release_event = manager.Event()
+        shared_state = manager.dict(blocked_once=False)
+
+        worker = _BlockingPartitionWorker(
+            shared_results=shared_results,
+            started_event=started_event,
+            release_event=release_event,
+            shared_state=shared_state,
+            label="stop-drain",
+            block_partition=partition,
+            block_offset=0,
+        )
+
+        kafka_config = _build_kafka_config(group_id)
+        kafka_config.parallel_consumer.poll_batch_size = produced_count
+        poller, engine = _build_process_runtime(
+            topic=topic,
+            kafka_config=kafka_config,
+            worker_fn=worker,
+            max_in_flight=1,
+        )
+
+        await poller.start()
+        try:
+            await _wait_for_event(
+                started_event,
+                timeout_seconds=20,
+                message="poller never started blocked in-flight stop-drain work",
+            )
+
+            stop_task = asyncio.create_task(poller.stop())
+            await _wait_until(
+                lambda: poller._shutdown_event.is_set(),
+                timeout_seconds=10,
+                message="graceful stop never reached the shutdown drain boundary",
+            )
+            await asyncio.sleep(0)
+            assert not stop_task.done(), (
+                "graceful stop returned after the consumer loop stopped but before "
+                "in-flight process work was released"
+            )
+            blocked_commit = _fetch_committed_offset(group_id, topic, partition)
+            assert blocked_commit in (-1001, 0), (
+                "commit advanced before the blocked stop-drain work completed: "
+                f"offset={blocked_commit}"
+            )
+
+            release_event.set()
+            await asyncio.wait_for(stop_task, timeout=30)
+            await _wait_until(
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
+                timeout_seconds=15,
+                message="graceful stop did not commit all drained in-flight work",
+            )
+            final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+        finally:
+            release_event.set()
+            if stop_task is not None and not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if getattr(poller, "_running", False) or getattr(
+                poller, "_consumer_task", None
+            ):
+                await poller.stop()
+            await engine.shutdown()
+            all_entries = list(shared_results)
+            _delete_topic(admin, topic)
+
+    completed_offsets = [
+        entry[3]
+        for entry in all_entries
+        if entry[0] == "completed" and entry[2] == partition
+    ]
+    assert set(completed_offsets) == set(range(produced_count))
+    assert final_committed_offset == produced_count
+
+
+@pytest.mark.asyncio
 async def test_process_restart_preserves_offset_continuity() -> None:
     _require_kafka()
     topic = _topic_name("process-recovery-restart")
