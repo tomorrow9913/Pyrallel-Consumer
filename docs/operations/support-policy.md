@@ -1,7 +1,7 @@
 # Support / Compatibility Policy
 
-This document defines the support posture for `Pyrallel Consumer` across both
-the current prerelease phase and the `1.0.0` stable launch surface.
+This document defines the support posture for `Pyrallel Consumer` across the
+current stable `1.0.0` release line and any opt-in prerelease preview channels.
 
 The goal is to make release-line support, compatibility boundaries, and
 security response scope explicit so operators can decide whether to upgrade,
@@ -9,10 +9,9 @@ hold, or rollback.
 
 ## Current Release Status
 
-- The project is currently published as a **prerelease / alpha** package.
-- Support commitments are intentionally conservative until stable promotion.
-- This document already defines the stable-launch support matrix so it can be
-  applied without policy re-interpretation at `1.0.0`.
+- The project is currently published as a **stable `1.0.0`** package.
+- The latest stable minor is the primary active support target.
+- Prerelease builds remain opt-in preview channels with best-effort support.
 
 See also:
 
@@ -26,20 +25,13 @@ See also:
 
 ## Release-Line Support Matrix
 
-### While prerelease is the only published line (current)
-
-| Release line | Status | Notes |
-| --- | --- | --- |
-| latest prerelease | Active support | Main triage target during prerelease hardening |
-| older prerelease builds | Best effort | May be asked to reproduce on latest prerelease |
-
-### After stable launch (effective once `1.0.0` ships)
+### Current stable support matrix
 
 | Release line | Status | Notes |
 | --- | --- | --- |
 | latest stable minor | Active support | Primary support and regression triage target |
 | previous stable minor | Security-fix-only | Critical/security fixes only; non-critical issues may be deferred |
-| prerelease builds newer than latest stable | Best effort | Preview channel, no stable SLA guarantees |
+| prerelease builds newer than latest stable | Best effort | Preview channel, no stable support guarantees |
 | older prerelease builds | Best effort | Outside primary support target |
 
 ## Python Support Policy
@@ -121,28 +113,22 @@ The following are **best-effort** until the matrix is widened and automated:
 - Reports against older prerelease releases
 - Reports against non-active stable lines outside security-fix-only scope
 - Reports against unverified broker distributions or older compatibility stacks
-- Requests that assume stable/SLA-grade compatibility guarantees before stable
-  promotion
+- Requests that assume support guarantees outside the documented stable release
+  lines
 
 ## Deprecation Policy
 
-Until `1.0.0`, public-surface changes may still happen as part of hardening
-work. The current policy is:
+Starting with `1.0.0`, public-surface changes follow the stable contract and
+semantic-versioning boundaries documented in the release/versioning policy. The
+current policy is:
 
-- avoid unnecessary breaking changes during alpha hardening
+- avoid unnecessary breaking changes on stable release lines
 - document user-visible contract changes in README / operations docs /
   changelog when they occur
-- tighten the policy further once the project graduates to stable
+- reserve breaking public-surface changes for an explicitly versioned major
+  release
 
-Before stable release begins, users should assume:
-
-- the core direction is intentional
-- the actively documented runtime / operational contract is the best current
-  source of truth
-- exact compatibility guarantees are still narrower than they will be after
-  stable promotion
-
-After stable release begins, users should assume:
+Users should assume:
 
 - stable release lines follow the support matrix above
 - non-stable lines remain best-effort unless explicitly promoted

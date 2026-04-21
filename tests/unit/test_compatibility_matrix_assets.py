@@ -96,6 +96,23 @@ def test_operations_docs_publish_verified_compatibility_rows() -> None:
     assert "compatibility-matrix.md" in readme_ko
 
 
+def test_support_policy_matches_stable_package_metadata() -> None:
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    readme = (REPO_ROOT / "README.md").read_text()
+    support_policy = (
+        REPO_ROOT / "docs" / "operations" / "support-policy.md"
+    ).read_text()
+
+    assert "Development Status :: 5 - Production/Stable" in pyproject
+    assert 'version = "1.0.0"' in pyproject
+    assert "current published version is stable (`1.0.0`)" in readme
+    assert "currently published as a **stable `1.0.0`** package" in support_policy
+    assert (
+        "currently published as a **prerelease / alpha** package" not in support_policy
+    )
+    assert "While prerelease is the only published line (current)" not in support_policy
+
+
 def test_generator_check_accepts_tracked_markdown() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/compatibility_matrix.py", "--check"],
