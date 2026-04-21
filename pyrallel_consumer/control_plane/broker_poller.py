@@ -570,6 +570,8 @@ class BrokerPoller:
                     has_completion = await self._drain_completion_events_once()
                 if has_completion:
                     await self._commit_ready_offsets()
+                    if self._pending_dlq_events:
+                        await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             raise
 
@@ -802,6 +804,7 @@ class BrokerPoller:
         if self.consumer:
             self.consumer.close()
         self._message_cache.clear()
+        self._pending_dlq_events.clear()
         self._message_cache_size_bytes = 0
 
     def _raise_if_failed(self) -> None:

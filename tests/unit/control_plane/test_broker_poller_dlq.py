@@ -921,7 +921,7 @@ async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
     broker_poller_with_dlq._running = True
     broker_poller_with_dlq._work_manager = MagicMock()
     broker_poller_with_dlq._work_manager.get_total_in_flight_count.return_value = 0
-    broker_poller_with_dlq._drain_completion_events_once = AsyncMock(return_value=True)
+    broker_poller_with_dlq._drain_completion_events_once = AsyncMock()
     broker_poller_with_dlq._commit_ready_offsets = AsyncMock()
 
     async def wait_for_completion(timeout_seconds=None):
@@ -943,6 +943,79 @@ async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
 
     broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
     broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_completion_monitor_throttles_persistent_pending_dlq_retries(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    pending_event = CompletionEvent(
+        id="pending-work-id",
+        tp=tp,
+        offset=100,
+        epoch=1,
+        status=CompletionStatus.FAILURE,
+        error="Test error",
+        attempt=3,
+    )
+    broker_poller_with_dlq._pending_dlq_events = OrderedDict({(tp, 100): pending_event})
+    broker_poller_with_dlq._running = True
+    broker_poller_with_dlq._work_manager = MagicMock()
+    broker_poller_with_dlq._work_manager.get_total_in_flight_count.return_value = 0
+    drain_attempts = 0
+
+    async def keep_pending_until_second_attempt():
+        nonlocal drain_attempts
+        drain_attempts += 1
+        if drain_attempts > 1:
+            broker_poller_with_dlq._running = False
+        return True
+
+    broker_poller_with_dlq._drain_completion_events_once = AsyncMock(
+        side_effect=keep_pending_until_second_attempt
+    )
+    broker_poller_with_dlq._commit_ready_offsets = AsyncMock()
+
+    async def stop_after_throttle(_timeout):
+        broker_poller_with_dlq._running = False
+
+    with patch(
+        "asyncio.sleep", new=AsyncMock(side_effect=stop_after_throttle)
+    ) as sleep:
+        await broker_poller_with_dlq._run_completion_monitor()
+
+    broker_poller_with_dlq._execution_engine.wait_for_completion.assert_not_awaited()
+    broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
+    broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
+    sleep.assert_awaited_once_with(broker_poller_with_dlq._idle_consume_timeout_seconds)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_clears_pending_dlq_events(broker_poller_with_dlq):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    broker_poller_with_dlq._pending_dlq_events = OrderedDict(
+        {
+            (
+                tp,
+                100,
+            ): CompletionEvent(
+                id="pending-work-id",
+                tp=tp,
+                offset=100,
+                epoch=1,
+                status=CompletionStatus.FAILURE,
+                error="Test error",
+                attempt=3,
+            )
+        }
+    )
+    broker_poller_with_dlq._message_cache[(tp, 100)] = (b"key", b"value")
+
+    await broker_poller_with_dlq._cleanup()
+
+    assert broker_poller_with_dlq._pending_dlq_events == OrderedDict()
+    assert broker_poller_with_dlq._message_cache == OrderedDict()
 
 
 @pytest.mark.asyncio
