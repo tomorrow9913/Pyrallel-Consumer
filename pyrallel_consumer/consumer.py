@@ -7,7 +7,13 @@ from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsume
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import RuntimeSnapshot, SystemMetrics, WorkItem
+from pyrallel_consumer.dto import (
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
+    RuntimeSnapshot,
+    SystemMetrics,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
 from pyrallel_consumer.resource_signals import (
@@ -81,6 +87,13 @@ class PyrallelConsumer:
                                For 'async' mode, this must be an async function.
                                For 'process' mode, this must be a picklable function.
             topic (str): The Kafka topic to subscribe to.
+            resource_signal_provider (Optional[ResourceSignalProvider]): Optional
+                provider sampled during metrics publishing for host/resource tuning
+                signals. If omitted, NullResourceSignalProvider is used, reporting
+                an unavailable signal by default. Providers should follow the
+                fail-open contract and must not raise from snapshot(); unavailable
+                or temporarily faulty signals should be represented as unavailable
+                snapshots instead.
         """
         self._logger = logging.getLogger(__name__)
         self.config = config
@@ -140,7 +153,13 @@ class PyrallelConsumer:
         if self._metrics_exporter is None:
             return
         metrics = self._poller.get_metrics()
-        resource_signal = self._resource_signal_provider.snapshot()
+        try:
+            resource_signal = self._resource_signal_provider.snapshot()
+        except Exception:
+            self._logger.exception("Resource signal provider snapshot failed")
+            resource_signal = ResourceSignalSnapshot(
+                status=ResourceSignalStatus.UNAVAILABLE
+            )
         try:
             metrics = replace(metrics, resource_signal=resource_signal)
         except TypeError:

@@ -34,8 +34,12 @@ POLICY_LINK_SURFACES = [
 ]
 
 
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="strict")
+
+
 def _iter_local_markdown_links(path: Path) -> list[str]:
-    text = path.read_text()
+    text = _read_text(path)
     links: list[str] = []
     for match in MARKDOWN_LINK_PATTERN.finditer(text):
         raw_target = match.group(1).strip()
@@ -51,7 +55,7 @@ def test_unsuffixed_internal_docs_are_english_only() -> None:
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in UNSUFFIXED_DOCS
-        if HANGUL_PATTERN.search(path.read_text())
+        if HANGUL_PATTERN.search(_read_text(path))
     ]
 
     assert offenders == []
@@ -66,8 +70,8 @@ def test_internal_prd_docs_have_korean_mirrors() -> None:
 
 
 def test_internal_doc_language_policy_lists_rule_and_exemptions() -> None:
-    text = POLICY_DOC.read_text()
-    operations_text = OPERATIONS_POLICY_DOC.read_text()
+    text = _read_text(POLICY_DOC)
+    operations_text = _read_text(OPERATIONS_POLICY_DOC)
 
     assert "unsuffixed `.md` files are the English canonical documents" in text
     assert "Korean mirrors must use the sibling `*.ko.md` filename" in text
@@ -85,7 +89,7 @@ def test_internal_doc_language_policy_lists_rule_and_exemptions() -> None:
 
 def test_internal_doc_language_policy_is_linked_from_readmes_and_docs() -> None:
     for path in POLICY_LINK_SURFACES:
-        text = path.read_text()
+        text = _read_text(path)
         assert "internal-doc-language-policy.md" in text
         assert "language-policy.md" in text
 

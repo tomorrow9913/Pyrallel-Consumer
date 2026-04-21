@@ -987,3 +987,15 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - 로컬 게이트 검증: `pytest tests/unit -q --maxfail=1` -> 277 passed.
 - Benchmark 결과 확장(2026-03-15): `BenchmarkStats`/`BenchmarkResult`에 100-message window 기반 TPS 분포 지표를 추가했습니다. JSON에 `window_size_messages`, `tps_p50_window`, `tps_p10_window`, `tps_min_window`를 저장하고, TUI 결과 모달 상세표에도 `TPS P50 (100)`, `TPS P10 (100)`, `TPS Min (100)` 컬럼을 노출합니다. 부족한 샘플(<100 completions)은 `null`/`—`로 처리합니다.
 - 검증: `pytest tests/unit/benchmarks/test_stats.py tests/unit/benchmarks/test_tui_results_report.py tests/unit/benchmarks/test_benchmark_runtime.py -q` -> 28 passed, `python -m py_compile benchmarks/stats.py benchmarks/tui/results_report.py tests/unit/benchmarks/test_stats.py tests/unit/benchmarks/test_tui_results_report.py` 통과.
+
+### 5.29 PR #84 review feedback fixes (2026-04-21)
+
+- TDD(red prep): added failing/unit coverage for PR #84 review feedback before production changes: resource signal provider exceptions should publish `ResourceSignalStatus.UNAVAILABLE` and recover on the next snapshot, post-init string `KafkaConfig.bootstrap_servers` assignment should export valid comma-separated producer/consumer configs, and language asset tests now read markdown with explicit UTF-8 strict decoding.
+
+### 5.30 PR #84 constructor docstring coverage (2026-04-21)
+
+- TDD(red): `tests/unit/test_consumer.py::test_pyrallel_consumer_constructor_docstring_documents_resource_signals` added to require `PyrallelConsumer.__init__` docstring coverage for `resource_signal_provider`, default null provider, and fail-open/no-raise expectations. Initial focused run failed because the parameter was undocumented.
+- Green: `pyrallel_consumer/consumer.py` constructor docstring now documents `resource_signal_provider`, the `NullResourceSignalProvider` default, and the fail-open/no-raise snapshot expectation. Focused test now passes.
+- Green: `PyrallelConsumer._publish_metrics_snapshot()` now catches resource signal provider exceptions, logs the traceback, publishes an unavailable signal, and allows later snapshots to recover. `KafkaConfig` producer/consumer exporters now normalize `bootstrap_servers` at export time so post-init string assignment is not character-joined. Constructor docstring documents resource signal provider default/fail-open behavior.
+- Targeted PR #84 verification: `PATH="$PWD/.venv/bin:$PATH" PYTHONPATH="$PWD" pytest tests/unit/test_consumer.py tests/unit/test_config.py tests/unit/test_internal_doc_language_assets.py tests/unit/test_blueprint_language_assets.py -q` -> 47 passed.
+- Full local unit/lint/type/security verification for PR #84 feedback: `pytest tests/unit -q` -> 518 passed; `ruff check pyrallel_consumer tests/unit` -> all checks passed; `mypy pyrallel_consumer` -> success; `bandit -q -lll ... -r .` -> no findings; `python -m py_compile` on modified Python files -> pass.

@@ -100,6 +100,21 @@ class _DummyResourceSignalProvider:
         )
 
 
+class _FailingOnceResourceSignalProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def snapshot(self) -> ResourceSignalSnapshot:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("resource sampler failed")
+        return ResourceSignalSnapshot(
+            status=ResourceSignalStatus.AVAILABLE,
+            cpu_utilization=0.75,
+            memory_utilization=0.5,
+        )
+
+
 class _FailingStopPoller(_DummyPoller):
     async def stop(self):
         self.stopped = True
@@ -109,6 +124,16 @@ class _FailingStopPoller(_DummyPoller):
 class _FailingStartPoller(_DummyPoller):
     async def start(self):
         raise RuntimeError("poller start failed")
+
+
+def test_pyrallel_consumer_constructor_docstring_documents_resource_signals():
+    docstring = PyrallelConsumer.__init__.__doc__
+
+    assert docstring is not None
+    assert "resource_signal_provider" in docstring
+    assert "NullResourceSignalProvider" in docstring
+    assert "fail-open" in docstring
+    assert "must not raise" in docstring
 
 
 @pytest.mark.asyncio
@@ -392,6 +417,80 @@ async def test_pyrallel_consumer_publishes_resource_signal_snapshot(
         == ResourceSignalStatus.AVAILABLE
     )
     assert exporter.system_metrics_updates[0].resource_signal.cpu_utilization == 0.25
+
+
+@pytest.mark.asyncio
+async def test_pyrallel_consumer_fails_open_when_resource_signal_provider_raises(
+    monkeypatch: MonkeyPatch,
+):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        metrics_exporter=None,
+        poison_message_circuit=None,
+    ):
+        return _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+        )
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        return _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.PrometheusMetricsExporter",
+        _DummyPrometheusExporter,
+    )
+
+    config = KafkaConfig()
+    config.metrics.enabled = True
+    config.metrics.port = 9922
+
+    consumer = PyrallelConsumer(
+        config=config,
+        worker=lambda _: None,
+        topic="demo",
+        resource_signal_provider=_FailingOnceResourceSignalProvider(),
+    )
+
+    await consumer.start()
+
+    exporter = cast(_DummyPrometheusExporter, consumer._metrics_exporter)
+    assert exporter.system_metrics_updates[0].resource_signal is not None
+    assert (
+        exporter.system_metrics_updates[0].resource_signal.status
+        == ResourceSignalStatus.UNAVAILABLE
+    )
+
+    await consumer.stop()
+
+    assert (
+        exporter.system_metrics_updates[-1].resource_signal.status
+        == ResourceSignalStatus.AVAILABLE
+    )
+    assert dummy_engine.shutdown_called is True
 
 
 @pytest.mark.asyncio

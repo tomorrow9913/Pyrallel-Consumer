@@ -9,6 +9,10 @@ HANGUL_PATTERN = re.compile(r"[가-힣]")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
 
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="strict")
+
+
 def _iter_unsuffixed_blueprint_docs() -> list[Path]:
     return sorted(
         path
@@ -22,7 +26,7 @@ def _ko_mirror_for(path: Path) -> Path:
 
 
 def _iter_local_markdown_links(path: Path) -> list[str]:
-    text = path.read_text()
+    text = _read_text(path)
     links: list[str] = []
     for match in MARKDOWN_LINK_PATTERN.finditer(text):
         raw_target = match.group(1).strip()
@@ -39,7 +43,7 @@ def test_unsuffixed_blueprint_docs_are_english_only() -> None:
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in _iter_unsuffixed_blueprint_docs()
-        if HANGUL_PATTERN.search(path.read_text())
+        if HANGUL_PATTERN.search(_read_text(path))
     ]
 
     assert offenders == []

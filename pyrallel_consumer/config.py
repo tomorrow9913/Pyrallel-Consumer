@@ -266,15 +266,18 @@ class KafkaConfig(BaseSettings):
     metrics: MetricsConfig = MetricsConfig()
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
+    def _bootstrap_servers_csv(self) -> str:
+        return ",".join(self._parse_bootstrap_servers(self.bootstrap_servers))
+
     def get_producer_config(self) -> dict[str, str]:
         return {
-            "bootstrap.servers": ",".join(self.bootstrap_servers),
+            "bootstrap.servers": self._bootstrap_servers_csv(),
             "client.id": socket.gethostname(),
         }
 
     def get_consumer_config(self) -> dict[str, str | int | bool]:
         return {
-            "bootstrap.servers": ",".join(self.bootstrap_servers),
+            "bootstrap.servers": self._bootstrap_servers_csv(),
             "group.id": self.consumer_group,
             "auto.offset.reset": self.auto_offset_reset,
             "enable.auto.commit": self.enable_auto_commit,

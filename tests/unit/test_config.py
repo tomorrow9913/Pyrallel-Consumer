@@ -243,6 +243,32 @@ def test_kafka_config_accepts_snake_case_constructor_fields() -> None:
     assert config.session_timeout_ms == 7777
 
 
+def test_kafka_config_normalizes_string_bootstrap_servers_after_assignment() -> None:
+    config = KafkaConfig(_env_file=None)
+
+    config.bootstrap_servers = "kafka-1:9092,kafka-2:9092"
+
+    assert (
+        config.get_producer_config()["bootstrap.servers"] == "kafka-1:9092,kafka-2:9092"
+    )
+    assert (
+        config.get_consumer_config()["bootstrap.servers"] == "kafka-1:9092,kafka-2:9092"
+    )
+
+
+def test_kafka_config_preserves_list_bootstrap_servers_after_assignment() -> None:
+    config = KafkaConfig(_env_file=None)
+
+    config.bootstrap_servers = ["kafka-1:9092", "kafka-2:9092"]
+
+    assert (
+        config.get_producer_config()["bootstrap.servers"] == "kafka-1:9092,kafka-2:9092"
+    )
+    assert (
+        config.get_consumer_config()["bootstrap.servers"] == "kafka-1:9092,kafka-2:9092"
+    )
+
+
 def test_kafka_config_keeps_legacy_uppercase_aliases() -> None:
     config = KafkaConfig(
         _env_file=None,
