@@ -107,7 +107,7 @@ class ExecutionConfig(BaseSettings):
     max_in_flight: int = Field(default=1000, gt=0)
     max_revoke_grace_ms: int = 500
     shutdown_policy: Literal["graceful", "abort"] = "graceful"
-    consumer_task_stop_timeout_ms: int = 5000
+    consumer_task_stop_timeout_ms: int = Field(default=5000, ge=0)
     shutdown_drain_timeout_ms: int = 5000
     max_retries: int = 3
     retry_backoff_ms: int = 1000

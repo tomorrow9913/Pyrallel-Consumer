@@ -211,6 +211,19 @@ def test_execution_config_consumer_stop_timeout_default() -> None:
     assert config.resolve_shutdown_drain_timeout_ms() == 5000
 
 
+def test_execution_config_rejects_negative_consumer_stop_timeout() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _ = ExecutionConfig(consumer_task_stop_timeout_ms=-1)
+
+    assert "consumer_task_stop_timeout_ms" in str(excinfo.value)
+
+
+def test_execution_config_accepts_zero_consumer_stop_timeout() -> None:
+    config = ExecutionConfig(consumer_task_stop_timeout_ms=0)
+
+    assert config.consumer_task_stop_timeout_ms == 0
+
+
 def test_kafka_config_exposes_canonical_snake_case_fields() -> None:
     config = KafkaConfig(_env_file=None)
 
