@@ -123,7 +123,8 @@ def validate_branch_version(branch: str, version: str) -> bool:
         return not parsed.is_prerelease
     if kind == "release":
         match = _BRANCH_RELEASE_RE.match(branch)
-        assert match is not None
+        if match is None:
+            raise PolicyError(f"invalid release branch: {branch}")
         if (parsed.major, parsed.minor) != (
             int(match.group("major")),
             int(match.group("minor")),
@@ -136,7 +137,8 @@ def validate_branch_version(branch: str, version: str) -> bool:
         )
     if kind == "hotfix":
         match = _BRANCH_HOTFIX_RE.match(branch)
-        assert match is not None
+        if match is None:
+            raise PolicyError(f"invalid hotfix branch: {branch}")
         branch_major = int(match.group("major"))
         branch_minor = int(match.group("minor"))
         branch_patch = int(match.group("patch"))

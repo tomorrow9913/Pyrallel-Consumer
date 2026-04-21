@@ -41,6 +41,12 @@ def test_validate_branch_version(branch: str, version: str, expected: bool) -> N
     assert release_policy.validate_branch_version(branch, version) is expected
 
 
+def test_validate_branch_version_does_not_use_optimized_assert_guards() -> None:
+    source = (ROOT / "scripts" / "release_policy.py").read_text(encoding="utf-8")
+
+    assert "assert match is not None" not in source
+
+
 def test_validate_tag_version_exact_match() -> None:
     assert release_policy.validate_tag_version("v0.3.0rc1", "0.3.0rc1") is True
     assert release_policy.validate_tag_version("v0.3.0-rc.1", "0.3.0rc1") is False
