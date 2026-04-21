@@ -73,6 +73,7 @@ class _DummyPoller:
         self.stopped = False
         self.wait_closed_called = False
         self.metrics = SimpleNamespace(source="dummy")
+        self.runtime_snapshot = SimpleNamespace(source="runtime")
 
     async def start(self):
         self.started = True
@@ -85,6 +86,9 @@ class _DummyPoller:
 
     def get_metrics(self):
         return self.metrics
+
+    def get_runtime_snapshot(self):
+        return self.runtime_snapshot
 
 
 class _DummyResourceSignalProvider:
@@ -744,3 +748,36 @@ async def test_pyrallel_consumer_wait_closed_is_passive(monkeypatch: MonkeyPatch
     assert dummy_poller.wait_closed_called is True
     assert dummy_poller.stopped is False
     assert dummy_engine.shutdown_called is False
+
+
+def test_pyrallel_consumer_delegates_runtime_snapshot_to_poller(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_poller = None
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        nonlocal dummy_poller
+        dummy_poller = _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+        return dummy_poller
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    consumer = PyrallelConsumer(
+        config=KafkaConfig(), worker=lambda _: None, topic="demo"
+    )
+
+    dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
+    assert consumer.get_runtime_snapshot() is dummy_poller.runtime_snapshot

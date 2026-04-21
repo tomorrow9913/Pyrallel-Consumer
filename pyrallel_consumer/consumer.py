@@ -7,7 +7,7 @@ from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsume
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import SystemMetrics, WorkItem
+from pyrallel_consumer.dto import RuntimeSnapshot, SystemMetrics, WorkItem
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
 from pyrallel_consumer.resource_signals import (
@@ -226,3 +226,9 @@ class PyrallelConsumer:
         Get current system metrics.
         """
         return self._poller.get_metrics()
+
+    def get_runtime_snapshot(self) -> RuntimeSnapshot:
+        """
+        Get the current runtime diagnostics snapshot.
+        """
+        return self._poller.get_runtime_snapshot()
