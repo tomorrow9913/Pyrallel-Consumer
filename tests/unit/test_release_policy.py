@@ -269,6 +269,13 @@ def test_publish_workflow_uses_release_policy_and_trusted_publishing() -> None:
     assert "pypa/gh-action-pypi-publish@release/v1" in text
 
 
+def test_publish_workflow_validates_branch_and_tag_refs_separately() -> None:
+    text = PUBLISH_WORKFLOW.read_text()
+
+    assert "if: ${{ github.ref_type == 'branch' }}" in text
+    assert "if: ${{ github.ref_type == 'tag' }}" in text
+
+
 def test_release_verify_runs_policy_preflight_and_smoke_install() -> None:
     text = RELEASE_VERIFY_WORKFLOW.read_text()
 

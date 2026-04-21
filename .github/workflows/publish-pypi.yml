@@ -22,6 +22,7 @@ jobs:
         run: |
           uv sync --frozen --group dev
       - name: Validate branch/version policy
+        if: ${{ github.ref_type == 'branch' }}
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -44,8 +45,8 @@ jobs:
               )
           PY
       - name: Validate canonical tag when present
+        if: ${{ github.ref_type == 'tag' }}
         env:
-          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           uv run python - <<'PY'
@@ -54,10 +55,7 @@ jobs:
 
           from scripts.release_policy import validate_tag_version
 
-          ref_type = "${{ github.ref_type }}"
           ref_name = "${{ github.ref_name }}"
-          if ref_type != "tag":
-              raise SystemExit(0)
 
           data = tomllib.loads(Path("pyproject.toml").read_text())
           version = data["project"]["version"]
