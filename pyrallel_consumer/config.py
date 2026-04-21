@@ -21,10 +21,10 @@ class ProcessConfig(BaseSettings):
         extra="ignore",
     )
 
-    process_count: int = 8
-    queue_size: int = 2048
+    process_count: int = Field(default=8, gt=0)
+    queue_size: int = Field(default=2048, gt=0)
     require_picklable_worker: bool = True
-    batch_size: int = 64
+    batch_size: int = Field(default=64, gt=0)
     batch_bytes: str = "256KB"
     max_batch_wait_ms: int = 5
     flush_policy: Literal[
@@ -34,7 +34,7 @@ class ProcessConfig(BaseSettings):
     shutdown_drain_timeout_ms: int = 5000
     worker_join_timeout_ms: int = 30000
     task_timeout_ms: int = 30000
-    msgpack_max_bytes: int = 1_000_000
+    msgpack_max_bytes: int = Field(default=1_000_000, gt=0)
     max_tasks_per_child: int = 0
     recycle_jitter_ms: int = 0
 
@@ -48,7 +48,7 @@ class MetricsConfig(BaseSettings):
     )
 
     enabled: bool = False
-    port: int = 9091
+    port: int = Field(default=9091, ge=1, le=65535)
 
 
 class AdaptiveConcurrencyConfig(BaseSettings):
@@ -104,7 +104,7 @@ class ExecutionConfig(BaseSettings):
     )
 
     mode: ExecutionMode = ExecutionMode.ASYNC
-    max_in_flight: int = 1000
+    max_in_flight: int = Field(default=1000, gt=0)
     max_revoke_grace_ms: int = 500
     shutdown_policy: Literal["graceful", "abort"] = "graceful"
     consumer_task_stop_timeout_ms: int = 5000

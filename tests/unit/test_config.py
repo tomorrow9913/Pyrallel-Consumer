@@ -5,7 +5,9 @@ from pydantic import ValidationError
 from pyrallel_consumer.config import (
     ExecutionConfig,
     KafkaConfig,
+    MetricsConfig,
     ParallelConsumerConfig,
+    ProcessConfig,
 )
 from pyrallel_consumer.dto import ExecutionMode, OrderingMode
 
@@ -177,6 +179,28 @@ def test_parallel_consumer_config_rejects_zero_batch_and_worker_pool_size() -> N
         _ = ParallelConsumerConfig(worker_pool_size=0)
     assert "worker_pool_size" in str(excinfo.value)
     assert "greater than 0" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("config_type", "kwargs", "field_name"),
+    [
+        (ExecutionConfig, {"max_in_flight": 0}, "max_in_flight"),
+        (ExecutionConfig, {"max_in_flight": -1}, "max_in_flight"),
+        (ProcessConfig, {"process_count": 0}, "process_count"),
+        (ProcessConfig, {"queue_size": 0}, "queue_size"),
+        (ProcessConfig, {"batch_size": 0}, "batch_size"),
+        (ProcessConfig, {"msgpack_max_bytes": 0}, "msgpack_max_bytes"),
+        (MetricsConfig, {"port": 0}, "port"),
+        (MetricsConfig, {"port": 65536}, "port"),
+    ],
+)
+def test_resource_config_rejects_unsafe_bounds(
+    config_type, kwargs: dict[str, int], field_name: str
+) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _ = config_type(**kwargs)
+
+    assert field_name in str(excinfo.value)
 
 
 def test_execution_config_consumer_stop_timeout_default() -> None:
