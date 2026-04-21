@@ -189,6 +189,12 @@ class BrokerPoller:
         self._message_cache: (
             "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
         ) = OrderedDict()
+        # BrokerPoller owns pending terminal DLQ failures across transient
+        # BrokerCompletionSupport instances; support mutates this ledger while
+        # retrying DLQ publication before offsets may be marked complete.
+        self._pending_dlq_events: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]"
+        ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
 
@@ -478,6 +484,14 @@ class BrokerPoller:
 
         try:
             while self._running:
+                if self._pending_dlq_events:
+                    async with self._control_lock:
+                        drained_completion = await self._drain_completion_events_once()
+                    if drained_completion:
+                        await self._commit_ready_offsets()
+                    await asyncio.sleep(self._idle_consume_timeout_seconds)
+                    continue
+
                 await self._check_backpressure()
 
                 consume_timeout = await self._get_consume_timeout_seconds()
@@ -520,7 +534,7 @@ class BrokerPoller:
         timeout_events = await self._handle_blocking_timeouts()
         if timeout_events:
             completed_events.extend(timeout_events)
-        if not completed_events:
+        if not completed_events and not self._pending_dlq_events:
             return False
 
         await self._process_completed_events(completed_events)
@@ -537,15 +551,20 @@ class BrokerPoller:
 
         try:
             while self._running:
-                if self._work_manager.get_total_in_flight_count() <= 0:
+                if (
+                    self._work_manager.get_total_in_flight_count() <= 0
+                    and not self._pending_dlq_events
+                ):
                     await asyncio.sleep(timeout_seconds)
                     continue
 
-                has_completion = await self._execution_engine.wait_for_completion(
-                    timeout_seconds=timeout_seconds,
-                )
-                if not has_completion and self._max_blocking_duration_ms <= 0:
-                    continue
+                has_completion = bool(self._pending_dlq_events)
+                if not has_completion:
+                    has_completion = await self._execution_engine.wait_for_completion(
+                        timeout_seconds=timeout_seconds,
+                    )
+                    if not has_completion and self._max_blocking_duration_ms <= 0:
+                        continue
 
                 async with self._control_lock:
                     has_completion = await self._drain_completion_events_once()
@@ -576,6 +595,7 @@ class BrokerPoller:
             pop_cached_message=self._pop_cached_message,
             publish_to_dlq=_publish_to_dlq_proxy,
             logger=logger,
+            pending_dlq_events=self._pending_dlq_events,
         )
 
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
@@ -957,26 +977,29 @@ class BrokerPoller:
 
             total_in_flight = self._work_manager.get_total_in_flight_count()
             total_queued = await self._get_total_queued_messages()
-            if total_in_flight <= 0 and total_queued <= 0:
+            pending_dlq_count = len(self._pending_dlq_events)
+            if total_in_flight <= 0 and total_queued <= 0 and pending_dlq_count <= 0:
                 await self._commit_ready_offsets()
                 logger.debug(
-                    "Graceful shutdown drain completed with in_flight=%d queued=%d",
+                    "Graceful shutdown drain completed with in_flight=%d queued=%d pending_dlq=%d",
                     total_in_flight,
                     total_queued,
+                    pending_dlq_count,
                 )
                 return True
 
             remaining_seconds = deadline - time.monotonic()
             if remaining_seconds <= 0:
                 logger.warning(
-                    "Graceful shutdown drain timed out after %.3fs; continuing with forced abort path (in_flight=%d queued=%d)",
+                    "Graceful shutdown drain timed out after %.3fs; continuing with forced abort path (in_flight=%d queued=%d pending_dlq=%d)",
                     max(0.0, timeout_seconds),
                     total_in_flight,
                     total_queued,
+                    pending_dlq_count,
                 )
                 return False
 
-            if total_in_flight > 0:
+            if total_in_flight > 0 and pending_dlq_count <= 0:
                 has_completion = await self._execution_engine.wait_for_completion(
                     timeout_seconds=min(
                         remaining_seconds,
