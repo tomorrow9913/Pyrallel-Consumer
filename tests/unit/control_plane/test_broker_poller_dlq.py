@@ -904,6 +904,40 @@ async def test_graceful_shutdown_drain_times_out_while_pending_dlq_remains(
 
 
 @pytest.mark.asyncio
+async def test_graceful_shutdown_drain_throttles_persistent_pending_dlq(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    pending_event = CompletionEvent(
+        id="pending-work-id",
+        tp=tp,
+        offset=100,
+        epoch=1,
+        status=CompletionStatus.FAILURE,
+        error="Test error",
+        attempt=3,
+    )
+    broker_poller_with_dlq._pending_dlq_events = OrderedDict({(tp, 100): pending_event})
+    broker_poller_with_dlq._work_manager = MagicMock()
+    broker_poller_with_dlq._work_manager.schedule = AsyncMock()
+    broker_poller_with_dlq._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller_with_dlq._get_total_queued_messages = AsyncMock(return_value=0)
+    broker_poller_with_dlq._drain_completion_events_once = AsyncMock(return_value=True)
+    broker_poller_with_dlq._commit_ready_offsets = AsyncMock()
+
+    async def clear_pending_after_sleep(_timeout):
+        broker_poller_with_dlq._pending_dlq_events.clear()
+
+    with patch(
+        "asyncio.sleep", new=AsyncMock(side_effect=clear_pending_after_sleep)
+    ) as sleep:
+        drained = await broker_poller_with_dlq._drain_shutdown_work(timeout_seconds=1)
+
+    assert drained is True
+    sleep.assert_awaited_once_with(broker_poller_with_dlq._idle_consume_timeout_seconds)
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
     broker_poller_with_dlq,
 ):

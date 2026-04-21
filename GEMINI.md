@@ -1048,3 +1048,9 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 - TDD(red): added `test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry` after architect review found a fresh same-epoch duplicate completion could mark an offset complete and clear a pending DLQ retry before DLQ publish success. Initial focused run failed with the pending ledger entry missing.
 - Green: `BrokerCompletionSupport.process_completed_events()` now ignores fresh completions for `(tp, offset)` while a pending DLQ retry exists, so duplicate/zombie completions cannot supersede the terminal DLQ decision. Verification: DLQ focused suite -> 30 passed; ruff on changed files -> pass.
+
+### 5.39 Issue #71 shutdown throttle and same-batch duplicate review fixes (2026-04-21)
+
+- TDD(red): added `test_graceful_shutdown_drain_throttles_persistent_pending_dlq` after PR #85 review showed graceful shutdown could retry pending DLQ every 10ms. Initial focused run showed sleep used `0.01` instead of the monitor idle timeout.
+- TDD(red): added `test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_success` after review showed a duplicate fresh completion in the same drain batch could re-add pending DLQ after an earlier pending retry succeeded. Initial focused run re-added the duplicate failure to the ledger.
+- Green: shutdown drain now uses `_idle_consume_timeout_seconds` while pending DLQ remains, and `BrokerCompletionSupport` ignores fresh duplicate completions for pending keys already resolved earlier in the same processing batch. Verification: DLQ focused suite -> 32 passed; ruff on changed files -> pass.

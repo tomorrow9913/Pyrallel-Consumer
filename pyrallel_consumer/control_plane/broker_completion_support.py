@@ -84,10 +84,14 @@ class BrokerCompletionSupport:
         pending_events = [(event, True) for event in self._pending_dlq_events.values()]
         fresh_events = [(event, False) for event in completed_events]
         events_to_process = pending_events + fresh_events
+        resolved_pending_keys: set[tuple[DtoTopicPartition, int]] = set()
 
         for event, from_pending_ledger in events_to_process:
             pending_key = (event.tp, event.offset)
-            if not from_pending_ledger and pending_key in self._pending_dlq_events:
+            if not from_pending_ledger and (
+                pending_key in self._pending_dlq_events
+                or pending_key in resolved_pending_keys
+            ):
                 self._logger.warning(
                     "Ignoring duplicate completion for pending DLQ retry %s@%d",
                     event.tp,
@@ -156,6 +160,8 @@ class BrokerCompletionSupport:
                     continue
 
             tracker.mark_complete(event.offset)
+            if from_pending_ledger:
+                resolved_pending_keys.add(pending_key)
             self._pending_dlq_events.pop(pending_key, None)
             self._pop_cached_message((event.tp, event.offset))
 

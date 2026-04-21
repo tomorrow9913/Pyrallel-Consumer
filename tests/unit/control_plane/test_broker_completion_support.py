@@ -359,3 +359,71 @@ async def test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry()
     await support.process_completed_events([])
     assert 100 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 100)]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_success() -> (
+    None
+):
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=100,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    current_epoch = tracker.get_current_epoch()
+    message_cache = OrderedDict({(tp, 100): (b"key", b"value")})
+    popped_cache_keys: list[tuple[DtoTopicPartition, int]] = []
+    kafka_config = KafkaConfig()
+    kafka_config.dlq_enabled = True
+    kafka_config.parallel_consumer.execution.max_retries = 3
+    publish_to_dlq = AsyncMock(side_effect=[True, False])
+
+    support = BrokerCompletionSupport(
+        kafka_config=kafka_config,
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=message_cache,
+        should_cache_message_payloads=lambda: True,
+        pop_cached_message=lambda cache_key: popped_cache_keys.append(cache_key),
+        publish_to_dlq=publish_to_dlq,
+        logger=MagicMock(),
+        pending_dlq_events=OrderedDict(
+            {
+                (
+                    tp,
+                    100,
+                ): CompletionEvent(
+                    id="pending-id",
+                    tp=tp,
+                    offset=100,
+                    epoch=current_epoch,
+                    status=CompletionStatus.FAILURE,
+                    error="pending failure",
+                    attempt=3,
+                )
+            }
+        ),
+    )
+    duplicate_failure = CompletionEvent(
+        id="duplicate-failure-id",
+        tp=tp,
+        offset=100,
+        epoch=current_epoch,
+        status=CompletionStatus.FAILURE,
+        error="duplicate failure",
+        attempt=3,
+    )
+
+    await support.process_completed_events([duplicate_failure])
+
+    assert support._pending_dlq_events == OrderedDict()
+    assert 100 in tracker.completed_offsets
+    assert popped_cache_keys == [(tp, 100)]
+    publish_to_dlq.assert_awaited_once()

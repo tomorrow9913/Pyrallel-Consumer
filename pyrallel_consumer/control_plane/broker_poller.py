@@ -1012,7 +1012,12 @@ class BrokerPoller:
                 if has_completion:
                     continue
             else:
-                await asyncio.sleep(min(remaining_seconds, 0.01))
+                sleep_seconds = (
+                    self._idle_consume_timeout_seconds
+                    if pending_dlq_count > 0
+                    else 0.01
+                )
+                await asyncio.sleep(min(remaining_seconds, sleep_seconds))
 
     async def wait_closed(self) -> None:
         if not self._running and self._consumer_task is None:
