@@ -1038,3 +1038,13 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 - TDD(red): added `test_completion_monitor_throttles_persistent_pending_dlq_retries` and `test_cleanup_clears_pending_dlq_events` after PR #85 review flagged a hot completion-monitor retry loop and stale pending ledger across restart/cleanup. Initial focused run failed: monitor retried without sleep and `_cleanup()` left `_pending_dlq_events` intact.
 - Green: `_run_completion_monitor()` now sleeps for the monitor timeout after a pending DLQ retry whenever pending DLQ entries remain, preventing a tight retry loop during sustained DLQ outages. `_cleanup()` now clears `_pending_dlq_events` with the message cache. Verification: pending DLQ focused tests -> 2 passed; DLQ focused suite -> 28 passed; control-plane suite -> 228 passed; ruff and mypy on changed source/tests -> pass.
+
+### 5.37 Issue #71 stale completion ledger preservation review fix (2026-04-21)
+
+- TDD(red): added `test_stale_completion_does_not_drop_pending_dlq_retry` after PR #85 review showed a fresh stale/zombie completion for the same `(tp, offset)` could remove the current pending DLQ retry ledger entry. Initial focused run failed with the pending entry missing.
+- Green: `BrokerCompletionSupport.process_completed_events()` now tracks whether an event came from the pending DLQ ledger and only removes ledger entries for stale/untracked events that originated from the ledger itself. Fresh stale completions no longer drop unrelated current pending DLQ retries. Verification: DLQ focused suite -> 29 passed; ruff on changed files -> pass.
+
+### 5.38 Issue #71 pending DLQ duplicate completion review fix (2026-04-21)
+
+- TDD(red): added `test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry` after architect review found a fresh same-epoch duplicate completion could mark an offset complete and clear a pending DLQ retry before DLQ publish success. Initial focused run failed with the pending ledger entry missing.
+- Green: `BrokerCompletionSupport.process_completed_events()` now ignores fresh completions for `(tp, offset)` while a pending DLQ retry exists, so duplicate/zombie completions cannot supersede the terminal DLQ decision. Verification: DLQ focused suite -> 30 passed; ruff on changed files -> pass.

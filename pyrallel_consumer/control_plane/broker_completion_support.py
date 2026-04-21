@@ -81,15 +81,24 @@ class BrokerCompletionSupport:
         self,
         completed_events: list[CompletionEvent],
     ) -> int:
-        pending_events = list(self._pending_dlq_events.values())
-        events_to_process = pending_events + completed_events
+        pending_events = [(event, True) for event in self._pending_dlq_events.values()]
+        fresh_events = [(event, False) for event in completed_events]
+        events_to_process = pending_events + fresh_events
 
-        for event in events_to_process:
+        for event, from_pending_ledger in events_to_process:
             pending_key = (event.tp, event.offset)
+            if not from_pending_ledger and pending_key in self._pending_dlq_events:
+                self._logger.warning(
+                    "Ignoring duplicate completion for pending DLQ retry %s@%d",
+                    event.tp,
+                    event.offset,
+                )
+                continue
             tracker = self._offset_trackers.get(event.tp)
             if tracker is None:
                 self._logger.warning("Completion for untracked partition %s", event.tp)
-                self._pending_dlq_events.pop(pending_key, None)
+                if from_pending_ledger:
+                    self._pending_dlq_events.pop(pending_key, None)
                 continue
             if event.epoch != tracker.get_current_epoch():
                 self._logger.warning(
@@ -99,7 +108,8 @@ class BrokerCompletionSupport:
                     event.epoch,
                     tracker.get_current_epoch(),
                 )
-                self._pending_dlq_events.pop(pending_key, None)
+                if from_pending_ledger:
+                    self._pending_dlq_events.pop(pending_key, None)
                 continue
 
             dlq_success = True
