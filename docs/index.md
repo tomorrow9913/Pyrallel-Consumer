@@ -1,30 +1,42 @@
 # Docs Index
 
-`docs/`는 세 가지 문서군으로 나뉜다.
+`docs/` is organized into three document groups.
 
 ## 1. Blueprint
 
-- **[blueprint/00-index.md](./blueprint/00-index.md)** - 서비스 정의, 요구사항, 아키텍처, feature blueprint의 메인 진입점
+- **[blueprint/00-index.md](./blueprint/00-index.md)** - main entry point for service definition, requirements, architecture, and feature blueprints
 
-이 문서군에는 다음이 포함된다.
+This group includes:
 
 - overview / requirements / architecture / open decisions / context restoration
-- feature별 `00-index -> 01-requirements -> 02-architecture -> 03-design`
+- per-feature flow: `00-index -> 01-requirements -> 02-architecture -> 03-design`
 
 ## 2. Operations
 
-- **[operations/index.md](./operations/index.md)** - 운영 문서 entrypoint
-- **[operations/guide.ko.md](./operations/guide.ko.md)** - 한국어 운영 가이드
-- **[operations/guide.en.md](./operations/guide.en.md)** - 영문 운영 가이드
-- **[operations/playbooks.md](./operations/playbooks.md)** - 운영 플레이북과 튜닝 절차
-- **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness 체크리스트
+- **[../SECURITY.md](../SECURITY.md)** - private vulnerability reporting path and security response policy
+- **[internal-doc-language-policy.md](./internal-doc-language-policy.md)** - legacy internal-doc mirror for the filename-language rule and exemptions
+- **[operations/index.md](./operations/index.md)** - operations document entry point
+- **[operations/language-policy.md](./operations/language-policy.md)** - filename-language rule and explicit exemptions for internal / legacy documents
+- **[operations/guide.ko.md](./operations/guide.ko.md)** - Korean operations guide
+- **[operations/guide.en.md](./operations/guide.en.md)** - English operations guide
+- **[operations/playbooks.md](./operations/playbooks.md)** - operations playbooks and tuning procedures
+- **[operations/development-verification-workflow.md](./operations/development-verification-workflow.md)** - canonical local development and verification commands
+- **[operations/stable-operations-evidence.md](./operations/stable-operations-evidence.md)** - release-review reference for soak evidence and performance baselines
+- **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
+- **[operations/public-contract-v1.md](./operations/public-contract-v1.md)** - v1 ordering/rebalance/DLQ/commit public contract freeze
+- **[operations/oss-messaging-guardrails.md](./operations/oss-messaging-guardrails.md)** - inbound-only OSS messaging policy guardrails
+- **[operations/wave-2-gate-cadence.md](./operations/wave-2-gate-cadence.md)** - wave-2 resume gate/cadence rules after MQU-4
+- **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness checklist
+- **[operations/support-policy.md](./operations/support-policy.md)** - Python/Kafka support scope and compatibility policy
+- **[operations/upgrade-rollback-guide.md](./operations/upgrade-rollback-guide.md)** - upgrade/rollback operations guide
+- **[operations/github-actions-act-local-review.md](./operations/github-actions-act-local-review.md)** - local `act` workflow review guide
 
 ## 3. Plans
 
-- **[plans/](./plans/)** - 날짜별 design / implementation plan 아카이브
+- **[plans/](./plans/)** - date-based design/implementation plan archive
 
-## 빠른 안내
+## Quick Guide
 
-- 현재 runtime 구조와 feature 청사진을 보려면 `blueprint/`
-- 운영과 장애 대응만 보려면 `operations/`
-- 과거 작업 계획과 설계 결정을 보려면 `plans/`
+- For current runtime structure and feature blueprints, start at `blueprint/`.
+- For operations and incident response only, start at `operations/`.
+- For archived plans and design decisions, check `plans/`.

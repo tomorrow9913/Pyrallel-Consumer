@@ -1,25 +1,21 @@
 # Async Execution Engine Index
 
-이 문서는 `async-execution-engine` subfeature의 목차다.
-이 subfeature는 `AsyncExecutionEngine`이 coroutine worker를 실행하고 completion을 되돌리는 경로를 다룬다.
+This index is the canonical English entry for the subfeature document set.
+For the preserved Korean source text, see [00-index.ko.md](./00-index.ko.md).
 
-## 이 subfeature가 답하는 질문
+## Subfeature summary
 
-- async mode에서 worker는 어떤 형태여야 하는가
-- concurrency 제한은 어디서 걸리는가
-- timeout/retry/shutdown은 어떻게 동작하는가
-- completion queue는 어떤 의미를 가지는가
+`async-execution-engine` covers coroutine worker contract, semaphore-limited concurrency, timeout handling, and graceful shutdown. It belongs to the same blueprint family as the companion documents listed below.
 
-## 문서 역할
+## Focus areas
 
-| 문서 | 역할 |
-| --- | --- |
-| [01-requirements.md](./01-requirements.md) | async engine의 책임과 acceptance 기준 |
-| [02-architecture.md](./02-architecture.md) | semaphore, task lifecycle, completion flow |
-| [03-design.md](./03-design.md) | config key, worker contract, completion payload 규칙 |
+- Async worker submission and completion delivery.
+- Semaphore-based concurrency control and timeout or retry behavior.
+- Shutdown semantics that preserve the shared engine contract.
 
-## 빠른 읽기 분기
+## Companion documents
 
-- async worker 제약이 궁금하면 `03-design.md`
-- task lifecycle과 shutdown 흐름이 궁금하면 `02-architecture.md`
-- 이 엔진의 책임 범위를 알고 싶으면 `01-requirements.md`
+- [00-index.md](./00-index.md)
+- [01-requirements.md](./01-requirements.md)
+- [02-architecture.md](./02-architecture.md)
+- [03-design.md](./03-design.md)

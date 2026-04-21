@@ -80,19 +80,13 @@ async def test_run_consumer_uses_non_blocking_consume_timeout_when_work_remains(
     broker_poller._max_blocking_duration_ms = 0
 
     consume_timeouts: list[float] = []
-    work_state = [1, 1]
-
-    def get_total_in_flight_count():
-        return work_state.pop(0)
 
     def fake_consume(num_messages=1, timeout=0.1):
         consume_timeouts.append(timeout)
         broker_poller._running = False
         return []
 
-    broker_poller._work_manager.get_total_in_flight_count.side_effect = (
-        get_total_in_flight_count
-    )
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 1
     broker_poller.consumer.consume = MagicMock(side_effect=fake_consume)
 
     async def passthrough_to_thread(fn, *args, **kwargs):

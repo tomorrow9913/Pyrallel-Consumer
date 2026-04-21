@@ -2,9 +2,11 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from typing import Any, Dict, List, Mapping, Optional, Protocol
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 from pyrallel_consumer.dto import (
     CompletionEvent,
@@ -17,7 +19,8 @@ from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 OffsetTrackerAssignment = Mapping[DtoTopicPartition, int | OffsetTracker]
-GroupedMessages = Mapping[tuple[DtoTopicPartition, Any], list[tuple[int, int, Any]]]
+GroupedMessage = tuple[int, int, Any] | tuple[int, int, Any, Any]
+GroupedMessages = Mapping[tuple[DtoTopicPartition, Any], list[GroupedMessage]]
 
 
 class MetricsExporter(Protocol):
@@ -43,6 +46,7 @@ class WorkManager:
         ordering_mode: OrderingMode = OrderingMode.UNORDERED,
         blocking_cache_ttl: int = 100,
         max_revoke_grace_ms: int = 500,
+        poison_message_circuit: Optional[PoisonMessageCircuitBreaker] = None,
     ):
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
@@ -55,6 +59,9 @@ class WorkManager:
         self._work_item_ids_by_tp_offset: Dict[tuple[DtoTopicPartition, int], str] = {}
         self._dispatch_timestamps: Dict[str, float] = {}
         self._total_queued_messages = 0
+        self._completion_latency_ema_seconds: Optional[float] = None
+        self._completion_timestamps: deque[float] = deque(maxlen=256)
+        self._completion_rate_window_seconds = 5.0
 
         self._max_in_flight_messages = max_in_flight_messages
         self._current_in_flight_count = 0
@@ -74,12 +81,42 @@ class WorkManager:
         )
         self._head_offsets = self._queue_topology.head_offsets
         self._head_queue_keys_by_offset = self._queue_topology.head_queue_keys_by_offset
+        self._poison_message_circuit = poison_message_circuit
 
     def get_ordering_mode(self) -> OrderingMode:
         return self._ordering_mode
 
     def set_metrics_exporter(self, metrics_exporter: Optional[MetricsExporter]) -> None:
         self._metrics_exporter = metrics_exporter
+
+    def get_average_completion_latency_seconds(self) -> Optional[float]:
+        return self._completion_latency_ema_seconds
+
+    def get_recent_completion_rate_per_second(
+        self, *, now_monotonic: Optional[float] = None
+    ) -> float:
+        now = time.perf_counter() if now_monotonic is None else float(now_monotonic)
+        self._prune_completion_timestamps(now)
+        if self._completion_rate_window_seconds <= 0:
+            return 0.0
+        return len(self._completion_timestamps) / self._completion_rate_window_seconds
+
+    def _record_completion_latency(
+        self, *, duration_seconds: float, now: float
+    ) -> None:
+        if self._completion_latency_ema_seconds is None:
+            self._completion_latency_ema_seconds = duration_seconds
+        else:
+            self._completion_latency_ema_seconds = (
+                self._completion_latency_ema_seconds * 0.8 + duration_seconds * 0.2
+            )
+        self._completion_timestamps.append(now)
+        self._prune_completion_timestamps(now)
+
+    def _prune_completion_timestamps(self, now: float) -> None:
+        cutoff = now - self._completion_rate_window_seconds
+        while self._completion_timestamps and self._completion_timestamps[0] < cutoff:
+            self._completion_timestamps.popleft()
 
     async def force_fail(
         self,
@@ -189,6 +226,31 @@ class WorkManager:
             self._is_queue_eligible
         )
 
+    async def _force_fail_queued_item(
+        self,
+        *,
+        item_to_submit: WorkItem,
+        selected_tp: DtoTopicPartition,
+        selected_key: Any,
+    ) -> bool:
+        if self._poison_message_circuit is None:
+            return False
+        if not self._poison_message_circuit.should_force_fail(item_to_submit):
+            return False
+
+        dequeued_item = self._queue_topology.dequeue_submitted_item(
+            selected_tp, selected_key
+        )
+        if dequeued_item is None:
+            return False
+
+        self._total_queued_messages = max(0, self._total_queued_messages - 1)
+        await self._completion_queue.put(
+            self._poison_message_circuit.build_forced_failure_event(dequeued_item)
+        )
+        self._invalidate_blocking_cache()
+        return True
+
     def on_assign(
         self,
         assigned_tps: List[DtoTopicPartition] | OffsetTrackerAssignment,
@@ -244,6 +306,8 @@ class WorkManager:
             )
             self._offset_trackers.pop(tp, None)
             self._shared_offset_trackers.discard(tp)
+            if self._poison_message_circuit is not None:
+                self._poison_message_circuit.clear_partition(tp)
         if revoked_tps:
             revoked_tp_set = set(revoked_tps)
             stale_ids = [
@@ -294,7 +358,12 @@ class WorkManager:
 
             work_items: list[WorkItem] = []
 
-            for offset, epoch, payload in messages:
+            for message in messages:
+                if len(message) == 3:
+                    offset, epoch, payload = message
+                    poison_key = key
+                else:
+                    offset, epoch, payload, poison_key = message
                 work_item_id = str(uuid.uuid4())
                 work_item = WorkItem(
                     id=work_item_id,
@@ -303,6 +372,7 @@ class WorkManager:
                     epoch=epoch,
                     key=key,
                     payload=payload,
+                    poison_key=poison_key,
                 )
                 work_items.append(work_item)
                 self._in_flight_work_items[work_item_id] = work_item
@@ -364,6 +434,14 @@ class WorkManager:
                 item_to_submit = self._peek_queue(queue_to_dequeue_from)
 
             if item_to_submit:
+                force_failed = await self._force_fail_queued_item(
+                    item_to_submit=item_to_submit,
+                    selected_tp=selected_tp,
+                    selected_key=selected_key,
+                )
+                if force_failed:
+                    continue
+
                 try:
                     await self._execution_engine.submit(item_to_submit)
                     dequeued_item = self._queue_topology.dequeue_submitted_item(
@@ -432,9 +510,18 @@ class WorkManager:
                     event.id in self._in_flight_work_items
                 ):  # Now CompletionEvent has 'id'
                     completed_item = self._in_flight_work_items[event.id]
+                    if self._poison_message_circuit is not None:
+                        self._poison_message_circuit.record_completion(
+                            event, completed_item
+                        )
                     _, dispatch_time = self._release_in_flight_item(event.id)
-                    if dispatch_time is not None and self._metrics_exporter is not None:
+                    if dispatch_time is not None:
                         duration = max(0.0, time.perf_counter() - dispatch_time)
+                        self._record_completion_latency(
+                            duration_seconds=duration,
+                            now=time.perf_counter(),
+                        )
+                    if dispatch_time is not None and self._metrics_exporter is not None:
                         completion_observer = getattr(
                             self._metrics_exporter, "observe_work_completion", None
                         )
@@ -492,6 +579,31 @@ class WorkManager:
 
     def get_total_queued_messages(self) -> int:
         return self._total_queued_messages
+
+    def get_max_in_flight_messages(self) -> int:
+        return self._max_in_flight_messages
+
+    def get_poison_message_open_circuit_count(self) -> int:
+        if self._poison_message_circuit is None:
+            return 0
+        return self._poison_message_circuit.get_open_circuit_count()
+
+    def set_max_in_flight_messages(self, value: int) -> None:
+        if value < 1:
+            raise ValueError("max_in_flight_messages must be >= 1")
+        self._max_in_flight_messages = value
+
+    def is_rebalancing(self) -> bool:
+        return self._rebalancing
+
+    def get_in_flight_counts(self) -> Dict[DtoTopicPartition, int]:
+        counts: Dict[DtoTopicPartition, int] = {}
+        for work_item_id in self._dispatch_timestamps:
+            work_item = self._in_flight_work_items.get(work_item_id)
+            if work_item is None:
+                continue
+            counts[work_item.tp] = counts.get(work_item.tp, 0) + 1
+        return counts
 
     def _invalidate_blocking_cache(self) -> None:
         self._blocking_cache_counter = 0

@@ -1,13 +1,25 @@
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsumerConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
+from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import SystemMetrics, WorkItem
+from pyrallel_consumer.dto import (
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
+    RuntimeSnapshot,
+    SystemMetrics,
+    WorkItem,
+)
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
+from pyrallel_consumer.resource_signals import (
+    NullResourceSignalProvider,
+    ResourceSignalProvider,
+)
 
 _PROMETHEUS_EXPORTERS: dict[int, PrometheusMetricsExporter] = {}
 _PROMETHEUS_EXPORTER_REFCOUNTS: dict[int, int] = {}
@@ -64,6 +76,7 @@ class PyrallelConsumer:
         config: KafkaConfig,
         worker: Union[Callable[[WorkItem], Awaitable[Any]], Callable[[WorkItem], Any]],
         topic: str,
+        resource_signal_provider: Optional[ResourceSignalProvider] = None,
     ):
         """
         Initialize the Pyrallel Consumer.
@@ -74,10 +87,20 @@ class PyrallelConsumer:
                                For 'async' mode, this must be an async function.
                                For 'process' mode, this must be a picklable function.
             topic (str): The Kafka topic to subscribe to.
+            resource_signal_provider (Optional[ResourceSignalProvider]): Optional
+                provider sampled during metrics publishing for host/resource tuning
+                signals. If omitted, NullResourceSignalProvider is used, reporting
+                an unavailable signal by default. Providers should follow the
+                fail-open contract and must not raise from snapshot(); unavailable
+                or temporarily faulty signals should be represented as unavailable
+                snapshots instead.
         """
         self._logger = logging.getLogger(__name__)
         self.config = config
         self._topic = topic
+        self._resource_signal_provider = (
+            resource_signal_provider or NullResourceSignalProvider()
+        )
 
         metrics_config = getattr(self.config, "metrics", None)
         if metrics_config is None:
@@ -99,11 +122,23 @@ class PyrallelConsumer:
 
         # 2. Create Work Manager
         ordering_mode = parallel_config.ordering_mode
+        poison_message_config = getattr(parallel_config, "poison_message", None)
+        poison_message_circuit = None
+        if poison_message_config is not None:
+            poison_message_circuit = PoisonMessageCircuitBreaker(
+                enabled=bool(getattr(poison_message_config, "enabled", False)),
+                failure_threshold=int(
+                    getattr(poison_message_config, "failure_threshold", 3)
+                ),
+                cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
+                forced_failure_attempt=execution_config.max_retries,
+            )
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
             ordering_mode=ordering_mode,
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
         )
 
         # 3. Create Broker Poller (The main loop)
@@ -117,7 +152,19 @@ class PyrallelConsumer:
     def _publish_metrics_snapshot(self) -> None:
         if self._metrics_exporter is None:
             return
-        self._metrics_exporter.update_from_system_metrics(self._poller.get_metrics())
+        metrics = self._poller.get_metrics()
+        try:
+            resource_signal = self._resource_signal_provider.snapshot()
+        except Exception:
+            self._logger.exception("Resource signal provider snapshot failed")
+            resource_signal = ResourceSignalSnapshot(
+                status=ResourceSignalStatus.UNAVAILABLE
+            )
+        try:
+            metrics = replace(metrics, resource_signal=resource_signal)
+        except TypeError:
+            setattr(metrics, "resource_signal", resource_signal)
+        self._metrics_exporter.update_from_system_metrics(metrics)
 
     async def start(self) -> None:
         """
@@ -198,3 +245,9 @@ class PyrallelConsumer:
         Get current system metrics.
         """
         return self._poller.get_metrics()
+
+    def get_runtime_snapshot(self) -> RuntimeSnapshot:
+        """
+        Get the current runtime diagnostics snapshot.
+        """
+        return self._poller.get_runtime_snapshot()

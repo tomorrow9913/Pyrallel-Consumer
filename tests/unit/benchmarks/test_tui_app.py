@@ -800,7 +800,7 @@ async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_run_screen_formats_status_and_tps_cells_for_readability(
-    monkeypatch
+    monkeypatch,
 ) -> None:
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
@@ -957,7 +957,7 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_run_screen_surfaces_last_error_line_in_failure_status(
-    monkeypatch
+    monkeypatch,
 ) -> None:
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController

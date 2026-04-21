@@ -1,20 +1,15 @@
-# Stable Public Contract Decisions (Locked for 1.0.0)
+# Open Decisions
 
-이 문서는 `GitHub #34` 기준으로 1.0.0 안정 릴리스 전에 확정해야 하는
-public contract 결정을 잠근 결과다.
+This document is the canonical English register of cross-cutting blueprint decisions that still need to be locked.
+For the preserved Korean source text, see [04-open-decisions.ko.md](./04-open-decisions.ko.md).
 
-- 기준 이슈: https://github.com/tomorrow9913/Pyrallel-Consumer/issues/34
-- 잠금 일자: 2026-04-17
-- 상태: 1.0.0 gate 기준 unresolved 항목 없음
-
-| 계약 영역 | 1.0.0 고정 결정 | 사용자/운영 기대치 |
-| --- | --- | --- |
-| ordering mode 기본 가이드 | 기본값은 `key_hash` | `partition`, `unordered`는 의도적 opt-in 시나리오에서만 사용한다. README/예제 기본은 `key_hash`를 유지한다. |
-| DLQ payload default | 런타임 기본값은 `full` | production 운영 가이드는 `metadata_only`를 권장한다. `full` 사용 시 payload cache 예산(`PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES`)을 반드시 설정한다. |
-| commit semantics public surface | canonical public contract는 `on_complete`만 제공 | periodic commit은 실험/향후 확장 범위이며 1.0.0 안정 계약에는 포함하지 않는다. |
-| rebalance/restart state strategy 기본값 | 기본값은 `contiguous_only` | `metadata_snapshot`은 opt-in이며, 실패 시 `contiguous_only` 의미로 fail-closed 해야 한다. |
-
-## Notes
-
-- metrics exporter packaging, benchmark gate/policy, worker recycle default는
-  stable contract blocker가 아니라 운영 성숙도(P1/P2) 트랙에서 계속 관리한다.
+| Item | Decision to lock | Why it matters | Options | Recommended direction |
+| --- | --- | --- | --- | --- |
+| `metadata_snapshot` default | Whether sparse completed offsets should be restored by default | It trades lower reprocessing against higher operational complexity | `contiguous_only`, `metadata_snapshot` | Keep `contiguous_only` as the default and make snapshots opt-in |
+| Metrics exporter packaging | How far canonical support should extend beyond runtime metric exposure | Runtime support exists, but packaging and dashboard ownership remain policy choices | runtime only, helper scripts, full bundled stack | Keep runtime auto-wiring plus documented ops/test stacks |
+| Commit strategy public surface | Whether periodic commit becomes part of the supported public contract | Docs must distinguish present guarantees from possible future direction | `on_complete` only, experimental periodic, fully supported periodic | Keep `on_complete` as the canonical contract for now |
+| Process worker recycle default | Whether recycle controls should be actively enabled by default | Long-run stability and predictable latency pull in different directions | recycle off, conservative default, aggressive recycle | Keep recycle off by default and document opt-in tuning |
+| DLQ payload default | Whether `full` or `metadata_only` should be the default payload mode | Diagnosis convenience trades against memory and security cost | `full`, `metadata_only`, topic-specific override | Use `full` for development defaults and recommend `metadata_only` in production |
+| Ordering mode guidance | Which ordering mode should be the default recommendation in user-facing docs | This shapes throughput and correctness expectations from the start | `key_hash`, `partition`, `unordered` | Recommend `key_hash` generally and document special cases separately |
+| Benchmark release gate | Whether benchmark numbers should become a release-enforced quality gate | Regression management matters, but environments remain noisy | no gate, advisory gate, fixed CI gate | Start with an advisory gate and document the thresholds |
+| Benchmark profiling policy | How formal process-mode profiling support should become | `py-spy` and `yappi` behave differently across platforms | best-effort, official `py-spy` only, official multi-tool support | Treat `py-spy` as the official process path and keep `yappi` focused on async or baseline runs |

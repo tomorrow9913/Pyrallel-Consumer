@@ -1,0 +1,103 @@
+name: publish-pypi
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Validate branch/version policy
+        if: ${{ github.ref_type == 'branch' }}
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          uv run python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          from scripts.release_policy import validate_branch_version
+
+          branch = "${{ github.ref_name }}"
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          version = data["project"]["version"]
+
+          if branch == "develop":
+              raise SystemExit("publish-pypi is not allowed from develop in V1")
+
+          if not validate_branch_version(branch, version):
+              raise SystemExit(
+                  f"Branch/version policy mismatch: branch={branch!r} version={version!r}"
+              )
+          PY
+      - name: Validate canonical tag when present
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          uv run python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          from scripts.release_policy import validate_tag_version
+
+          ref_name = "${{ github.ref_name }}"
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          version = data["project"]["version"]
+
+          if not validate_tag_version(ref_name, version):
+              raise SystemExit(
+                  f"Tag/version policy mismatch: tag={ref_name!r} version={version!r}"
+              )
+          PY
+      - name: Build distributions
+        run: |
+          rm -rf dist
+          uv build
+      - name: Resolve release artifacts (freshness gate)
+        id: release_artifacts
+        run: |
+          uv run python scripts/release_policy.py resolve-artifacts --write-github-output
+      - name: Check distribution metadata
+        run: |
+          uv run twine check \
+            "${{ steps.release_artifacts.outputs.sdist_path }}" \
+            "${{ steps.release_artifacts.outputs.wheel_path }}"
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: |
+            ${{ steps.release_artifacts.outputs.sdist_path }}
+            ${{ steps.release_artifacts.outputs.wheel_path }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+WORK_ITEM_POISON_KEY_UNSET = object()
+
 
 # --- Completion ---
 class CompletionStatus(Enum):
@@ -87,6 +89,7 @@ class WorkItem:
         key (Any): 가상 파티셔닝을 위한 메시지 키
         payload (Any): 실제 메시지 페이로드
         requeue_attempts (int): process worker 재큐 시도 횟수
+        poison_key (Any): poison-message circuit 식별용 원본 메시지 키
     """
 
     id: str
@@ -96,6 +99,7 @@ class WorkItem:
     key: Any  # Message key for virtual partitioning
     payload: Any  # The actual message payload
     requeue_attempts: int = 0
+    poison_key: Any = WORK_ITEM_POISON_KEY_UNSET
 
 
 # --- Process Execution ---
@@ -163,6 +167,13 @@ class ProcessBatchMetrics:
         last_flush_wait_seconds (float): Wait time of the most recent flushed batch
         buffered_items (int): Number of currently buffered items
         buffered_age_seconds (float): Age of current buffer since first item
+        demand_flush_count (int): Number of demand-triggered flushes
+        last_main_to_worker_ipc_seconds (float): Most recent main-to-worker IPC time
+        avg_main_to_worker_ipc_seconds (float): Average main-to-worker IPC time
+        last_worker_exec_seconds (float): Most recent worker execution time
+        avg_worker_exec_seconds (float): Average worker execution time
+        last_worker_to_main_ipc_seconds (float): Most recent worker-to-main IPC time
+        avg_worker_to_main_ipc_seconds (float): Average worker-to-main IPC time
     """
 
     size_flush_count: int
@@ -180,6 +191,33 @@ class ProcessBatchMetrics:
     avg_worker_exec_seconds: float = 0.0
     last_worker_to_main_ipc_seconds: float = 0.0
     avg_worker_to_main_ipc_seconds: float = 0.0
+
+
+class ResourceSignalStatus(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    STALE = "stale"
+    FIRST_SAMPLE_PENDING = "first_sample_pending"
+
+
+@dataclass(frozen=True)
+class ResourceSignalSnapshot:
+    """
+    Host resource signal snapshot for future adaptive tuning decisions.
+
+    Non-available states are intentionally fail-open: they must not constrain
+    concurrency or backpressure decisions.
+    """
+
+    status: ResourceSignalStatus
+    cpu_utilization: Optional[float] = None
+    memory_utilization: Optional[float] = None
+    sampled_at_monotonic_seconds: Optional[float] = None
+    stale_after_seconds: Optional[float] = None
+
+    @property
+    def is_actionable_for_tuning(self) -> bool:
+        return self.status == ResourceSignalStatus.AVAILABLE
 
 
 @dataclass(frozen=True)
@@ -219,3 +257,93 @@ class SystemMetrics:
     is_paused: bool
     partitions: list[PartitionMetrics]
     process_batch_metrics: Optional[ProcessBatchMetrics] = None
+    resource_signal: Optional[ResourceSignalSnapshot] = None
+
+
+@dataclass(frozen=True)
+class QueueRuntimeSnapshot:
+    total_in_flight: int
+    total_queued: int
+    max_in_flight: int
+    is_paused: bool
+    is_rebalancing: bool
+    ordering_mode: OrderingMode
+    configured_max_in_flight: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class AdaptiveConcurrencyRuntimeSnapshot:
+    configured_max_in_flight: int
+    effective_max_in_flight: int
+    min_in_flight: int
+    scale_up_step: int
+    scale_down_step: int
+    cooldown_ms: int
+
+
+@dataclass(frozen=True)
+class AdaptiveBackpressureSnapshot:
+    configured_max_in_flight: int
+    effective_max_in_flight: int
+    min_in_flight: int
+    scale_up_step: int
+    scale_down_step: int
+    cooldown_ms: int
+    lag_scale_up_threshold: int
+    low_latency_threshold_ms: float
+    high_latency_threshold_ms: float
+    last_decision: str
+    avg_completion_latency_seconds: Optional[float]
+
+
+@dataclass(frozen=True)
+class RetryPolicySnapshot:
+    max_retries: int
+    retry_backoff_ms: int
+    exponential_backoff: bool
+    max_retry_backoff_ms: int
+    retry_jitter_ms: int
+
+
+@dataclass(frozen=True)
+class DlqRuntimeSnapshot:
+    enabled: bool
+    topic: str
+    payload_mode: DLQPayloadMode
+    message_cache_size_bytes: int
+    message_cache_entry_count: int
+
+
+@dataclass(frozen=True)
+class PoisonMessageRuntimeSnapshot:
+    enabled: bool
+    failure_threshold: int
+    cooldown_ms: int
+    open_circuit_count: int
+
+
+@dataclass(frozen=True)
+class PartitionRuntimeSnapshot:
+    tp: TopicPartition
+    current_epoch: int
+    last_committed_offset: int
+    last_fetched_offset: int
+    true_lag: int
+    gaps: list[OffsetRange]
+    blocking_offset: Optional[int]
+    blocking_duration_sec: Optional[float]
+    queued_count: int
+    in_flight_count: int
+    min_in_flight_offset: Optional[int]
+
+
+@dataclass(frozen=True)
+class RuntimeSnapshot:
+    queue: QueueRuntimeSnapshot
+    retry: RetryPolicySnapshot
+    dlq: DlqRuntimeSnapshot
+    partitions: list[PartitionRuntimeSnapshot]
+    adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot] = None
+    adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot] = None
+    process_batch_metrics: Optional[ProcessBatchMetrics] = None
+    poison_message: Optional[PoisonMessageRuntimeSnapshot] = None

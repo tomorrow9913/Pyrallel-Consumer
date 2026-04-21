@@ -1,0 +1,175 @@
+name: release-verify
+
+on:
+  push:
+    branches: [main, 'release/**', 'hotfix/**']
+    tags: ['v*']
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "CHANGELOG.md"
+      - "README.md"
+      - "README.ko.md"
+      - "SECURITY.md"
+      - "docs/operations/**"
+      - "docker-compose.yml"
+      - ".github/compatibility-matrix.json"
+      - ".github/e2e.compose.yml"
+      - ".github/workflows/compatibility-matrix.yml"
+      - ".github/workflows/release-verify.yml"
+      - ".github/workflows/e2e.yml"
+      - "scripts/compatibility_matrix.py"
+      - "scripts/release_policy.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Check generated compatibility docs
+        run: |
+          uv run python scripts/compatibility_matrix.py --check
+      - name: Start Kafka for broker-backed E2E gate
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+        run: |
+          docker compose -f .github/e2e.compose.yml up -d kafka-1
+      - name: Wait for Kafka metadata readiness
+        run: |
+          uv run python - <<'PY'
+          import time
+
+          from confluent_kafka.admin import AdminClient
+
+          client = AdminClient({"bootstrap.servers": "127.0.0.1:9092"})
+          deadline = time.time() + 90
+          while time.time() < deadline:
+              try:
+                  metadata = client.list_topics(timeout=5)
+                  if getattr(metadata, "brokers", None):
+                      raise SystemExit(0)
+              except Exception:
+                  time.sleep(1)
+          raise SystemExit(
+              "Kafka did not become metadata-ready on localhost:9092 within 90 seconds"
+          )
+          PY
+      - name: Run Ruff
+        run: |
+          uv run ruff check .
+      - name: Run mypy
+        run: |
+          uv run mypy pyrallel_consumer
+      - name: Run Bandit
+        run: |
+          uv run bandit -q -lll -r pyrallel_consumer
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/unit -q --ignore=tests/unit/benchmarks --maxfail=1
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/integration -q --maxfail=1
+      - name: Run broker-backed E2E tests (release gate)
+        env:
+          PYRALLEL_E2E_REQUIRE_BROKER: "1"
+        run: |
+          mkdir -p .artifacts
+          uv run pytest tests/e2e -q --maxfail=1 --junitxml=.artifacts/release-e2e-junit.xml
+      - name: Build distributions
+        run: |
+          rm -rf dist
+          uv build
+      - name: Run release policy preflight
+        id: release_artifacts
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          uv run python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          from scripts.release_policy import (
+              validate_branch_version,
+              validate_tag_version,
+          )
+
+          ref_name = "${{ github.ref_name }}"
+          ref_type = "${{ github.ref_type }}"
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"][
+              "version"
+          ]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          headings = re.findall(r"^## \\[([^\\]]+)\\]", changelog, flags=re.MULTILINE)
+          concrete = [heading for heading in headings if heading.lower() != "unreleased"]
+          if not concrete:
+              raise SystemExit("CHANGELOG.md must contain a concrete release heading")
+          if concrete[0] != version:
+              raise SystemExit(
+                  "CHANGELOG latest heading %r != pyproject version %r"
+                  % (concrete[0], version)
+              )
+
+          if ref_type == "tag":
+              if not validate_tag_version(ref_name, version):
+                  raise SystemExit(
+                      "Tag/version policy mismatch: tag=%r version=%r"
+                      % (ref_name, version)
+                  )
+          elif not validate_branch_version(ref_name, version):
+              raise SystemExit(
+                  "Branch/version policy mismatch: branch=%r version=%r"
+                  % (ref_name, version)
+              )
+          PY
+          uv run python scripts/release_policy.py resolve-artifacts --write-github-output
+      - name: Smoke install/import from built wheel
+        run: |
+          python -m venv /tmp/release-smoke-venv
+          source /tmp/release-smoke-venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install dist/pyrallel_consumer-*.whl
+          python - <<'PY'
+          import pyrallel_consumer
+
+          print("smoke import ok: %s" % pyrallel_consumer.__name__)
+          PY
+      - name: Check distribution metadata
+        run: |
+          uv run twine check \
+            "${{ steps.release_artifacts.outputs.sdist_path }}" \
+            "${{ steps.release_artifacts.outputs.wheel_path }}"
+      - name: Upload broker-backed E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verify-e2e-junit-${{ github.run_id }}
+          path: .artifacts/release-e2e-junit.xml
+      - name: Upload distributions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/*
+      - name: Stop Kafka
+        if: always()
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: local-e2e
+        run: |
+          docker compose -f .github/e2e.compose.yml down

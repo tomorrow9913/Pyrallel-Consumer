@@ -14,9 +14,13 @@ from pyrallel_consumer.config import MetricsConfig
 from pyrallel_consumer.dto import (
     CompletionStatus,
     ProcessBatchMetrics,
+    ResourceSignalSnapshot,
+    ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
 )
+
+_RESOURCE_SIGNAL_STATUSES = tuple(status.value for status in ResourceSignalStatus)
 
 
 class _Joinable(Protocol):
@@ -85,6 +89,22 @@ class PrometheusMetricsExporter:
             "consumer_metadata_size_bytes",
             "Offset commit metadata payload size",
             labelnames=("topic",),
+            registry=self._registry,
+        )
+        self._resource_signal_status_gauge = Gauge(
+            "consumer_resource_signal_status",
+            "Resource signal status as a one-hot fixed-cardinality gauge",
+            labelnames=("status",),
+            registry=self._registry,
+        )
+        self._resource_cpu_utilization_gauge = Gauge(
+            "consumer_resource_cpu_utilization_ratio",
+            "Latest host CPU utilization ratio from resource signals",
+            registry=self._registry,
+        )
+        self._resource_memory_utilization_gauge = Gauge(
+            "consumer_resource_memory_utilization_ratio",
+            "Latest host memory utilization ratio from resource signals",
             registry=self._registry,
         )
         self._process_batch_flush_count = Gauge(
@@ -169,6 +189,7 @@ class PrometheusMetricsExporter:
             self._queued_gauge.labels(*labels).set(partition.queued_count)
             duration = partition.blocking_duration_sec or 0.0
             self._blocking_duration_gauge.labels(*labels).set(duration)
+        self._update_resource_signal(metrics.resource_signal)
         self._update_process_batch_metrics(metrics.process_batch_metrics)
 
     def observe_completion(
@@ -201,6 +222,27 @@ class PrometheusMetricsExporter:
 
         self._http_server = None
         self._http_thread = None
+
+    def _update_resource_signal(self, signal: Optional[ResourceSignalSnapshot]) -> None:
+        signal_status = (
+            signal.status.value
+            if signal is not None
+            else ResourceSignalStatus.UNAVAILABLE.value
+        )
+        for status in _RESOURCE_SIGNAL_STATUSES:
+            self._resource_signal_status_gauge.labels(status=status).set(
+                1 if status == signal_status else 0
+            )
+        self._resource_cpu_utilization_gauge.set(
+            signal.cpu_utilization
+            if signal is not None and signal.cpu_utilization is not None
+            else 0
+        )
+        self._resource_memory_utilization_gauge.set(
+            signal.memory_utilization
+            if signal is not None and signal.memory_utilization is not None
+            else 0
+        )
 
     def _update_process_batch_metrics(
         self, metrics: Optional[ProcessBatchMetrics]

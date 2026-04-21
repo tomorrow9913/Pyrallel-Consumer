@@ -2,35 +2,58 @@
 
 ## Supported Versions
 
-현재는 prerelease/alpha 계열만 공개되어 있으므로, 최신 공개 버전만 보안 수정 대상으로 간주합니다.
+This security support matrix is aligned with
+`docs/operations/support-policy.md`.
+
+### Current prerelease-only phase (before first stable release)
 
 | Version | Supported |
 | --- | --- |
 | latest prerelease | Yes |
 | older prerelease builds | Best effort |
 
-stable release가 시작되면 지원 매트릭스를 이 문서에서 명시적으로 확장합니다.
+### Stable launch policy (effective once `1.0.0` ships)
+
+| Version line | Security support |
+| --- | --- |
+| latest stable minor | Yes |
+| previous stable minor | Security fixes only |
+| prerelease builds newer than latest stable | Best effort |
+| older prerelease builds | Best effort |
 
 ## Reporting A Vulnerability
 
-보안 이슈는 공개 GitHub issue로 올리지 말고, 저장소 관리자에게 비공개 채널로 먼저 제보해 주세요.
+Do not report security issues in public GitHub issues.
 
-- 포함하면 좋은 정보
-  - 영향 범위
-  - 재현 절차
-  - 로그 또는 스택트레이스
-  - 가능한 완화 방법
+Preferred private channels:
 
-- 기대 응답
-  - 접수 확인: 영업일 기준 3일 이내 목표
-  - 초기 triage: 영업일 기준 7일 이내 목표
+1. GitHub repository `Security` tab -> `Report a vulnerability`
+2. GitHub private security advisory draft for this repository
+
+If private reporting is unavailable in your environment, contact repository
+maintainers privately first and avoid posting exploit details in public threads.
+
+- Helpful details to include
+  - affected scope
+  - reproduction steps
+  - logs or stack traces
+  - possible mitigations
+
+- Expected response window
+  - acknowledgement: target within 3 business days
+  - initial triage: target within 7 business days
 
 ## Scope Notes
 
-- Kafka topic 이름, DLQ topic suffix, serialization payload는 입력 검증의 일부로 취급합니다.
-- secrets는 저장소에 커밋하지 않고 환경 변수 또는 배포 비밀 저장소를 사용해야 합니다.
-- 운영 환경에서는 `KAFKA_DLQ_PAYLOAD_MODE=metadata_only`를 우선 검토해 민감 payload 노출 범위를 줄이세요.
+- Treat Kafka topic names, DLQ topic suffixes, and serialization payloads as part
+  of input validation.
+- Never commit secrets to the repository; use environment variables or a deployment
+  secret store.
+- In production, evaluate `KAFKA_DLQ_PAYLOAD_MODE=metadata_only` first to reduce
+  sensitive payload exposure.
 
 ## Coordinated Disclosure
 
-수정 전까지는 취약점 상세를 공개하지 않는 것을 기본 원칙으로 합니다. 수정본이 배포되면 영향 범위와 완화 내용을 changelog 또는 release note에 요약합니다.
+By default, vulnerability details remain private until a fix is released. After a
+patched version ships, summarize impact scope and mitigations in the changelog or
+release notes.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +26,7 @@ async def test_handle_blocking_timeouts_forces_failure_and_polls_completion() ->
     )
     tracker.update_last_fetched_offset(0)
     tracker.get_gaps()
+    tracker._blocking_offset_timestamps[0] = time.time() - 1.0
 
     kafka_config = KafkaConfig()
     kafka_config.parallel_consumer.execution.max_retries = 3

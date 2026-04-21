@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -559,6 +561,109 @@ async def test_stop_uses_stable_consumer_task_reference_when_timeout_races_with_
         await broker_poller.stop()
 
     assert cancelled.is_set() or broker_poller._shutdown_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_graceful_stop_drains_before_closing_consumer(
+    broker_poller,
+):
+    events: list[str] = []
+    consume_started = threading.Event()
+
+    def fake_consume(num_messages=1, timeout=0.1):
+        del num_messages, timeout
+        consume_started.set()
+        while broker_poller._running:
+            time.sleep(0.001)
+        return []
+
+    async def fake_cleanup():
+        events.append("cleanup")
+        broker_poller.consumer = None
+
+    async def fake_drain_shutdown_work(*, timeout_seconds: float) -> bool:
+        del timeout_seconds
+        events.append(f"drain_consumer_open={broker_poller.consumer is not None}")
+        return True
+
+    broker_poller.consumer.consume = MagicMock(side_effect=fake_consume)
+    broker_poller._drain_completion_events_once = AsyncMock(return_value=False)
+    broker_poller._commit_ready_offsets = AsyncMock()
+    broker_poller._cleanup = AsyncMock(side_effect=fake_cleanup)
+    broker_poller._drain_shutdown_work = AsyncMock(side_effect=fake_drain_shutdown_work)
+    broker_poller._get_consume_timeout_seconds = AsyncMock(return_value=0.001)
+    broker_poller._shutdown_policy = MagicMock(return_value="graceful")
+    broker_poller._consumer_task_stop_timeout_seconds = 0.05
+    broker_poller._running = True
+    broker_poller._consumer_task = asyncio.create_task(broker_poller._run_consumer())
+
+    try:
+        assert await asyncio.to_thread(consume_started.wait, 1)
+
+        await broker_poller.stop()
+    finally:
+        broker_poller._running = False
+        if broker_poller._consumer_task is not None:
+            broker_poller._consumer_task.cancel()
+            await asyncio.gather(
+                broker_poller._consumer_task,
+                return_exceptions=True,
+            )
+
+    assert events == ["drain_consumer_open=True", "cleanup"]
+    broker_poller._drain_shutdown_work.assert_awaited_once()
+    broker_poller._cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_graceful_stop_cleans_up_when_stop_runtime_raises(
+    broker_poller,
+):
+    class _FailingLifecycleSupport:
+        async def stop_runtime(self, **_kwargs):
+            raise RuntimeError("stop-runtime failed")
+
+    broker_poller._make_task_lifecycle_support = MagicMock(
+        return_value=_FailingLifecycleSupport()
+    )
+    broker_poller._shutdown_policy = MagicMock(return_value="graceful")
+    broker_poller._cleanup = AsyncMock()
+    broker_poller._running = True
+    broker_poller._consumer_task = MagicMock()
+
+    with pytest.raises(RuntimeError, match="stop-runtime failed"):
+        await broker_poller.stop()
+
+    broker_poller._cleanup.assert_awaited_once()
+    assert broker_poller._defer_consumer_cleanup_for_stop is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_graceful_stop_cleans_up_once(
+    broker_poller,
+):
+    class _SlowLifecycleSupport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stop_runtime(self, **_kwargs):
+            self.calls += 1
+            await asyncio.sleep(0.01)
+            broker_poller._shutdown_event.set()
+
+    support = _SlowLifecycleSupport()
+    broker_poller._make_task_lifecycle_support = MagicMock(return_value=support)
+    broker_poller._shutdown_policy = MagicMock(return_value="graceful")
+    broker_poller._drain_shutdown_work = AsyncMock(return_value=True)
+    broker_poller._cleanup = AsyncMock()
+    broker_poller._running = True
+    broker_poller._consumer_task = MagicMock()
+
+    await asyncio.gather(broker_poller.stop(), broker_poller.stop())
+
+    assert support.calls == 1
+    broker_poller._drain_shutdown_work.assert_awaited_once()
+    broker_poller._cleanup.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,61 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
     assert "sleep-pyrallel-process" in summary
 
 
+def test_render_results_summary_includes_performance_improvement_analysis(
+    tmp_path: Path,
+) -> None:
+    results_path = tmp_path / "benchmark-results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "options": {},
+                "performance_improvements": [
+                    {
+                        "comparison": "adaptive_on_vs_off",
+                        "workload": "sleep",
+                        "ordering": "key_hash",
+                        "run_type": "async",
+                        "candidate_run_name": (
+                            "sleep-key_hash-pyrallel-async-adaptive-on"
+                        ),
+                        "reference_run_name": (
+                            "sleep-key_hash-pyrallel-async-adaptive-off"
+                        ),
+                        "candidate_throughput_tps": 125.0,
+                        "reference_throughput_tps": 100.0,
+                        "throughput_tps_delta": 25.0,
+                        "throughput_tps_delta_pct": 25.0,
+                        "improvement_ratio": 1.25,
+                    }
+                ],
+                "results": [
+                    {
+                        "run_name": "sleep-key_hash-pyrallel-async-adaptive-off",
+                        "run_type": "async",
+                        "workload": "sleep",
+                        "ordering": "key_hash",
+                        "topic": "demo-sleep-key_hash-async-adaptive-off",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.0,
+                        "throughput_tps": 100.0,
+                        "avg_processing_ms": 1.0,
+                        "p99_processing_ms": 2.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = render_results_summary(results_path)
+
+    assert "성능 개선" in summary
+    assert "adaptive_on_vs_off" in summary
+    assert "sleep/key_hash/async" in summary
+    assert "+25.00 TPS" in summary
+    assert "+25.00%" in summary
+
+
 def test_results_modal_renders_ordering_grouped_winner_sections(tmp_path: Path) -> None:
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(

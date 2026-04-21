@@ -1,37 +1,149 @@
-# Support & Compatibility Policy
+# Support / Compatibility Policy
 
-이 문서는 stable 운영 기준의 지원 범위와 호환성/폐기 정책을 정의한다.
+This document defines the support posture for `Pyrallel Consumer` across the
+current stable `1.0.0` release line and any opt-in prerelease preview channels.
 
-## Supported Release Lines
+The goal is to make release-line support, compatibility boundaries, and
+security response scope explicit so operators can decide whether to upgrade,
+hold, or rollback.
 
-| Release line | Support status | Notes |
+## Current Release Status
+
+- The project is currently published as a **stable `1.0.0`** package.
+- The latest stable minor is the primary active support target.
+- Prerelease builds remain opt-in preview channels with best-effort support.
+
+See also:
+
+- `README.md`
+- `README.ko.md`
+- `SECURITY.md`
+- `docs/operations/compatibility-matrix.md`
+- `docs/operations/release-readiness.md`
+- `docs/operations/upgrade-rollback-guide.md`
+- `docs/operations/playbooks.md`
+
+## Release-Line Support Matrix
+
+### Current stable support matrix
+
+| Release line | Status | Notes |
 | --- | --- | --- |
-| `1.x` (latest stable) | Active support | security fix/bugfix 대상 |
-| `0.1.xa*` prerelease | Best effort | API/behavior compatibility 미보장 |
+| latest stable minor | Active support | Primary support and regression triage target |
+| previous stable minor | Security-fix-only | Critical/security fixes only; non-critical issues may be deferred |
+| prerelease builds newer than latest stable | Best effort | Preview channel, no stable support guarantees |
+| older prerelease builds | Best effort | Outside primary support target |
 
-- `1.x`는 운영 기준 primary support line이다.
-- prerelease는 실험/검증 목적이며, patch 제공이나 strict SLA를 보장하지 않는다.
+## Python Support Policy
 
-## Runtime Compatibility Scope
+### Supported runtime floor
 
-- Python: package metadata 기준 `>=3.12` (현재 classifier: `3.12`, `3.13`)
-- Kafka broker/client: 프로젝트의 Docker/CI 기반 E2E 경로(`localhost:9092` 기준)를 compatibility baseline으로 간주
-- Baseline 밖 조합(다른 배포판, 구버전 broker/client 조합)은 best-effort로 취급
+- `pyrallel-consumer` currently requires **Python `>=3.12`**
+  (`pyproject.toml`).
 
-## Security Support
+### Actively advertised versions
 
-- 보안 제보 채널과 응답 목표는 [`SECURITY.md`](../../SECURITY.md)를 따른다.
-- 보안 수정은 원칙적으로 active stable line(`1.x`)에 우선 제공한다.
-- prerelease line에 대한 보안 백포트는 case-by-case best-effort다.
+- Current package classifiers advertise:
+  - Python `3.12`
+  - Python `3.13`
 
-## Deprecation & EOL Policy
+### Support meaning
 
-- stable line에서 breaking change가 필요한 경우, 다음 minor/major 계획과 migration note를 `CHANGELOG.md`에 사전 공지한다.
-- deprecation은 최소 한 번의 stable minor window 동안 경고/문서 안내를 유지한 후 제거를 검토한다.
-- line EOL 시점에는 릴리스 노트/README에 종료 일정을 명시하고 대체 line으로의 업그레이드 경로를 제공한다.
+- **Supported** means:
+  - package metadata allows installation
+  - CI currently exercises the relevant test/quality gates on that version
+    where configured
+  - regressions on those versions should be treated as in-scope issues
+- **Not supported yet** means:
+  - no compatibility commitment is made
+  - failures may still be accepted as enhancement / future-work items rather
+    than release blockers
+
+### Current boundary
+
+| Python version | Status | Notes |
+| --- | --- | --- |
+| 3.12 | Supported | Included in package classifiers and CI matrix |
+| 3.13 | Supported | Included in package classifiers and CI matrix |
+| < 3.12 | Not supported | Outside current metadata contract |
+
+## Kafka Support Policy
+
+### What is actively verified
+
+The currently verified Kafka path is the repository's own local Docker /
+GitHub Actions-backed Kafka flow used by the E2E suite and monitoring smoke.
+
+The exact broker-backed combinations that are automated today live in
+`docs/operations/compatibility-matrix.md`.
+
+That means the strongest current confidence exists for:
+
+- the Kafka broker path exercised by `.github/e2e.compose.yml`
+- the Python/client lanes declared in the compatibility matrix workflow
+- runtime behavior covered by unit, integration, and Kafka-backed E2E tests
+
+### What is best-effort
+
+The following are **best-effort** until the matrix is widened and automated:
+
+- broker distributions not exercised by the repository's Docker / CI path
+- older client / broker combinations outside the currently tested path
+- vendor-specific Kafka-compatible environments with behavior that differs from
+  the CI-backed baseline
+
+### Current boundary
+
+| Kafka surface | Status | Notes |
+| --- | --- | --- |
+| Local Docker / CI-backed Kafka path used by repo E2E | Supported / verified | This is the primary compatibility reference today |
+| Other broker distributions | Best effort | No broader certified matrix published yet |
+| Older client / broker combinations | Best effort | No compatibility commitment yet |
 
 ## Support Expectations
 
-- 일반 운영 이슈: 재현 정보 기준으로 우선순위를 분류해 triage한다.
-- 릴리스 인시던트/롤백 절차는 [`playbooks.md`](./playbooks.md)를 따른다.
-- 릴리스 승인 전 체크는 [`release-readiness.md`](./release-readiness.md) 증거 항목 기준으로 판단한다.
+### Bug reports that are in scope
+
+- Reproductions on Python `3.12` / `3.13`
+- Reproductions against the Kafka path the repository actively tests
+- Regressions against the active release line in the matrix above
+
+### Bug reports that may be downgraded to best-effort
+
+- Reports against older prerelease releases
+- Reports against non-active stable lines outside security-fix-only scope
+- Reports against unverified broker distributions or older compatibility stacks
+- Requests that assume support guarantees outside the documented stable release
+  lines
+
+## Deprecation Policy
+
+Starting with `1.0.0`, public-surface changes follow the stable contract and
+semantic-versioning boundaries documented in the release/versioning policy. The
+current policy is:
+
+- avoid unnecessary breaking changes on stable release lines
+- document user-visible contract changes in README / operations docs /
+  changelog when they occur
+- reserve breaking public-surface changes for an explicitly versioned major
+  release
+
+Users should assume:
+
+- stable release lines follow the support matrix above
+- non-stable lines remain best-effort unless explicitly promoted
+- security handling follows `SECURITY.md` without requiring ad-hoc policy changes
+
+## Maintainer Guidance
+
+Before widening this support policy, maintainers should update all of the
+following together:
+
+1. package metadata (`pyproject.toml`)
+2. CI / verification coverage
+3. README support summary
+4. `SECURITY.md` supported-version language
+5. `docs/operations/release-readiness.md`
+
+This keeps the support statement aligned with real verification evidence rather
+than aspirational claims.

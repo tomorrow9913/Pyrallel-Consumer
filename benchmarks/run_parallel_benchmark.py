@@ -37,6 +37,7 @@ _YAPPI_WORKER_STARTED = False
 _WORKLOAD_CHOICES = ("sleep", "cpu", "io")
 _ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
 _STRICT_COMPLETION_MONITOR_CHOICES = ("on", "off")
+_ADAPTIVE_CONCURRENCY_CHOICES = ("off", "on")
 _PROCESS_FLUSH_POLICY_CHOICES = (
     "size_or_timer",
     "demand",
@@ -371,6 +372,7 @@ async def _run_pyrparallel_round(
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
     metrics_port: int | None = None,
+    adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
     produce_messages(
         num_messages=num_messages,
@@ -407,6 +409,7 @@ async def _run_pyrparallel_round(
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         metrics_port=metrics_port,
+        adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
     if timed_out:
         raise RuntimeError(
@@ -652,6 +655,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated strict completion monitor modes to run (choices: on,off)",
     )
     parser.add_argument(
+        "--adaptive-concurrency",
+        type=lambda value: _parse_csv_selection(
+            value,
+            argument_name="--adaptive-concurrency",
+            choices=_ADAPTIVE_CONCURRENCY_CHOICES,
+        ),
+        default=["off"],
+        help="Comma-separated adaptive concurrency modes for Pyrallel runs (choices: off,on)",
+    )
+    parser.add_argument(
         "--worker-sleep-ms",
         type=float,
         default=0.5,
@@ -792,6 +805,43 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
     )
 
 
+def _resolve_effective_process_batching(
+    args: argparse.Namespace,
+    *,
+    strict_completion_monitor_enabled: bool | None = None,
+) -> tuple[int | None, int | None]:
+    process_batch_size = args.process_batch_size
+    process_max_batch_wait_ms = args.process_max_batch_wait_ms
+
+    if args.skip_process:
+        return process_batch_size, process_max_batch_wait_ms
+    if "sleep" not in args.workloads:
+        return process_batch_size, process_max_batch_wait_ms
+    if "partition" not in args.order:
+        return process_batch_size, process_max_batch_wait_ms
+    if strict_completion_monitor_enabled is None:
+        strict_completion_monitor_enabled = "on" in args.strict_completion_monitor
+    if not strict_completion_monitor_enabled:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.worker_sleep_ms > 0.5:
+        return process_batch_size, process_max_batch_wait_ms
+    if process_batch_size is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if process_max_batch_wait_ms is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.process_flush_policy is not None:
+        return process_batch_size, process_max_batch_wait_ms
+    if args.process_demand_flush_min_residence_ms is not None:
+        return process_batch_size, process_max_batch_wait_ms
+
+    print(
+        "[info] Auto-tuning process micro-batch for strict partition run: "
+        "process_batch_size=1, process_max_batch_wait_ms=0",
+        flush=True,
+    )
+    return 1, 0
+
+
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
@@ -817,6 +867,7 @@ def run_benchmark(
     workloads = list(args.workloads)
     orderings = list(args.order)
     strict_monitor_modes = list(args.strict_completion_monitor)
+    adaptive_concurrency_modes = list(args.adaptive_concurrency)
     profile_dir = Path(args.profile_dir)
 
     _warn_on_tiny_partition_process_defaults(args)
@@ -879,35 +930,127 @@ def run_benchmark(
                 async_results: List[BenchmarkResult] = []
                 for strict_monitor_mode in strict_monitor_modes:
                     strict_completion_monitor_enabled = strict_monitor_mode == "on"
+                    (
+                        effective_process_batch_size,
+                        effective_process_max_batch_wait_ms,
+                    ) = _resolve_effective_process_batching(
+                        args,
+                        strict_completion_monitor_enabled=(
+                            strict_completion_monitor_enabled
+                        ),
+                    )
                     strict_suffix = ""
                     if len(strict_monitor_modes) > 1 or strict_monitor_mode != "on":
                         strict_suffix = "-strict-%s" % strict_monitor_mode
 
-                    if not args.skip_async:
-                        topic_name = f"{args.topic_prefix}{suffix}-async{strict_suffix}"
-                        run_name = f"{run_prefix}-pyrallel-async{strict_suffix}"
-                        group_id = f"{args.async_group}{suffix}{strict_suffix}"
-                        if not args.skip_reset:
-                            _reset_run_targets(
-                                bootstrap_servers=args.bootstrap_servers,
-                                topic_name=topic_name,
-                                group_id=group_id,
-                                num_partitions=args.num_partitions,
-                            )
-                        with _profile_session(
-                            enabled=args.profile,
-                            run_name=run_name,
-                            output_dir=profile_dir,
-                            clock=args.profile_clock,
-                            profile_threads=args.profile_threads,
-                            profile_greenlets=args.profile_greenlets,
-                            top_n=args.profile_top_n,
+                    for adaptive_concurrency_mode in adaptive_concurrency_modes:
+                        adaptive_concurrency_enabled = adaptive_concurrency_mode == "on"
+                        adaptive_suffix = ""
+                        if (
+                            len(adaptive_concurrency_modes) > 1
+                            or adaptive_concurrency_mode != "off"
                         ):
+                            adaptive_suffix = "-adaptive-%s" % adaptive_concurrency_mode
+
+                        if not args.skip_async:
+                            topic_name = (
+                                f"{args.topic_prefix}{suffix}-async"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            run_name = (
+                                f"{run_prefix}-pyrallel-async"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            group_id = (
+                                f"{args.async_group}{suffix}"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            if not args.skip_reset:
+                                _reset_run_targets(
+                                    bootstrap_servers=args.bootstrap_servers,
+                                    topic_name=topic_name,
+                                    group_id=group_id,
+                                    num_partitions=args.num_partitions,
+                                )
+                            with _profile_session(
+                                enabled=args.profile,
+                                run_name=run_name,
+                                output_dir=profile_dir,
+                                clock=args.profile_clock,
+                                profile_threads=args.profile_threads,
+                                profile_greenlets=args.profile_greenlets,
+                                top_n=args.profile_top_n,
+                            ):
+                                async_results.append(
+                                    await _run_pyrparallel_round(
+                                        topic_name=topic_name,
+                                        run_name=run_name,
+                                        mode=ExecutionMode.ASYNC,
+                                        num_messages=args.num_messages,
+                                        bootstrap_servers=args.bootstrap_servers,
+                                        num_partitions=args.num_partitions,
+                                        num_keys=args.num_keys,
+                                        group_id=group_id,
+                                        timeout_sec=args.timeout_sec,
+                                        async_worker_fn=async_worker_fn,
+                                        process_worker_fn=process_worker_fn,
+                                        workload=workload,
+                                        ordering=ordering,
+                                        ensure_topic_exists=args.skip_reset,
+                                        strict_completion_monitor_enabled=(
+                                            strict_completion_monitor_enabled
+                                        ),
+                                        process_batch_size=(
+                                            effective_process_batch_size
+                                        ),
+                                        process_max_batch_wait_ms=(
+                                            effective_process_max_batch_wait_ms
+                                        ),
+                                        process_flush_policy=args.process_flush_policy,
+                                        process_demand_flush_min_residence_ms=(
+                                            args.process_demand_flush_min_residence_ms
+                                        ),
+                                        metrics_port=metrics_port,
+                                        adaptive_concurrency_enabled=(
+                                            adaptive_concurrency_enabled
+                                        ),
+                                    )
+                                )
+                        if not args.skip_process:
+                            topic_name = (
+                                f"{args.topic_prefix}{suffix}-process"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            run_name = (
+                                f"{run_prefix}-pyrallel-process"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            group_id = (
+                                f"{args.process_group}{suffix}"
+                                f"{strict_suffix}{adaptive_suffix}"
+                            )
+                            if not args.skip_reset:
+                                _reset_run_targets(
+                                    bootstrap_servers=args.bootstrap_servers,
+                                    topic_name=topic_name,
+                                    group_id=group_id,
+                                    num_partitions=args.num_partitions,
+                                )
+                            prof_process_worker = process_worker_fn
+                            if args.profile and args.profile_process_workers:
+                                prof_process_worker = _wrap_process_worker_for_profile(
+                                    process_worker_fn,
+                                    output_dir=profile_dir,
+                                    run_name=run_name,
+                                    clock=args.profile_clock,
+                                    profile_threads=args.profile_threads,
+                                    profile_greenlets=args.profile_greenlets,
+                                )
                             async_results.append(
                                 await _run_pyrparallel_round(
                                     topic_name=topic_name,
                                     run_name=run_name,
-                                    mode=ExecutionMode.ASYNC,
+                                    mode=ExecutionMode.PROCESS,
                                     num_messages=args.num_messages,
                                     bootstrap_servers=args.bootstrap_servers,
                                     num_partitions=args.num_partitions,
@@ -915,84 +1058,34 @@ def run_benchmark(
                                     group_id=group_id,
                                     timeout_sec=args.timeout_sec,
                                     async_worker_fn=async_worker_fn,
-                                    process_worker_fn=process_worker_fn,
+                                    process_worker_fn=prof_process_worker,
                                     workload=workload,
                                     ordering=ordering,
                                     ensure_topic_exists=args.skip_reset,
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
-                                    process_batch_size=args.process_batch_size,
+                                    process_batch_size=effective_process_batch_size,
                                     process_max_batch_wait_ms=(
-                                        args.process_max_batch_wait_ms
+                                        effective_process_max_batch_wait_ms
                                     ),
                                     process_flush_policy=args.process_flush_policy,
                                     process_demand_flush_min_residence_ms=(
                                         args.process_demand_flush_min_residence_ms
                                     ),
                                     metrics_port=metrics_port,
+                                    adaptive_concurrency_enabled=(
+                                        adaptive_concurrency_enabled
+                                    ),
                                 )
                             )
-                    if not args.skip_process:
-                        topic_name = (
-                            f"{args.topic_prefix}{suffix}-process{strict_suffix}"
-                        )
-                        run_name = f"{run_prefix}-pyrallel-process{strict_suffix}"
-                        group_id = f"{args.process_group}{suffix}{strict_suffix}"
-                        if not args.skip_reset:
-                            _reset_run_targets(
-                                bootstrap_servers=args.bootstrap_servers,
-                                topic_name=topic_name,
-                                group_id=group_id,
-                                num_partitions=args.num_partitions,
-                            )
-                        prof_process_worker = process_worker_fn
-                        if args.profile and args.profile_process_workers:
-                            prof_process_worker = _wrap_process_worker_for_profile(
-                                process_worker_fn,
-                                output_dir=profile_dir,
-                                run_name=run_name,
-                                clock=args.profile_clock,
-                                profile_threads=args.profile_threads,
-                                profile_greenlets=args.profile_greenlets,
-                            )
-                        async_results.append(
-                            await _run_pyrparallel_round(
-                                topic_name=topic_name,
-                                run_name=run_name,
-                                mode=ExecutionMode.PROCESS,
-                                num_messages=args.num_messages,
-                                bootstrap_servers=args.bootstrap_servers,
-                                num_partitions=args.num_partitions,
-                                num_keys=args.num_keys,
-                                group_id=group_id,
-                                timeout_sec=args.timeout_sec,
-                                async_worker_fn=async_worker_fn,
-                                process_worker_fn=prof_process_worker,
-                                workload=workload,
-                                ordering=ordering,
-                                ensure_topic_exists=args.skip_reset,
-                                strict_completion_monitor_enabled=(
-                                    strict_completion_monitor_enabled
-                                ),
-                                process_batch_size=args.process_batch_size,
-                                process_max_batch_wait_ms=(
-                                    args.process_max_batch_wait_ms
-                                ),
-                                process_flush_policy=args.process_flush_policy,
-                                process_demand_flush_min_residence_ms=(
-                                    args.process_demand_flush_min_residence_ms
-                                ),
-                                metrics_port=metrics_port,
-                            )
-                        )
-                        if args.profile and args.profile_process_workers:
-                            _summarize_worker_profiles(
-                                run_name,
-                                profile_dir=profile_dir,
-                                top_n=args.profile_top_n,
-                                clock=args.profile_clock,
-                            )
+                            if args.profile and args.profile_process_workers:
+                                _summarize_worker_profiles(
+                                    run_name,
+                                    profile_dir=profile_dir,
+                                    top_n=args.profile_top_n,
+                                    clock=args.profile_clock,
+                                )
                 return async_results
 
             results.extend(asyncio.run(run_async_rounds()))

@@ -49,6 +49,7 @@ uv sync --group dev
   - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
+  - `--adaptive-concurrency off,on` (comma-separated subset for Pyrallel adaptive concurrency A/B comparison; defaults to `off`).
   - `--metrics-port`: expose Prometheus metrics on the host for the current benchmark process (defaults to `9091`; use `0` to disable).
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
@@ -76,8 +77,32 @@ uv sync --group dev
 
 ## Outputs
 - Benchmark results: console table + JSON summary (default `benchmarks/results/<timestamp>.json`).
+- JSON summaries include `performance_improvements`, which reports TPS delta,
+  percent delta, and ratio for adaptive on/off pairs plus the best Pyrallel run
+  versus the matching baseline for each workload/order combination.
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
+
+## Process Batch Advisor
+
+`benchmarks.process_batch_advisor` is an advisor-only PoC for process batch / IPC
+experiments. It reads an existing benchmark JSON summary with
+`process_batch_metrics` and emits next-run benchmark flags only.
+
+```bash
+uv run python -m benchmarks.process_batch_advisor benchmarks/results/<summary>.json
+uv run python -m benchmarks.process_batch_advisor benchmarks/results/<summary>.json --format json
+```
+
+The advisor may recommend benchmark-only follow-up flags such as
+`--process-batch-size`, `--process-max-batch-wait-ms`, `--process-flush-policy`,
+and `--process-demand-flush-min-residence-ms`. It must not recommend or mutate
+runtime `process_count` or `queue_size`; those remain research-review / CTO
+approval items.
+
+For the release-review reference that ties the benchmark baseline policy to the
+current soak evidence package, see
+[`docs/operations/stable-operations-evidence.md`](../docs/operations/stable-operations-evidence.md).
 
 
 ## Recent sample results (no profiling, 4 partitions, 2000 msgs, 100 keys)
@@ -119,6 +144,7 @@ uv run python -m benchmarks.run_parallel_benchmark \
   --num-messages 50000 \
   --num-partitions 8 \
   --strict-completion-monitor on,off \
+  --adaptive-concurrency off,on \
   --metrics-port 9091
 ```
 
@@ -129,6 +155,9 @@ uv run pytest tests/e2e/test_process_recovery.py -q
 ```
 
 These notes are the minimum evidence trail for the remaining soak / long-running stability checklist item in release-readiness tracking.
+
+For the fixed pass/fail gate and the latest template-aligned evidence package,
+use [`docs/operations/soak-restart-evidence.md`](../docs/operations/soak-restart-evidence.md).
 
 ## Interpreting TPS vs per-message latency
 

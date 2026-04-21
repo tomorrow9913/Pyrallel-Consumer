@@ -1,7 +1,7 @@
 import socket
 from typing import ClassVar, Literal, cast
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
@@ -21,19 +21,20 @@ class ProcessConfig(BaseSettings):
         extra="ignore",
     )
 
-    process_count: int = 8
-    queue_size: int = 2048
+    process_count: int = Field(default=8, gt=0)
+    queue_size: int = Field(default=2048, gt=0)
     require_picklable_worker: bool = True
-    batch_size: int = 64
+    batch_size: int = Field(default=64, gt=0)
     batch_bytes: str = "256KB"
     max_batch_wait_ms: int = 5
     flush_policy: Literal[
         "size_or_timer", "demand", "demand_min_residence"
     ] = "size_or_timer"
     demand_flush_min_residence_ms: int = 0
+    shutdown_drain_timeout_ms: int = 5000
     worker_join_timeout_ms: int = 30000
     task_timeout_ms: int = 30000
-    msgpack_max_bytes: int = 1_000_000
+    msgpack_max_bytes: int = Field(default=1_000_000, gt=0)
     max_tasks_per_child: int = 0
     recycle_jitter_ms: int = 0
 
@@ -47,7 +48,50 @@ class MetricsConfig(BaseSettings):
     )
 
     enabled: bool = False
-    port: int = 9091
+    port: int = Field(default=9091, ge=1, le=65535)
+
+
+class AdaptiveConcurrencyConfig(BaseSettings):
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    min_in_flight: int = Field(default=0, ge=0)
+    scale_up_step: int = Field(default=32, gt=0)
+    scale_down_step: int = Field(default=64, gt=0)
+    cooldown_ms: int = Field(default=1000, ge=0)
+
+
+class AdaptiveBackpressureConfig(BaseSettings):
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    min_in_flight: int = Field(default=1, ge=1)
+    scale_up_step: int = Field(default=16, gt=0)
+    scale_down_step: int = Field(default=16, gt=0)
+    cooldown_ms: int = Field(default=1000, ge=0)
+    lag_scale_up_threshold: int = Field(default=0, ge=0)
+    low_latency_threshold_ms: float = Field(default=25.0, ge=0.0)
+    high_latency_threshold_ms: float = Field(default=100.0, ge=0.0)
+
+
+class PoisonMessageConfig(BaseSettings):
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    failure_threshold: int = Field(default=3, gt=0)
+    cooldown_ms: int = Field(default=30000, ge=0)
 
 
 class ExecutionConfig(BaseSettings):
@@ -60,8 +104,11 @@ class ExecutionConfig(BaseSettings):
     )
 
     mode: ExecutionMode = ExecutionMode.ASYNC
-    max_in_flight: int = 1000
+    max_in_flight: int = Field(default=1000, gt=0)
     max_revoke_grace_ms: int = 500
+    shutdown_policy: Literal["graceful", "abort"] = "graceful"
+    consumer_task_stop_timeout_ms: int = Field(default=5000, ge=0)
+    shutdown_drain_timeout_ms: int = 5000
     max_retries: int = 3
     retry_backoff_ms: int = 1000
     exponential_backoff: bool = True
@@ -84,6 +131,15 @@ class ExecutionConfig(BaseSettings):
     def max_in_flight_messages(self) -> int:
         return self.max_in_flight
 
+    def resolve_shutdown_drain_timeout_ms(self) -> int:
+        if self.shutdown_policy == "abort":
+            return 0
+        if "shutdown_drain_timeout_ms" in self.model_fields_set:
+            return max(0, int(self.shutdown_drain_timeout_ms))
+        if self.mode == ExecutionMode.ASYNC:
+            return max(0, int(self.async_config.shutdown_grace_timeout_ms))
+        return max(0, int(self.process_config.shutdown_drain_timeout_ms))
+
 
 class ParallelConsumerConfig(BaseSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
@@ -104,6 +160,9 @@ class ParallelConsumerConfig(BaseSettings):
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     strict_completion_monitor_enabled: bool = True
+    adaptive_backpressure: AdaptiveBackpressureConfig = AdaptiveBackpressureConfig()
+    adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
+    poison_message: PoisonMessageConfig = PoisonMessageConfig()
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
@@ -128,34 +187,101 @@ class KafkaConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
+        populate_by_name=True,
         extra="ignore",
     )
 
-    BOOTSTRAP_SERVERS: str | list[str] = ["localhost:9092"]
-    CONSUMER_GROUP: str = "pyrallel-consumer-group"
-    DLQ_TOPIC_SUFFIX: str = ".dlq"
-    dlq_enabled: bool = True
-    dlq_payload_mode: DLQPayloadMode = DLQPayloadMode.FULL
-    DLQ_FLUSH_TIMEOUT_MS: int = 5000
-    AUTO_OFFSET_RESET: Literal["earliest", "latest", "none"] = "earliest"
-    ENABLE_AUTO_COMMIT: bool = False
-    SESSION_TIMEOUT_MS: int = 60000
+    bootstrap_servers: str | list[str] = Field(
+        default_factory=lambda: ["localhost:9092"],
+        validation_alias=AliasChoices(
+            "bootstrap_servers",
+            "BOOTSTRAP_SERVERS",
+            "KAFKA_BOOTSTRAP_SERVERS",
+        ),
+    )
+    consumer_group: str = Field(
+        default="pyrallel-consumer-group",
+        validation_alias=AliasChoices(
+            "consumer_group",
+            "CONSUMER_GROUP",
+            "KAFKA_CONSUMER_GROUP",
+        ),
+    )
+    dlq_topic_suffix: str = Field(
+        default=".dlq",
+        validation_alias=AliasChoices(
+            "dlq_topic_suffix",
+            "DLQ_TOPIC_SUFFIX",
+            "KAFKA_DLQ_TOPIC_SUFFIX",
+        ),
+    )
+    dlq_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "dlq_enabled",
+            "DLQ_ENABLED",
+            "KAFKA_DLQ_ENABLED",
+        ),
+    )
+    dlq_payload_mode: DLQPayloadMode = Field(
+        default=DLQPayloadMode.FULL,
+        validation_alias=AliasChoices(
+            "dlq_payload_mode",
+            "DLQ_PAYLOAD_MODE",
+            "KAFKA_DLQ_PAYLOAD_MODE",
+        ),
+    )
+    dlq_flush_timeout_ms: int = Field(
+        default=5000,
+        validation_alias=AliasChoices(
+            "dlq_flush_timeout_ms",
+            "DLQ_FLUSH_TIMEOUT_MS",
+            "KAFKA_DLQ_FLUSH_TIMEOUT_MS",
+        ),
+    )
+    auto_offset_reset: Literal["earliest", "latest", "none"] = Field(
+        default="earliest",
+        validation_alias=AliasChoices(
+            "auto_offset_reset",
+            "AUTO_OFFSET_RESET",
+            "KAFKA_AUTO_OFFSET_RESET",
+        ),
+    )
+    enable_auto_commit: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "enable_auto_commit",
+            "ENABLE_AUTO_COMMIT",
+            "KAFKA_ENABLE_AUTO_COMMIT",
+        ),
+    )
+    session_timeout_ms: int = Field(
+        default=60000,
+        validation_alias=AliasChoices(
+            "session_timeout_ms",
+            "SESSION_TIMEOUT_MS",
+            "KAFKA_SESSION_TIMEOUT_MS",
+        ),
+    )
     metrics: MetricsConfig = MetricsConfig()
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
+    def _bootstrap_servers_csv(self) -> str:
+        return ",".join(self._parse_bootstrap_servers(self.bootstrap_servers))
+
     def get_producer_config(self) -> dict[str, str]:
         return {
-            "bootstrap.servers": ",".join(self.BOOTSTRAP_SERVERS),
+            "bootstrap.servers": self._bootstrap_servers_csv(),
             "client.id": socket.gethostname(),
         }
 
     def get_consumer_config(self) -> dict[str, str | int | bool]:
         return {
-            "bootstrap.servers": ",".join(self.BOOTSTRAP_SERVERS),
-            "group.id": self.CONSUMER_GROUP,
-            "auto.offset.reset": self.AUTO_OFFSET_RESET,
-            "enable.auto.commit": self.ENABLE_AUTO_COMMIT,
-            "session.timeout.ms": self.SESSION_TIMEOUT_MS,
+            "bootstrap.servers": self._bootstrap_servers_csv(),
+            "group.id": self.consumer_group,
+            "auto.offset.reset": self.auto_offset_reset,
+            "enable.auto.commit": self.enable_auto_commit,
+            "session.timeout.ms": self.session_timeout_ms,
         }
 
     @field_validator("dlq_payload_mode", mode="before")
@@ -170,7 +296,7 @@ class KafkaConfig(BaseSettings):
             f"dlq_payload_mode must be str or DLQPayloadMode, got {type(v).__name__}"
         )
 
-    @field_validator("BOOTSTRAP_SERVERS", mode="before")
+    @field_validator("bootstrap_servers", mode="before")
     @classmethod
     def _parse_bootstrap_servers(cls, v: object) -> list[str]:
         if isinstance(v, str):
@@ -178,27 +304,27 @@ class KafkaConfig(BaseSettings):
         if isinstance(v, list):
             for item in cast(list[object], v):
                 if not isinstance(item, str):
-                    raise TypeError("BOOTSTRAP_SERVERS list entries must be str")
+                    raise TypeError("bootstrap_servers list entries must be str")
             string_list = cast(list[str], v)
             cleaned: list[str] = [item.strip() for item in string_list if item.strip()]
             return cleaned
         raise TypeError(
-            f"BOOTSTRAP_SERVERS must be str or list[str], got {type(v).__name__}"
+            "bootstrap_servers must be str or list[str], got %s" % type(v).__name__
         )
 
     def dump_to_rdkafka(self) -> dict[str, object]:
         data: dict[str, object] = self.model_dump(exclude_none=True)
 
         _exclude = {
-            "BOOTSTRAP_SERVERS",
-            "CONSUMER_GROUP",
-            "DLQ_TOPIC_SUFFIX",
+            "bootstrap_servers",
+            "consumer_group",
+            "dlq_topic_suffix",
             "dlq_payload_mode",
             "dlq_enabled",
-            "DLQ_FLUSH_TIMEOUT_MS",
-            "AUTO_OFFSET_RESET",
-            "ENABLE_AUTO_COMMIT",
-            "SESSION_TIMEOUT_MS",
+            "dlq_flush_timeout_ms",
+            "auto_offset_reset",
+            "enable_auto_commit",
+            "session_timeout_ms",
             "rebalance_protocol",
             "metrics",
             "parallel_consumer",
@@ -215,3 +341,59 @@ class KafkaConfig(BaseSettings):
             for k, v in extras_source.items():
                 conf[k.replace("_", ".").lower()] = v
         return conf
+
+    @property
+    def BOOTSTRAP_SERVERS(self) -> list[str]:
+        return self._parse_bootstrap_servers(self.bootstrap_servers)
+
+    @BOOTSTRAP_SERVERS.setter
+    def BOOTSTRAP_SERVERS(self, value: str | list[str]) -> None:
+        self.bootstrap_servers = self._parse_bootstrap_servers(value)
+
+    @property
+    def CONSUMER_GROUP(self) -> str:
+        return self.consumer_group
+
+    @CONSUMER_GROUP.setter
+    def CONSUMER_GROUP(self, value: str) -> None:
+        self.consumer_group = value
+
+    @property
+    def DLQ_TOPIC_SUFFIX(self) -> str:
+        return self.dlq_topic_suffix
+
+    @DLQ_TOPIC_SUFFIX.setter
+    def DLQ_TOPIC_SUFFIX(self, value: str) -> None:
+        self.dlq_topic_suffix = value
+
+    @property
+    def DLQ_FLUSH_TIMEOUT_MS(self) -> int:
+        return self.dlq_flush_timeout_ms
+
+    @DLQ_FLUSH_TIMEOUT_MS.setter
+    def DLQ_FLUSH_TIMEOUT_MS(self, value: int) -> None:
+        self.dlq_flush_timeout_ms = value
+
+    @property
+    def AUTO_OFFSET_RESET(self) -> Literal["earliest", "latest", "none"]:
+        return self.auto_offset_reset
+
+    @AUTO_OFFSET_RESET.setter
+    def AUTO_OFFSET_RESET(self, value: Literal["earliest", "latest", "none"]) -> None:
+        self.auto_offset_reset = value
+
+    @property
+    def ENABLE_AUTO_COMMIT(self) -> bool:
+        return self.enable_auto_commit
+
+    @ENABLE_AUTO_COMMIT.setter
+    def ENABLE_AUTO_COMMIT(self, value: bool) -> None:
+        self.enable_auto_commit = value
+
+    @property
+    def SESSION_TIMEOUT_MS(self) -> int:
+        return self.session_timeout_ms
+
+    @SESSION_TIMEOUT_MS.setter
+    def SESSION_TIMEOUT_MS(self, value: int) -> None:
+        self.session_timeout_ms = value

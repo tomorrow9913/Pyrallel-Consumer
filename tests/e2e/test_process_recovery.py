@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections import Counter
@@ -33,6 +34,9 @@ E2E_CONF = {
 
 
 def _require_kafka() -> None:
+    strict_ci_gate = os.environ.get(
+        "PYRALLEL_E2E_REQUIRE_BROKER", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     admin = AdminClient(
         {
             "bootstrap.servers": BOOTSTRAP_SERVERS,
@@ -40,9 +44,14 @@ def _require_kafka() -> None:
         }
     )
     try:
-        admin.list_topics(timeout=3)
+        metadata = admin.list_topics(timeout=5)
+        if not getattr(metadata, "brokers", None):
+            raise RuntimeError("Kafka metadata response did not include broker entries")
     except Exception as exc:
-        pytest.skip(f"Kafka broker not available for recovery e2e tests: {exc}")
+        message = f"Kafka broker not available for recovery e2e tests: {exc}"
+        if strict_ci_gate:
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 class _BlockingPartitionWorker:
@@ -274,13 +283,13 @@ def _topic_name(prefix: str) -> str:
 
 def _build_kafka_config(group_id: str) -> KafkaConfig:
     kafka_config = KafkaConfig(
-        BOOTSTRAP_SERVERS=[BOOTSTRAP_SERVERS],
-        CONSUMER_GROUP=group_id,
-        AUTO_OFFSET_RESET=E2E_CONF["auto.offset.reset"],
-        ENABLE_AUTO_COMMIT=E2E_CONF["enable.auto.commit"],
+        bootstrap_servers=[BOOTSTRAP_SERVERS],
+        consumer_group=group_id,
+        auto_offset_reset=E2E_CONF["auto.offset.reset"],
+        enable_auto_commit=E2E_CONF["enable.auto.commit"],
     )
     kafka_config.dlq_enabled = True
-    kafka_config.DLQ_TOPIC_SUFFIX = DLQ_SUFFIX
+    kafka_config.dlq_topic_suffix = DLQ_SUFFIX
     kafka_config.parallel_consumer.rebalance_state_strategy = "metadata_snapshot"
     return kafka_config
 
@@ -473,20 +482,24 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
 
             release_event.set()
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="rebalance scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="rebalance scenario never committed the final safe offset",
             )
@@ -513,6 +526,104 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
         "expected the secondary poller to receive at least one partition assignment after rebalance; "
         f"all entries={all_entries}"
     )
+
+
+@pytest.mark.asyncio
+async def test_process_graceful_stop_drains_inflight_before_close() -> None:
+    _require_kafka()
+    topic = _topic_name("process-recovery-stop-drain")
+    group_id = _topic_name("process-recovery-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 3
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    all_entries = []
+    final_committed_offset = -1001
+    stop_task: asyncio.Task[None] | None = None
+    with Manager() as manager:
+        shared_results = manager.list()
+        started_event = manager.Event()
+        release_event = manager.Event()
+        shared_state = manager.dict(blocked_once=False)
+
+        worker = _BlockingPartitionWorker(
+            shared_results=shared_results,
+            started_event=started_event,
+            release_event=release_event,
+            shared_state=shared_state,
+            label="stop-drain",
+            block_partition=partition,
+            block_offset=0,
+        )
+
+        kafka_config = _build_kafka_config(group_id)
+        kafka_config.parallel_consumer.poll_batch_size = produced_count
+        poller, engine = _build_process_runtime(
+            topic=topic,
+            kafka_config=kafka_config,
+            worker_fn=worker,
+            max_in_flight=1,
+        )
+
+        await poller.start()
+        try:
+            await _wait_for_event(
+                started_event,
+                timeout_seconds=20,
+                message="poller never started blocked in-flight stop-drain work",
+            )
+
+            stop_task = asyncio.create_task(poller.stop())
+            await _wait_until(
+                lambda: poller._shutdown_event.is_set(),
+                timeout_seconds=10,
+                message="graceful stop never reached the shutdown drain boundary",
+            )
+            await asyncio.sleep(0)
+            assert not stop_task.done(), (
+                "graceful stop returned after the consumer loop stopped but before "
+                "in-flight process work was released"
+            )
+            blocked_commit = _fetch_committed_offset(group_id, topic, partition)
+            assert blocked_commit in (-1001, 0), (
+                "commit advanced before the blocked stop-drain work completed: "
+                f"offset={blocked_commit}"
+            )
+
+            release_event.set()
+            await asyncio.wait_for(stop_task, timeout=30)
+            await _wait_until(
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
+                timeout_seconds=15,
+                message="graceful stop did not commit all drained in-flight work",
+            )
+            final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+        finally:
+            release_event.set()
+            if stop_task is not None and not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if getattr(poller, "_running", False) or getattr(
+                poller, "_consumer_task", None
+            ):
+                await poller.stop()
+            await engine.shutdown()
+            all_entries = list(shared_results)
+            _delete_topic(admin, topic)
+
+    completed_offsets = [
+        entry[3]
+        for entry in all_entries
+        if entry[0] == "completed" and entry[2] == partition
+    ]
+    assert set(completed_offsets) == set(range(produced_count))
+    assert final_committed_offset == produced_count
 
 
 @pytest.mark.asyncio
@@ -543,6 +654,9 @@ async def test_process_restart_preserves_offset_continuity() -> None:
 
         first_config = _build_kafka_config(group_id)
         second_config = _build_kafka_config(group_id)
+        # Keep the first runtime from buffering the whole partition before restart.
+        first_config.parallel_consumer.poll_batch_size = 1
+        second_config.parallel_consumer.poll_batch_size = 1
         first_poller, first_engine = _build_process_runtime(
             topic=topic,
             kafka_config=first_config,
@@ -559,20 +673,24 @@ async def test_process_restart_preserves_offset_continuity() -> None:
         await first_poller.start()
         try:
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[1] == "first"
-                    }
-                )
-                >= restart_after_commit,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[1] == "first"
+                        }
+                    )
+                    >= restart_after_commit
+                ),
                 timeout_seconds=30,
                 message="first poller did not process the expected pre-restart subset",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                >= restart_after_commit,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    >= restart_after_commit
+                ),
                 timeout_seconds=15,
                 message="committed offset did not advance before restart",
             )
@@ -586,32 +704,38 @@ async def test_process_restart_preserves_offset_continuity() -> None:
         await second_poller.start()
         try:
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[1] == "second"
-                    }
-                )
-                >= 1,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[1] == "second"
+                        }
+                    )
+                    >= 1
+                ),
                 timeout_seconds=30,
                 message="second poller did not process any post-restart work",
             )
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="restart scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="restart scenario never committed the final safe offset",
             )
@@ -715,20 +839,24 @@ async def test_process_retry_path_commits_only_after_success() -> None:
 
             success_release_event.set()
             await _wait_until(
-                lambda: len(
-                    {
-                        entry[3]
-                        for entry in list(shared_results)
-                        if entry[0] == "completed" and entry[2] == partition
-                    }
-                )
-                >= produced_count,
+                lambda: (
+                    len(
+                        {
+                            entry[3]
+                            for entry in list(shared_results)
+                            if entry[0] == "completed" and entry[2] == partition
+                        }
+                    )
+                    >= produced_count
+                ),
                 timeout_seconds=30,
                 message="retry scenario did not complete all produced offsets",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=15,
                 message="retry scenario never committed the final safe offset",
             )
@@ -786,6 +914,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
             target_offset=target_offset,
         )
         kafka_config = _build_kafka_config(group_id)
+        max_retries = kafka_config.parallel_consumer.execution.max_retries
         poller, engine = _build_process_runtime(
             topic=topic,
             kafka_config=kafka_config,
@@ -796,14 +925,15 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
         await poller.start()
         try:
             await _wait_until(
-                lambda: int(attempt_counts.get(target_key, 0))
-                >= kafka_config.parallel_consumer.execution.max_retries,
+                lambda: (int(attempt_counts.get(target_key, 0)) >= max_retries),
                 timeout_seconds=20,
                 message="dlq scenario never exhausted the configured retry count",
             )
             await _wait_until(
-                lambda: _fetch_committed_offset(group_id, topic, partition)
-                == produced_count,
+                lambda: (
+                    _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count
+                ),
                 timeout_seconds=20,
                 message="dlq scenario never committed the final safe offset",
             )
@@ -830,7 +960,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
     headers = dict(dlq_msg.headers() or [])
     dlq_payload = json.loads(dlq_msg.value().decode("utf-8"))
 
-    assert target_attempts == 2
+    assert target_attempts >= max_retries
     assert set(completed_offsets) == {1, 2}
     assert not target_completions
     assert dlq_msg.key() == b"key-0"

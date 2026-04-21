@@ -171,7 +171,11 @@ def render_results_summary(output_path: str | Path) -> str:
         " | ".join(row[index].ljust(widths[index]) for index in range(len(_HEADERS)))
         for row in table_data.rows
     ]
-    return "\n".join([header_line, divider, *body])
+    sections = [header_line, divider, *body]
+    performance_summary = _format_performance_improvements(path)
+    if performance_summary:
+        sections.extend(["", "성능 개선", performance_summary])
+    return "\n".join(sections)
 
 
 def _format_row(result: dict[str, Any]) -> list[str]:
@@ -238,6 +242,73 @@ def _load_results_payload(output_path: str | Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _format_performance_improvements(output_path: str | Path) -> str:
+    payload = _load_results_payload(output_path)
+    if payload is None:
+        return ""
+    improvements = payload.get("performance_improvements")
+    if not isinstance(improvements, list) or not improvements:
+        return ""
+
+    lines: list[str] = []
+    for improvement in improvements:
+        if not isinstance(improvement, dict):
+            continue
+        comparison = str(improvement.get("comparison", "unknown"))
+        workload = str(improvement.get("workload", "unknown"))
+        ordering = str(improvement.get("ordering", "unknown"))
+        run_type = str(improvement.get("run_type", "unknown"))
+        delta = _format_signed_optional_float(
+            improvement.get("throughput_tps_delta"),
+            precision=2,
+            suffix=" TPS",
+        )
+        delta_pct = _format_signed_optional_float(
+            improvement.get("throughput_tps_delta_pct"),
+            precision=2,
+            suffix="%",
+        )
+        ratio = _format_ratio(improvement.get("improvement_ratio"))
+        candidate = str(improvement.get("candidate_run_name", "unknown"))
+        reference = str(improvement.get("reference_run_name", "unknown"))
+        lines.append(
+            "%s/%s/%s | %s | %s (%s) | %s | %s vs %s"
+            % (
+                workload,
+                ordering,
+                run_type,
+                comparison,
+                delta,
+                delta_pct,
+                ratio,
+                candidate,
+                reference,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_signed_optional_float(
+    value: Any,
+    *,
+    precision: int,
+    suffix: str,
+) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    sign = "+" if number >= 0 else ""
+    return "%s%.*f%s" % (sign, precision, number, suffix)
+
+
+def _format_ratio(value: Any) -> str:
+    try:
+        return "%.2fx" % float(value)
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def _resolve_ordering(result: dict[str, Any], payload: dict[str, Any]) -> str | None:
