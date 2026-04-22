@@ -810,13 +810,15 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
                 message="rebalance scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+            all_entries = list(shared_results)
         finally:
             release_event.set()
+            if not all_entries:
+                all_entries = list(shared_results)
             await secondary_poller.stop()
             await secondary_engine.shutdown()
             await primary_poller.stop()
             await primary_engine.shutdown()
-            all_entries = list(shared_results)
             partition_entries = [
                 entry for entry in all_entries if entry[2] == partition
             ]
@@ -1070,10 +1072,12 @@ async def test_process_restart_preserves_offset_continuity(
                 message="restart scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+            all_entries = list(shared_results)
         finally:
+            if not all_entries:
+                all_entries = list(shared_results)
             await second_poller.stop()
             await second_engine.shutdown()
-            all_entries = list(shared_results)
             _delete_topic(admin, topic)
 
     completed_entries = [
@@ -1186,10 +1190,10 @@ async def test_process_retry_path_commits_only_after_success(
             all_entries = _drain_result_queue(result_queue)
         finally:
             success_release_event.set()
-            if not all_entries:
-                all_entries = _drain_result_queue(result_queue)
+            all_entries.extend(_drain_result_queue(result_queue))
             await poller.stop()
             await engine.shutdown()
+            all_entries.extend(_drain_result_queue(result_queue))
             _delete_topic(admin, topic)
     finally:
         result_queue.close()
@@ -1275,10 +1279,10 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
             all_entries = _drain_result_queue(result_queue)
         finally:
-            if not all_entries:
-                all_entries = _drain_result_queue(result_queue)
+            all_entries.extend(_drain_result_queue(result_queue))
             await poller.stop()
             await engine.shutdown()
+            all_entries.extend(_drain_result_queue(result_queue))
 
         try:
             dlq_msg = _consume_single_record(
