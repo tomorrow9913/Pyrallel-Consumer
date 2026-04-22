@@ -1,10 +1,11 @@
 import asyncio
 import json
 import os
+import queue
 import time
 import uuid
 from collections import Counter
-from multiprocessing import Manager
+from multiprocessing import Event, Manager, Queue
 from typing import Any, Callable
 
 import pytest
@@ -32,6 +33,23 @@ E2E_CONF = {
     "auto.offset.reset": "earliest",
     "enable.auto.commit": False,
 }
+
+
+class _QueueBackedResults:
+    def __init__(self, result_queue) -> None:
+        self._result_queue = result_queue
+
+    def append(self, entry) -> None:
+        self._result_queue.put(entry)
+
+
+def _drain_result_queue(result_queue) -> list:
+    entries = []
+    while True:
+        try:
+            entries.append(result_queue.get_nowait())
+        except queue.Empty:
+            return entries
 
 
 def _require_kafka() -> None:
@@ -514,6 +532,10 @@ def _build_process_runtime(
     execution_config.process_config.queue_size = 64
     execution_config.process_config.batch_size = 1
     execution_config.process_config.max_batch_wait_ms = 0
+    # Recovery E2E workers use fork-inherited synchronization primitives to
+    # coordinate broker timing; keep the picklability contract covered in unit
+    # tests while allowing these broker-backed harness workers.
+    execution_config.process_config.require_picklable_worker = False
     execution_config.max_retries = 2
     execution_config.retry_backoff_ms = 10
     execution_config.max_retry_backoff_ms = 20
@@ -1109,10 +1131,11 @@ async def test_process_retry_path_commits_only_after_success(
     all_entries = []
     target_attempts = 0
     final_committed_offset = -1001
-    with Manager() as manager:
-        shared_results = manager.list()
-        success_started_event = manager.Event()
-        success_release_event = manager.Event()
+    result_queue: Any = Queue()
+    try:
+        shared_results = _QueueBackedResults(result_queue)
+        success_started_event = Event()
+        success_release_event = Event()
 
         retry_worker_cls = (
             _AsyncRetryThenSucceedWorker
@@ -1153,20 +1176,6 @@ async def test_process_retry_path_commits_only_after_success(
             success_release_event.set()
             await _wait_until(
                 lambda: (
-                    len(
-                        {
-                            entry[3]
-                            for entry in list(shared_results)
-                            if entry[0] == "completed" and entry[2] == partition
-                        }
-                    )
-                    >= produced_count
-                ),
-                timeout_seconds=30,
-                message="retry scenario did not complete all produced offsets",
-            )
-            await _wait_until(
-                lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
                     == produced_count
                 ),
@@ -1174,14 +1183,17 @@ async def test_process_retry_path_commits_only_after_success(
                 message="retry scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
-            all_entries = list(shared_results)
+            all_entries = _drain_result_queue(result_queue)
         finally:
             success_release_event.set()
             if not all_entries:
-                all_entries = list(shared_results)
+                all_entries = _drain_result_queue(result_queue)
             await poller.stop()
             await engine.shutdown()
             _delete_topic(admin, topic)
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
 
     completed_entries = [entry for entry in all_entries if entry[0] == "completed"]
     completed_offsets = [entry[3] for entry in completed_entries]
@@ -1224,8 +1236,9 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     all_entries = []
     target_attempts = 0
     final_committed_offset = -1001
-    with Manager() as manager:
-        shared_results = manager.list()
+    result_queue: Any = Queue()
+    try:
+        shared_results = _QueueBackedResults(result_queue)
 
         always_fail_worker_cls = (
             _AsyncAlwaysFailWorker
@@ -1240,7 +1253,6 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
             target_offset=target_offset,
         )
         kafka_config = _build_kafka_config(group_id)
-        max_retries = kafka_config.parallel_consumer.execution.max_retries
         poller, engine = _build_recovery_runtime(
             execution_mode=execution_mode,
             topic=topic,
@@ -1261,10 +1273,10 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
                 message="dlq scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
-            all_entries = list(shared_results)
+            all_entries = _drain_result_queue(result_queue)
         finally:
             if not all_entries:
-                all_entries = list(shared_results)
+                all_entries = _drain_result_queue(result_queue)
             await poller.stop()
             await engine.shutdown()
 
@@ -1276,6 +1288,9 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
         finally:
             _delete_topic(admin, dlq_topic)
             _delete_topic(admin, topic)
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
 
     completed_entries = [entry for entry in all_entries if entry[0] == "completed"]
     completed_offsets = [entry[3] for entry in completed_entries]
