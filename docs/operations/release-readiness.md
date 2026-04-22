@@ -37,7 +37,7 @@ For each item, review all three dimensions below.
 - [x] **Include process mode in real-broker E2E**
   - What: validate core paths (ordering, retry, DLQ, rebalance/restart) for both
     async/process engines against a real Kafka broker.
-  - Evidence: process-mode real-broker E2E passes in
+  - Evidence: async/process real-broker E2E passes in
     `tests/e2e/test_ordering.py` and `tests/e2e/test_process_recovery.py`.
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 

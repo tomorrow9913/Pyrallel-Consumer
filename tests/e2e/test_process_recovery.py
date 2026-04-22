@@ -22,6 +22,7 @@ from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import ExecutionMode, OrderingMode, WorkItem
+from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
 
 BOOTSTRAP_SERVERS = "localhost:9092"
@@ -132,6 +133,84 @@ class _RecordingWorker:
         )
 
 
+class _AsyncBlockingPartitionWorker:
+    def __init__(
+        self,
+        shared_results,
+        started_event,
+        release_event,
+        shared_state,
+        label: str,
+        block_partition: int,
+        block_offset: int,
+    ) -> None:
+        self._shared_results = shared_results
+        self._started_event = started_event
+        self._release_event = release_event
+        self._shared_state = shared_state
+        self._label = label
+        self._block_partition = block_partition
+        self._block_offset = block_offset
+
+    async def __call__(self, item: WorkItem) -> None:
+        payload = json.loads(item.payload.decode("utf-8"))
+        self._shared_results.append(
+            (
+                "started",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+            )
+        )
+        should_block = (
+            item.tp.partition == self._block_partition
+            and item.offset == self._block_offset
+            and not self._shared_state.get("blocked_once", False)
+        )
+        if should_block:
+            self._shared_state["blocked_once"] = True
+            self._started_event.set()
+            deadline = time.monotonic() + 15
+            while not self._release_event.is_set():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting to release blocked worker")
+                await asyncio.sleep(0.01)
+        else:
+            await asyncio.sleep(0.02)
+
+        self._shared_results.append(
+            (
+                "completed",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+            )
+        )
+
+
+class _AsyncRecordingWorker:
+    def __init__(self, shared_results, label: str, sleep_ms: float = 5.0) -> None:
+        self._shared_results = shared_results
+        self._label = label
+        self._sleep_ms = sleep_ms
+
+    async def __call__(self, item: WorkItem) -> None:
+        payload = json.loads(item.payload.decode("utf-8"))
+        if self._sleep_ms > 0:
+            await asyncio.sleep(self._sleep_ms / 1000.0)
+        self._shared_results.append(
+            (
+                "completed",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+            )
+        )
+
+
 class _RetryThenSucceedWorker:
     def __init__(
         self,
@@ -208,6 +287,82 @@ class _RetryThenSucceedWorker:
         )
 
 
+class _AsyncRetryThenSucceedWorker:
+    def __init__(
+        self,
+        shared_results,
+        attempt_counts,
+        label: str,
+        target_partition: int,
+        target_offset: int,
+        fail_first_attempts: int,
+        sleep_ms: float = 5.0,
+        success_started_event=None,
+        success_release_event=None,
+    ) -> None:
+        self._shared_results = shared_results
+        self._attempt_counts = attempt_counts
+        self._label = label
+        self._target_partition = target_partition
+        self._target_offset = target_offset
+        self._fail_first_attempts = fail_first_attempts
+        self._sleep_ms = sleep_ms
+        self._success_started_event = success_started_event
+        self._success_release_event = success_release_event
+
+    async def __call__(self, item: WorkItem) -> None:
+        payload = json.loads(item.payload.decode("utf-8"))
+        key = f"{item.tp.partition}:{item.offset}"
+        attempt = int(self._attempt_counts.get(key, 0)) + 1
+        self._attempt_counts[key] = attempt
+        self._shared_results.append(
+            (
+                "attempt",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+                attempt,
+            )
+        )
+
+        if self._sleep_ms > 0:
+            await asyncio.sleep(self._sleep_ms / 1000.0)
+
+        if (
+            item.tp.partition == self._target_partition
+            and item.offset == self._target_offset
+            and attempt <= self._fail_first_attempts
+        ):
+            raise RuntimeError(f"intentional retry trigger on attempt {attempt}")
+
+        should_block_before_success = (
+            item.tp.partition == self._target_partition
+            and item.offset == self._target_offset
+            and attempt == self._fail_first_attempts + 1
+            and self._success_started_event is not None
+            and self._success_release_event is not None
+        )
+        if should_block_before_success:
+            self._success_started_event.set()
+            deadline = time.monotonic() + 15
+            while not self._success_release_event.is_set():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting to release retry success")
+                await asyncio.sleep(0.01)
+
+        self._shared_results.append(
+            (
+                "completed",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+                attempt,
+            )
+        )
+
+
 class _AlwaysFailWorker:
     def __init__(
         self,
@@ -243,6 +398,60 @@ class _AlwaysFailWorker:
 
         if self._sleep_ms > 0:
             time.sleep(self._sleep_ms / 1000.0)
+
+        if (
+            item.tp.partition == self._target_partition
+            and item.offset == self._target_offset
+        ):
+            raise RuntimeError(f"intentional dlq trigger on attempt {attempt}")
+
+        self._shared_results.append(
+            (
+                "completed",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+                attempt,
+            )
+        )
+
+
+class _AsyncAlwaysFailWorker:
+    def __init__(
+        self,
+        shared_results,
+        attempt_counts,
+        label: str,
+        target_partition: int,
+        target_offset: int,
+        sleep_ms: float = 5.0,
+    ) -> None:
+        self._shared_results = shared_results
+        self._attempt_counts = attempt_counts
+        self._label = label
+        self._target_partition = target_partition
+        self._target_offset = target_offset
+        self._sleep_ms = sleep_ms
+
+    async def __call__(self, item: WorkItem) -> None:
+        payload = json.loads(item.payload.decode("utf-8"))
+        key = f"{item.tp.partition}:{item.offset}"
+        attempt = int(self._attempt_counts.get(key, 0)) + 1
+        self._attempt_counts[key] = attempt
+        self._shared_results.append(
+            (
+                "attempt",
+                self._label,
+                item.tp.partition,
+                item.offset,
+                payload["sequence"],
+                attempt,
+            )
+        )
+
+        if self._sleep_ms > 0:
+            await asyncio.sleep(self._sleep_ms / 1000.0)
 
         if (
             item.tp.partition == self._target_partition
@@ -330,6 +539,62 @@ def _build_process_runtime(
     return poller, engine
 
 
+def _build_async_runtime(
+    *,
+    topic: str,
+    kafka_config: KafkaConfig,
+    worker_fn: Any,
+    max_in_flight: int = 16,
+) -> tuple[BrokerPoller, AsyncExecutionEngine]:
+    execution_config: ExecutionConfig = kafka_config.parallel_consumer.execution
+    execution_config.mode = ExecutionMode.ASYNC
+    execution_config.max_in_flight = max_in_flight
+    execution_config.max_retries = 2
+    execution_config.retry_backoff_ms = 10
+    execution_config.max_retry_backoff_ms = 20
+    execution_config.retry_jitter_ms = 0
+
+    engine = AsyncExecutionEngine(config=execution_config, worker_fn=worker_fn)
+    work_manager = WorkManager(
+        execution_engine=engine,
+        max_in_flight_messages=execution_config.max_in_flight,
+        ordering_mode=OrderingMode.PARTITION,
+    )
+    poller = BrokerPoller(
+        consume_topic=topic,
+        kafka_config=kafka_config,
+        execution_engine=engine,
+        work_manager=work_manager,
+    )
+    poller.ORDERING_MODE = OrderingMode.PARTITION
+    return poller, engine
+
+
+def _build_recovery_runtime(
+    *,
+    execution_mode: ExecutionMode,
+    topic: str,
+    kafka_config: KafkaConfig,
+    worker_fn: Any,
+    max_in_flight: int = 16,
+    process_count: int = 1,
+) -> tuple[BrokerPoller, Any]:
+    if execution_mode == ExecutionMode.ASYNC:
+        return _build_async_runtime(
+            topic=topic,
+            kafka_config=kafka_config,
+            worker_fn=worker_fn,
+            max_in_flight=max_in_flight,
+        )
+    return _build_process_runtime(
+        topic=topic,
+        kafka_config=kafka_config,
+        worker_fn=worker_fn,
+        max_in_flight=max_in_flight,
+        process_count=process_count,
+    )
+
+
 def _create_topic(admin: AdminClient, topic_name: str, num_partitions: int) -> None:
     topic = NewTopic(topic_name, num_partitions=num_partitions, replication_factor=1)
     admin.create_topics([topic])[topic_name].result(timeout=10)
@@ -403,10 +668,18 @@ def _consume_single_record(topic: str, group_id: str, timeout_seconds: float = 1
 
 
 @pytest.mark.asyncio
-async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> None:
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
+    execution_mode: ExecutionMode,
+) -> None:
     _require_kafka()
-    topic = _topic_name("process-recovery-rebalance")
-    group_id = _topic_name("process-recovery-group")
+    mode_label = execution_mode.value
+    topic = _topic_name(f"{mode_label}-recovery-rebalance")
+    group_id = _topic_name(f"{mode_label}-recovery-group")
     admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
     partition = 1
     produced_count = 5
@@ -426,7 +699,18 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
         release_event = manager.Event()
         shared_state = manager.dict(blocked_once=False)
 
-        primary_worker = _BlockingPartitionWorker(
+        blocking_worker_cls = (
+            _AsyncBlockingPartitionWorker
+            if execution_mode == ExecutionMode.ASYNC
+            else _BlockingPartitionWorker
+        )
+        recording_worker_cls = (
+            _AsyncRecordingWorker
+            if execution_mode == ExecutionMode.ASYNC
+            else _RecordingWorker
+        )
+
+        primary_worker = blocking_worker_cls(
             shared_results=shared_results,
             started_event=started_event,
             release_event=release_event,
@@ -435,19 +719,21 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
             block_partition=partition,
             block_offset=0,
         )
-        secondary_worker = _RecordingWorker(
+        secondary_worker = recording_worker_cls(
             shared_results=shared_results, label="secondary"
         )
 
         primary_config = _build_kafka_config(group_id)
         secondary_config = _build_kafka_config(group_id)
-        primary_poller, primary_engine = _build_process_runtime(
+        primary_poller, primary_engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=primary_config,
             worker_fn=primary_worker,
             max_in_flight=1,
         )
-        secondary_poller, secondary_engine = _build_process_runtime(
+        secondary_poller, secondary_engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=secondary_config,
             worker_fn=secondary_worker,
@@ -464,7 +750,7 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight() -> N
 
             blocked_commit = _fetch_committed_offset(group_id, topic, partition)
             assert blocked_commit in (-1001, 0), (
-                "commit advanced before the blocked process-mode work completed: "
+                "commit advanced before the blocked recovery work completed: "
                 f"offset={blocked_commit}"
             )
 
@@ -627,10 +913,18 @@ async def test_process_graceful_stop_drains_inflight_before_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_restart_preserves_offset_continuity() -> None:
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_process_restart_preserves_offset_continuity(
+    execution_mode: ExecutionMode,
+) -> None:
     _require_kafka()
-    topic = _topic_name("process-recovery-restart")
-    group_id = _topic_name("process-recovery-group")
+    mode_label = execution_mode.value
+    topic = _topic_name(f"{mode_label}-recovery-restart")
+    group_id = _topic_name(f"{mode_label}-recovery-group")
     admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
     partition = 0
     produced_count = 6
@@ -645,10 +939,16 @@ async def test_process_restart_preserves_offset_continuity() -> None:
     with Manager() as manager:
         shared_results = manager.list()
 
-        first_worker = _RecordingWorker(
+        recording_worker_cls = (
+            _AsyncRecordingWorker
+            if execution_mode == ExecutionMode.ASYNC
+            else _RecordingWorker
+        )
+
+        first_worker = recording_worker_cls(
             shared_results=shared_results, label="first", sleep_ms=10.0
         )
-        second_worker = _RecordingWorker(
+        second_worker = recording_worker_cls(
             shared_results=shared_results, label="second", sleep_ms=10.0
         )
 
@@ -657,13 +957,15 @@ async def test_process_restart_preserves_offset_continuity() -> None:
         # Keep the first runtime from buffering the whole partition before restart.
         first_config.parallel_consumer.poll_batch_size = 1
         second_config.parallel_consumer.poll_batch_size = 1
-        first_poller, first_engine = _build_process_runtime(
+        first_poller, first_engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=first_config,
             worker_fn=first_worker,
             max_in_flight=1,
         )
-        second_poller, second_engine = _build_process_runtime(
+        second_poller, second_engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=second_config,
             worker_fn=second_worker,
@@ -778,10 +1080,18 @@ async def test_process_restart_preserves_offset_continuity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_retry_path_commits_only_after_success() -> None:
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_process_retry_path_commits_only_after_success(
+    execution_mode: ExecutionMode,
+) -> None:
     _require_kafka()
-    topic = _topic_name("process-recovery-retry")
-    group_id = _topic_name("process-recovery-group")
+    mode_label = execution_mode.value
+    topic = _topic_name(f"{mode_label}-recovery-retry")
+    group_id = _topic_name(f"{mode_label}-recovery-group")
     admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
     partition = 0
     produced_count = 3
@@ -801,7 +1111,13 @@ async def test_process_retry_path_commits_only_after_success() -> None:
         success_started_event = manager.Event()
         success_release_event = manager.Event()
 
-        worker = _RetryThenSucceedWorker(
+        retry_worker_cls = (
+            _AsyncRetryThenSucceedWorker
+            if execution_mode == ExecutionMode.ASYNC
+            else _RetryThenSucceedWorker
+        )
+
+        worker = retry_worker_cls(
             shared_results=shared_results,
             attempt_counts=attempt_counts,
             label="retry",
@@ -812,7 +1128,8 @@ async def test_process_retry_path_commits_only_after_success() -> None:
             success_release_event=success_release_event,
         )
         kafka_config = _build_kafka_config(group_id)
-        poller, engine = _build_process_runtime(
+        poller, engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=kafka_config,
             worker_fn=worker,
@@ -885,10 +1202,18 @@ async def test_process_retry_path_commits_only_after_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.ASYNC, ExecutionMode.PROCESS],
+    ids=["async", "process"],
+)
+async def test_process_dlq_path_commits_after_retry_exhaustion(
+    execution_mode: ExecutionMode,
+) -> None:
     _require_kafka()
-    topic = _topic_name("process-recovery-dlq")
-    group_id = _topic_name("process-recovery-group")
+    mode_label = execution_mode.value
+    topic = _topic_name(f"{mode_label}-recovery-dlq")
+    group_id = _topic_name(f"{mode_label}-recovery-group")
     admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
     partition = 0
     produced_count = 3
@@ -906,7 +1231,13 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
         shared_results = manager.list()
         attempt_counts = manager.dict()
 
-        worker = _AlwaysFailWorker(
+        always_fail_worker_cls = (
+            _AsyncAlwaysFailWorker
+            if execution_mode == ExecutionMode.ASYNC
+            else _AlwaysFailWorker
+        )
+
+        worker = always_fail_worker_cls(
             shared_results=shared_results,
             attempt_counts=attempt_counts,
             label="dlq",
@@ -915,7 +1246,8 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
         )
         kafka_config = _build_kafka_config(group_id)
         max_retries = kafka_config.parallel_consumer.execution.max_retries
-        poller, engine = _build_process_runtime(
+        poller, engine = _build_recovery_runtime(
+            execution_mode=execution_mode,
             topic=topic,
             kafka_config=kafka_config,
             worker_fn=worker,
