@@ -1054,3 +1054,13 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - TDD(red): added `test_graceful_shutdown_drain_throttles_persistent_pending_dlq` after PR #85 review showed graceful shutdown could retry pending DLQ every 10ms. Initial focused run showed sleep used `0.01` instead of the monitor idle timeout.
 - TDD(red): added `test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_success` after review showed a duplicate fresh completion in the same drain batch could re-add pending DLQ after an earlier pending retry succeeded. Initial focused run re-added the duplicate failure to the ledger.
 - Green: shutdown drain now uses `_idle_consume_timeout_seconds` while pending DLQ remains, and `BrokerCompletionSupport` ignores fresh duplicate completions for pending keys already resolved earlier in the same processing batch. Verification: DLQ focused suite -> 32 passed; ruff on changed files -> pass.
+
+### 5.40 Issue #71 pending DLQ consumer poll cadence review fix (2026-04-22)
+
+- TDD(red): renamed/updated the consumer-loop pending DLQ regression to require a zero-timeout `consumer.consume(num_messages=1, timeout=0)` poll while pending DLQ retries are prioritized, so Kafka client poll cadence is maintained during prolonged DLQ outages. Initial focused run failed because the pending-DLQ path did not call `consume` at all.
+- Green: `_run_consumer()` now performs a zero-timeout poll after pending DLQ retry/commit work and before the idle retry sleep. This services Kafka consumer poll cadence without fetching/dispatching new work. Verification: DLQ focused suite -> 32 passed; ruff on changed files -> pass.
+
+### 5.41 Issue #71 pending DLQ Kafka poll cadence review fix (2026-04-22)
+
+- TDD(red): added `test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending_dlq_exists` after PR #85 review warned that ignoring zero-timeout consume results could drop buffered Kafka records. Initial focused run failed because returned messages were not dispatched.
+- Green: pending-DLQ consumer loop now performs a zero-timeout poll to service Kafka cadence and dispatches/schedules any returned buffered messages through the normal dispatch path before sleeping. Verification: DLQ focused suite -> 33 passed; ruff on changed files -> pass.

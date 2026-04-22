@@ -489,6 +489,17 @@ class BrokerPoller:
                         drained_completion = await self._drain_completion_events_once()
                     if drained_completion:
                         await self._commit_ready_offsets()
+                    cadence_messages: List[Message] = await asyncio.to_thread(
+                        self.consumer.consume,
+                        num_messages=1,
+                        timeout=0,
+                    )
+                    if cadence_messages:
+                        async with self._control_lock:
+                            await self._make_dispatch_support().dispatch_messages(
+                                cadence_messages
+                            )
+                            await self._work_manager.schedule()
                     await asyncio.sleep(self._idle_consume_timeout_seconds)
                     continue
 
