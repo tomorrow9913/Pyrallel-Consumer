@@ -1,6 +1,6 @@
 # Pyrallel Consumer - 개발 현황 및 인수인계 문서
 
-*최종 업데이트: 2026년 4월 21일 화요일*
+*최종 업데이트: 2026년 4월 22일 수요일*
 
 ## 최근 업데이트 (2026-04-22)
 - Issue #74 release preflight 최종 커밋 전 검증 (2026-04-22 KST): 커밋 전 scoped quality gate를 재실행했습니다. 검증은 `UV_CACHE_DIR=.uv-cache uv run ruff check scripts/release_policy.py tests/unit/test_release_policy.py` -> clean, `UV_CACHE_DIR=.uv-cache uv run mypy pyrallel_consumer` -> success, `UV_CACHE_DIR=.uv-cache uv run pytest tests/unit/test_release_policy.py -q` -> `43 passed`, `UV_CACHE_DIR=.uv-cache uv run python scripts/release_policy.py release-preflight --ref-name main --ref-type branch` -> `OK: 1.0.0`, `UV_CACHE_DIR=.uv-cache uv run python scripts/release_policy.py resolve-artifacts` -> expected sdist/wheel paths, `UV_CACHE_DIR=.uv-cache uv run twine check dist/pyrallel_consumer-1.0.0.tar.gz dist/pyrallel_consumer-1.0.0-py3-none-any.whl` -> both `PASSED`, `git diff --check` -> clean입니다.

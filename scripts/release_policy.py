@@ -24,7 +24,7 @@ class PolicyError(ValueError):
 
 
 def load_project_metadata(pyproject_path: str) -> tuple[str, str]:
-    data = tomllib.loads(Path(pyproject_path).read_text())
+    data = tomllib.loads(Path(pyproject_path).read_text(encoding="utf-8"))
     project = data.get("project")
     if not isinstance(project, dict):
         raise PolicyError(f"missing [project] metadata: {pyproject_path}")
