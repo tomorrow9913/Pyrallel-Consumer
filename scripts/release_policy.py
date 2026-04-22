@@ -16,6 +16,7 @@ _LINE_VERSION_RE = re.compile(
     r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(?P<label>a|b|rc)(?P<num>\d+)$"
 )
 _STABLE_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
+_CHANGELOG_HEADING_RE = re.compile(r"^## \[([^\]]+)\]", flags=re.MULTILINE)
 
 
 class PolicyError(ValueError):
@@ -155,6 +156,51 @@ def validate_tag_version(tag: str, version: str) -> bool:
     return tag == f"v{version}"
 
 
+def latest_concrete_changelog_heading(changelog_text: str) -> str:
+    headings = _CHANGELOG_HEADING_RE.findall(changelog_text)
+    concrete = [heading for heading in headings if heading.lower() != "unreleased"]
+    if not concrete:
+        raise PolicyError("CHANGELOG.md must contain a concrete release heading")
+    return concrete[0]
+
+
+def validate_changelog_version(changelog_text: str, version: str) -> bool:
+    return latest_concrete_changelog_heading(changelog_text) == version
+
+
+def validate_release_preflight(
+    project_file: str,
+    changelog_file: str,
+    *,
+    ref_name: str,
+    ref_type: str,
+) -> str:
+    _, version = load_project_metadata(project_file)
+    changelog_text = Path(changelog_file).read_text(encoding="utf-8")
+    latest_heading = latest_concrete_changelog_heading(changelog_text)
+    if latest_heading != version:
+        raise PolicyError(
+            "CHANGELOG latest heading %r != pyproject version %r"
+            % (latest_heading, version)
+        )
+
+    if ref_type == "tag":
+        if not validate_tag_version(ref_name, version):
+            raise PolicyError(
+                "Tag/version policy mismatch: tag=%r version=%r" % (ref_name, version)
+            )
+    elif ref_type == "branch":
+        if not validate_branch_version(ref_name, version):
+            raise PolicyError(
+                "Branch/version policy mismatch: branch=%r version=%r"
+                % (ref_name, version)
+            )
+    else:
+        raise PolicyError(f"unsupported ref type: {ref_type}")
+
+    return version
+
+
 def validate_pull_request_flow(base_branch: str, head_branch: str) -> bool:
     """Validate git-flow pull-request routing.
 
@@ -221,6 +267,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tag_parser.add_argument("--tag", required=True)
     tag_parser.add_argument("--version", required=True)
 
+    preflight_parser = subparsers.add_parser("release-preflight")
+    preflight_parser.add_argument("--project-file", default="pyproject.toml")
+    preflight_parser.add_argument("--changelog-file", default="CHANGELOG.md")
+    preflight_parser.add_argument("--ref-name", required=True)
+    preflight_parser.add_argument(
+        "--ref-type", required=True, choices=["branch", "tag"]
+    )
+
     artifacts_parser = subparsers.add_parser("resolve-artifacts")
     artifacts_parser.add_argument("--dist-dir", default="dist")
     artifacts_parser.add_argument("--project-file", default="pyproject.toml")
@@ -257,6 +311,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             print("INVALID")
             return 1
+        if args.command == "release-preflight":
+            version = validate_release_preflight(
+                args.project_file,
+                args.changelog_file,
+                ref_name=args.ref_name,
+                ref_type=args.ref_type,
+            )
+            print("OK: %s" % version)
+            return 0
 
         project_name, version = load_project_metadata(args.project_file)
         sdist_path, wheel_path = resolve_release_artifacts(

@@ -100,44 +100,9 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
-          uv run python - <<'PY'
-          import re
-          import tomllib
-          from pathlib import Path
-
-          from scripts.release_policy import (
-              validate_branch_version,
-              validate_tag_version,
-          )
-
-          ref_name = "${{ github.ref_name }}"
-          ref_type = "${{ github.ref_type }}"
-          version = tomllib.loads(Path("pyproject.toml").read_text())["project"][
-              "version"
-          ]
-          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-          headings = re.findall(r"^## \\[([^\\]]+)\\]", changelog, flags=re.MULTILINE)
-          concrete = [heading for heading in headings if heading.lower() != "unreleased"]
-          if not concrete:
-              raise SystemExit("CHANGELOG.md must contain a concrete release heading")
-          if concrete[0] != version:
-              raise SystemExit(
-                  "CHANGELOG latest heading %r != pyproject version %r"
-                  % (concrete[0], version)
-              )
-
-          if ref_type == "tag":
-              if not validate_tag_version(ref_name, version):
-                  raise SystemExit(
-                      "Tag/version policy mismatch: tag=%r version=%r"
-                      % (ref_name, version)
-                  )
-          elif not validate_branch_version(ref_name, version):
-              raise SystemExit(
-                  "Branch/version policy mismatch: branch=%r version=%r"
-                  % (ref_name, version)
-              )
-          PY
+          uv run python scripts/release_policy.py release-preflight \
+            --ref-name "$REF_NAME" \
+            --ref-type "$REF_TYPE"
           uv run python scripts/release_policy.py resolve-artifacts --write-github-output
       - name: Smoke install/import from built wheel
         run: |

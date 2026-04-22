@@ -52,6 +52,35 @@ def test_validate_tag_version_exact_match() -> None:
     assert release_policy.validate_tag_version("v0.3.0-rc.1", "0.3.0rc1") is False
 
 
+def test_latest_concrete_changelog_heading_skips_unreleased() -> None:
+    changelog = "\n".join(
+        [
+            "# Changelog",
+            "",
+            "## [Unreleased]",
+            "",
+            "## [1.2.3] - 2026-04-22",
+            "",
+        ]
+    )
+
+    assert release_policy.latest_concrete_changelog_heading(changelog) == "1.2.3"
+
+
+def test_latest_concrete_changelog_heading_requires_release_heading() -> None:
+    with pytest.raises(release_policy.PolicyError, match="concrete release heading"):
+        release_policy.latest_concrete_changelog_heading(
+            "# Changelog\n\n## [Unreleased]\n"
+        )
+
+
+def test_validate_changelog_version_matches_latest_concrete_heading() -> None:
+    changelog = "# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2026-04-22\n"
+
+    assert release_policy.validate_changelog_version(changelog, "1.2.3") is True
+    assert release_policy.validate_changelog_version(changelog, "1.2.4") is False
+
+
 @pytest.mark.parametrize(
     ("base_branch", "head_branch", "expected"),
     [
@@ -108,6 +137,123 @@ def test_resolve_release_artifacts_rejects_stale_dist_files(tmp_path: Path) -> N
         release_policy.resolve_release_artifacts(
             str(dist_dir), "pyrallel-consumer", "0.3.0rc1"
         )
+
+
+def _write_release_inputs(
+    tmp_path: Path,
+    *,
+    version: str = "1.2.3",
+    changelog_heading: str = "1.2.3",
+) -> tuple[Path, Path]:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "pyrallel-consumer"',
+                f'version = "{version}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "\n".join(
+            [
+                "# Changelog",
+                "",
+                "## [Unreleased]",
+                "",
+                "## [%s] - 2026-04-22" % changelog_heading,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return pyproject, changelog
+
+
+def test_release_preflight_accepts_matching_branch_tag_version_changelog(
+    tmp_path: Path,
+) -> None:
+    pyproject, changelog = _write_release_inputs(tmp_path, version="1.2.3")
+
+    assert (
+        release_policy.validate_release_preflight(
+            str(pyproject), str(changelog), ref_name="main", ref_type="branch"
+        )
+        == "1.2.3"
+    )
+    assert (
+        release_policy.validate_release_preflight(
+            str(pyproject), str(changelog), ref_name="v1.2.3", ref_type="tag"
+        )
+        == "1.2.3"
+    )
+
+
+def test_release_preflight_rejects_stale_changelog_latest_heading(
+    tmp_path: Path,
+) -> None:
+    pyproject, changelog = _write_release_inputs(
+        tmp_path, version="1.2.3", changelog_heading="1.2.2"
+    )
+
+    with pytest.raises(release_policy.PolicyError, match="CHANGELOG latest heading"):
+        release_policy.validate_release_preflight(
+            str(pyproject), str(changelog), ref_name="main", ref_type="branch"
+        )
+
+
+def test_release_preflight_rejects_tag_version_mismatch(tmp_path: Path) -> None:
+    pyproject, changelog = _write_release_inputs(tmp_path, version="1.2.3")
+
+    with pytest.raises(release_policy.PolicyError, match="Tag/version policy mismatch"):
+        release_policy.validate_release_preflight(
+            str(pyproject), str(changelog), ref_name="v1.2.2", ref_type="tag"
+        )
+
+
+def test_release_preflight_rejects_branch_version_mismatch(tmp_path: Path) -> None:
+    pyproject, changelog = _write_release_inputs(tmp_path, version="1.2.3")
+
+    with pytest.raises(
+        release_policy.PolicyError, match="Branch/version policy mismatch"
+    ):
+        release_policy.validate_release_preflight(
+            str(pyproject), str(changelog), ref_name="develop", ref_type="branch"
+        )
+
+
+def test_release_preflight_cli_returns_non_zero_for_changelog_mismatch(
+    tmp_path: Path,
+) -> None:
+    pyproject, changelog = _write_release_inputs(
+        tmp_path, version="1.2.3", changelog_heading="1.2.2"
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "release_policy.py"),
+            "release-preflight",
+            "--project-file",
+            str(pyproject),
+            "--changelog-file",
+            str(changelog),
+            "--ref-name",
+            "main",
+            "--ref-type",
+            "branch",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "CHANGELOG latest heading" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -282,12 +428,24 @@ def test_publish_workflow_validates_branch_and_tag_refs_separately() -> None:
     assert "if: ${{ github.ref_type == 'tag' }}" in text
 
 
+def test_publish_workflow_handoff_uses_only_uploaded_artifacts() -> None:
+    text = PUBLISH_WORKFLOW.read_text()
+    publish_job = text.split("\n  publish:", maxsplit=1)[1]
+
+    assert "needs: build" in publish_job
+    assert "actions/download-artifact@v4" in publish_job
+    assert "name: python-package-distributions" in publish_job
+    assert "path: dist/" in publish_job
+    assert "pypa/gh-action-pypi-publish@release/v1" in publish_job
+    assert "actions/checkout" not in publish_job
+    assert "uv build" not in publish_job
+    assert "password:" not in publish_job
+
+
 def test_release_verify_runs_policy_preflight_and_smoke_install() -> None:
     text = RELEASE_VERIFY_WORKFLOW.read_text()
 
-    assert "scripts.release_policy" in text
-    assert "validate_branch_version" in text
-    assert "validate_tag_version" in text
+    assert "scripts/release_policy.py release-preflight" in text
     assert "resolve-artifacts --write-github-output" in text
     assert "Smoke install/import from built wheel" in text
     assert "pip install dist/pyrallel_consumer-*.whl" in text
