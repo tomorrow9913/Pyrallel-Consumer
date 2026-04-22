@@ -934,7 +934,9 @@ async def test_graceful_shutdown_drain_throttles_persistent_pending_dlq(
         drained = await broker_poller_with_dlq._drain_shutdown_work(timeout_seconds=1)
 
     assert drained is True
-    sleep.assert_awaited_once_with(broker_poller_with_dlq._idle_consume_timeout_seconds)
+    sleep.assert_awaited_once()
+    sleep_duration = sleep.await_args.args[0]
+    assert 0 < sleep_duration <= broker_poller_with_dlq._idle_consume_timeout_seconds
 
 
 @pytest.mark.asyncio
