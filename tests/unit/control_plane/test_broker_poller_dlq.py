@@ -1145,6 +1145,60 @@ async def test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending
 
 
 @pytest.mark.asyncio
+async def test_consumer_loop_dispatches_buffered_cadence_messages_after_backpressure_check(
+    broker_poller_with_dlq,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    pending_event = CompletionEvent(
+        id="pending-work-id",
+        tp=tp,
+        offset=100,
+        epoch=1,
+        status=CompletionStatus.FAILURE,
+        error="Test error",
+        attempt=3,
+    )
+    message = MagicMock()
+    message.error.return_value = None
+    message.topic.return_value = tp.topic
+    message.partition.return_value = tp.partition
+    message.offset.return_value = 101
+    message.key.return_value = b"key"
+    message.value.return_value = b"value"
+
+    dispatch_support = MagicMock()
+    dispatch_support.dispatch_messages = AsyncMock()
+    broker_poller_with_dlq._make_dispatch_support = MagicMock(
+        return_value=dispatch_support
+    )
+    broker_poller_with_dlq._pending_dlq_events = OrderedDict({(tp, 100): pending_event})
+    broker_poller_with_dlq._running = True
+    broker_poller_with_dlq._work_manager.schedule = AsyncMock()
+    broker_poller_with_dlq._drain_completion_events_once = AsyncMock()
+    broker_poller_with_dlq._commit_ready_offsets = AsyncMock()
+    broker_poller_with_dlq._check_backpressure = AsyncMock()
+    broker_poller_with_dlq.consumer.consume = MagicMock(return_value=[message])
+
+    async def pause_and_stop_after_check():
+        broker_poller_with_dlq._is_paused = True
+        broker_poller_with_dlq._running = False
+
+    broker_poller_with_dlq._check_backpressure.side_effect = pause_and_stop_after_check
+    broker_poller_with_dlq._drain_completion_events_once.return_value = True
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await broker_poller_with_dlq._run_consumer()
+
+    broker_poller_with_dlq._check_backpressure.assert_awaited_once()
+    broker_poller_with_dlq.consumer.consume.assert_called_once_with(
+        num_messages=1,
+        timeout=0,
+    )
+    dispatch_support.dispatch_messages.assert_awaited_once_with([message])
+    broker_poller_with_dlq._work_manager.schedule.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_completed_events_falls_back_to_metadata_only_when_cache_missing(
     broker_poller_with_dlq,
 ):

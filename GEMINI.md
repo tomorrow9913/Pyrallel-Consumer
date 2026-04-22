@@ -1064,3 +1064,13 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 
 - TDD(red): added `test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending_dlq_exists` after PR #85 review warned that ignoring zero-timeout consume results could drop buffered Kafka records. Initial focused run failed because returned messages were not dispatched.
 - Green: pending-DLQ consumer loop now performs a zero-timeout poll to service Kafka cadence and dispatches/schedules any returned buffered messages through the normal dispatch path before sleeping. Verification: DLQ focused suite -> 33 passed; ruff on changed files -> pass.
+
+### 5.42 Issue #71 pending DLQ cadence backpressure review fix (2026-04-22)
+
+- TDD(red): added `test_consumer_loop_applies_backpressure_before_cadence_dispatch` after PR #85 review showed cadence-poll messages could be dispatched while pending-DLQ path bypassed backpressure. Initial focused run hung because `_check_backpressure()` was never called to pause/stop the test loop.
+- Green: pending-DLQ consumer path now runs `_check_backpressure()` before zero-timeout cadence poll dispatch and dispatches returned messages only when not paused. Verification: pending-DLQ consumer loop focused tests -> 3 passed.
+
+### 5.43 Issue #71 cadence poll buffered message handling review fix (2026-04-22)
+
+- Architect review found that the paused cadence-poll path could still drop returned `consumer.consume(timeout=0)` records if dispatch was skipped while paused. The pending-DLQ path now still runs `_check_backpressure()` before cadence polling, but any returned buffered records are dispatched/scheduled through the normal path instead of being discarded.
+- Test updated to `test_consumer_loop_dispatches_buffered_cadence_messages_after_backpressure_check`, proving backpressure check occurs first and returned cadence records are dispatched even when the check sets paused. Verification: DLQ focused suite -> 34 passed; ruff on changed files -> pass.
