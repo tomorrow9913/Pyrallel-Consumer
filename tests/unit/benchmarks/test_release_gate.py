@@ -277,6 +277,11 @@ def test_benchmark_workflow_exposes_release_gate_evaluator_job() -> None:
     text = BENCHMARK_WORKFLOW.read_text(encoding="utf-8")
 
     assert "release_gate_artifacts" in text
+    assert "release_gate_artifact_run_id" in text
+    assert "actions: read" in text
+    assert "actions/download-artifact@v4" in text
+    assert "run-id: ${{ inputs.release_gate_artifact_run_id }}" in text
+    assert "merge-multiple: true" in text
     assert "benchmarks.release_gate" in text
     assert "--benchmark-json" in text
     assert "Upload release performance gate verdict" in text

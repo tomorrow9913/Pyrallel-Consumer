@@ -111,7 +111,9 @@ Release-candidate performance decisions are based on the fixed thresholds in
 from JSON artifacts rather than from console output.
 
 1. Generate at least two standard release-gate benchmark JSON artifacts with
-   profiling disabled and `--strict-completion-monitor on`.
+   profiling disabled and `--strict-completion-monitor on`, then either keep them
+   as runner-local paths for manual dispatch or upload them as GitHub Actions
+   artifacts and provide the source workflow run id plus artifact pattern.
 2. Run the benchmark gate evaluator configured by the release-candidate
    workflow against those JSON artifacts.
 3. Attach the evaluator's machine-readable `PASS` / `NO-GO` verdict, reasons,

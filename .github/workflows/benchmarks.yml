@@ -14,12 +14,22 @@ on:
   workflow_dispatch:
     inputs:
       release_gate_artifacts:
-        description: "Newline-separated runner-local benchmark JSON paths to evaluate for release GO/NO-GO."
+        description: "Newline-separated runner-local benchmark JSON paths, or pass a workflow run id plus artifact pattern to download benchmark JSON artifacts before evaluating release GO/NO-GO."
         required: false
+        type: string
+      release_gate_artifact_run_id:
+        description: "Optional workflow run id containing uploaded benchmark JSON artifacts to download first."
+        required: false
+        type: string
+      release_gate_artifact_pattern:
+        description: "Artifact name pattern to download from release_gate_artifact_run_id."
+        required: false
+        default: "release-gate-*"
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   benchmark-tests:
@@ -41,7 +51,7 @@ jobs:
           uv run pytest tests/unit/benchmarks -q
 
   release-candidate-gate:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_gate_artifacts != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.release_gate_artifacts != '' || inputs.release_gate_artifact_run_id != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -55,12 +65,22 @@ jobs:
       - name: Sync benchmark dependencies
         run: |
           uv sync --frozen --group dev
+      - name: Download release benchmark artifacts
+        if: ${{ inputs.release_gate_artifact_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.release_gate_artifact_run_id }}
+          pattern: ${{ inputs.release_gate_artifact_pattern }}
+          github-token: ${{ github.token }}
+          path: .artifacts/release-gate-inputs
+          merge-multiple: true
       - name: Evaluate release benchmark gates
         env:
           RELEASE_GATE_ARTIFACTS: ${{ inputs.release_gate_artifacts }}
         run: |
           mkdir -p .artifacts
           uv run python - <<'PY' | tee .artifacts/release-performance-gate.json
+          import glob
           import os
           import subprocess
 
@@ -69,8 +89,9 @@ jobs:
               for line in os.environ["RELEASE_GATE_ARTIFACTS"].splitlines()
               if line.strip()
           ]
+          artifacts.extend(sorted(glob.glob(".artifacts/release-gate-inputs/**/*.json", recursive=True)))
           if not artifacts:
-              raise SystemExit("release_gate_artifacts is required")
+              raise SystemExit("release_gate_artifacts or release_gate_artifact_run_id is required")
           command = ["uv", "run", "python", "-m", "benchmarks.release_gate"]
           for artifact in artifacts:
               command.extend(["--benchmark-json", artifact])
