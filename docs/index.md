@@ -28,6 +28,7 @@ This group includes:
 - **[operations/wave-2-gate-cadence.md](./operations/wave-2-gate-cadence.md)** - wave-2 resume gate/cadence rules after MQU-4
 - **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness checklist
 - **[operations/support-policy.md](./operations/support-policy.md)** - Python/Kafka support scope and compatibility policy
+- **[operations/secure-kafka-config.md](./operations/secure-kafka-config.md)** - TLS/SASL Kafka client configuration and secret-handling guide
 - **[operations/upgrade-rollback-guide.md](./operations/upgrade-rollback-guide.md)** - upgrade/rollback operations guide
 - **[operations/github-actions-act-local-review.md](./operations/github-actions-act-local-review.md)** - local `act` workflow review guide
 

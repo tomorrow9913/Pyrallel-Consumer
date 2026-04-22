@@ -950,7 +950,7 @@ class BrokerPoller:
             )
             admin_conf = cast(
                 dict[str, str | int | float | bool],
-                {"bootstrap.servers": self._kafka_config.BOOTSTRAP_SERVERS[0]},
+                self._kafka_config.get_admin_config(),
             )
             consumer_conf = cast(
                 dict[str, str | int | float | bool | None],

@@ -20,6 +20,7 @@ The scope of this document matches the P0-B items locked in [MQU-27](/MQU/issues
 | Rebalance state strategy (`ParallelConsumerConfig.rebalance_state_strategy`) | `contiguous_only` | `contiguous_only`, `metadata_snapshot` | The fail-closed guarantee of `contiguous_only` must be preserved |
 | DLQ payload mode (`KafkaConfig.dlq_payload_mode`) | `full` | `full`, `metadata_only` | Changing the default is breaking; `metadata_only` must remain opt-in |
 | Offset commit model (`KafkaConfig.enable_auto_commit`) | `False` | `False` (operations default) | Enabling auto-commit by default is breaking |
+| Secure Kafka connection fields (`KafkaConfig.security_protocol`, `sasl_mechanisms`, `sasl_username`, `sasl_password`, `ssl_ca_location`, `ssl_certificate_location`, `ssl_key_location`, `ssl_key_password`) | unset | optional allowlisted librdkafka TLS/SASL keys only | Adding optional allowlisted keys is minor; generic passthrough or logging/snapshotting secrets is not allowed |
 | Commit public surface | completion-driven (`on_complete`) only | no explicit public knob for periodic commit | Adding a periodic commit option to facade/config changes the contract |
 | Runtime diagnostics facade (`PyrallelConsumer.get_runtime_snapshot()`) | read-only structured snapshot | queue summary, retry policy, DLQ status, per-partition assignment/runtime state | Additive read-only fields are backward-compatible; renaming/removing existing snapshot fields is breaking once documented |
 
@@ -27,6 +28,7 @@ Operational rules:
 
 - Failed messages are committed only after successful DLQ publish (preserve the existing at-least-once boundary).
 - `metadata_snapshot` is an optional recovery optimization and must safely degrade to `contiguous_only` semantics on failure.
+- Secure Kafka config values must be forwarded through the supported Kafka client builders without exposing secrets through logs, metrics labels, runtime snapshots, or support artifacts.
 - `shutdown_policy=graceful` must stop new fetches first, then perform a bounded drain of queued/in-flight work before the forced-abort engine shutdown path takes over.
 
 ### Runtime diagnostics field boundary

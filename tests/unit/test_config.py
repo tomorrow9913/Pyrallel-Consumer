@@ -302,6 +302,87 @@ def test_kafka_config_preserves_list_bootstrap_servers_after_assignment() -> Non
     )
 
 
+def test_kafka_config_includes_allowlisted_security_fields_in_client_configs() -> None:
+    config = KafkaConfig(
+        _env_file=None,
+        bootstrap_servers=["secure-1:9093", "secure-2:9093"],
+        consumer_group="secure-group",
+        security_protocol="SASL_SSL",
+        sasl_mechanisms="SCRAM-SHA-512",
+        sasl_username="pyrallel-user",
+        sasl_password="super-secret",
+        ssl_ca_location="/etc/kafka/ca.pem",
+        ssl_certificate_location="/etc/kafka/client.pem",
+        ssl_key_location="/etc/kafka/client.key",
+        ssl_key_password="key-secret",
+    )
+
+    expected_security_config = {
+        "bootstrap.servers": "secure-1:9093,secure-2:9093",
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanisms": "SCRAM-SHA-512",
+        "sasl.username": "pyrallel-user",
+        "sasl.password": "super-secret",
+        "ssl.ca.location": "/etc/kafka/ca.pem",
+        "ssl.certificate.location": "/etc/kafka/client.pem",
+        "ssl.key.location": "/etc/kafka/client.key",
+        "ssl.key.password": "key-secret",
+    }
+
+    producer_config = config.get_producer_config()
+    consumer_config = config.get_consumer_config()
+    admin_config = config.get_admin_config()
+
+    for key, value in expected_security_config.items():
+        assert producer_config[key] == value
+        assert consumer_config[key] == value
+        assert admin_config[key] == value
+    assert consumer_config["group.id"] == "secure-group"
+
+
+def test_kafka_config_masks_secret_security_fields_in_snapshots() -> None:
+    config = KafkaConfig(
+        _env_file=None,
+        security_protocol="SASL_SSL",
+        sasl_username="pyrallel-user",
+        sasl_password="super-secret",
+        ssl_key_password="key-secret",
+    )
+
+    dumped_json = config.model_dump_json()
+    rdkafka_snapshot = repr(config.dump_to_rdkafka())
+
+    assert "super-secret" not in dumped_json
+    assert "key-secret" not in dumped_json
+    assert "super-secret" not in rdkafka_snapshot
+    assert "key-secret" not in rdkafka_snapshot
+
+
+def test_kafka_config_omits_blank_security_fields_from_client_configs() -> None:
+    config = KafkaConfig(
+        _env_file=None,
+        security_protocol="",
+        sasl_mechanisms="  ",
+        sasl_username="",
+        sasl_password="",
+        ssl_ca_location="",
+        ssl_certificate_location="",
+        ssl_key_location="",
+        ssl_key_password="",
+    )
+
+    producer_config = config.get_producer_config()
+
+    assert "security.protocol" not in producer_config
+    assert "sasl.mechanisms" not in producer_config
+    assert "sasl.username" not in producer_config
+    assert "sasl.password" not in producer_config
+    assert "ssl.ca.location" not in producer_config
+    assert "ssl.certificate.location" not in producer_config
+    assert "ssl.key.location" not in producer_config
+    assert "ssl.key.password" not in producer_config
+
+
 def test_kafka_config_keeps_legacy_uppercase_aliases() -> None:
     config = KafkaConfig(
         _env_file=None,
@@ -367,3 +448,38 @@ def test_kafka_config_env_vars_populate_canonical_snake_case_fields(
     monkeypatch.delenv("KAFKA_AUTO_OFFSET_RESET", raising=False)
     monkeypatch.delenv("KAFKA_ENABLE_AUTO_COMMIT", raising=False)
     monkeypatch.delenv("KAFKA_SESSION_TIMEOUT_MS", raising=False)
+
+
+def test_kafka_config_security_env_vars_populate_allowlisted_fields(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAFKA_SECURITY_PROTOCOL", "SASL_SSL")
+    monkeypatch.setenv("KAFKA_SASL_MECHANISMS", "SCRAM-SHA-512")
+    monkeypatch.setenv("KAFKA_SASL_USERNAME", "env-user")
+    monkeypatch.setenv("KAFKA_SASL_PASSWORD", "env-secret")
+    monkeypatch.setenv("KAFKA_SSL_CA_LOCATION", "/env-ca.pem")
+    monkeypatch.setenv("KAFKA_SSL_CERTIFICATE_LOCATION", "/env-cert.pem")
+    monkeypatch.setenv("KAFKA_SSL_KEY_LOCATION", "/env-key.pem")
+    monkeypatch.setenv("KAFKA_SSL_KEY_PASSWORD", "env-key-secret")
+
+    config = KafkaConfig(_env_file=None)
+
+    assert config.security_protocol == "SASL_SSL"
+    assert config.sasl_mechanisms == "SCRAM-SHA-512"
+    assert config.sasl_username == "env-user"
+    assert config.sasl_password is not None
+    assert config.sasl_password.get_secret_value() == "env-secret"
+    assert config.ssl_ca_location == "/env-ca.pem"
+    assert config.ssl_certificate_location == "/env-cert.pem"
+    assert config.ssl_key_location == "/env-key.pem"
+    assert config.ssl_key_password is not None
+    assert config.ssl_key_password.get_secret_value() == "env-key-secret"
+
+    monkeypatch.delenv("KAFKA_SECURITY_PROTOCOL", raising=False)
+    monkeypatch.delenv("KAFKA_SASL_MECHANISMS", raising=False)
+    monkeypatch.delenv("KAFKA_SASL_USERNAME", raising=False)
+    monkeypatch.delenv("KAFKA_SASL_PASSWORD", raising=False)
+    monkeypatch.delenv("KAFKA_SSL_CA_LOCATION", raising=False)
+    monkeypatch.delenv("KAFKA_SSL_CERTIFICATE_LOCATION", raising=False)
+    monkeypatch.delenv("KAFKA_SSL_KEY_LOCATION", raising=False)
+    monkeypatch.delenv("KAFKA_SSL_KEY_PASSWORD", raising=False)
