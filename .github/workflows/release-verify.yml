@@ -21,6 +21,7 @@ on:
       - ".github/workflows/e2e.yml"
       - "scripts/compatibility_matrix.py"
       - "scripts/release_policy.py"
+      - "benchmarks/release_gate.py"
   workflow_dispatch:
 
 permissions:

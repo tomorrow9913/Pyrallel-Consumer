@@ -104,6 +104,25 @@ For the release-review reference that ties the benchmark baseline policy to the
 current soak evidence package, see
 [`docs/operations/stable-operations-evidence.md`](../docs/operations/stable-operations-evidence.md).
 
+## Release gate evaluation
+
+Release-candidate performance decisions are based on the fixed thresholds in
+[`docs/operations/playbooks.md`](../docs/operations/playbooks.md), evaluated
+from JSON artifacts rather than from console output.
+
+1. Generate at least two standard release-gate benchmark JSON artifacts with
+   profiling disabled and `--strict-completion-monitor on`.
+2. Run the benchmark gate evaluator configured by the release-candidate
+   workflow against those JSON artifacts.
+3. Attach the evaluator's machine-readable `PASS` / `NO-GO` verdict, reasons,
+   and artifact paths to the release review.
+
+`NO-GO` is release-blocking for missing combinations, insufficient repetitions,
+incomplete message counts, TPS/p99 threshold misses, or represented lag/gap
+fail-fast evidence. Soak/restart evidence is tracked separately in
+[`docs/operations/soak-restart-evidence.md`](../docs/operations/soak-restart-evidence.md);
+a soak `PASS` does not convert a performance gate `NO-GO` into a release `GO`.
+
 
 ## Recent sample results (no profiling, 4 partitions, 2000 msgs, 100 keys)
 - Workload `sleep` (5ms): baseline 159.69 TPS; async 2206.35 TPS; process 910.04 TPS.

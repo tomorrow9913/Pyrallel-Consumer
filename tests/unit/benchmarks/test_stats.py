@@ -54,6 +54,45 @@ def test_benchmark_stats_summary_omits_windowed_tps_when_too_few_messages() -> N
     assert summary.tps_min_window is None
 
 
+def test_benchmark_stats_summary_includes_release_gate_lag_gap_evidence() -> None:
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+    )
+    stats.start()
+    stats.record(0.001, completed_at=1.0)
+    stats.record_release_gate_observation(
+        elapsed_sec=5.0,
+        consumer_parallel_lag=2,
+        consumer_gap_count=1,
+    )
+    stats.record_release_gate_observation(
+        elapsed_sec=10.0,
+        consumer_parallel_lag=0,
+        consumer_gap_count=0,
+    )
+
+    summary = stats.summary()
+
+    assert summary.final_lag == 0
+    assert summary.final_gap_count == 0
+    assert summary.metrics_observations == [
+        {
+            "elapsed_sec": 5.0,
+            "consumer_parallel_lag": 2,
+            "consumer_gap_count": 1,
+        },
+        {
+            "elapsed_sec": 10.0,
+            "consumer_parallel_lag": 0,
+            "consumer_gap_count": 0,
+        },
+    ]
+
+
 def test_write_results_json_includes_performance_improvement_analysis(tmp_path) -> None:
     output_path = tmp_path / "summary.json"
 
