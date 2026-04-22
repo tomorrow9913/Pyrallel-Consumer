@@ -75,9 +75,11 @@ jobs:
           path: .artifacts/release-gate-inputs
           merge-multiple: true
       - name: Evaluate release benchmark gates
+        shell: bash
         env:
           RELEASE_GATE_ARTIFACTS: ${{ inputs.release_gate_artifacts }}
         run: |
+          set -o pipefail
           mkdir -p .artifacts
           uv run python - <<'PY' | tee .artifacts/release-performance-gate.json
           import glob

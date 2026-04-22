@@ -284,5 +284,7 @@ def test_benchmark_workflow_exposes_release_gate_evaluator_job() -> None:
     assert "merge-multiple: true" in text
     assert "benchmarks.release_gate" in text
     assert "--benchmark-json" in text
+    assert "shell: bash" in text
+    assert "set -o pipefail" in text
     assert "Upload release performance gate verdict" in text
     assert "release-performance-gate-${{ github.run_id }}" in text
