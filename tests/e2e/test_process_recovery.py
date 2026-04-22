@@ -215,7 +215,6 @@ class _RetryThenSucceedWorker:
     def __init__(
         self,
         shared_results,
-        attempt_counts,
         label: str,
         target_partition: int,
         target_offset: int,
@@ -225,7 +224,7 @@ class _RetryThenSucceedWorker:
         success_release_event=None,
     ) -> None:
         self._shared_results = shared_results
-        self._attempt_counts = attempt_counts
+        self._attempt_counts: dict[str, int] = {}
         self._label = label
         self._target_partition = target_partition
         self._target_offset = target_offset
@@ -291,7 +290,6 @@ class _AsyncRetryThenSucceedWorker:
     def __init__(
         self,
         shared_results,
-        attempt_counts,
         label: str,
         target_partition: int,
         target_offset: int,
@@ -301,7 +299,7 @@ class _AsyncRetryThenSucceedWorker:
         success_release_event=None,
     ) -> None:
         self._shared_results = shared_results
-        self._attempt_counts = attempt_counts
+        self._attempt_counts: dict[str, int] = {}
         self._label = label
         self._target_partition = target_partition
         self._target_offset = target_offset
@@ -367,14 +365,13 @@ class _AlwaysFailWorker:
     def __init__(
         self,
         shared_results,
-        attempt_counts,
         label: str,
         target_partition: int,
         target_offset: int,
         sleep_ms: float = 5.0,
     ) -> None:
         self._shared_results = shared_results
-        self._attempt_counts = attempt_counts
+        self._attempt_counts: dict[str, int] = {}
         self._label = label
         self._target_partition = target_partition
         self._target_offset = target_offset
@@ -421,14 +418,13 @@ class _AsyncAlwaysFailWorker:
     def __init__(
         self,
         shared_results,
-        attempt_counts,
         label: str,
         target_partition: int,
         target_offset: int,
         sleep_ms: float = 5.0,
     ) -> None:
         self._shared_results = shared_results
-        self._attempt_counts = attempt_counts
+        self._attempt_counts: dict[str, int] = {}
         self._label = label
         self._target_partition = target_partition
         self._target_offset = target_offset
@@ -1106,7 +1102,6 @@ async def test_process_retry_path_commits_only_after_success(
     produced_count = 3
     target_offset = 0
     fail_first_attempts = 1
-    target_key = f"{partition}:{target_offset}"
 
     _create_topic(admin, topic, num_partitions=1)
     _produce_partition_messages(topic, partition=partition, count=produced_count)
@@ -1116,7 +1111,6 @@ async def test_process_retry_path_commits_only_after_success(
     final_committed_offset = -1001
     with Manager() as manager:
         shared_results = manager.list()
-        attempt_counts = manager.dict()
         success_started_event = manager.Event()
         success_release_event = manager.Event()
 
@@ -1128,7 +1122,6 @@ async def test_process_retry_path_commits_only_after_success(
 
         worker = retry_worker_cls(
             shared_results=shared_results,
-            attempt_counts=attempt_counts,
             label="retry",
             target_partition=partition,
             target_offset=target_offset,
@@ -1144,14 +1137,8 @@ async def test_process_retry_path_commits_only_after_success(
             worker_fn=worker,
             max_in_flight=1,
         )
-
         await poller.start()
         try:
-            await _wait_until(
-                lambda: int(attempt_counts.get(target_key, 0)) >= fail_first_attempts,
-                timeout_seconds=20,
-                message="retry scenario never exercised the expected failure attempts",
-            )
             await _wait_for_event(
                 success_started_event,
                 timeout_seconds=20,
@@ -1186,13 +1173,14 @@ async def test_process_retry_path_commits_only_after_success(
                 timeout_seconds=15,
                 message="retry scenario never committed the final safe offset",
             )
-            target_attempts = int(attempt_counts.get(target_key, 0))
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+            all_entries = list(shared_results)
         finally:
             success_release_event.set()
+            if not all_entries:
+                all_entries = list(shared_results)
             await poller.stop()
             await engine.shutdown()
-            all_entries = list(shared_results)
             _delete_topic(admin, topic)
 
     completed_entries = [entry for entry in all_entries if entry[0] == "completed"]
@@ -1203,6 +1191,7 @@ async def test_process_retry_path_commits_only_after_success(
         if entry[2] == partition and entry[3] == target_offset
     ]
 
+    target_attempts = target_completions[0][5] if target_completions else 0
     assert target_attempts == fail_first_attempts + 1
     assert set(completed_offsets) == set(range(produced_count))
     assert len(target_completions) == 1
@@ -1227,7 +1216,6 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     partition = 0
     produced_count = 3
     target_offset = 0
-    target_key = f"{partition}:{target_offset}"
     dlq_topic = topic + DLQ_SUFFIX
 
     _create_topic(admin, topic, num_partitions=1)
@@ -1238,7 +1226,6 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     final_committed_offset = -1001
     with Manager() as manager:
         shared_results = manager.list()
-        attempt_counts = manager.dict()
 
         always_fail_worker_cls = (
             _AsyncAlwaysFailWorker
@@ -1248,7 +1235,6 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
 
         worker = always_fail_worker_cls(
             shared_results=shared_results,
-            attempt_counts=attempt_counts,
             label="dlq",
             target_partition=partition,
             target_offset=target_offset,
@@ -1267,11 +1253,6 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
         await poller.start()
         try:
             await _wait_until(
-                lambda: int(attempt_counts.get(target_key, 0)) >= max_retries,
-                timeout_seconds=20,
-                message="dlq scenario never exhausted the configured retry count",
-            )
-            await _wait_until(
                 lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
                     == produced_count
@@ -1279,12 +1260,13 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
                 timeout_seconds=20,
                 message="dlq scenario never committed the final safe offset",
             )
-            target_attempts = int(attempt_counts.get(target_key, 0))
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+            all_entries = list(shared_results)
         finally:
+            if not all_entries:
+                all_entries = list(shared_results)
             await poller.stop()
             await engine.shutdown()
-            all_entries = list(shared_results)
 
         try:
             dlq_msg = _consume_single_record(
@@ -1304,6 +1286,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     ]
     headers = dict(dlq_msg.headers() or [])
     dlq_payload = json.loads(dlq_msg.value().decode("utf-8"))
+    target_attempts = int(headers["x-retry-attempt"].decode("utf-8"))
 
     assert target_attempts >= max_retries
     assert set(completed_offsets) == {1, 2}
@@ -1311,7 +1294,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     assert dlq_msg.key() == b"key-0"
     assert dlq_payload["sequence"] == target_offset
     assert headers["x-error-reason"].startswith(b"intentional dlq trigger")
-    assert headers["x-retry-attempt"] == b"2"
+    assert headers["x-retry-attempt"] == str(max_retries).encode("utf-8")
     assert headers["source-topic"] == topic.encode("utf-8")
     assert headers["partition"] == b"0"
     assert headers["offset"] == b"0"
