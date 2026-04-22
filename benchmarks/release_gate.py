@@ -11,6 +11,7 @@ RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
 
 Combination = tuple[str, str, str]
+BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
 
 
 @dataclass(frozen=True)
@@ -203,16 +204,22 @@ def _evaluate_persistent_gap(
     return []
 
 
+def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
+    value = options.get("num_messages")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _group_results(
     summaries: Iterable[tuple[Path, Mapping[str, Any]]],
-) -> tuple[
-    dict[Combination, list[tuple[Path, Mapping[str, Any]]]], list[dict[str, Any]]
-]:
-    grouped: dict[Combination, list[tuple[Path, Mapping[str, Any]]]] = {
+) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]]]:
+    grouped: dict[Combination, list[BenchmarkEntry]] = {
         combination: [] for combination in RELEASE_THRESHOLDS
     }
     checks: list[dict[str, Any]] = []
     for path, summary in summaries:
+        expected_messages = None
         options = summary.get("options")
         if not isinstance(options, Mapping):
             checks.append(
@@ -224,6 +231,8 @@ def _group_results(
                 )
             )
             options = {}
+        else:
+            expected_messages = _expected_messages(path, options)
         checks.extend(_evaluate_options(path, options))
         checks.extend(_evaluate_persistent_gap(path, summary))
         results = summary.get("results")
@@ -250,12 +259,12 @@ def _group_results(
                 continue
             combination = _result_combination(result, path=path)
             if combination in grouped:
-                grouped[combination].append((path, result))
+                grouped[combination].append((path, result, expected_messages))
     return grouped, checks
 
 
 def _evaluate_matrix(
-    grouped: Mapping[Combination, list[tuple[Path, Mapping[str, Any]]]],
+    grouped: Mapping[Combination, list[BenchmarkEntry]],
     required_repetitions: int,
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
@@ -277,12 +286,18 @@ def _evaluate_matrix(
 
         tps_values = []
         p99_values = []
-        for path, result in entries:
-            expected_messages = _as_int(
-                _load_summary(path).get("options", {}).get("num_messages"),
-                "options.num_messages",
-                path=path,
-            )
+        for path, result, expected_messages in entries:
+            if expected_messages is None:
+                checks.append(
+                    _check(
+                        "measurement_conditions",
+                        "FAIL",
+                        "options.num_messages must be an integer",
+                        path=str(path),
+                        combination=label,
+                    )
+                )
+                continue
             messages_processed = _as_int(
                 result.get("messages_processed"), "messages_processed", path=path
             )
@@ -321,6 +336,8 @@ def _evaluate_matrix(
                 )
             )
 
+        if not tps_values or not p99_values:
+            continue
         worst_tps = min(tps_values)
         worst_p99 = max(p99_values)
         if worst_tps < threshold.tps_floor or worst_p99 > threshold.p99_ceiling_ms:
@@ -354,6 +371,15 @@ def evaluate_release_gate(
 ) -> dict[str, Any]:
     paths = [Path(path) for path in benchmark_json_paths]
     checks: list[dict[str, Any]] = []
+    if required_repetitions < 1:
+        checks.append(
+            _check(
+                "repetitions",
+                "FAIL",
+                "required_repetitions must be at least 1",
+                actual=required_repetitions,
+            )
+        )
     normalized_paths = [str(path.resolve()) for path in paths]
     if len(set(normalized_paths)) != len(normalized_paths):
         checks.append(

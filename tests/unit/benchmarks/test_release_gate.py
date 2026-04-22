@@ -188,6 +188,38 @@ def test_evaluate_release_gate_rejects_duplicate_artifact_paths(tmp_path: Path) 
     assert "artifacts" in failed_codes
 
 
+def test_evaluate_release_gate_rejects_invalid_repetition_count(tmp_path: Path) -> None:
+    path = tmp_path / "release-gate.json"
+    path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate([path], required_repetitions=0)
+
+    assert report["verdict"] == "NO-GO"
+    assert report["checks"][0]["code"] == "repetitions"
+
+
+def test_evaluate_release_gate_reports_schema_failure_for_missing_num_messages(
+    tmp_path: Path,
+) -> None:
+    bad = _passing_summary()
+    options = bad["options"]
+    assert isinstance(options, dict)
+    del options["num_messages"]
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-missing-options-%d.json" % index)
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "measurement_conditions" in failed_codes
+
+
 def test_cli_emits_machine_readable_no_go_for_invalid_json(tmp_path: Path) -> None:
     path = tmp_path / "bad.json"
     path.write_text("{", encoding="utf-8")
