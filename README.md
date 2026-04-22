@@ -362,7 +362,7 @@ uv run pytest tests/e2e -q
 - If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
 - Use the local `docker compose` stack when you want the full Kafka-backed path.
 - The Kafka-backed ordering suite now exercises both `async` and `process` execution modes for `key_hash` and `partition` ordering on a real broker.
-- The process-mode recovery suite now also covers retry, DLQ, rebalance during in-flight work, and restart/offset continuity on a real broker via `tests/e2e/test_process_recovery.py`.
+- The recovery suite now runs retry, DLQ, rebalance during in-flight work, and restart/offset continuity against both `async` and `process` execution modes on a real broker via `tests/e2e/test_process_recovery.py`.
 - These tests prove broker-visible recovery invariants; longer-running soak and broader release-readiness concerns are still tracked separately.
 - For the test monitoring stack, run `docker compose -f .github/e2e.compose.yml up -d`.
 - Test-stack dashboards:

@@ -37,7 +37,7 @@ For each item, review all three dimensions below.
 - [x] **Include process mode in real-broker E2E**
   - What: validate core paths (ordering, retry, DLQ, rebalance/restart) for both
     async/process engines against a real Kafka broker.
-  - Evidence: process-mode real-broker E2E passes in
+  - Evidence: async/process real-broker E2E passes in
     `tests/e2e/test_ordering.py` and `tests/e2e/test_process_recovery.py`.
   - Owner hint: `tests/e2e/`, `.github/workflows/e2e.yml`
 
@@ -181,10 +181,10 @@ UV_CACHE_DIR=.uv-cache uv run twine check "${release_artifacts[@]}"
 
 - The current state is best described as **stable metadata/policy aligned, with remaining release-gate hardening in progress**.
 - Beyond `key_hash`/`partition` ordering, real-broker E2E evidence now also
-  covers process-mode retry, DLQ, in-flight rebalance, and restart/offset continuity.
+  covers async/process retry, DLQ, in-flight rebalance, and restart/offset continuity.
 - The main blockers for further release hardening are dedicated publish
   automation, long-window soak/restart coverage, and P2 operational maturity coverage.
-- This round secured real-broker evidence for process recovery paths; next rounds
+- This round secured real-broker evidence for async/process recovery paths; next rounds
   should focus on replacing manual publish with protected automation and
   accumulating repeatable long-window operations evidence.
 
