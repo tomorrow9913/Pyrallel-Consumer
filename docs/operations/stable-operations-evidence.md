@@ -21,7 +21,8 @@ Use [`playbooks.md`](./playbooks.md) as the normative source for:
 - the fixed TPS / p99 threshold table under `Release Go/No-Go Threshold`
 - fail-fast criteria (`TIMEOUT`, ordering mismatch, incomplete message count,
   lag/gap violations)
-- benchmark verdict rules (`GO` / `NO-GO`)
+- benchmark verdict rules (`PASS` / `NO-GO` from the machine evaluator, with
+  `GO` used only as release-review shorthand after the evaluator passes)
 - the standard benchmark command for re-measurement
 
 Release-review benchmark command:
@@ -38,6 +39,18 @@ UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark \
   --metrics-port 9091 \
   --json-output benchmarks/results/release-gate-<UTC>.json
 ```
+
+Release-review evaluation requirement:
+
+- Run the benchmark gate evaluator configured in the release-candidate workflow
+  against the generated JSON artifacts:
+  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-<UTC-2>.json`.
+- Attach the evaluator's machine-readable verdict and reasons to the release
+  review.
+- **Performance release gate verdict**: comes only from the benchmark evaluator
+  (`PASS` or `NO-GO`) and is release-blocking on `NO-GO`.
+- **Soak/restart evidence verdict**: comes from `soak-restart-evidence.md` gates;
+  a soak/restart `PASS` does not by itself approve the performance release gate.
 
 ### 2. Soak / restart evidence package
 
@@ -120,8 +133,12 @@ UV_CACHE_DIR=.uv-cache uv run pytest tests/e2e/test_process_recovery.py -q
 
 - Treat the fixed threshold table as the baseline policy. Sample TPS values in
   `README*` or ad-hoc benchmark runs are supporting context, not the release gate.
+- Treat the benchmark gate evaluator verdict as the performance release gate.
+  Human summaries must not downgrade an evaluator `NO-GO` to `GO`.
 - Treat the latest PASS package in `soak-restart-evidence.md` as the minimum
-  credible evidence trail already on record.
+  credible soak/restart evidence trail already on record. This is separate from
+  the performance release gate and cannot compensate for a threshold,
+  repetition, completion, lag, or gap failure in benchmark artifacts.
 - Treat the 2026-04-19 default-timeout rerun as a caution artifact and pair it
   with the `180s` PASS rerun rather than reading either log in isolation.
 - Do not claim a new `GO` verdict from a single benchmark slice or a

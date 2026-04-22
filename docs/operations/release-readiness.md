@@ -100,10 +100,13 @@ For each item, review all three dimensions below.
 
 - [x] **Fix performance regression baseline**
   - What: lock workload-specific TPS/p99 ranges as release-review inputs,
-    not advisory notes.
+    not advisory notes, and require the release-candidate gate to consume the
+    benchmark JSON with a machine-readable `PASS` / `NO-GO` evaluator.
   - Evidence: `docs/operations/playbooks.md` documents fixed threshold table
-    (mode/workload/ordering TPS floor + p99 ceiling), fail-fast criteria, and
-    verdict procedure.
+    (mode/workload/ordering TPS floor + p99 ceiling), fail-fast criteria,
+    verdict procedure, and the evaluator requirement. Release approval must
+    quote the evaluator verdict; a soak/restart `PASS` is recorded separately
+    and cannot override performance `NO-GO`.
   - Owner hint: `docs/operations/playbooks.md`, `benchmarks/README.md`
 
 ## P2: Post-Stable Maturity Improvements

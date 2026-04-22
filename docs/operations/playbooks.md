@@ -189,6 +189,11 @@ use the one-page summary in
 - Compare only with profiling disabled (`--profile`/`--py-spy` not used).
 - Run at least twice under identical conditions and judge by worst-case values
   per combination (`TPS` minimum, `p99` maximum).
+- Evaluate the repeated JSON artifacts with the machine gate before approving a
+  release-candidate performance verdict:
+  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-<UTC-2>.json`.
+  The evaluator emits JSON with `verdict: PASS|NO-GO`; any `NO-GO` is
+  release-blocking.
 
 ### Workload-Specific Thresholds (PASS Criteria)
 
@@ -225,3 +230,22 @@ If any of the following occurs, it is an immediate `NO-GO`.
 - Any single combination triggers fail-fast or violates thresholds: `NO-GO`
 - On `NO-GO`, attach run artifacts (JSON/log/metrics query) to the issue
   comment and include a re-measurement plan.
+
+### Machine-Evaluated Release Gate
+
+Release-candidate approval must use the benchmark gate evaluator wired into the
+release-candidate workflow, not a manual reading of console tables. The
+evaluator consumes one or more JSON artifacts from the standard benchmark
+command and emits a machine-readable verdict:
+
+- `PASS`: every required combination is present, repeated enough for
+  worst-case review, complete, and within the TPS/p99 thresholds with no
+  represented fail-fast lag/gap/completion criteria violated.
+- `NO-GO`: any required combination is missing, has insufficient repetitions,
+  has incomplete message processing, violates TPS/p99 thresholds, or carries
+  represented fail-fast lag/gap/completion evidence.
+
+Manual release notes may summarize the result, but the release decision should
+quote the evaluator verdict and artifact paths. A `PASS` soak/restart evidence
+package is supporting stability evidence; it does **not** override a benchmark
+gate `NO-GO`.
