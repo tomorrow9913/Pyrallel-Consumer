@@ -224,7 +224,27 @@ def test_execution_config_accepts_zero_consumer_stop_timeout() -> None:
     assert config.consumer_task_stop_timeout_ms == 0
 
 
-def test_kafka_config_exposes_canonical_snake_case_fields() -> None:
+def test_kafka_config_exposes_canonical_snake_case_fields(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    for name in (
+        "BOOTSTRAP_SERVERS",
+        "CONSUMER_GROUP",
+        "DLQ_TOPIC_SUFFIX",
+        "DLQ_FLUSH_TIMEOUT_MS",
+        "AUTO_OFFSET_RESET",
+        "ENABLE_AUTO_COMMIT",
+        "SESSION_TIMEOUT_MS",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "KAFKA_CONSUMER_GROUP",
+        "KAFKA_DLQ_TOPIC_SUFFIX",
+        "KAFKA_DLQ_FLUSH_TIMEOUT_MS",
+        "KAFKA_AUTO_OFFSET_RESET",
+        "KAFKA_ENABLE_AUTO_COMMIT",
+        "KAFKA_SESSION_TIMEOUT_MS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     config = KafkaConfig(_env_file=None)
 
     assert config.bootstrap_servers == ["localhost:9092"]

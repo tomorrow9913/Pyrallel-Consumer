@@ -921,6 +921,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion() -> None:
             worker_fn=worker,
             max_in_flight=1,
         )
+        max_retries = kafka_config.parallel_consumer.execution.max_retries
 
         await poller.start()
         try:

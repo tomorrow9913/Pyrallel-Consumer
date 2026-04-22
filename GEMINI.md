@@ -1025,3 +1025,52 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - Green: `AdaptiveBackpressureController.evaluate()` now updates cooldown/decision only when scale up/down changes the effective limit; no-op scale decisions hold. Focused controller tests -> 4 passed.
 - TDD(red): added `tests/unit/benchmarks/test_benchmark_runtime.py::test_run_benchmark_resolves_process_batching_per_strict_mode` to prove strict-on process auto-tuning does not leak into strict-off runs. Focused run failed because strict-off received `(1, 0)`.
 - Green: `run_parallel_benchmark` now resolves effective process batching per strict monitor mode, preserving strict-off defaults while keeping strict-on auto-tuning. Focused benchmark/controller verification -> 6 passed; ruff on changed files -> pass.
+
+### 5.35 Issue #71 DLQ liveness TDD (2026-04-21)
+
+- TDD(red): added `tests/unit/control_plane/test_broker_completion_support.py::test_process_completed_events_retries_pending_dlq_failure_and_marks_complete` to require a terminal DLQ publish failure to retain retry state/payload and mark the offset complete only after a later DLQ retry succeeds. Focused run failed as expected because `process_completed_events([])` did not retry pending DLQ work and the offset remained incomplete.
+- Worker-2 TDD(red): added `tests/unit/control_plane/test_broker_poller_dlq.py::test_dlq_publish_failure_is_retried_without_duplicate_completion_event` as BrokerPoller-level coverage for the same liveness requirement. Initial focused run failed with `_publish_to_dlq.await_count == 1` after the empty follow-up processing cycle; after the ledger/retry integration, `uv run pytest tests/unit/control_plane/test_broker_poller_dlq.py -q` -> 19 passed, with `ruff check` and `py_compile` clean for the modified test file.
+- Green: `BrokerCompletionSupport` now keeps a small pending DLQ event ledger, retries it on later `process_completed_events(...)` calls, preserves cached payload plus completion identity until DLQ publish succeeds, and only then marks the offset complete/clears cache. Focused regression now passes.
+- TDD(red/green): added `tests/unit/control_plane/test_broker_poller_dlq.py::test_drain_completion_events_retries_pending_dlq_without_new_completions`; it failed while the drain path returned early with only pending DLQ work, then passed after `BrokerPoller` started owning/passing the pending DLQ ledger and draining it even without fresh completion events.
+- Verification: `pytest tests/unit/control_plane/test_broker_completion_support.py tests/unit/control_plane/test_broker_poller_dlq.py -q` -> 23 passed; `pytest tests/unit/control_plane -q` -> 223 passed; `pytest tests/unit -q` -> 528 passed; `ruff check pyrallel_consumer tests/unit` -> pass; `mypy pyrallel_consumer` -> pass; targeted Bandit high-severity scan over source/script paths -> no findings; `python -m py_compile` on modified Python files -> pass.
+
+### 5.36 Issue #71 pending DLQ retry throttling review fix (2026-04-21)
+
+- TDD(red): added `test_completion_monitor_throttles_persistent_pending_dlq_retries` and `test_cleanup_clears_pending_dlq_events` after PR #85 review flagged a hot completion-monitor retry loop and stale pending ledger across restart/cleanup. Initial focused run failed: monitor retried without sleep and `_cleanup()` left `_pending_dlq_events` intact.
+- Green: `_run_completion_monitor()` now sleeps for the monitor timeout after a pending DLQ retry whenever pending DLQ entries remain, preventing a tight retry loop during sustained DLQ outages. `_cleanup()` now clears `_pending_dlq_events` with the message cache. Verification: pending DLQ focused tests -> 2 passed; DLQ focused suite -> 28 passed; control-plane suite -> 228 passed; ruff and mypy on changed source/tests -> pass.
+
+### 5.37 Issue #71 stale completion ledger preservation review fix (2026-04-21)
+
+- TDD(red): added `test_stale_completion_does_not_drop_pending_dlq_retry` after PR #85 review showed a fresh stale/zombie completion for the same `(tp, offset)` could remove the current pending DLQ retry ledger entry. Initial focused run failed with the pending entry missing.
+- Green: `BrokerCompletionSupport.process_completed_events()` now tracks whether an event came from the pending DLQ ledger and only removes ledger entries for stale/untracked events that originated from the ledger itself. Fresh stale completions no longer drop unrelated current pending DLQ retries. Verification: DLQ focused suite -> 29 passed; ruff on changed files -> pass.
+
+### 5.38 Issue #71 pending DLQ duplicate completion review fix (2026-04-21)
+
+- TDD(red): added `test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry` after architect review found a fresh same-epoch duplicate completion could mark an offset complete and clear a pending DLQ retry before DLQ publish success. Initial focused run failed with the pending ledger entry missing.
+- Green: `BrokerCompletionSupport.process_completed_events()` now ignores fresh completions for `(tp, offset)` while a pending DLQ retry exists, so duplicate/zombie completions cannot supersede the terminal DLQ decision. Verification: DLQ focused suite -> 30 passed; ruff on changed files -> pass.
+
+### 5.39 Issue #71 shutdown throttle and same-batch duplicate review fixes (2026-04-21)
+
+- TDD(red): added `test_graceful_shutdown_drain_throttles_persistent_pending_dlq` after PR #85 review showed graceful shutdown could retry pending DLQ every 10ms. Initial focused run showed sleep used `0.01` instead of the monitor idle timeout.
+- TDD(red): added `test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_success` after review showed a duplicate fresh completion in the same drain batch could re-add pending DLQ after an earlier pending retry succeeded. Initial focused run re-added the duplicate failure to the ledger.
+- Green: shutdown drain now uses `_idle_consume_timeout_seconds` while pending DLQ remains, and `BrokerCompletionSupport` ignores fresh duplicate completions for pending keys already resolved earlier in the same processing batch. Verification: DLQ focused suite -> 32 passed; ruff on changed files -> pass.
+
+### 5.40 Issue #71 pending DLQ consumer poll cadence review fix (2026-04-22)
+
+- TDD(red): renamed/updated the consumer-loop pending DLQ regression to require a zero-timeout `consumer.consume(num_messages=1, timeout=0)` poll while pending DLQ retries are prioritized, so Kafka client poll cadence is maintained during prolonged DLQ outages. Initial focused run failed because the pending-DLQ path did not call `consume` at all.
+- Green: `_run_consumer()` now performs a zero-timeout poll after pending DLQ retry/commit work and before the idle retry sleep. This services Kafka consumer poll cadence without fetching/dispatching new work. Verification: DLQ focused suite -> 32 passed; ruff on changed files -> pass.
+
+### 5.41 Issue #71 pending DLQ Kafka poll cadence review fix (2026-04-22)
+
+- TDD(red): added `test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending_dlq_exists` after PR #85 review warned that ignoring zero-timeout consume results could drop buffered Kafka records. Initial focused run failed because returned messages were not dispatched.
+- Green: pending-DLQ consumer loop now performs a zero-timeout poll to service Kafka cadence and dispatches/schedules any returned buffered messages through the normal dispatch path before sleeping. Verification: DLQ focused suite -> 33 passed; ruff on changed files -> pass.
+
+### 5.42 Issue #71 pending DLQ cadence backpressure review fix (2026-04-22)
+
+- TDD(red): added `test_consumer_loop_applies_backpressure_before_cadence_dispatch` after PR #85 review showed cadence-poll messages could be dispatched while pending-DLQ path bypassed backpressure. Initial focused run hung because `_check_backpressure()` was never called to pause/stop the test loop.
+- Green: pending-DLQ consumer path now runs `_check_backpressure()` before zero-timeout cadence poll dispatch and dispatches returned messages only when not paused. Verification: pending-DLQ consumer loop focused tests -> 3 passed.
+
+### 5.43 Issue #71 cadence poll buffered message handling review fix (2026-04-22)
+
+- Architect review found that the paused cadence-poll path could still drop returned `consumer.consume(timeout=0)` records if dispatch was skipped while paused. The pending-DLQ path now still runs `_check_backpressure()` before cadence polling, but any returned buffered records are dispatched/scheduled through the normal path instead of being discarded.
+- Test updated to `test_consumer_loop_dispatches_buffered_cadence_messages_after_backpressure_check`, proving backpressure check occurs first and returned cadence records are dispatched even when the check sets paused. Verification: DLQ focused suite -> 34 passed; ruff on changed files -> pass.

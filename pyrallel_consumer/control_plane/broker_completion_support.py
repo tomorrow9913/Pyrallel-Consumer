@@ -24,6 +24,9 @@ class BrokerCompletionSupport:
         ],
         publish_to_dlq: Callable[..., Awaitable[bool]],
         logger: logging.Logger,
+        pending_dlq_events: Optional[
+            OrderedDict[tuple[DtoTopicPartition, int], CompletionEvent]
+        ] = None,
     ) -> None:
         self._kafka_config = kafka_config
         self._work_manager = work_manager
@@ -33,6 +36,9 @@ class BrokerCompletionSupport:
         self._pop_cached_message = pop_cached_message
         self._publish_to_dlq = publish_to_dlq
         self._logger = logger
+        self._pending_dlq_events = (
+            pending_dlq_events if pending_dlq_events is not None else OrderedDict()
+        )
 
     async def handle_blocking_timeouts(
         self,
@@ -75,10 +81,28 @@ class BrokerCompletionSupport:
         self,
         completed_events: list[CompletionEvent],
     ) -> int:
-        for event in completed_events:
+        pending_events = [(event, True) for event in self._pending_dlq_events.values()]
+        fresh_events = [(event, False) for event in completed_events]
+        events_to_process = pending_events + fresh_events
+        resolved_pending_keys: set[tuple[DtoTopicPartition, int]] = set()
+
+        for event, from_pending_ledger in events_to_process:
+            pending_key = (event.tp, event.offset)
+            if not from_pending_ledger and (
+                pending_key in self._pending_dlq_events
+                or pending_key in resolved_pending_keys
+            ):
+                self._logger.warning(
+                    "Ignoring duplicate completion for pending DLQ retry %s@%d",
+                    event.tp,
+                    event.offset,
+                )
+                continue
             tracker = self._offset_trackers.get(event.tp)
             if tracker is None:
                 self._logger.warning("Completion for untracked partition %s", event.tp)
+                if from_pending_ledger:
+                    self._pending_dlq_events.pop(pending_key, None)
                 continue
             if event.epoch != tracker.get_current_epoch():
                 self._logger.warning(
@@ -88,6 +112,8 @@ class BrokerCompletionSupport:
                     event.epoch,
                     tracker.get_current_epoch(),
                 )
+                if from_pending_ledger:
+                    self._pending_dlq_events.pop(pending_key, None)
                 continue
 
             dlq_success = True
@@ -125,6 +151,7 @@ class BrokerCompletionSupport:
                     )
 
                 if not dlq_success:
+                    self._pending_dlq_events[pending_key] = event
                     self._logger.error(
                         "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
                         event.tp,
@@ -133,6 +160,9 @@ class BrokerCompletionSupport:
                     continue
 
             tracker.mark_complete(event.offset)
+            if from_pending_ledger:
+                resolved_pending_keys.add(pending_key)
+            self._pending_dlq_events.pop(pending_key, None)
             self._pop_cached_message((event.tp, event.offset))
 
-        return len(completed_events)
+        return len(events_to_process)
