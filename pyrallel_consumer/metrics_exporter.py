@@ -21,6 +21,7 @@ from pyrallel_consumer.dto import (
 )
 
 _RESOURCE_SIGNAL_STATUSES = tuple(status.value for status in ResourceSignalStatus)
+COMMIT_FAILURE_REASONS = ("kafka_exception",)
 
 
 class _Joinable(Protocol):
@@ -43,6 +44,18 @@ class PrometheusMetricsExporter:
             "consumer_processed_total",
             "Number of completion events processed",
             labelnames=("topic", "partition", "status"),
+            registry=self._registry,
+        )
+        self._commit_failures_total = Counter(
+            "consumer_commit_failures_total",
+            "Number of final offset commit failures",
+            labelnames=("topic", "partition", "reason"),
+            registry=self._registry,
+        )
+        self._dlq_publish_failures_total = Counter(
+            "consumer_dlq_publish_failures_total",
+            "Number of terminal DLQ publish failures",
+            labelnames=("topic", "partition"),
             registry=self._registry,
         )
         self._latency_hist = Histogram(
@@ -204,6 +217,27 @@ class PrometheusMetricsExporter:
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
+
+    def record_commit_failure(
+        self, tp: TopicPartition, reason: str = "kafka_exception"
+    ) -> None:
+        if reason not in COMMIT_FAILURE_REASONS:
+            allowed_reasons = ", ".join(COMMIT_FAILURE_REASONS)
+            raise ValueError(
+                "Unknown commit failure reason: "
+                f"{reason!r}; expected one of: {allowed_reasons}"
+            )
+        self._commit_failures_total.labels(
+            topic=tp.topic,
+            partition=str(tp.partition),
+            reason=reason,
+        ).inc()
+
+    def record_dlq_publish_failure(self, tp: TopicPartition) -> None:
+        self._dlq_publish_failures_total.labels(
+            topic=tp.topic,
+            partition=str(tp.partition),
+        ).inc()
 
     def close(self) -> None:
         if self._http_server is None:

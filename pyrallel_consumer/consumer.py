@@ -166,6 +166,13 @@ class PyrallelConsumer:
             setattr(metrics, "resource_signal", resource_signal)
         self._metrics_exporter.update_from_system_metrics(metrics)
 
+    def _set_poller_metrics_exporter(
+        self, metrics_exporter: Optional[PrometheusMetricsExporter]
+    ) -> None:
+        set_metrics_exporter = getattr(self._poller, "set_metrics_exporter", None)
+        if callable(set_metrics_exporter):
+            set_metrics_exporter(metrics_exporter)
+
     async def start(self) -> None:
         """
         Start the consumer.
@@ -177,6 +184,7 @@ class PyrallelConsumer:
                     self._metrics_config
                 )
                 self._work_manager.set_metrics_exporter(self._metrics_exporter)
+                self._set_poller_metrics_exporter(self._metrics_exporter)
             await self._poller.start()
             if self._metrics_exporter is not None and self._metrics_task is None:
                 self._publish_metrics_snapshot()
@@ -208,6 +216,7 @@ class PyrallelConsumer:
 
     def _release_metrics_exporter(self) -> None:
         self._work_manager.set_metrics_exporter(None)
+        self._set_poller_metrics_exporter(None)
         _release_prometheus_exporter(self._metrics_config, self._metrics_exporter)
         self._metrics_exporter = None
 

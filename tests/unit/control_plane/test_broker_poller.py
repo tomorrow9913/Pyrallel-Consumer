@@ -743,6 +743,23 @@ class TestOnRevokeCommitExceptionDefense:
             for record in caplog.records
         )
 
+    def test_on_revoke_commit_failure_records_metric(
+        self, broker_poller, mock_consumer
+    ):
+        """Commit failure in _on_revoke must increment the commit failure metric."""
+        self._setup_trackers(broker_poller)
+        exporter = MagicMock()
+        broker_poller.set_metrics_exporter(exporter)
+        mock_consumer.commit.side_effect = KafkaException("Broker unavailable")
+
+        tps_to_revoke = [KafkaTopicPartition("test-topic", 0)]
+        broker_poller._on_revoke(mock_consumer, tps_to_revoke)
+
+        exporter.record_commit_failure.assert_called_once_with(
+            DtoTopicPartition(topic="test-topic", partition=0),
+            "kafka_exception",
+        )
+
 
 @pytest.mark.asyncio
 async def test_commit_offsets_uses_topic_partition_with_metadata(broker_poller):
@@ -801,6 +818,43 @@ async def test_commit_offsets_uses_safe_offset_without_rescanning_tracker(
 
     assert tracker.last_committed_offset == 1
     assert tracker.completed_offsets == {3}
+
+
+@pytest.mark.asyncio
+async def test_commit_offsets_records_final_commit_failure_for_each_partition(
+    broker_poller,
+):
+    class _Exporter:
+        def __init__(self) -> None:
+            self.commit_failures: list[tuple[DtoTopicPartition, str]] = []
+
+        def record_commit_failure(self, tp: DtoTopicPartition, reason: str) -> None:
+            self.commit_failures.append((tp, reason))
+
+    exporter = _Exporter()
+    broker_poller.set_metrics_exporter(exporter)
+    tps = [
+        DtoTopicPartition(topic="test-topic", partition=0),
+        DtoTopicPartition(topic="test-topic", partition=1),
+    ]
+    for tp in tps:
+        tracker = OffsetTracker(
+            topic_partition=tp,
+            starting_offset=0,
+            max_revoke_grace_ms=0,
+            initial_completed_offsets=set(),
+        )
+        tracker.mark_complete(0)
+        broker_poller._offset_trackers[tp] = tracker
+    broker_poller.consumer = MagicMock(spec=Consumer)
+    broker_poller.consumer.commit.side_effect = KafkaException("Broker unavailable")
+
+    await broker_poller._commit_offsets([(tp, 0) for tp in tps])
+
+    assert broker_poller.consumer.commit.call_count == 2
+    assert exporter.commit_failures == [(tp, "kafka_exception") for tp in tps]
+    for tracker in broker_poller._offset_trackers.values():
+        assert tracker.last_committed_offset == -1
 
 
 class TestRunConsumerCommitExceptionDefense:

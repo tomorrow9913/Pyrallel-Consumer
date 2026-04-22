@@ -77,6 +77,23 @@ def test_operations_guides_use_regex_for_process_flush_reason_set() -> None:
         )
 
 
+def test_failure_counter_metric_names_are_documented() -> None:
+    doc_paths = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.ko.md",
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+        REPO_ROOT / "docs" / "operations" / "playbooks.md",
+    ]
+
+    for doc_path in doc_paths:
+        doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
+        assert "consumer_commit_failures_total" in doc_text
+        assert 'consumer_commit_failures_total{reason="kafka_exception"}' in doc_text
+        assert 'consumer_commit_failures_total{reason="commit_error"}' not in doc_text
+        assert "consumer_dlq_publish_failures_total" in doc_text
+
+
 def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> None:
     workflow_text = (
         REPO_ROOT / ".github" / "workflows" / "ci_monitoring.yml"

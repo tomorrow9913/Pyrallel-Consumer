@@ -49,6 +49,7 @@ class BrokerPoller:
     """Polls Kafka, feeds WorkManager, coordinates commits."""
 
     MAX_COMPLETED_OFFSETS_FOR_METADATA = 2048
+    COMMIT_FAILURE_REASON_KAFKA_EXCEPTION = "kafka_exception"
 
     def __init__(
         self,
@@ -60,6 +61,7 @@ class BrokerPoller:
         self._consume_topic = consume_topic
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
+        self._metrics_exporter: Optional[Any] = None
 
         pc_conf = self._kafka_config.parallel_consumer
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
@@ -199,6 +201,9 @@ class BrokerPoller:
         self._idle_consume_timeout_seconds = 0.1
 
     # ------------------------------------------------------------------
+    def set_metrics_exporter(self, metrics_exporter: Optional[Any]) -> None:
+        self._metrics_exporter = metrics_exporter
+
     def _rebalance_state_strategy(self) -> str:
         return str(
             getattr(
@@ -610,6 +615,7 @@ class BrokerPoller:
             publish_to_dlq=_publish_to_dlq_proxy,
             logger=logger,
             pending_dlq_events=self._pending_dlq_events,
+            metrics_exporter=self._metrics_exporter,
         )
 
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
@@ -694,6 +700,37 @@ class BrokerPoller:
                         max_attempts,
                         exc,
                     )
+                    self._record_commit_failure(
+                        tracked_commits,
+                        self.COMMIT_FAILURE_REASON_KAFKA_EXCEPTION,
+                    )
+
+    def _record_commit_failure(
+        self,
+        tracked_commits: list[tuple[DtoTopicPartition, int]],
+        reason: str,
+    ) -> None:
+        metrics_exporter = self._metrics_exporter
+        if metrics_exporter is None:
+            metrics_exporter = getattr(self._work_manager, "_metrics_exporter", None)
+        recorder = getattr(metrics_exporter, "record_commit_failure", None)
+        if not callable(recorder):
+            return
+
+        for tp, _ in tracked_commits:
+            try:
+                recorder(tp, reason)
+            except Exception as exc:
+                logger.warning(
+                    "Commit failure metric recording failed for %s: %s",
+                    tp,
+                    exc,
+                )
+
+    def _record_commit_failure_for_partition(
+        self, tp: DtoTopicPartition, reason: str
+    ) -> None:
+        self._record_commit_failure([(tp, 0)], reason)
 
     def _get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
@@ -897,6 +934,7 @@ class BrokerPoller:
             drop_cached_partition_messages=self._drop_cached_partition_messages,
             strategy=self._rebalance_state_strategy(),
             logger=logger,
+            record_commit_failure=self._record_commit_failure_for_partition,
         )
 
     # ------------------------------------------------------------------

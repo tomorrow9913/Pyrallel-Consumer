@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
+
+
+class DlqFailureMetricsExporter(Protocol):
+    def record_dlq_publish_failure(self, tp: DtoTopicPartition) -> None:
+        ...
 
 
 class BrokerCompletionSupport:
@@ -27,6 +32,7 @@ class BrokerCompletionSupport:
         pending_dlq_events: Optional[
             OrderedDict[tuple[DtoTopicPartition, int], CompletionEvent]
         ] = None,
+        metrics_exporter: Optional[DlqFailureMetricsExporter] = None,
     ) -> None:
         self._kafka_config = kafka_config
         self._work_manager = work_manager
@@ -39,6 +45,7 @@ class BrokerCompletionSupport:
         self._pending_dlq_events = (
             pending_dlq_events if pending_dlq_events is not None else OrderedDict()
         )
+        self._metrics_exporter = metrics_exporter
 
     async def handle_blocking_timeouts(
         self,
@@ -151,6 +158,21 @@ class BrokerCompletionSupport:
                     )
 
                 if not dlq_success:
+                    if self._metrics_exporter is not None:
+                        recorder = getattr(
+                            self._metrics_exporter,
+                            "record_dlq_publish_failure",
+                            None,
+                        )
+                        if callable(recorder):
+                            try:
+                                recorder(event.tp)
+                            except Exception:
+                                self._logger.exception(
+                                    "DLQ publish failure metric recording failed for %s@%d",
+                                    event.tp,
+                                    event.offset,
+                                )
                     self._pending_dlq_events[pending_key] = event
                     self._logger.error(
                         "DLQ publish failed for %s@%d, skipping commit and retaining cache for retry",
