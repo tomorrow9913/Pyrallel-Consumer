@@ -271,7 +271,8 @@ def _evaluate_matrix(
     for combination, threshold in RELEASE_THRESHOLDS.items():
         entries = grouped[combination]
         label = "/".join(combination)
-        if len(entries) < required_repetitions:
+        distinct_artifact_count = len({path.resolve() for path, _result, _ in entries})
+        if distinct_artifact_count < required_repetitions:
             checks.append(
                 _check(
                     "repetitions",
@@ -279,7 +280,7 @@ def _evaluate_matrix(
                     "release gate requires repeated runs per combination",
                     combination=label,
                     expected=required_repetitions,
-                    actual=len(entries),
+                    actual=distinct_artifact_count,
                 )
             )
             continue

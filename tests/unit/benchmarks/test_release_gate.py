@@ -152,6 +152,25 @@ def test_evaluate_release_gate_requires_repeated_full_release_matrix(
     assert "repetitions" in failed_codes
 
 
+def test_evaluate_release_gate_counts_repetitions_by_distinct_artifact(
+    tmp_path: Path,
+) -> None:
+    duplicate_rows = _passing_summary()
+    results = duplicate_rows["results"]
+    assert isinstance(results, list)
+    results.extend(dict(result) for result in list(results))
+    path = tmp_path / "single-with-duplicates.json"
+    path.write_text(json.dumps(duplicate_rows), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate([path])
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "repetitions" in failed_codes
+
+
 def test_cli_emits_machine_readable_no_go_and_nonzero_exit(tmp_path: Path) -> None:
     path = tmp_path / "single.json"
     path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
