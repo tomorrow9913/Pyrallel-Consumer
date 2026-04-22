@@ -44,6 +44,8 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | Number of completed messages (success/failure) |
+| `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | Final offset commit failures by fixed reason |
+| `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | Terminal DLQ publish failures that retain offsets pending retry |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | End-to-end processing latency (WorkManager submit → completion) |
 | `consumer_in_flight_count` | Gauge | – | Current in-flight message count |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |
@@ -69,6 +71,9 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
+For failure alerting, use `consumer_commit_failures_total{reason="kafka_exception"}`
+for final Kafka commit failures and `consumer_dlq_publish_failures_total` for
+terminal DLQ publish failures.
 
 ### Runtime Snapshot API
 

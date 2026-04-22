@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Optional
 
 from confluent_kafka import OFFSET_INVALID, Consumer, KafkaException
@@ -146,6 +147,9 @@ class BrokerRebalanceSupport:
         drop_cached_partition_messages,
         strategy: str,
         logger,
+        record_commit_failure: Optional[
+            Callable[[DtoTopicPartition, str], None]
+        ] = None,
     ) -> None:
         tp_dtos = [
             DtoTopicPartition(topic=tp.topic, partition=tp.partition)
@@ -191,5 +195,7 @@ class BrokerRebalanceSupport:
                         safe_offset + 1,
                         exc,
                     )
+                    if record_commit_failure is not None:
+                        record_commit_failure(tp_dto, "kafka_exception")
 
             del offset_trackers[tp_dto]

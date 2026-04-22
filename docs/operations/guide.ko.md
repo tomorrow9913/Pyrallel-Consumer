@@ -48,6 +48,13 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `timer` 비중이 높고 `consumer_process_batch_avg_size`가 낮으면 batching 효율이 떨어진 상태입니다. 지연 예산이 허용하면 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리는 쪽을 검토하십시오.
     - `demand`가 계속 증가하면 latency-first 강제 flush가 많다는 뜻입니다. `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, ordering skew를 함께 확인하십시오.
 
+### 1.6a. Commit / DLQ 실패 Counter
+- **Prometheus 쿼리**:
+    - `consumer_commit_failures_total{reason="kafka_exception"}`
+    - `consumer_dlq_publish_failures_total`
+- **의미**: 이 counter들은 lag/gap 증상으로만 보일 수 있는 release-critical 실패를 직접 구분합니다. Commit 실패는 broker commit 경계의 replay risk를 뜻하고, DLQ publish 실패는 terminal 실패 메시지를 DLQ에 publish하지 못해 offset이 retry 대기 상태로 유지됨을 뜻합니다.
+- **운영 팁**: 값이 증가하면 즉시 알림을 권장합니다. Commit 실패는 Kafka coordinator 상태, ACL, broker 연결을 확인하십시오. DLQ publish 실패는 DLQ topic 존재 여부, producer ACL, payload size 제한, broker 가용성을 먼저 복구한 뒤 consumer 재시작/확장을 검토하십시오.
+
 ### 1.7. Process Batch Buffer Health (버퍼 적체 상태)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_avg_size`

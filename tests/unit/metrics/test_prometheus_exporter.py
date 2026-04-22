@@ -161,6 +161,40 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
     assert exporter._resource_memory_utilization_gauge._value.get() == 0
 
 
+def test_exporter_registers_and_increments_failure_counters() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+    tp = TopicPartition(topic="topic-a", partition=0)
+
+    exporter.record_commit_failure(tp, reason="kafka_exception")
+    exporter.record_commit_failure(tp, reason="kafka_exception")
+    exporter.record_dlq_publish_failure(tp)
+
+    commit_failure = exporter._commit_failures_total.labels(
+        topic="topic-a", partition="0", reason="kafka_exception"
+    )._value.get()
+    dlq_failure = exporter._dlq_publish_failures_total.labels(
+        topic="topic-a", partition="0"
+    )._value.get()
+
+    assert commit_failure == 2
+    assert dlq_failure == 1
+
+
+def test_exporter_rejects_unknown_commit_failure_reason() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    with pytest.raises(ValueError, match="Unknown commit failure reason"):
+        exporter.record_commit_failure(
+            TopicPartition(topic="topic-a", partition=0), reason="exception text"
+        )
+
+
 def test_exporter_closes_http_server_when_enabled(monkeypatch):
     registry = CollectorRegistry()
     closed = {"shutdown": 0, "server_close": 0, "join": 0}

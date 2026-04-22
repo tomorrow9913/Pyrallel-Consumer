@@ -48,6 +48,13 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - If `timer` dominates and `consumer_process_batch_avg_size` stays low, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` only if the latency budget allows it.
     - If `demand` keeps growing, the workload is spending more time on latency-first forced flushes than on full batches. Revisit `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, and ordering skew together.
 
+### 1.6a. Commit and DLQ Failure Counters
+- **Prometheus queries**:
+    - `consumer_commit_failures_total{reason="kafka_exception"}`
+    - `consumer_dlq_publish_failures_total`
+- **Meaning**: These counters identify release-critical failures that can otherwise appear only as lag/gap symptoms. Commit failures indicate replay-risk at the broker commit boundary; DLQ publish failures mean a terminal failed message could not be published and the offset remains pending retry.
+- **Tip**: Alert on any increase. For commit failures, check Kafka coordinator health, ACLs, and broker connectivity. For DLQ publish failures, verify DLQ topic existence, producer ACLs, payload size limits, and broker availability before restarting or scaling consumers.
+
 ### 1.7. Process Batch Buffer Health
 - **Prometheus queries**:
     - `consumer_process_batch_avg_size`

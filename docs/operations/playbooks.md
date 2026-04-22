@@ -10,7 +10,8 @@ see [`stable-operations-evidence.md`](./stable-operations-evidence.md).
 - **Resource Constrained**: `max_in_flight=128-256`, `poll_batch_size=200-500`, `process_count=max(1, cpu_count/2)`, `process_config.batch_size=64`, enable backoff (`max_retries=3`, `retry_backoff_ms=1000`).
 
 ## Failure / Recovery Runbook
-- **DLQ publish failures**: watch logs for `DLQ publish failed`; message remains cached. Action: check broker connectivity, DLQ topic ACLs. Retry by restarting consumer after restoring DLQ path.
+- **Commit failures**: alert on any increase in `consumer_commit_failures_total{reason="kafka_exception"}`; offsets may replay after restart. Action: check group coordinator health, broker connectivity, commit ACLs, and recent rebalance noise before scaling.
+- **DLQ publish failures**: watch `consumer_dlq_publish_failures_total` and logs for `DLQ publish failed`; message remains cached and the offset stays pending retry. Action: check broker connectivity, DLQ topic existence, producer ACLs, and payload limits. Retry by restoring the DLQ path; restart only after confirming the counter stops increasing.
 - **Worker crash/timeout**: `CompletionStatus.FAILURE` with attempt=max_retries. Action: inspect worker logs, reduce `task_timeout_ms` for faster detection, increase `max_retries` only with idempotent workers.
 - **Rebalance stalls**: commits paused by gaps; monitor `consumer_parallel_lag` and `consumer_gap_count`. Action: verify `blocking_cache_ttl`, ensure `WorkManager` queues stay bounded (see queue cleanup), consider lowering `poll_batch_size`.
 
@@ -48,7 +49,8 @@ Use this when a new release rollout causes production-impacting regressions.
 ## Observability & Alerts
 - **Backpressure**: `consumer_backpressure_active == 1` for >1 minute -> alert; check `max_in_flight` and queue depth.
 - **Lag/Gap**: `consumer_parallel_lag` or `consumer_gap_count` growing for 5m -> investigate stuck offsets, slow workers.
-- **DLQ**: failure rate >1% or repeated warning logs -> validate DLQ topic and payload mode.
+- **Commit failure counter**: any increase in `consumer_commit_failures_total` -> investigate commit path health and replay risk immediately.
+- **DLQ**: any increase in `consumer_dlq_publish_failures_total`, failure rate >1%, or repeated warning logs -> validate DLQ topic and payload mode.
 - **Oldest task duration**: `consumer_oldest_task_duration_seconds` > timeout -> potential stuck worker; trigger graceful shutdown.
 
 ## Tuning Checklist (stepwise)

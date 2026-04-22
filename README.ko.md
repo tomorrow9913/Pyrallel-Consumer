@@ -51,6 +51,8 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | Metric | Type | Labels | 설명 |
 | --- | --- | --- | --- |
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | 완료된 메시지 수 (성공/실패 구분) |
+| `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | 고정 reason별 최종 offset commit 실패 수 |
+| `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | offset을 retry 대기 상태로 남긴 terminal DLQ publish 실패 수 |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | WorkManager 제출 → Completion 까지의 지연 |
 | `consumer_in_flight_count` | Gauge | – | 현재 인플라이트 메시지 수 |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |
@@ -76,6 +78,9 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | 평균 worker-to-main IPC 시간 |
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
+실패 알림에는 최종 Kafka commit 실패용
+`consumer_commit_failures_total{reason="kafka_exception"}`와 terminal DLQ
+publish 실패용 `consumer_dlq_publish_failures_total`을 사용하십시오.
 
 ### Runtime Snapshot API
 
