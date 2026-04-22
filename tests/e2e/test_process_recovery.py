@@ -610,10 +610,12 @@ def _delete_topic(admin: AdminClient, topic_name: str) -> None:
             raise
 
 
-def _produce_partition_messages(topic: str, partition: int, count: int) -> None:
+def _produce_partition_messages(
+    topic: str, partition: int, count: int, start_sequence: int = 0
+) -> None:
     producer = Producer({"bootstrap.servers": BOOTSTRAP_SERVERS})
     try:
-        for sequence in range(count):
+        for sequence in range(start_sequence, start_sequence + count):
             payload = json.dumps({"sequence": sequence}).encode("utf-8")
             producer.produce(
                 topic=topic,
@@ -931,7 +933,7 @@ async def test_process_restart_preserves_offset_continuity(
     restart_after_commit = 3
 
     _create_topic(admin, topic, num_partitions=1)
-    _produce_partition_messages(topic, partition=partition, count=produced_count)
+    _produce_partition_messages(topic, partition=partition, count=restart_after_commit)
 
     all_entries = []
     committed_before_restart = -1001
@@ -1003,6 +1005,14 @@ async def test_process_restart_preserves_offset_continuity(
             await first_poller.stop()
             await first_engine.shutdown()
 
+        assert committed_before_restart == restart_after_commit
+        _produce_partition_messages(
+            topic,
+            partition=partition,
+            count=produced_count - restart_after_commit,
+            start_sequence=restart_after_commit,
+        )
+
         await second_poller.start()
         try:
             await _wait_until(
@@ -1061,11 +1071,10 @@ async def test_process_restart_preserves_offset_continuity(
         offset for offset, count in Counter(completed_offsets).items() if count > 1
     ]
 
-    assert committed_before_restart >= restart_after_commit
+    assert committed_before_restart == restart_after_commit
     assert set(completed_offsets) == set(range(produced_count))
-    assert (
-        second_completed_offsets
-    ), f"expected post-restart work, got entries={all_entries}"
+    post_restart_message = f"expected post-restart work, got entries={all_entries}"
+    assert second_completed_offsets, post_restart_message
     assert min(second_completed_offsets) >= committed_before_restart, (
         "restart replayed offsets before the last committed position; "
         f"committed_before_restart={committed_before_restart}, "
@@ -1258,7 +1267,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
         await poller.start()
         try:
             await _wait_until(
-                lambda: (int(attempt_counts.get(target_key, 0)) >= max_retries),
+                lambda: int(attempt_counts.get(target_key, 0)) >= max_retries,
                 timeout_seconds=20,
                 message="dlq scenario never exhausted the configured retry count",
             )
@@ -1277,11 +1286,14 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
             await engine.shutdown()
             all_entries = list(shared_results)
 
-        dlq_msg = _consume_single_record(
-            dlq_topic,
-            group_id=_topic_name("process-recovery-dlq-reader"),
-        )
-        _delete_topic(admin, topic)
+        try:
+            dlq_msg = _consume_single_record(
+                dlq_topic,
+                group_id=_topic_name("process-recovery-dlq-reader"),
+            )
+        finally:
+            _delete_topic(admin, dlq_topic)
+            _delete_topic(admin, topic)
 
     completed_entries = [entry for entry in all_entries if entry[0] == "completed"]
     completed_offsets = [entry[3] for entry in completed_entries]
