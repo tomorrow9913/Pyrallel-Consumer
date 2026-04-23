@@ -32,7 +32,7 @@ services:
       - yamong_network
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:v0.7.2
     container_name: kafka-ui
     ports:
       - "8080:8080"
@@ -45,7 +45,7 @@ services:
       - yamong_network
 
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
+    image: danielqsj/kafka-exporter:v1.8.0
     container_name: kafka-exporter
     command:
       - "--kafka.server=kafka-1:29092"
@@ -57,7 +57,7 @@ services:
       - yamong_network
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     container_name: prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro

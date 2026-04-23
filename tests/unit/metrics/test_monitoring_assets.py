@@ -18,6 +18,17 @@ def test_e2e_compose_includes_prometheus_and_grafana_services() -> None:
     assert "../monitoring/grafana/dashboards" in compose_text
 
 
+def test_compose_files_do_not_use_latest_images() -> None:
+    compose_files = [
+        REPO_ROOT / ".github" / "e2e.compose.yml",
+        REPO_ROOT / "docker-compose.yml",
+    ]
+
+    for compose_file in compose_files:
+        compose_text = compose_file.read_text()
+        assert ":latest" not in compose_text, f"found unpinned tag in {compose_file}"
+
+
 def test_grafana_prometheus_datasource_uses_stable_uid() -> None:
     datasource_text = (
         REPO_ROOT

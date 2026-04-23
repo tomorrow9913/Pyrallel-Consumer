@@ -25,7 +25,7 @@ services:
       - yamong_network
 
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
+    image: danielqsj/kafka-exporter:v1.8.0
     command:
       - "--kafka.server=kafka-1:29092"
     ports:
@@ -37,7 +37,7 @@ services:
       - yamong_network
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
