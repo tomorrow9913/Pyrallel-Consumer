@@ -323,6 +323,53 @@ class TestBrokerPollerMetrics:
         assert metrics.adaptive_concurrency.effective_max_in_flight == 40
 
     @pytest.mark.asyncio
+    async def test_get_metrics_aligns_adaptive_backpressure_effective_max_when_runtime_limit_scales_up(
+        self, broker_poller_with_mocks
+    ):
+        broker_poller_with_mocks._adaptive_backpressure_controller = (
+            AdaptiveBackpressureController(
+                configured_max_in_flight=100,
+                config=AdaptiveBackpressureConfig(
+                    enabled=True,
+                    min_in_flight=8,
+                    scale_up_step=16,
+                    scale_down_step=16,
+                    cooldown_ms=1000,
+                    lag_scale_up_threshold=2500,
+                    low_latency_threshold_ms=25.0,
+                    high_latency_threshold_ms=125.0,
+                ),
+            )
+        )
+        broker_poller_with_mocks._adaptive_concurrency_controller = (
+            AdaptiveConcurrencyController(
+                AdaptiveConcurrencyConfig(
+                    enabled=True,
+                    min_in_flight=10,
+                    scale_up_step=8,
+                    scale_down_step=16,
+                    cooldown_ms=500,
+                ),
+                configured_max_in_flight=100,
+            )
+        )
+        broker_poller_with_mocks._adaptive_backpressure_controller.evaluate(
+            total_true_lag=0,
+            total_queued=10,
+            avg_completion_latency_seconds=0.5,
+            is_paused=True,
+            now_monotonic=1.0,
+        )
+        broker_poller_with_mocks._set_runtime_max_in_flight(60, log_change=False)
+
+        metrics = broker_poller_with_mocks.get_metrics()
+
+        assert metrics.adaptive_backpressure is not None
+        assert metrics.adaptive_backpressure.effective_max_in_flight == 60
+        assert metrics.adaptive_concurrency is not None
+        assert metrics.adaptive_concurrency.effective_max_in_flight == 60
+
+    @pytest.mark.asyncio
     async def test_get_runtime_snapshot_projects_runtime_state(
         self, broker_poller_with_mocks, mock_work_manager, mock_offset_tracker
     ):

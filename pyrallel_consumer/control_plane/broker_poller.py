@@ -1112,16 +1112,11 @@ class BrokerPoller:
                     avg_completion_latency_seconds=avg_completion_latency
                 )
             )
-            # Avoid exposing a stale backpressure cap when adaptive concurrency has
-            # tightened MAX_IN_FLIGHT_MESSAGES after the backpressure evaluator ran.
+            # Export the true live runtime cap for the backpressure snapshot too.
+            # Adaptive concurrency can change MAX_IN_FLIGHT_MESSAGES after the
+            # backpressure evaluator runs, in either direction.
             if adaptive_backpressure_snapshot is not None:
-                normalized_backpressure_cap = max(
-                    1,
-                    min(
-                        int(self.MAX_IN_FLIGHT_MESSAGES),
-                        int(adaptive_backpressure_snapshot.effective_max_in_flight),
-                    ),
-                )
+                normalized_backpressure_cap = max(1, int(self.MAX_IN_FLIGHT_MESSAGES))
                 if (
                     normalized_backpressure_cap
                     != adaptive_backpressure_snapshot.effective_max_in_flight
