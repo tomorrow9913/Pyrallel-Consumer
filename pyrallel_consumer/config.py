@@ -472,9 +472,7 @@ class KafkaConfig(BaseSettings):
         if not include_secrets:
             _exclude.update({"sasl_password", "ssl_key_password"})
 
-        conf: dict[str, object] = {}
-        if include_secrets:
-            conf["bootstrap.servers"] = self._bootstrap_servers_csv()
+        conf: dict[str, object] = {"bootstrap.servers": self._bootstrap_servers_csv()}
 
         for k, v in data.items():
             if k in _exclude:

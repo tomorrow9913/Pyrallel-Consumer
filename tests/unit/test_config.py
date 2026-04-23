@@ -343,6 +343,7 @@ def test_kafka_config_includes_allowlisted_security_fields_in_client_configs() -
 def test_kafka_config_masks_secret_security_fields_in_snapshots() -> None:
     config = KafkaConfig(
         _env_file=None,
+        bootstrap_servers=["secure-1:9093", "secure-2:9093"],
         security_protocol="SASL_SSL",
         sasl_username="pyrallel-user",
         sasl_password="super-secret",
@@ -350,12 +351,14 @@ def test_kafka_config_masks_secret_security_fields_in_snapshots() -> None:
     )
 
     dumped_json = config.model_dump_json()
-    rdkafka_snapshot = repr(config.dump_to_rdkafka())
+    redacted_snapshot = config.dump_to_rdkafka()
+    rdkafka_snapshot = repr(redacted_snapshot)
 
     assert "super-secret" not in dumped_json
     assert "key-secret" not in dumped_json
     assert "super-secret" not in rdkafka_snapshot
     assert "key-secret" not in rdkafka_snapshot
+    assert redacted_snapshot["bootstrap.servers"] == "secure-1:9093,secure-2:9093"
 
 
 def test_kafka_config_get_rdkafka_config_includes_secret_security_fields() -> None:

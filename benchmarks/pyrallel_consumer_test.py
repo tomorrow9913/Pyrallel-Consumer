@@ -495,12 +495,6 @@ async def run_pyrallel_consumer_test(
     run_completed = False
     metrics_start = time.perf_counter()
 
-    def _record_release_gate_metrics() -> None:
-        if stats is None:
-            return
-        metrics = broker_poller.get_metrics()
-        _record_release_gate_metrics_from_snapshot(metrics)
-
     def _record_release_gate_metrics_from_snapshot(metrics: SystemMetrics) -> None:
         if stats is None:
             return
