@@ -9,7 +9,9 @@ For the preserved Korean source text, see [01-requirements.ko.md](./01-requireme
 The benchmark runtime must:
 
 - compare the baseline consumer and Pyrallel async/process modes under the same workload, ordering, partition-count, and message-count inputs;
-- support both non-interactive CLI execution and an interactive Textual TUI that emits the same benchmark command surface;
+- support both non-interactive CLI execution and an interactive Textual TUI that
+  covers the common benchmark workflow without claiming parity with every
+  advanced CLI-only matrix or profiling flag;
 - persist machine-readable benchmark summaries and optional profiling artifacts;
 - document how throughput, total runtime, and per-message latency should be read together;
 - keep benchmark-only conveniences such as topic reset, profiling, and metrics exposure outside the production control-plane contract.

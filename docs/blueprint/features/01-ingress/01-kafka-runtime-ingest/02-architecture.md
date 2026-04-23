@@ -58,9 +58,9 @@ flowchart LR
    constructs `BrokerPoller`.
 2. `PyrallelConsumer.start()` acquires an optional metrics exporter and delegates
    runtime startup to `BrokerPoller.start()`.
-3. `BrokerPoller.start()` validates topic-facing inputs, creates Kafka clients,
-   starts the consume task, and conditionally starts the completion-monitor task
-   when `strict_completion_monitor_enabled=true`.
+3. `BrokerPoller.start()` creates Kafka clients, starts the consume task, and
+   conditionally starts the completion-monitor task when
+   `strict_completion_monitor_enabled=true`.
 4. The Kafka `Consumer` yields records into `BrokerPoller`, which preserves
    topic, partition, offset, key, and payload when preparing `WorkItem`
    submission.
@@ -90,7 +90,9 @@ flowchart LR
 
 ## 6. Failure boundaries
 
-- Topic validation failures must surface before the consume loop begins.
+- Topic-name validation is currently explicit in the DLQ publish path and should
+  not be described as an unconditional `BrokerPoller.start()` fail-fast step
+  unless startup code is changed to enforce it there.
 - Kafka client initialization failures surface as `PyrallelConsumer.start()`
   failures after facade cleanup.
 - Fatal consume-loop errors are captured by the broker task lifecycle support

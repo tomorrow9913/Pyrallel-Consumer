@@ -85,7 +85,7 @@ The workload selector changes only the worker function cost model; it does not a
 | JSON release-gate evidence | the same JSON payload carries `metrics_observations`, final lag/gap fields, and `performance_improvements` so repeated artifacts can be evaluated by `benchmarks.release_gate` without scraping console output |
 | yappi artifacts | `.prof` files under the configured profile directory |
 | py-spy artifacts | format-specific files under the configured py-spy output directory |
-| TUI output | live progress, parsed status/logs, and a rendered results summary for the same command surface |
+| TUI output | live progress, parsed status/logs, and a rendered results summary for the common benchmark workflow; some advanced matrix/profiling flags remain CLI-only |
 
 ## 6. Interpretation rules
 
