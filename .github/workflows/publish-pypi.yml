@@ -97,7 +97,7 @@ jobs:
             ${{ steps.release_artifacts.outputs.sdist_path }}
             ${{ steps.release_artifacts.outputs.wheel_path }}
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
           path: |
