@@ -19,6 +19,7 @@ def mock_kafka_config():
     config.BOOTSTRAP_SERVERS = ["broker:9092"]
     config.get_consumer_config.return_value = {"group.id": "test_group"}
     config.get_producer_config.return_value = {}
+    config.get_admin_config.return_value = {"bootstrap.servers": "broker:9092"}
 
     parallel_consumer_mock = MagicMock()
     parallel_consumer_mock.poll_batch_size = 1000
@@ -1049,7 +1050,7 @@ async def test_start_skips_completion_monitor_when_disabled(
     assert broker_poller._consumer_task is created_tasks[0][1]
     assert created_tasks == [("broker-poller-loop", created_tasks[0][1])]
     mock_producer.assert_called_once()
-    mock_admin.assert_called_once()
+    mock_admin.assert_called_once_with({"bootstrap.servers": "broker:9092"})
     mock_consumer_ctor.assert_called_once()
 
 

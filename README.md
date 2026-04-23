@@ -197,6 +197,50 @@ KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async  # or process
 ```
 
+### Secure Kafka connections (`KafkaConfig`)
+
+`KafkaConfig` exposes an allowlisted librdkafka security surface for secured
+clusters. The fields are forwarded to consumer, producer, and admin clients
+without using ad-hoc config injection. Keep secret values in environment
+variables or a deployment secret store; do not commit them to `.env` files that
+leave your workstation.
+
+| Env | Python field | librdkafka key | Notes |
+| --- | --- | --- | --- |
+| `KAFKA_SECURITY_PROTOCOL` | `security_protocol` | `security.protocol` | Common values: `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, `SASL_SSL` |
+| `KAFKA_SASL_MECHANISMS` | `sasl_mechanisms` | `sasl.mechanisms` | For example `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
+| `KAFKA_SASL_USERNAME` | `sasl_username` | `sasl.username` | Treat as sensitive |
+| `KAFKA_SASL_PASSWORD` | `sasl_password` | `sasl.password` | Secret; must not appear in logs or snapshots |
+| `KAFKA_SSL_CA_LOCATION` | `ssl_ca_location` | `ssl.ca.location` | CA bundle path |
+| `KAFKA_SSL_CERTIFICATE_LOCATION` | `ssl_certificate_location` | `ssl.certificate.location` | Client certificate path for mTLS |
+| `KAFKA_SSL_KEY_LOCATION` | `ssl_key_location` | `ssl.key.location` | Client private key path; treat path and file as sensitive |
+| `KAFKA_SSL_KEY_PASSWORD` | `ssl_key_password` | `ssl.key.password` | Secret for encrypted client keys; must not appear in logs or snapshots |
+
+SASL over TLS example:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093,broker-2.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SASL_SSL
+KAFKA_SASL_MECHANISMS=SCRAM-SHA-512
+KAFKA_SASL_USERNAME=pyrallel-consumer
+KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+```
+
+mTLS example:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SSL
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+KAFKA_SSL_CERTIFICATE_LOCATION=/etc/pyrallel/kafka/client.crt
+KAFKA_SSL_KEY_LOCATION=/etc/pyrallel/kafka/client.key
+KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+```
+
+See [Secure Kafka configuration](./docs/operations/secure-kafka-config.md) for
+operator guidance, review checks, and secret-handling expectations.
+
 ## 🔁 Retry & DLQ
 
 Pyrallel Consumer supports automatic retries and DLQ publishing.

@@ -208,6 +208,50 @@ KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async # 또는 process
 ```
 
+#### 보안 Kafka 연결 (`KafkaConfig`)
+
+`KafkaConfig`는 보안 Kafka 클러스터 연결을 위해 allowlist 방식의
+librdkafka 보안 설정 표면을 제공합니다. 이 값들은 consumer, producer,
+admin client 설정으로 전달되며 임의 config injection을 요구하지 않습니다.
+비밀번호와 키 파일은 환경 변수 또는 배포 secret store에 보관하고, 공유되는
+`.env` 파일이나 로그/스냅샷에 남기지 마세요.
+
+| 환경 변수 | Python 필드 | librdkafka 키 | 메모 |
+| --- | --- | --- | --- |
+| `KAFKA_SECURITY_PROTOCOL` | `security_protocol` | `security.protocol` | 예: `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, `SASL_SSL` |
+| `KAFKA_SASL_MECHANISMS` | `sasl_mechanisms` | `sasl.mechanisms` | 예: `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
+| `KAFKA_SASL_USERNAME` | `sasl_username` | `sasl.username` | 민감 정보로 취급 |
+| `KAFKA_SASL_PASSWORD` | `sasl_password` | `sasl.password` | secret; 로그와 스냅샷에 노출 금지 |
+| `KAFKA_SSL_CA_LOCATION` | `ssl_ca_location` | `ssl.ca.location` | CA bundle 경로 |
+| `KAFKA_SSL_CERTIFICATE_LOCATION` | `ssl_certificate_location` | `ssl.certificate.location` | mTLS client certificate 경로 |
+| `KAFKA_SSL_KEY_LOCATION` | `ssl_key_location` | `ssl.key.location` | client private key 경로; 파일 권한 주의 |
+| `KAFKA_SSL_KEY_PASSWORD` | `ssl_key_password` | `ssl.key.password` | 암호화된 client key용 secret; 로그와 스냅샷에 노출 금지 |
+
+SASL over TLS 예시:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093,broker-2.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SASL_SSL
+KAFKA_SASL_MECHANISMS=SCRAM-SHA-512
+KAFKA_SASL_USERNAME=pyrallel-consumer
+KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+```
+
+mTLS 예시:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SSL
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+KAFKA_SSL_CERTIFICATE_LOCATION=/etc/pyrallel/kafka/client.crt
+KAFKA_SSL_KEY_LOCATION=/etc/pyrallel/kafka/client.key
+KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+```
+
+운영 지침, review checklist, secret 취급 기준은
+[Secure Kafka configuration](./docs/operations/secure-kafka-config.md)을 참고하세요.
+
 ### 재시도 및 DLQ (Dead Letter Queue) 설정
 
 Pyrallel Consumer는 실패한 메시지에 대한 자동 재시도와 DLQ 퍼블리싱을 지원합니다.
