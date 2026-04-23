@@ -97,6 +97,7 @@ Interpretation rules:
 - `queue.configured_max_in_flight` is the static configured ceiling.
 - When adaptive concurrency/backpressure is disabled, the optional adaptive sections may be absent even though queue state still exists.
 - The runtime snapshot is a diagnostics surface. It is not an audit log, retry ledger, DLQ history, or payload dump.
+- The runtime snapshot must not expose secure Kafka transport fields, SASL/TLS secrets, usernames, or certificate/key paths; those remain ingress config inputs, not observability outputs.
 
 ## 4. Benchmark/runtime exposure boundary
 

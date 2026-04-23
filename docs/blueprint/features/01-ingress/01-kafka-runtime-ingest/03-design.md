@@ -24,11 +24,32 @@ runtime contract.
 | `KAFKA_AUTO_OFFSET_RESET` | Initial read position for partitions without a committed offset | `earliest` |
 | `KAFKA_ENABLE_AUTO_COMMIT` | Whether librdkafka auto-commit is enabled | `false` |
 | `KAFKA_SESSION_TIMEOUT_MS` | Consumer session timeout | `60000` |
+| `KAFKA_SECURITY_PROTOCOL` | Allowlisted transport/auth mode for consumer, producer, and admin clients | unset |
+| `KAFKA_SASL_MECHANISMS` | Optional SASL mechanism forwarded to all Kafka clients | unset |
+| `KAFKA_SASL_USERNAME` | Optional SASL principal for secure Kafka deployments | unset |
+| `KAFKA_SASL_PASSWORD` | Optional SASL secret stored as `SecretStr` and excluded from redacted dumps | unset |
+| `KAFKA_SSL_CA_LOCATION` | Optional CA bundle path for TLS broker verification | unset |
+| `KAFKA_SSL_CERTIFICATE_LOCATION` | Optional client certificate path for mTLS | unset |
+| `KAFKA_SSL_KEY_LOCATION` | Optional client private key path for mTLS | unset |
+| `KAFKA_SSL_KEY_PASSWORD` | Optional encrypted private-key secret stored as `SecretStr` | unset |
 | `PARALLEL_CONSUMER_POLL_BATCH_SIZE` | Maximum poll batch size seen by the broker loop | `1000` |
 | `PARALLEL_CONSUMER_QUEUE_MAX_MESSAGES` | Backpressure queue ceiling for queued work | `5000` |
 | `PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES` | Raw DLQ payload cache budget | `67108864` |
+| `PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED` | Whether `BrokerPoller.start()` creates the dedicated completion-monitor task or keeps completion draining inline with the consume loop | `true` |
 | `EXECUTION_MAX_IN_FLIGHT` | Runtime in-flight ceiling used for pause/resume hysteresis | `1000` |
 | `EXECUTION_CONSUMER_TASK_STOP_TIMEOUT_MS` | How long stop waits for the consume task to exit after fetches halt | `5000` |
+
+Secure Kafka config stays intentionally allowlisted. `KafkaConfig` accepts only
+the documented TLS/SASL fields and translates them into the matching
+`librdkafka` keys for consumer, producer, and admin helpers. The blueprint does
+not treat arbitrary pass-through client config as part of this ingress contract.
+
+When secure fields are unset or empty, the runtime omits them instead of
+forwarding blank values. Password-bearing fields stay typed as `SecretStr`, and
+redacted config snapshots must exclude `sasl.password` and
+`ssl.key.password`. Operator-facing docs may mention coarse secure-mode state,
+but they must not publish principals, file paths, or secret values in examples,
+metrics, or runtime snapshots.
 
 ## 3. Facade contract
 
@@ -51,6 +72,9 @@ The facade assembles core runtime state in this fixed order:
 `stop()` stops the poller first, publishes a final metrics snapshot, then shuts
 down the execution engine.
 `wait_closed()` passively surfaces fatal broker-loop errors.
+`get_runtime_snapshot()` returns the poller-owned read-only diagnostics
+projection without exposing secure Kafka client settings or mutating runtime
+state.
 
 ## 4. Ingest output contract
 
@@ -87,6 +111,13 @@ The ingest layer must also preserve enough context to:
 ## 6. Lifecycle rules
 
 - `BrokerPoller.start()` owns Kafka client construction and task startup.
+- `strict_completion_monitor_enabled=true` means `BrokerPoller` starts a
+  dedicated completion-monitor task that waits on execution completions even
+  while the consumer loop is otherwise idle.
+- `strict_completion_monitor_enabled=false` means no separate completion task is
+  created; the consumer loop still drains completion events before commit
+  planning, so the difference is wakeup latency and task topology rather than
+  offset-safety semantics.
 - The consume loop polls with a short idle timeout when the system has no
   backlog, and uses immediate drain behavior when queued or in-flight work
   already exists.

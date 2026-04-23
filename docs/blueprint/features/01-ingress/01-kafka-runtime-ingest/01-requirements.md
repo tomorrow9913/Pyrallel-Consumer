@@ -19,7 +19,8 @@ control plane for scheduling.
 - `BrokerPoller` must be the only Kafka poll loop entrypoint for normal
   runtime consumption.
 - The ingest runtime must own Kafka topic validation, Kafka client creation,
-  main consume loop startup, and completion-monitor lifecycle.
+  main consume loop startup, strict-completion-monitor lifecycle, and the
+  read-only runtime-snapshot handoff surfaced by the facade.
 - The ingest runtime must maintain a bounded raw payload cache when DLQ full
   payload mode is enabled.
 
@@ -34,6 +35,9 @@ control plane for scheduling.
 - The runtime must pause Kafka fetches when control-plane load exceeds the
   configured limit and resume only after hysteresis thresholds are satisfied.
 - Invalid topic names must fail before worker execution begins.
+- `PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED=false` may remove the
+  dedicated completion-monitor task, but it must not change completion-drain,
+  commit-safety, or shutdown-drain correctness.
 - `PyrallelConsumer.stop()` must stop the poller and then shut down the
   execution engine.
 - `PyrallelConsumer.wait_closed()` must surface fatal background consume-loop
@@ -46,6 +50,10 @@ control plane for scheduling.
   process-specific internals.
 - Kafka client lifecycle paths must have explicit teardown behavior for normal
   shutdown and failed startup.
+- Secure Kafka client settings may flow through `KafkaConfig` helper builders,
+  but ingress/runtime docs and examples must not expose TLS/SASL secret values,
+  usernames, certificate/key paths, or runtime-snapshot/log artifacts that
+  would leak them.
 - Raw payload retention must obey a bounded memory policy and evict oldest
   cached entries first.
 - DLQ payload preservation must never take priority over offset correctness or
@@ -65,6 +73,7 @@ control plane for scheduling.
 - Normalized `WorkItem` submission inputs for `WorkManager`
 - Bounded raw payload cache entries used by the DLQ path
 - Fetch and queue state needed to project `SystemMetrics` and runtime snapshots
+- Read-only diagnostics returned by `PyrallelConsumer.get_runtime_snapshot()`
 
 ## 6. MVP boundary
 
@@ -87,5 +96,7 @@ control plane for scheduling.
   facade, not a second scheduler or commit state owner.
 - The document must make it explicit that `BrokerPoller` is both the Kafka
   ingest entrypoint and the commit coordinator.
+- The document must make it explicit that the strict completion monitor is an
+  optional wake-up task, not a second source of runtime truth.
 - The document must make it explicit that the raw payload cache is a best-effort
   DLQ aid, not an authoritative delivery-state store.
