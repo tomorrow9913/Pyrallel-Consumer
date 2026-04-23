@@ -45,6 +45,10 @@ def _workflow_triggers(text: dict[str, Any]) -> dict[str, Any]:
     raise KeyError("Workflow trigger section not found")
 
 
+def _normalized_subject_lines(subject_text: str) -> list[str]:
+    return [line.strip() for line in subject_text.splitlines() if line.strip()]
+
+
 def test_ci_release_verify_and_publish_quality_jobs_run_lockfile_sca_gate() -> None:
     ci = _load_yaml(CI_WORKFLOW)
     _assert_sca_gate_steps(ci["jobs"], "quality")
@@ -82,9 +86,13 @@ def test_publish_workflow_attests_built_distribution_artifacts() -> None:
         None,
     )
     assert attest_step is not None
-    subject_path = attest_step["with"]["subject-path"].strip()  # type: ignore[index]
-    assert "${{ steps.release_artifacts.outputs.sdist_path }}" in subject_path
-    assert "${{ steps.release_artifacts.outputs.wheel_path }}" in subject_path
+    subject_lines = _normalized_subject_lines(
+        attest_step["with"]["subject-path"]  # type: ignore[index]
+    )
+    assert subject_lines == [
+        "${{ steps.release_artifacts.outputs.sdist_path }}",
+        "${{ steps.release_artifacts.outputs.wheel_path }}",
+    ]
     assert any(
         step.get("uses") == "pypa/gh-action-pypi-publish@release/v1"
         for step in publish_job["steps"]
@@ -111,9 +119,13 @@ def test_release_verify_attests_built_distribution_artifacts() -> None:
         None,
     )
     assert attest_step is not None
-    subject_path = attest_step["with"]["subject-path"].strip()  # type: ignore[index]
-    assert "${{ steps.release_artifacts.outputs.sdist_path }}" in subject_path
-    assert "${{ steps.release_artifacts.outputs.wheel_path }}" in subject_path
+    subject_lines = _normalized_subject_lines(
+        attest_step["with"]["subject-path"]  # type: ignore[index]
+    )
+    assert subject_lines == [
+        "${{ steps.release_artifacts.outputs.sdist_path }}",
+        "${{ steps.release_artifacts.outputs.wheel_path }}",
+    ]
 
 
 def test_release_verify_triggers_on_supply_chain_controls() -> None:
