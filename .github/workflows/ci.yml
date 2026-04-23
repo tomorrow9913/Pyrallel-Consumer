@@ -12,9 +12,13 @@ on:
       - ".github/compatibility-matrix.json"
       - ".github/e2e.compose.yml"
       - ".github/workflows/compatibility-matrix.yml"
+      - ".github/workflows/publish-pypi.yml"
+      - ".github/workflows/release-verify.yml"
+      - ".github/dependabot.yml"
       - "docs/operations/**"
       - "scripts/compatibility_matrix.py"
       - "tests/unit/test_compatibility_matrix_assets.py"
+      - "tests/unit/test_supply_chain_assets.py"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main, develop]
@@ -27,9 +31,13 @@ on:
       - ".github/compatibility-matrix.json"
       - ".github/e2e.compose.yml"
       - ".github/workflows/compatibility-matrix.yml"
+      - ".github/workflows/publish-pypi.yml"
+      - ".github/workflows/release-verify.yml"
+      - ".github/dependabot.yml"
       - "docs/operations/**"
       - "scripts/compatibility_matrix.py"
       - "tests/unit/test_compatibility_matrix_assets.py"
+      - "tests/unit/test_supply_chain_assets.py"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -170,6 +178,14 @@ jobs:
       - name: Sync locked dependencies
         run: |
           uv sync --frozen --group dev
+      - name: Export locked requirements for SCA
+        run: |
+          mkdir -p .artifacts
+          uv export --frozen --format requirements.txt --all-groups --no-hashes --no-emit-project \
+            --output-file .artifacts/locked-requirements.txt
+      - name: Run lockfile SCA audit
+        run: |
+          uv run pip-audit --no-deps --disable-pip -r .artifacts/locked-requirements.txt
       - name: Run Bandit
         run: |
           uv run bandit -q -lll -r pyrallel_consumer
