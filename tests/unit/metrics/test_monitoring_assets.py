@@ -113,11 +113,16 @@ def test_grafana_dashboard_includes_process_batch_panels() -> None:
     assert "Process batch flushes" in panel_titles
     assert "Process batch sizing" in panel_titles
     assert "Process batch timing" in panel_titles
+    assert "Adaptive control caps" in panel_titles
+    assert "Adaptive control parameters" in panel_titles
     assert 'consumer_process_batch_flush_count{reason="timer"}' in expressions
     assert "consumer_process_batch_avg_size" in expressions
     assert "consumer_process_batch_avg_main_to_worker_ipc_seconds" in expressions
     assert "consumer_process_batch_avg_worker_exec_seconds" in expressions
     assert "consumer_process_batch_avg_worker_to_main_ipc_seconds" in expressions
+    assert "consumer_adaptive_backpressure_effective_max_in_flight" in expressions
+    assert "consumer_adaptive_concurrency_effective_max_in_flight" in expressions
+    assert "consumer_adaptive_backpressure_last_decision" in expressions
 
 
 def test_operations_guides_use_regex_for_process_flush_reason_set() -> None:

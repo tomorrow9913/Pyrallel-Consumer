@@ -188,6 +188,8 @@ class BrokerRuntimeSupport:
             total_in_flight=self._work_manager.get_total_in_flight_count(),
             is_paused=self._is_paused,
             partitions=partition_metrics_list,
+            adaptive_backpressure=self._adaptive_backpressure,
+            adaptive_concurrency=self._adaptive_concurrency,
         )
 
     def build_runtime_snapshot(self) -> RuntimeSnapshot:

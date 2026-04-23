@@ -6,6 +6,7 @@ import inspect
 import random
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
@@ -1087,6 +1088,8 @@ class BrokerPoller:
             total_in_flight=metrics.total_in_flight,
             is_paused=metrics.is_paused,
             partitions=metrics.partitions,
+            adaptive_backpressure=metrics.adaptive_backpressure,
+            adaptive_concurrency=metrics.adaptive_concurrency,
             process_batch_metrics=(
                 runtime_metrics
                 if isinstance(runtime_metrics, ProcessBatchMetrics)
@@ -1109,6 +1112,19 @@ class BrokerPoller:
                     avg_completion_latency_seconds=avg_completion_latency
                 )
             )
+            # Export the true live runtime cap for the backpressure snapshot too.
+            # Adaptive concurrency can change MAX_IN_FLIGHT_MESSAGES after the
+            # backpressure evaluator runs, in either direction.
+            if adaptive_backpressure_snapshot is not None:
+                normalized_backpressure_cap = max(1, int(self.MAX_IN_FLIGHT_MESSAGES))
+                if (
+                    normalized_backpressure_cap
+                    != adaptive_backpressure_snapshot.effective_max_in_flight
+                ):
+                    adaptive_backpressure_snapshot = replace(
+                        adaptive_backpressure_snapshot,
+                        effective_max_in_flight=normalized_backpressure_cap,
+                    )
         adaptive_concurrency_snapshot = None
         if self._adaptive_concurrency_controller.enabled:
             adaptive_concurrency_snapshot = (

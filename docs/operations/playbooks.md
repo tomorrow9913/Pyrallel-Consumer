@@ -49,6 +49,17 @@ Use this when a new release rollout causes production-impacting regressions.
 ## Observability & Alerts
 - **Backpressure**: `consumer_backpressure_active == 1` for >1 minute -> alert; check `max_in_flight` and queue depth.
 - **Lag/Gap**: `consumer_parallel_lag` or `consumer_gap_count` growing for 5m -> investigate stuck offsets, slow workers.
+- **Adaptive control state**:
+  - Backpressure/Concurrency cap tracking:
+    - `consumer_adaptive_backpressure_configured_max_in_flight`
+    - `consumer_adaptive_backpressure_effective_max_in_flight`
+    - `consumer_adaptive_concurrency_effective_max_in_flight`
+  - Backpressure dynamics:
+    - `consumer_adaptive_backpressure_last_decision`
+    - `consumer_adaptive_backpressure_scale_up_step`
+    - `consumer_adaptive_backpressure_scale_down_step`
+    - `consumer_adaptive_concurrency_scale_up_step`
+    - `consumer_adaptive_concurrency_scale_down_step`
 - **Commit failure counter**: any increase in `consumer_commit_failures_total` -> investigate commit path health and replay risk immediately.
 - **DLQ**: any increase in `consumer_dlq_publish_failures_total`, failure rate >1%, or repeated warning logs -> validate DLQ topic and payload mode.
 - **Oldest task duration**: `consumer_oldest_task_duration_seconds` > timeout -> potential stuck worker; trigger graceful shutdown.
