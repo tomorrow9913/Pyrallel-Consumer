@@ -92,6 +92,28 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 최소 in-flight offset 같은 Process 전용 안전 정보는 `BrokerPoller` 내부의 구체 클래스 분기 대신, 선택적 엔진 capability로 노출되어야 합니다.
 - **운영 팁**: 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
 
+### 1.10. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
+- **Prometheus 쿼리**:
+    - `consumer_adaptive_backpressure_configured_max_in_flight`
+    - `consumer_adaptive_backpressure_effective_max_in_flight`
+    - `consumer_adaptive_backpressure_min_in_flight`
+    - `consumer_adaptive_backpressure_scale_up_step`
+    - `consumer_adaptive_backpressure_scale_down_step`
+    - `consumer_adaptive_backpressure_cooldown_ms`
+    - `consumer_adaptive_backpressure_lag_scale_up_threshold`
+    - `consumer_adaptive_backpressure_low_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_high_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_avg_completion_latency_seconds`
+    - `consumer_adaptive_backpressure_last_decision`
+    - `consumer_adaptive_concurrency_configured_max_in_flight`
+    - `consumer_adaptive_concurrency_effective_max_in_flight`
+    - `consumer_adaptive_concurrency_min_in_flight`
+    - `consumer_adaptive_concurrency_scale_up_step`
+    - `consumer_adaptive_concurrency_scale_down_step`
+    - `consumer_adaptive_concurrency_cooldown_ms`
+- **의미**: 위 게이지는 adaptive backpressure/adaptive concurrency의 현재 런타임 의사결정값과 설정 값을 함께 보여줍니다. `max_in_flight` 튜닝과 진동(oscillation) 분석에 유용합니다.
+- **운영 팁**: `*_effective_*` 값이 낮은 상태에서 `consumer_backpressure_active == 1`와 `consumer_in_flight_count`가 동시에 높으면, 급격한 동시성 변경이 지속되지 않도록 하여 IPC/워커 처리 지연부터 확인하세요.
+
 ## 2. 튜닝 가이드
 
 ### 2.1. `max_in_flight_messages` (Control Plane)
@@ -176,6 +198,20 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: 세 값을 분리해서 보면 병목이 serialization/IPC인지, 실제 worker 실행인지, completion 회수인지 빠르게 구분할 수 있습니다.
+
+### 4.5. Adaptive Control Runtime (Row)
+- **Adaptive Backpressure Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_backpressure_configured_max_in_flight`, `consumer_adaptive_backpressure_effective_max_in_flight`
+- **Adaptive Concurrency Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_concurrency_configured_max_in_flight`, `consumer_adaptive_concurrency_effective_max_in_flight`
+- **Adaptive Decision Input**:
+    - Type: Time Series
+    - Query: `consumer_adaptive_backpressure_avg_completion_latency_seconds`, `consumer_adaptive_backpressure_last_decision`
+- **튜닝 참조값**:
+    - Type: Table
+    - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
 
 ---
 © 2026 Pyrallel Consumer Project

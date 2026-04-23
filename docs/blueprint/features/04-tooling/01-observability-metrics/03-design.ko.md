@@ -27,6 +27,23 @@
 | `consumer_oldest_task_duration_seconds` | Gauge | `topic`, `partition` | blocking duration |
 | `consumer_backpressure_active` | Gauge | 없음 | `1=paused` |
 | `consumer_metadata_size_bytes` | Gauge | `topic` | commit metadata payload 크기 |
+| `consumer_adaptive_backpressure_configured_max_in_flight` | Gauge | 없음 | adaptive backpressure 설정 ceiling |
+| `consumer_adaptive_backpressure_effective_max_in_flight` | Gauge | 없음 | adaptive backpressure 실시간 ceiling |
+| `consumer_adaptive_backpressure_min_in_flight` | Gauge | 없음 | adaptive backpressure 최소 하한 |
+| `consumer_adaptive_backpressure_scale_up_step` | Gauge | 없음 | adaptive backpressure 상승 step |
+| `consumer_adaptive_backpressure_scale_down_step` | Gauge | 없음 | adaptive backpressure 하향 step |
+| `consumer_adaptive_backpressure_cooldown_ms` | Gauge | 없음 | adaptive backpressure 쿨다운(ms) |
+| `consumer_adaptive_backpressure_lag_scale_up_threshold` | Gauge | 없음 | adaptive backpressure scale-up을 유도하는 lag 임계값 |
+| `consumer_adaptive_backpressure_low_latency_threshold_ms` | Gauge | 없음 | adaptive backpressure 저지연 임계값(ms) |
+| `consumer_adaptive_backpressure_high_latency_threshold_ms` | Gauge | 없음 | adaptive backpressure 고지연 임계값(ms) |
+| `consumer_adaptive_backpressure_avg_completion_latency_seconds` | Gauge | 없음 | 현재 adaptive backpressure 의사결정 입력값 |
+| `consumer_adaptive_backpressure_last_decision` | Gauge | `decision` | 마지막 adaptive backpressure decision one-hot |
+| `consumer_adaptive_concurrency_configured_max_in_flight` | Gauge | 없음 | adaptive concurrency 설정 ceiling |
+| `consumer_adaptive_concurrency_effective_max_in_flight` | Gauge | 없음 | adaptive concurrency 실시간 ceiling |
+| `consumer_adaptive_concurrency_min_in_flight` | Gauge | 없음 | adaptive concurrency 최소 하한 |
+| `consumer_adaptive_concurrency_scale_up_step` | Gauge | 없음 | adaptive concurrency 상승 step |
+| `consumer_adaptive_concurrency_scale_down_step` | Gauge | 없음 | adaptive concurrency 하향 step |
+| `consumer_adaptive_concurrency_cooldown_ms` | Gauge | 없음 | adaptive concurrency 쿨다운(ms) |
 
 ## 4. 운영 해석 규칙
 
