@@ -97,6 +97,6 @@ The workload selector changes only the worker function cost model; it does not a
 - Profiled runs must not be compared directly with non-profiled TPS measurements.
 - `strict-completion-monitor=on` is the primary release-oriented comparison slice; `off` remains a benchmarking comparison axis, not a substitute for strict-on release evidence.
 - `adaptive-concurrency=on` changes the control-plane live in-flight limit for Pyrallel runs; it is a benchmark axis for runtime tuning behavior, not a process-count or semaphore-resize benchmark.
-- Adaptive backpressure is currently a runtime observability/configuration surface, not a separate benchmark matrix flag.
+- Adaptive backpressure is currently a runtime observability/configuration surface, while `adaptive-concurrency=on|off` is a distinct benchmark matrix axis for the control-plane live-limit policy.
 - Logging above `WARNING` can materially perturb throughput measurements and should be treated as a debugging mode, not a benchmark baseline.
 - Tiny process + partition benchmarks can be dominated by default batching; compare benchmark-only overrides before drawing conclusions about library defaults.

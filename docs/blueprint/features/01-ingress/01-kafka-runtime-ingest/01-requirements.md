@@ -34,7 +34,7 @@ control plane for scheduling.
   there is queued or in-flight work.
 - The runtime must pause Kafka fetches when control-plane load exceeds the
   configured limit and resume only after hysteresis thresholds are satisfied.
-- Invalid topic names must fail before worker execution begins.
+- Topic-name validation must be documented according to the current runtime boundary: fail-fast validation is guaranteed only where the implementation explicitly performs it, while DLQ-topic/suffix validation currently occurs in the DLQ publish path.
 - `PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED=false` may remove the
   dedicated completion-monitor task, but it must not change completion-drain,
   commit-safety, or shutdown-drain correctness.
