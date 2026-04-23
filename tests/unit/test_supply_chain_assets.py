@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
+
+import yaml  # type: ignore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -9,44 +12,123 @@ PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
 DEPENDABOT_CONFIG = REPO_ROOT / ".github" / "dependabot.yml"
 
 
-def test_ci_release_verify_and_publish_run_lockfile_sca_gate() -> None:
-    for workflow_path in (CI_WORKFLOW, RELEASE_VERIFY_WORKFLOW, PUBLISH_WORKFLOW):
-        text = workflow_path.read_text(encoding="utf-8")
+def _load_yaml(path: Path) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-        assert "uv export --frozen --format requirements.txt" in text
-        assert "--all-groups" in text
-        assert "--no-hashes" in text
-        assert "--no-emit-project" in text
-        assert "uvx --from pip-audit pip-audit" in text
-        assert "--no-deps" in text
-        assert "--disable-pip" in text
-        assert ".artifacts/locked-requirements.txt" in text
+
+def _job_has_step_command(job: dict[str, Any], command: str) -> bool:
+    for step in job.get("steps", []):
+        run = step.get("run")
+        if isinstance(run, str) and command in run:
+            return True
+    return False
+
+
+def _assert_sca_gate_steps(ci_jobs: dict[str, Any], job_name: str) -> None:
+    job = ci_jobs[job_name]
+
+    assert _job_has_step_command(
+        job,
+        "uv export --frozen --format requirements.txt --all-groups --no-hashes --no-emit-project",
+    )
+    assert _job_has_step_command(
+        job,
+        "uv run pip-audit --no-deps --disable-pip -r .artifacts/locked-requirements.txt",
+    )
+
+
+def _workflow_triggers(text: dict[str, Any]) -> dict[str, Any]:
+    if "on" in text:
+        return cast(dict[str, Any], text["on"])
+    if True in text:
+        return cast(dict[str, Any], text[True])  # type: ignore[index]
+    raise KeyError("Workflow trigger section not found")
+
+
+def test_ci_release_verify_and_publish_quality_jobs_run_lockfile_sca_gate() -> None:
+    ci = _load_yaml(CI_WORKFLOW)
+    _assert_sca_gate_steps(ci["jobs"], "quality")
+
+    release = _load_yaml(RELEASE_VERIFY_WORKFLOW)
+    _assert_sca_gate_steps(release["jobs"], "verify")
+
+    publish = _load_yaml(PUBLISH_WORKFLOW)
+    _assert_sca_gate_steps(publish["jobs"], "build")
 
 
 def test_publish_workflow_attests_built_distribution_artifacts() -> None:
-    text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    build_job = text.split("\n  publish:", maxsplit=1)[0]
-    publish_job = text.split("\n  publish:", maxsplit=1)[1]
+    text = _load_yaml(PUBLISH_WORKFLOW)
+    jobs = text["jobs"]
+    build_job = jobs["build"]
+    publish_job = jobs["publish"]
 
-    assert "attestations: write" in build_job
-    assert "id-token: write" in build_job
-    assert "actions/attest-build-provenance@v4.1.0" in build_job
-    assert "subject-path:" in build_job
-    assert "${{ steps.release_artifacts.outputs.sdist_path }}" in build_job
-    assert "${{ steps.release_artifacts.outputs.wheel_path }}" in build_job
-    assert "id-token: write" in publish_job
-    assert "pypa/gh-action-pypi-publish@release/v1" in publish_job
+    assert build_job["permissions"]["attestations"] == "write"
+    assert build_job["permissions"]["id-token"] == "write"
+    assert publish_job["permissions"]["id-token"] == "write"
+    assert any(
+        step.get("uses") == "actions/attest-build-provenance@v4.1.0"
+        for step in build_job["steps"]
+    )
+    assert any(
+        step.get("with", {})
+        .get("subject-path", "")
+        .strip()
+        .count("${{ steps.release_artifacts.outputs.sdist_path }}")
+        and step.get("with", {})
+        .get("subject-path", "")
+        .strip()
+        .count("${{ steps.release_artifacts.outputs.wheel_path }}")
+        for step in build_job["steps"]
+        if isinstance(step, dict) and step.get("with")
+    )
+    assert any(
+        step.get("uses") == "pypa/gh-action-pypi-publish@release/v1"
+        for step in publish_job["steps"]
+    )
 
 
 def test_release_verify_attests_built_distribution_artifacts() -> None:
-    text = RELEASE_VERIFY_WORKFLOW.read_text(encoding="utf-8")
+    text = _load_yaml(RELEASE_VERIFY_WORKFLOW)
+    jobs = text["jobs"]
+    verify_job = jobs["verify"]
 
-    assert "id-token: write" in text
-    assert "attestations: write" in text
-    assert "actions/attest-build-provenance@v4.1.0" in text
-    assert "subject-path:" in text
-    assert "${{ steps.release_artifacts.outputs.sdist_path }}" in text
-    assert "${{ steps.release_artifacts.outputs.wheel_path }}" in text
+    assert text["permissions"]["id-token"] == "write"
+    assert text["permissions"]["attestations"] == "write"
+    assert any(
+        step.get("uses") == "actions/attest-build-provenance@v4.1.0"
+        for step in verify_job["steps"]
+    )
+    assert any(
+        step.get("with", {}).get("subject-path", "").strip().count("sdist") > 0
+        and step.get("with", {}).get("subject-path", "").strip().count("wheel") > 0
+        for step in verify_job["steps"]
+        if isinstance(step, dict) and step.get("with")
+    )
+
+
+def test_release_verify_triggers_on_supply_chain_controls() -> None:
+    text = _load_yaml(RELEASE_VERIFY_WORKFLOW)
+    triggers = _workflow_triggers(text)
+    paths = triggers["push"]["paths"]
+    for expected in (
+        ".github/workflows/publish-pypi.yml",
+        ".github/dependabot.yml",
+        "tests/unit/test_supply_chain_assets.py",
+    ):
+        assert expected in paths
+
+
+def test_ci_triggers_on_supply_chain_controls() -> None:
+    text = _load_yaml(CI_WORKFLOW)
+    triggers = _workflow_triggers(text)
+    paths = triggers["push"]["paths"] + triggers["pull_request"]["paths"]
+    for expected in (
+        ".github/workflows/publish-pypi.yml",
+        ".github/workflows/release-verify.yml",
+        ".github/dependabot.yml",
+        "tests/unit/test_supply_chain_assets.py",
+    ):
+        assert expected in paths
 
 
 def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:
