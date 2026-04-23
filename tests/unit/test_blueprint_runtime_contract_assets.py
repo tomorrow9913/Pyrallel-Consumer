@@ -1,3 +1,5 @@
+"""Regression coverage for blueprint runtime-contract wording."""
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +42,7 @@ OBSERVABILITY_DESIGN = (
 
 
 def test_ingress_blueprint_documents_strict_completion_monitor_contract() -> None:
+    """The ingress blueprint must describe strict-monitor behavior accurately."""
     requirements = INGRESS_REQUIREMENTS.read_text(encoding="utf-8")
     architecture = INGRESS_ARCHITECTURE.read_text(encoding="utf-8")
     design = INGRESS_DESIGN.read_text(encoding="utf-8")
@@ -51,6 +54,7 @@ def test_ingress_blueprint_documents_strict_completion_monitor_contract() -> Non
 
 
 def test_blueprint_runtime_docs_keep_runtime_snapshot_and_secret_boundaries() -> None:
+    """Blueprint docs must keep runtime snapshot and secret boundaries explicit."""
     requirements = INGRESS_REQUIREMENTS.read_text(encoding="utf-8")
     design = INGRESS_DESIGN.read_text(encoding="utf-8")
     observability = OBSERVABILITY_DESIGN.read_text(encoding="utf-8")
