@@ -66,6 +66,7 @@ The workload selector changes only the worker function cost model; it does not a
 - `--metrics-port` is normalized so values `<= 0` disable benchmark metrics exposure.
 - Baseline runs ignore the metrics port entirely.
 - Pyrallel runs pass the selected port into `run_pyrallel_consumer_test()`, which both enables `KafkaConfig.metrics` and acquires a reusable `PrometheusMetricsExporter` for the benchmark process.
+- The benchmark harness records selected observability evidence (`consumer_parallel_lag`, `consumer_gap_count`) into JSON summaries, but it does not serialize the full `RuntimeSnapshot` API documented under `04-tooling/01-observability-metrics`.
 - Therefore the benchmark harness provides a convenience default (`9091`), but exporter startup still depends on actually running a Pyrallel round.
 
 ### 4.3 Profiling modes
@@ -95,5 +96,7 @@ The workload selector changes only the worker function cost model; it does not a
 - Process mode can win on CPU-heavy work yet still show worse per-message latency because IPC and scheduling overhead are part of the measured path.
 - Profiled runs must not be compared directly with non-profiled TPS measurements.
 - `strict-completion-monitor=on` is the primary release-oriented comparison slice; `off` remains a benchmarking comparison axis, not a substitute for strict-on release evidence.
+- `adaptive-concurrency=on` changes the control-plane live in-flight limit for Pyrallel runs; it is a benchmark axis for runtime tuning behavior, not a process-count or semaphore-resize benchmark.
+- Adaptive backpressure is currently a runtime observability/configuration surface, not a separate benchmark matrix flag.
 - Logging above `WARNING` can materially perturb throughput measurements and should be treated as a debugging mode, not a benchmark baseline.
 - Tiny process + partition benchmarks can be dominated by default batching; compare benchmark-only overrides before drawing conclusions about library defaults.
