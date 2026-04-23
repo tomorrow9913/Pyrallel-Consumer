@@ -230,6 +230,109 @@ async def test_process_completed_events_retries_pending_dlq_failure_and_marks_co
 
 
 @pytest.mark.asyncio
+async def test_process_completed_events_records_dlq_publish_failure_metric() -> None:
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=100,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    kafka_config = KafkaConfig()
+    kafka_config.dlq_enabled = True
+    kafka_config.parallel_consumer.execution.max_retries = 3
+    metrics_exporter = MagicMock()
+
+    support = BrokerCompletionSupport(
+        kafka_config=kafka_config,
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict({(tp, 100): (b"key", b"value")}),
+        should_cache_message_payloads=lambda: True,
+        pop_cached_message=lambda _cache_key: None,
+        publish_to_dlq=AsyncMock(return_value=False),
+        logger=MagicMock(),
+        metrics_exporter=metrics_exporter,
+    )
+
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="failed",
+                tp=tp,
+                offset=100,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=3,
+            )
+        ]
+    )
+
+    metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
+    assert 100 not in tracker.completed_offsets
+    assert support._pending_dlq_events[(tp, 100)].id == "failed"
+
+
+@pytest.mark.asyncio
+async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() -> None:
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=100,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    kafka_config = KafkaConfig()
+    kafka_config.dlq_enabled = True
+    kafka_config.parallel_consumer.execution.max_retries = 3
+    metrics_exporter = MagicMock()
+    metrics_exporter.record_dlq_publish_failure.side_effect = RuntimeError(
+        "metrics backend down"
+    )
+
+    support = BrokerCompletionSupport(
+        kafka_config=kafka_config,
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict({(tp, 100): (b"key", b"value")}),
+        should_cache_message_payloads=lambda: True,
+        pop_cached_message=lambda _cache_key: None,
+        publish_to_dlq=AsyncMock(return_value=False),
+        logger=MagicMock(),
+        metrics_exporter=metrics_exporter,
+    )
+
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="failed",
+                tp=tp,
+                offset=100,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=3,
+            )
+        ]
+    )
+
+    metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
+    assert 100 not in tracker.completed_offsets
+    assert support._pending_dlq_events[(tp, 100)].id == "failed"
+
+
+@pytest.mark.asyncio
 async def test_stale_completion_does_not_drop_pending_dlq_retry() -> None:
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,

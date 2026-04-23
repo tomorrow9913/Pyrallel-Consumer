@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   kafka-1:
-    image: confluentinc/cp-kafka:7.6.0
+    image: confluentinc/cp-kafka@sha256:8fc15a671986983b83beecae14e013a91adcd3999f687de8b6b8153fd47e8f67
     hostname: kafka-1
     container_name: kafka-1
     ports:
@@ -32,7 +32,7 @@ services:
       - yamong_network
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui@sha256:4346a0af1450f52286e671a6b49f701d069d7306a802f7cf6743bd27ac4dbcd1
     container_name: kafka-ui
     ports:
       - "8080:8080"
@@ -45,7 +45,7 @@ services:
       - yamong_network
 
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
+    image: danielqsj/kafka-exporter@sha256:bfae1aa15e873268c75899d02fcb5479418d3cde69d5d0b424511e067caf6f22
     container_name: kafka-exporter
     command:
       - "--kafka.server=kafka-1:29092"
@@ -57,7 +57,7 @@ services:
       - yamong_network
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus@sha256:b1935d181b6dd8e9c827705e89438815337e1b10ae35605126f05f44e5c6940f
     container_name: prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -69,7 +69,7 @@ services:
       - yamong_network
 
   grafana:
-    image: grafana/grafana:10.4.2
+    image: grafana/grafana@sha256:3aa2a03d88ad9628485f78e89adcd5b18bcde1aced3e6146bbbd7a718b82b797
     container_name: grafana
     ports:
       - "3000:3000"

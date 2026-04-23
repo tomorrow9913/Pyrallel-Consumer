@@ -10,7 +10,8 @@ see [`stable-operations-evidence.md`](./stable-operations-evidence.md).
 - **Resource Constrained**: `max_in_flight=128-256`, `poll_batch_size=200-500`, `process_count=max(1, cpu_count/2)`, `process_config.batch_size=64`, enable backoff (`max_retries=3`, `retry_backoff_ms=1000`).
 
 ## Failure / Recovery Runbook
-- **DLQ publish failures**: watch logs for `DLQ publish failed`; message remains cached. Action: check broker connectivity, DLQ topic ACLs. Retry by restarting consumer after restoring DLQ path.
+- **Commit failures**: alert on any increase in `consumer_commit_failures_total{reason="kafka_exception"}`; offsets may replay after restart. Action: check group coordinator health, broker connectivity, commit ACLs, and recent rebalance noise before scaling.
+- **DLQ publish failures**: watch `consumer_dlq_publish_failures_total` and logs for `DLQ publish failed`; message remains cached and the offset stays pending retry. Action: check broker connectivity, DLQ topic existence, producer ACLs, and payload limits. Retry by restoring the DLQ path; restart only after confirming the counter stops increasing.
 - **Worker crash/timeout**: `CompletionStatus.FAILURE` with attempt=max_retries. Action: inspect worker logs, reduce `task_timeout_ms` for faster detection, increase `max_retries` only with idempotent workers.
 - **Rebalance stalls**: commits paused by gaps; monitor `consumer_parallel_lag` and `consumer_gap_count`. Action: verify `blocking_cache_ttl`, ensure `WorkManager` queues stay bounded (see queue cleanup), consider lowering `poll_batch_size`.
 
@@ -48,7 +49,19 @@ Use this when a new release rollout causes production-impacting regressions.
 ## Observability & Alerts
 - **Backpressure**: `consumer_backpressure_active == 1` for >1 minute -> alert; check `max_in_flight` and queue depth.
 - **Lag/Gap**: `consumer_parallel_lag` or `consumer_gap_count` growing for 5m -> investigate stuck offsets, slow workers.
-- **DLQ**: failure rate >1% or repeated warning logs -> validate DLQ topic and payload mode.
+- **Adaptive control state**:
+  - Backpressure/Concurrency cap tracking:
+    - `consumer_adaptive_backpressure_configured_max_in_flight`
+    - `consumer_adaptive_backpressure_effective_max_in_flight`
+    - `consumer_adaptive_concurrency_effective_max_in_flight`
+  - Backpressure dynamics:
+    - `consumer_adaptive_backpressure_last_decision`
+    - `consumer_adaptive_backpressure_scale_up_step`
+    - `consumer_adaptive_backpressure_scale_down_step`
+    - `consumer_adaptive_concurrency_scale_up_step`
+    - `consumer_adaptive_concurrency_scale_down_step`
+- **Commit failure counter**: any increase in `consumer_commit_failures_total` -> investigate commit path health and replay risk immediately.
+- **DLQ**: any increase in `consumer_dlq_publish_failures_total`, failure rate >1%, or repeated warning logs -> validate DLQ topic and payload mode.
 - **Oldest task duration**: `consumer_oldest_task_duration_seconds` > timeout -> potential stuck worker; trigger graceful shutdown.
 
 ## Tuning Checklist (stepwise)
@@ -187,6 +200,11 @@ use the one-page summary in
 - Compare only with profiling disabled (`--profile`/`--py-spy` not used).
 - Run at least twice under identical conditions and judge by worst-case values
   per combination (`TPS` minimum, `p99` maximum).
+- Evaluate the repeated JSON artifacts with the machine gate before approving a
+  release-candidate performance verdict:
+  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-<UTC-2>.json`.
+  The evaluator emits JSON with `verdict: PASS|NO-GO`; any `NO-GO` is
+  release-blocking.
 
 ### Workload-Specific Thresholds (PASS Criteria)
 
@@ -223,3 +241,22 @@ If any of the following occurs, it is an immediate `NO-GO`.
 - Any single combination triggers fail-fast or violates thresholds: `NO-GO`
 - On `NO-GO`, attach run artifacts (JSON/log/metrics query) to the issue
   comment and include a re-measurement plan.
+
+### Machine-Evaluated Release Gate
+
+Release-candidate approval must use the benchmark gate evaluator wired into the
+release-candidate workflow, not a manual reading of console tables. The
+evaluator consumes one or more JSON artifacts from the standard benchmark
+command and emits a machine-readable verdict:
+
+- `PASS`: every required combination is present, repeated enough for
+  worst-case review, complete, and within the TPS/p99 thresholds with no
+  represented fail-fast lag/gap/completion criteria violated.
+- `NO-GO`: any required combination is missing, has insufficient repetitions,
+  has incomplete message processing, violates TPS/p99 thresholds, or carries
+  represented fail-fast lag/gap/completion evidence.
+
+Manual release notes may summarize the result, but the release decision should
+quote the evaluator verdict and artifact paths. A `PASS` soak/restart evidence
+package is supporting stability evidence; it does **not** override a benchmark
+gate `NO-GO`.

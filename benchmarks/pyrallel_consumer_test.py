@@ -15,6 +15,7 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     ExecutionMode,
     OrderingMode,
+    SystemMetrics,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
@@ -492,6 +493,17 @@ async def run_pyrallel_consumer_test(
     metrics_task: Optional[asyncio.Task[None]] = None
     timed_out = False
     run_completed = False
+    metrics_start = time.perf_counter()
+
+    def _record_release_gate_metrics_from_snapshot(metrics: SystemMetrics) -> None:
+        if stats is None:
+            return
+        stats.record_release_gate_observation(
+            elapsed_sec=time.perf_counter() - metrics_start,
+            consumer_parallel_lag=sum(pm.true_lag for pm in metrics.partitions),
+            consumer_gap_count=sum(pm.gap_count for pm in metrics.partitions),
+        )
+
     try:
         await broker_poller.start()
         if prometheus_exporter is not None:
@@ -517,6 +529,16 @@ async def run_pyrallel_consumer_test(
                 if stop_event.is_set():
                     break
                 metrics = broker_poller.get_metrics()
+                if stats is not None:
+                    stats.record_release_gate_observation(
+                        elapsed_sec=time.perf_counter() - metrics_start,
+                        consumer_parallel_lag=sum(
+                            pm.true_lag for pm in metrics.partitions
+                        ),
+                        consumer_gap_count=sum(
+                            pm.gap_count for pm in metrics.partitions
+                        ),
+                    )
                 in_flight = metrics.total_in_flight
                 paused = metrics.is_paused
                 partitions_info = []
@@ -576,9 +598,11 @@ async def run_pyrallel_consumer_test(
                 pass
 
         print("Stopping PyrallelConsumer...")
+        final_metrics = broker_poller.get_metrics()
+        _record_release_gate_metrics_from_snapshot(final_metrics)
         await broker_poller.stop()
         if prometheus_exporter is not None:
-            prometheus_exporter.update_from_system_metrics(broker_poller.get_metrics())
+            prometheus_exporter.update_from_system_metrics(final_metrics)
         await engine.shutdown()
         if stats:
             stats.stop()

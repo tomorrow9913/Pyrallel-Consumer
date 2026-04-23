@@ -125,3 +125,17 @@ def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> No
         text = path.read_text()
         assert "first_sample_pending" in text
         assert "consumer_resource_signal_status{provider" not in text
+
+
+def test_release_performance_gate_evaluator_is_documented_separately_from_soak() -> (
+    None
+):
+    playbooks = (REPO_ROOT / "docs" / "operations" / "playbooks.md").read_text()
+    evidence = (
+        REPO_ROOT / "docs" / "operations" / "stable-operations-evidence.md"
+    ).read_text()
+
+    assert "python -m benchmarks.release_gate" in playbooks
+    assert "Performance release gate verdict" in evidence
+    assert "Soak/restart evidence verdict" in evidence
+    assert "does not by itself approve the performance release gate" in evidence

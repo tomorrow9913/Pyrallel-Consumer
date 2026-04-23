@@ -48,6 +48,13 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `timer` 비중이 높고 `consumer_process_batch_avg_size`가 낮으면 batching 효율이 떨어진 상태입니다. 지연 예산이 허용하면 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리는 쪽을 검토하십시오.
     - `demand`가 계속 증가하면 latency-first 강제 flush가 많다는 뜻입니다. `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, ordering skew를 함께 확인하십시오.
 
+### 1.6a. Commit / DLQ 실패 Counter
+- **Prometheus 쿼리**:
+    - `consumer_commit_failures_total{reason="kafka_exception"}`
+    - `consumer_dlq_publish_failures_total`
+- **의미**: 이 counter들은 lag/gap 증상으로만 보일 수 있는 release-critical 실패를 직접 구분합니다. Commit 실패는 broker commit 경계의 replay risk를 뜻하고, DLQ publish 실패는 terminal 실패 메시지를 DLQ에 publish하지 못해 offset이 retry 대기 상태로 유지됨을 뜻합니다.
+- **운영 팁**: 값이 증가하면 즉시 알림을 권장합니다. Commit 실패는 Kafka coordinator 상태, ACL, broker 연결을 확인하십시오. DLQ publish 실패는 DLQ topic 존재 여부, producer ACL, payload size 제한, broker 가용성을 먼저 복구한 뒤 consumer 재시작/확장을 검토하십시오.
+
 ### 1.7. Process Batch Buffer Health (버퍼 적체 상태)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_avg_size`
@@ -84,6 +91,28 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
 - **의미**: 최소 in-flight offset 같은 Process 전용 안전 정보는 `BrokerPoller` 내부의 구체 클래스 분기 대신, 선택적 엔진 capability로 노출되어야 합니다.
 - **운영 팁**: 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
+
+### 1.10. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
+- **Prometheus 쿼리**:
+    - `consumer_adaptive_backpressure_configured_max_in_flight`
+    - `consumer_adaptive_backpressure_effective_max_in_flight`
+    - `consumer_adaptive_backpressure_min_in_flight`
+    - `consumer_adaptive_backpressure_scale_up_step`
+    - `consumer_adaptive_backpressure_scale_down_step`
+    - `consumer_adaptive_backpressure_cooldown_ms`
+    - `consumer_adaptive_backpressure_lag_scale_up_threshold`
+    - `consumer_adaptive_backpressure_low_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_high_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_avg_completion_latency_seconds`
+    - `consumer_adaptive_backpressure_last_decision`
+    - `consumer_adaptive_concurrency_configured_max_in_flight`
+    - `consumer_adaptive_concurrency_effective_max_in_flight`
+    - `consumer_adaptive_concurrency_min_in_flight`
+    - `consumer_adaptive_concurrency_scale_up_step`
+    - `consumer_adaptive_concurrency_scale_down_step`
+    - `consumer_adaptive_concurrency_cooldown_ms`
+- **의미**: 위 게이지는 adaptive backpressure/adaptive concurrency의 현재 런타임 의사결정값과 설정 값을 함께 보여줍니다. `max_in_flight` 튜닝과 진동(oscillation) 분석에 유용합니다.
+- **운영 팁**: `*_effective_*` 값이 낮은 상태에서 `consumer_backpressure_active == 1`와 `consumer_in_flight_count`가 동시에 높으면, 급격한 동시성 변경이 지속되지 않도록 하여 IPC/워커 처리 지연부터 확인하세요.
 
 ## 2. 튜닝 가이드
 
@@ -169,6 +198,20 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: 세 값을 분리해서 보면 병목이 serialization/IPC인지, 실제 worker 실행인지, completion 회수인지 빠르게 구분할 수 있습니다.
+
+### 4.5. Adaptive Control Runtime (Row)
+- **Adaptive Backpressure Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_backpressure_configured_max_in_flight`, `consumer_adaptive_backpressure_effective_max_in_flight`
+- **Adaptive Concurrency Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_concurrency_configured_max_in_flight`, `consumer_adaptive_concurrency_effective_max_in_flight`
+- **Adaptive Decision Input**:
+    - Type: Time Series
+    - Query: `consumer_adaptive_backpressure_avg_completion_latency_seconds`, `consumer_adaptive_backpressure_last_decision`
+- **튜닝 참조값**:
+    - Type: Table
+    - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
 
 ---
 © 2026 Pyrallel Consumer Project

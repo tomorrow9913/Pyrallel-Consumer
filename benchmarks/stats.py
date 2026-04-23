@@ -25,6 +25,9 @@ class BenchmarkResult:
     tps_p50_window: float | None = None
     tps_p10_window: float | None = None
     tps_min_window: float | None = None
+    final_lag: int | None = None
+    final_gap_count: int | None = None
+    metrics_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,6 +55,7 @@ class BenchmarkStats:
         self._completion_times: list[float] = []
         self._processed = 0
         self._window_size_messages = 100
+        self._release_gate_observations: list[dict[str, Any]] = []
 
     def start(self) -> None:
         if self._start_time is None:
@@ -72,6 +76,21 @@ class BenchmarkStats:
             self.start()
         self._end_time = perf_counter()
 
+    def record_release_gate_observation(
+        self,
+        *,
+        elapsed_sec: float,
+        consumer_parallel_lag: int,
+        consumer_gap_count: int,
+    ) -> None:
+        self._release_gate_observations.append(
+            {
+                "elapsed_sec": elapsed_sec,
+                "consumer_parallel_lag": consumer_parallel_lag,
+                "consumer_gap_count": consumer_gap_count,
+            }
+        )
+
     @property
     def processed(self) -> int:
         return self._processed
@@ -90,6 +109,11 @@ class BenchmarkStats:
         avg_ms = _safe_mean(self._durations) * 1000
         p99_ms = _percentile(self._durations, 99) * 1000
         window_tps = self._windowed_tps_samples()
+        final_observation = (
+            self._release_gate_observations[-1]
+            if self._release_gate_observations
+            else {}
+        )
         return BenchmarkResult(
             run_name=self.run_name,
             run_type=self.run_type,
@@ -105,6 +129,13 @@ class BenchmarkStats:
             tps_p50_window=_optional_percentile(window_tps, 50),
             tps_p10_window=_optional_percentile(window_tps, 10),
             tps_min_window=min(window_tps) if window_tps else None,
+            final_lag=final_observation.get("consumer_parallel_lag"),
+            final_gap_count=final_observation.get("consumer_gap_count"),
+            metrics_observations=(
+                list(self._release_gate_observations)
+                if self._release_gate_observations
+                else None
+            ),
         )
 
     def _windowed_tps_samples(self) -> list[float]:
@@ -168,9 +199,30 @@ def write_results_json(
     payload = {
         "options": options or {},
         "performance_improvements": _build_performance_improvements(results),
+        "metrics_observations": _merge_metrics_observations(results),
         "results": [result.to_dict() for result in results],
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _merge_metrics_observations(
+    results: list[BenchmarkResult],
+) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for result in results:
+        if not result.metrics_observations:
+            continue
+        for observation in result.metrics_observations:
+            observations.append(
+                {
+                    "run_name": result.run_name,
+                    "run_type": result.run_type,
+                    "workload": result.workload,
+                    "ordering": result.ordering,
+                    **observation,
+                }
+            )
+    return observations
 
 
 def _build_performance_improvements(

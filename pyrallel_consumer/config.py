@@ -1,7 +1,7 @@
 import socket
 from typing import ClassVar, Literal, cast
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
@@ -263,26 +263,158 @@ class KafkaConfig(BaseSettings):
             "KAFKA_SESSION_TIMEOUT_MS",
         ),
     )
+    security_protocol: (
+        Literal["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"] | None
+    ) = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "security_protocol",
+            "SECURITY_PROTOCOL",
+            "KAFKA_SECURITY_PROTOCOL",
+            "security.protocol",
+        ),
+    )
+    sasl_mechanisms: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "sasl_mechanisms",
+            "SASL_MECHANISMS",
+            "KAFKA_SASL_MECHANISMS",
+            "sasl.mechanisms",
+        ),
+    )
+    sasl_username: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "sasl_username",
+            "SASL_USERNAME",
+            "KAFKA_SASL_USERNAME",
+            "sasl.username",
+        ),
+    )
+    sasl_password: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "sasl_password",
+            "SASL_PASSWORD",
+            "KAFKA_SASL_PASSWORD",
+            "sasl.password",
+        ),
+    )
+    ssl_ca_location: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ssl_ca_location",
+            "SSL_CA_LOCATION",
+            "KAFKA_SSL_CA_LOCATION",
+            "ssl.ca.location",
+        ),
+    )
+    ssl_certificate_location: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ssl_certificate_location",
+            "SSL_CERTIFICATE_LOCATION",
+            "KAFKA_SSL_CERTIFICATE_LOCATION",
+            "ssl.certificate.location",
+        ),
+    )
+    ssl_key_location: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ssl_key_location",
+            "SSL_KEY_LOCATION",
+            "KAFKA_SSL_KEY_LOCATION",
+            "ssl.key.location",
+        ),
+    )
+    ssl_key_password: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ssl_key_password",
+            "SSL_KEY_PASSWORD",
+            "KAFKA_SSL_KEY_PASSWORD",
+            "ssl.key.password",
+        ),
+    )
     metrics: MetricsConfig = MetricsConfig()
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
     def _bootstrap_servers_csv(self) -> str:
         return ",".join(self._parse_bootstrap_servers(self.bootstrap_servers))
 
+    def _get_security_config(self) -> dict[str, str]:
+        security_config: dict[str, str] = {}
+        field_to_config_key = {
+            "security_protocol": "security.protocol",
+            "sasl_mechanisms": "sasl.mechanisms",
+            "sasl_username": "sasl.username",
+            "sasl_password": "sasl.password",
+            "ssl_ca_location": "ssl.ca.location",
+            "ssl_certificate_location": "ssl.certificate.location",
+            "ssl_key_location": "ssl.key.location",
+            "ssl_key_password": "ssl.key.password",
+        }
+
+        for field_name, config_key in field_to_config_key.items():
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if isinstance(value, SecretStr):
+                security_config[config_key] = value.get_secret_value()
+            else:
+                security_config[config_key] = str(value)
+        return security_config
+
     def get_producer_config(self) -> dict[str, str]:
-        return {
+        config = {
             "bootstrap.servers": self._bootstrap_servers_csv(),
             "client.id": socket.gethostname(),
         }
+        config.update(self._get_security_config())
+        return config
 
     def get_consumer_config(self) -> dict[str, str | int | bool]:
-        return {
+        config: dict[str, str | int | bool] = {
             "bootstrap.servers": self._bootstrap_servers_csv(),
             "group.id": self.consumer_group,
             "auto.offset.reset": self.auto_offset_reset,
             "enable.auto.commit": self.enable_auto_commit,
             "session.timeout.ms": self.session_timeout_ms,
         }
+        config.update(self._get_security_config())
+        return config
+
+    def get_admin_config(self) -> dict[str, str]:
+        config = {
+            "bootstrap.servers": self._bootstrap_servers_csv(),
+        }
+        config.update(self._get_security_config())
+        return config
+
+    @field_validator(
+        "security_protocol",
+        "sasl_mechanisms",
+        "sasl_username",
+        "sasl_password",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        "ssl_key_password",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_optional_security_field(
+        cls, v: object, info: ValidationInfo
+    ) -> object:
+        if isinstance(v, str):
+            cleaned = v.strip()
+            if cleaned == "":
+                return None
+            if info.field_name in {"sasl_password", "ssl_key_password"}:
+                return v
+            return cleaned
+        return v
 
     @field_validator("dlq_payload_mode", mode="before")
     @classmethod
@@ -313,6 +445,14 @@ class KafkaConfig(BaseSettings):
         )
 
     def dump_to_rdkafka(self) -> dict[str, object]:
+        """Return a redacted librdkafka-style snapshot safe for logging/tests."""
+        return self._build_rdkafka_config(include_secrets=False)
+
+    def get_rdkafka_config(self) -> dict[str, object]:
+        """Return a full librdkafka-style config for live client construction."""
+        return self._build_rdkafka_config(include_secrets=True)
+
+    def _build_rdkafka_config(self, *, include_secrets: bool) -> dict[str, object]:
         data: dict[str, object] = self.model_dump(exclude_none=True)
 
         _exclude = {
@@ -329,10 +469,16 @@ class KafkaConfig(BaseSettings):
             "metrics",
             "parallel_consumer",
         }
+        if not include_secrets:
+            _exclude.update({"sasl_password", "ssl_key_password"})
 
-        conf: dict[str, object] = {}
+        conf: dict[str, object] = {"bootstrap.servers": self._bootstrap_servers_csv()}
+
         for k, v in data.items():
             if k in _exclude:
+                continue
+            if isinstance(v, SecretStr):
+                conf[k.replace("_", ".")] = v.get_secret_value()
                 continue
             conf[k.replace("_", ".")] = v
 

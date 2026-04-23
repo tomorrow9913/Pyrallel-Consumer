@@ -49,6 +49,11 @@ maintainers privately first and avoid posting exploit details in public threads.
   of input validation.
 - Never commit secrets to the repository; use environment variables or a deployment
   secret store.
+- Configure secured Kafka clusters through the allowlisted `KafkaConfig` TLS/SASL
+  fields documented in `docs/operations/secure-kafka-config.md`; do not rely on
+  local patches that log or snapshot raw client configs.
+- Treat `KAFKA_SASL_PASSWORD`, `KAFKA_SSL_KEY_PASSWORD`, client private-key
+  files, and key/certificate paths as sensitive operational material.
 - In production, evaluate `KAFKA_DLQ_PAYLOAD_MODE=metadata_only` first to reduce
   sensitive payload exposure.
 

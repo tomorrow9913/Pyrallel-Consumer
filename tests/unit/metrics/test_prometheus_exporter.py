@@ -6,6 +6,8 @@ from prometheus_client import CollectorRegistry  # noqa: E402
 from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
     CompletionStatus,
+    AdaptiveBackpressureSnapshot,
+    AdaptiveConcurrencyRuntimeSnapshot,
     PartitionMetrics,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
@@ -75,6 +77,27 @@ def test_exporter_updates_metrics_and_observes_completion():
             last_worker_to_main_ipc_seconds=0.004,
             avg_worker_to_main_ipc_seconds=0.003,
         ),
+        adaptive_backpressure=AdaptiveBackpressureSnapshot(
+            configured_max_in_flight=128,
+            effective_max_in_flight=96,
+            min_in_flight=32,
+            scale_up_step=16,
+            scale_down_step=16,
+            cooldown_ms=1000,
+            lag_scale_up_threshold=1000,
+            low_latency_threshold_ms=25.5,
+            high_latency_threshold_ms=125.0,
+            last_decision="scale_down",
+            avg_completion_latency_seconds=0.42,
+        ),
+        adaptive_concurrency=AdaptiveConcurrencyRuntimeSnapshot(
+            configured_max_in_flight=100,
+            effective_max_in_flight=80,
+            min_in_flight=24,
+            scale_up_step=8,
+            scale_down_step=16,
+            cooldown_ms=500,
+        ),
     )
 
     exporter.update_from_system_metrics(metrics)
@@ -125,6 +148,56 @@ def test_exporter_updates_metrics_and_observes_completion():
         exporter._process_batch_avg_worker_to_main_ipc_seconds_gauge._value.get()
         == 0.003
     )
+    assert (
+        exporter._adaptive_backpressure_configured_max_in_flight_gauge._value.get()
+        == 128
+    )
+    assert (
+        exporter._adaptive_backpressure_effective_max_in_flight_gauge._value.get() == 96
+    )
+    assert exporter._adaptive_backpressure_min_in_flight_gauge._value.get() == 32
+    assert exporter._adaptive_backpressure_scale_up_step_gauge._value.get() == 16
+    assert exporter._adaptive_backpressure_scale_down_step_gauge._value.get() == 16
+    assert exporter._adaptive_backpressure_cooldown_ms_gauge._value.get() == 1000
+    assert (
+        exporter._adaptive_backpressure_lag_scale_up_threshold_gauge._value.get()
+        == 1000
+    )
+    assert (
+        exporter._adaptive_backpressure_low_latency_threshold_ms_gauge._value.get()
+        == 25.5
+    )
+    assert (
+        exporter._adaptive_backpressure_high_latency_threshold_ms_gauge._value.get()
+        == 125.0
+    )
+    assert (
+        exporter._adaptive_backpressure_avg_completion_latency_seconds_gauge._value.get()
+        == 0.42
+    )
+    assert (
+        exporter._adaptive_backpressure_last_decision_gauge.labels(
+            decision="scale_down"
+        )._value.get()
+        == 1
+    )
+    assert (
+        exporter._adaptive_backpressure_last_decision_gauge.labels(
+            decision="scale_up"
+        )._value.get()
+        == 0
+    )
+    assert (
+        exporter._adaptive_concurrency_configured_max_in_flight_gauge._value.get()
+        == 100
+    )
+    assert (
+        exporter._adaptive_concurrency_effective_max_in_flight_gauge._value.get() == 80
+    )
+    assert exporter._adaptive_concurrency_min_in_flight_gauge._value.get() == 24
+    assert exporter._adaptive_concurrency_scale_up_step_gauge._value.get() == 8
+    assert exporter._adaptive_concurrency_scale_down_step_gauge._value.get() == 16
+    assert exporter._adaptive_concurrency_cooldown_ms_gauge._value.get() == 500
 
     tp = TopicPartition(topic="topic-a", partition=0)
     exporter.observe_completion(tp, CompletionStatus.SUCCESS, duration_seconds=0.12)
@@ -159,6 +232,52 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
     )
     assert exporter._resource_cpu_utilization_gauge._value.get() == 0
     assert exporter._resource_memory_utilization_gauge._value.get() == 0
+    assert (
+        exporter._adaptive_backpressure_configured_max_in_flight_gauge._value.get() == 0
+    )
+    assert (
+        exporter._adaptive_backpressure_last_decision_gauge.labels(
+            decision="disabled"
+        )._value.get()
+        == 1
+    )
+    assert (
+        exporter._adaptive_concurrency_effective_max_in_flight_gauge._value.get() == 0
+    )
+
+
+def test_exporter_registers_and_increments_failure_counters() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+    tp = TopicPartition(topic="topic-a", partition=0)
+
+    exporter.record_commit_failure(tp, reason="kafka_exception")
+    exporter.record_commit_failure(tp, reason="kafka_exception")
+    exporter.record_dlq_publish_failure(tp)
+
+    commit_failure = exporter._commit_failures_total.labels(
+        topic="topic-a", partition="0", reason="kafka_exception"
+    )._value.get()
+    dlq_failure = exporter._dlq_publish_failures_total.labels(
+        topic="topic-a", partition="0"
+    )._value.get()
+
+    assert commit_failure == 2
+    assert dlq_failure == 1
+
+
+def test_exporter_rejects_unknown_commit_failure_reason() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    with pytest.raises(ValueError, match="Unknown commit failure reason"):
+        exporter.record_commit_failure(
+            TopicPartition(topic="topic-a", partition=0), reason="exception text"
+        )
 
 
 def test_exporter_closes_http_server_when_enabled(monkeypatch):

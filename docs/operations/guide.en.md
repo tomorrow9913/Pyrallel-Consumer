@@ -48,6 +48,13 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - If `timer` dominates and `consumer_process_batch_avg_size` stays low, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` only if the latency budget allows it.
     - If `demand` keeps growing, the workload is spending more time on latency-first forced flushes than on full batches. Revisit `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, and ordering skew together.
 
+### 1.6a. Commit and DLQ Failure Counters
+- **Prometheus queries**:
+    - `consumer_commit_failures_total{reason="kafka_exception"}`
+    - `consumer_dlq_publish_failures_total`
+- **Meaning**: These counters identify release-critical failures that can otherwise appear only as lag/gap symptoms. Commit failures indicate replay-risk at the broker commit boundary; DLQ publish failures mean a terminal failed message could not be published and the offset remains pending retry.
+- **Tip**: Alert on any increase. For commit failures, check Kafka coordinator health, ACLs, and broker connectivity. For DLQ publish failures, verify DLQ topic existence, producer ACLs, payload size limits, and broker availability before restarting or scaling consumers.
+
 ### 1.7. Process Batch Buffer Health
 - **Prometheus queries**:
     - `consumer_process_batch_avg_size`
@@ -84,6 +91,28 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Definition**: The control plane only depends on the shared execution-engine contract.
 - **Meaning**: Process-only safety data such as minimum in-flight offsets should be exposed as an optional engine capability, not by branching on a concrete engine class inside `BrokerPoller`.
 - **Tip**: When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
+
+### 1.10. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
+- **Prometheus queries**:
+    - `consumer_adaptive_backpressure_configured_max_in_flight`
+    - `consumer_adaptive_backpressure_effective_max_in_flight`
+    - `consumer_adaptive_backpressure_min_in_flight`
+    - `consumer_adaptive_backpressure_scale_up_step`
+    - `consumer_adaptive_backpressure_scale_down_step`
+    - `consumer_adaptive_backpressure_cooldown_ms`
+    - `consumer_adaptive_backpressure_lag_scale_up_threshold`
+    - `consumer_adaptive_backpressure_low_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_high_latency_threshold_ms`
+    - `consumer_adaptive_backpressure_avg_completion_latency_seconds`
+    - `consumer_adaptive_backpressure_last_decision`
+    - `consumer_adaptive_concurrency_configured_max_in_flight`
+    - `consumer_adaptive_concurrency_effective_max_in_flight`
+    - `consumer_adaptive_concurrency_min_in_flight`
+    - `consumer_adaptive_concurrency_scale_up_step`
+    - `consumer_adaptive_concurrency_scale_down_step`
+    - `consumer_adaptive_concurrency_cooldown_ms`
+- **Meaning**: These gauges expose both current runtime decisions and configured control limits for adaptive backpressure/adaptive concurrency. They are especially useful when tuning `max_in_flight_messages` and diagnosing oscillation.
+- **Tip**: Pair `*_effective_*` with `consumer_backpressure_active` and `consumer_in_flight_count`; if `*_effective_*` is pinned low while in-flight is saturated, reduce aggressive concurrency changes and check batch/processing latency behavior.
 
 ## 2. Tuning Guide
 
@@ -169,6 +198,20 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: Split these three values to quickly decide whether the bottleneck is serialization/IPC, worker execution, or completion draining.
+
+### 4.5. Adaptive Control Runtime (Row)
+- **Adaptive Backpressure Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_backpressure_configured_max_in_flight`, `consumer_adaptive_backpressure_effective_max_in_flight`
+- **Adaptive Concurrency Limits**:
+    - Type: Stat
+    - Query: `consumer_adaptive_concurrency_configured_max_in_flight`, `consumer_adaptive_concurrency_effective_max_in_flight`
+- **Adaptive Decision Input**:
+    - Type: Time Series
+    - Query: `consumer_adaptive_backpressure_avg_completion_latency_seconds`, `consumer_adaptive_backpressure_last_decision`
+- **Tuning Reference**:
+    - Type: Table
+    - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
 
 ---
 © 2026 Pyrallel Consumer Project

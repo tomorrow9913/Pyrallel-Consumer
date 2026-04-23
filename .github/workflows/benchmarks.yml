@@ -10,10 +10,26 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/benchmarks.yml"
+      - "benchmarks/release_gate.py"
   workflow_dispatch:
+    inputs:
+      release_gate_artifacts:
+        description: "Newline-separated runner-local benchmark JSON paths, or pass a workflow run id plus artifact pattern to download benchmark JSON artifacts before evaluating release GO/NO-GO."
+        required: false
+        type: string
+      release_gate_artifact_run_id:
+        description: "Optional workflow run id containing uploaded benchmark JSON artifacts to download first."
+        required: false
+        type: string
+      release_gate_artifact_pattern:
+        description: "Artifact name pattern to download from release_gate_artifact_run_id."
+        required: false
+        default: "release-gate-*"
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   benchmark-tests:
@@ -33,3 +49,59 @@ jobs:
       - name: Run benchmark and TUI unit tests
         run: |
           uv run pytest tests/unit/benchmarks -q
+
+  release-candidate-gate:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.release_gate_artifacts != '' || inputs.release_gate_artifact_run_id != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync benchmark dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Download release benchmark artifacts
+        if: ${{ inputs.release_gate_artifact_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.release_gate_artifact_run_id }}
+          pattern: ${{ inputs.release_gate_artifact_pattern }}
+          github-token: ${{ github.token }}
+          path: .artifacts/release-gate-inputs
+          merge-multiple: true
+      - name: Evaluate release benchmark gates
+        shell: bash
+        env:
+          RELEASE_GATE_ARTIFACTS: ${{ inputs.release_gate_artifacts }}
+        run: |
+          set -o pipefail
+          mkdir -p .artifacts
+          uv run python - <<'PY' | tee .artifacts/release-performance-gate.json
+          import glob
+          import os
+          import subprocess
+
+          artifacts = [
+              line.strip()
+              for line in os.environ["RELEASE_GATE_ARTIFACTS"].splitlines()
+              if line.strip()
+          ]
+          artifacts.extend(sorted(glob.glob(".artifacts/release-gate-inputs/**/*.json", recursive=True)))
+          if not artifacts:
+              raise SystemExit("release_gate_artifacts or release_gate_artifact_run_id is required")
+          command = ["uv", "run", "python", "-m", "benchmarks.release_gate"]
+          for artifact in artifacts:
+              command.extend(["--benchmark-json", artifact])
+          raise SystemExit(subprocess.call(command))
+          PY
+      - name: Upload release performance gate verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-performance-gate-${{ github.run_id }}
+          path: .artifacts/release-performance-gate.json

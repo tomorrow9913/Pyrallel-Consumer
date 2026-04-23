@@ -12,6 +12,8 @@ from prometheus_client import (
 
 from pyrallel_consumer.config import MetricsConfig
 from pyrallel_consumer.dto import (
+    AdaptiveBackpressureSnapshot,
+    AdaptiveConcurrencyRuntimeSnapshot,
     CompletionStatus,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
@@ -21,11 +23,18 @@ from pyrallel_consumer.dto import (
 )
 
 _RESOURCE_SIGNAL_STATUSES = tuple(status.value for status in ResourceSignalStatus)
+_ADAPTIVE_BACKPRESSURE_DECISIONS = (
+    "disabled",
+    "hold",
+    "scale_up",
+    "scale_down",
+    "cooldown",
+)
+COMMIT_FAILURE_REASONS = ("kafka_exception",)
 
 
 class _Joinable(Protocol):
-    def join(self, timeout: float | None = None) -> None:
-        ...
+    def join(self, timeout: float | None = None) -> None: ...
 
 
 class PrometheusMetricsExporter:
@@ -43,6 +52,18 @@ class PrometheusMetricsExporter:
             "consumer_processed_total",
             "Number of completion events processed",
             labelnames=("topic", "partition", "status"),
+            registry=self._registry,
+        )
+        self._commit_failures_total = Counter(
+            "consumer_commit_failures_total",
+            "Number of final offset commit failures",
+            labelnames=("topic", "partition", "reason"),
+            registry=self._registry,
+        )
+        self._dlq_publish_failures_total = Counter(
+            "consumer_dlq_publish_failures_total",
+            "Number of terminal DLQ publish failures",
+            labelnames=("topic", "partition"),
             registry=self._registry,
         )
         self._latency_hist = Histogram(
@@ -105,6 +126,92 @@ class PrometheusMetricsExporter:
         self._resource_memory_utilization_gauge = Gauge(
             "consumer_resource_memory_utilization_ratio",
             "Latest host memory utilization ratio from resource signals",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_configured_max_in_flight_gauge = Gauge(
+            "consumer_adaptive_backpressure_configured_max_in_flight",
+            "Configured adaptive backpressure max_in_flight ceiling",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_effective_max_in_flight_gauge = Gauge(
+            "consumer_adaptive_backpressure_effective_max_in_flight",
+            "Live adaptive backpressure max_in_flight limit",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_min_in_flight_gauge = Gauge(
+            "consumer_adaptive_backpressure_min_in_flight",
+            "Minimum adaptive backpressure max_in_flight floor",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_scale_up_step_gauge = Gauge(
+            "consumer_adaptive_backpressure_scale_up_step",
+            "Adaptive backpressure scale-up step",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_scale_down_step_gauge = Gauge(
+            "consumer_adaptive_backpressure_scale_down_step",
+            "Adaptive backpressure scale-down step",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_cooldown_ms_gauge = Gauge(
+            "consumer_adaptive_backpressure_cooldown_ms",
+            "Adaptive backpressure cooldown in milliseconds",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_lag_scale_up_threshold_gauge = Gauge(
+            "consumer_adaptive_backpressure_lag_scale_up_threshold",
+            "Adaptive backpressure lag threshold that triggers scale-up",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_low_latency_threshold_ms_gauge = Gauge(
+            "consumer_adaptive_backpressure_low_latency_threshold_ms",
+            "Adaptive backpressure low-latency threshold in milliseconds",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_high_latency_threshold_ms_gauge = Gauge(
+            "consumer_adaptive_backpressure_high_latency_threshold_ms",
+            "Adaptive backpressure high-latency threshold in milliseconds",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_avg_completion_latency_seconds_gauge = Gauge(
+            "consumer_adaptive_backpressure_avg_completion_latency_seconds",
+            "Current adaptive backpressure decision input: completion latency seconds",
+            registry=self._registry,
+        )
+        self._adaptive_backpressure_last_decision_gauge = Gauge(
+            "consumer_adaptive_backpressure_last_decision",
+            "One-hot gauge of the latest adaptive backpressure decision",
+            labelnames=("decision",),
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_configured_max_in_flight_gauge = Gauge(
+            "consumer_adaptive_concurrency_configured_max_in_flight",
+            "Configured adaptive concurrency max_in_flight ceiling",
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_effective_max_in_flight_gauge = Gauge(
+            "consumer_adaptive_concurrency_effective_max_in_flight",
+            "Live adaptive concurrency max_in_flight limit",
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_min_in_flight_gauge = Gauge(
+            "consumer_adaptive_concurrency_min_in_flight",
+            "Minimum adaptive concurrency max_in_flight floor",
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_scale_up_step_gauge = Gauge(
+            "consumer_adaptive_concurrency_scale_up_step",
+            "Adaptive concurrency scale-up step",
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_scale_down_step_gauge = Gauge(
+            "consumer_adaptive_concurrency_scale_down_step",
+            "Adaptive concurrency scale-down step",
+            registry=self._registry,
+        )
+        self._adaptive_concurrency_cooldown_ms_gauge = Gauge(
+            "consumer_adaptive_concurrency_cooldown_ms",
+            "Adaptive concurrency cooldown in milliseconds",
             registry=self._registry,
         )
         self._process_batch_flush_count = Gauge(
@@ -190,6 +297,10 @@ class PrometheusMetricsExporter:
             duration = partition.blocking_duration_sec or 0.0
             self._blocking_duration_gauge.labels(*labels).set(duration)
         self._update_resource_signal(metrics.resource_signal)
+        self._update_adaptive_snapshot_metrics(
+            metrics.adaptive_backpressure,
+            metrics.adaptive_concurrency,
+        )
         self._update_process_batch_metrics(metrics.process_batch_metrics)
 
     def observe_completion(
@@ -204,6 +315,27 @@ class PrometheusMetricsExporter:
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
+
+    def record_commit_failure(
+        self, tp: TopicPartition, reason: str = "kafka_exception"
+    ) -> None:
+        if reason not in COMMIT_FAILURE_REASONS:
+            allowed_reasons = ", ".join(COMMIT_FAILURE_REASONS)
+            raise ValueError(
+                "Unknown commit failure reason: "
+                f"{reason!r}; expected one of: {allowed_reasons}"
+            )
+        self._commit_failures_total.labels(
+            topic=tp.topic,
+            partition=str(tp.partition),
+            reason=reason,
+        ).inc()
+
+    def record_dlq_publish_failure(self, tp: TopicPartition) -> None:
+        self._dlq_publish_failures_total.labels(
+            topic=tp.topic,
+            partition=str(tp.partition),
+        ).inc()
 
     def close(self) -> None:
         if self._http_server is None:
@@ -243,6 +375,88 @@ class PrometheusMetricsExporter:
             if signal is not None and signal.memory_utilization is not None
             else 0
         )
+
+    def _update_adaptive_snapshot_metrics(
+        self,
+        adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot],
+        adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot],
+    ) -> None:
+        if adaptive_backpressure is None:
+            self._adaptive_backpressure_configured_max_in_flight_gauge.set(0)
+            self._adaptive_backpressure_effective_max_in_flight_gauge.set(0)
+            self._adaptive_backpressure_min_in_flight_gauge.set(0)
+            self._adaptive_backpressure_scale_up_step_gauge.set(0)
+            self._adaptive_backpressure_scale_down_step_gauge.set(0)
+            self._adaptive_backpressure_cooldown_ms_gauge.set(0)
+            self._adaptive_backpressure_lag_scale_up_threshold_gauge.set(0)
+            self._adaptive_backpressure_low_latency_threshold_ms_gauge.set(0)
+            self._adaptive_backpressure_high_latency_threshold_ms_gauge.set(0)
+            self._adaptive_backpressure_avg_completion_latency_seconds_gauge.set(0)
+            last_decision = "disabled"
+        else:
+            self._adaptive_backpressure_configured_max_in_flight_gauge.set(
+                adaptive_backpressure.configured_max_in_flight
+            )
+            self._adaptive_backpressure_effective_max_in_flight_gauge.set(
+                adaptive_backpressure.effective_max_in_flight
+            )
+            self._adaptive_backpressure_min_in_flight_gauge.set(
+                adaptive_backpressure.min_in_flight
+            )
+            self._adaptive_backpressure_scale_up_step_gauge.set(
+                adaptive_backpressure.scale_up_step
+            )
+            self._adaptive_backpressure_scale_down_step_gauge.set(
+                adaptive_backpressure.scale_down_step
+            )
+            self._adaptive_backpressure_cooldown_ms_gauge.set(
+                adaptive_backpressure.cooldown_ms
+            )
+            self._adaptive_backpressure_lag_scale_up_threshold_gauge.set(
+                adaptive_backpressure.lag_scale_up_threshold
+            )
+            self._adaptive_backpressure_low_latency_threshold_ms_gauge.set(
+                adaptive_backpressure.low_latency_threshold_ms
+            )
+            self._adaptive_backpressure_high_latency_threshold_ms_gauge.set(
+                adaptive_backpressure.high_latency_threshold_ms
+            )
+            self._adaptive_backpressure_avg_completion_latency_seconds_gauge.set(
+                adaptive_backpressure.avg_completion_latency_seconds or 0
+            )
+            last_decision = adaptive_backpressure.last_decision
+
+        for decision in _ADAPTIVE_BACKPRESSURE_DECISIONS:
+            self._adaptive_backpressure_last_decision_gauge.labels(
+                decision=decision
+            ).set(1 if decision == last_decision else 0)
+
+        if adaptive_concurrency is None:
+            self._adaptive_concurrency_configured_max_in_flight_gauge.set(0)
+            self._adaptive_concurrency_effective_max_in_flight_gauge.set(0)
+            self._adaptive_concurrency_min_in_flight_gauge.set(0)
+            self._adaptive_concurrency_scale_up_step_gauge.set(0)
+            self._adaptive_concurrency_scale_down_step_gauge.set(0)
+            self._adaptive_concurrency_cooldown_ms_gauge.set(0)
+        else:
+            self._adaptive_concurrency_configured_max_in_flight_gauge.set(
+                adaptive_concurrency.configured_max_in_flight
+            )
+            self._adaptive_concurrency_effective_max_in_flight_gauge.set(
+                adaptive_concurrency.effective_max_in_flight
+            )
+            self._adaptive_concurrency_min_in_flight_gauge.set(
+                adaptive_concurrency.min_in_flight
+            )
+            self._adaptive_concurrency_scale_up_step_gauge.set(
+                adaptive_concurrency.scale_up_step
+            )
+            self._adaptive_concurrency_scale_down_step_gauge.set(
+                adaptive_concurrency.scale_down_step
+            )
+            self._adaptive_concurrency_cooldown_ms_gauge.set(
+                adaptive_concurrency.cooldown_ms
+            )
 
     def _update_process_batch_metrics(
         self, metrics: Optional[ProcessBatchMetrics]

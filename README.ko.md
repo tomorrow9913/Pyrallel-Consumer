@@ -51,6 +51,8 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | Metric | Type | Labels | 설명 |
 | --- | --- | --- | --- |
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | 완료된 메시지 수 (성공/실패 구분) |
+| `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | 고정 reason별 최종 offset commit 실패 수 |
+| `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | offset을 retry 대기 상태로 남긴 terminal DLQ publish 실패 수 |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | WorkManager 제출 → Completion 까지의 지연 |
 | `consumer_in_flight_count` | Gauge | – | 현재 인플라이트 메시지 수 |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |
@@ -76,6 +78,9 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | 평균 worker-to-main IPC 시간 |
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
+실패 알림에는 최종 Kafka commit 실패용
+`consumer_commit_failures_total{reason="kafka_exception"}`와 terminal DLQ
+publish 실패용 `consumer_dlq_publish_failures_total`을 사용하십시오.
 
 ### Runtime Snapshot API
 
@@ -202,6 +207,50 @@ KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async # 또는 process
 ```
+
+#### 보안 Kafka 연결 (`KafkaConfig`)
+
+`KafkaConfig`는 보안 Kafka 클러스터 연결을 위해 allowlist 방식의
+librdkafka 보안 설정 표면을 제공합니다. 이 값들은 consumer, producer,
+admin client 설정으로 전달되며 임의 config injection을 요구하지 않습니다.
+비밀번호와 키 파일은 환경 변수 또는 배포 secret store에 보관하고, 공유되는
+`.env` 파일이나 로그/스냅샷에 남기지 마세요.
+
+| 환경 변수 | Python 필드 | librdkafka 키 | 메모 |
+| --- | --- | --- | --- |
+| `KAFKA_SECURITY_PROTOCOL` | `security_protocol` | `security.protocol` | 예: `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, `SASL_SSL` |
+| `KAFKA_SASL_MECHANISMS` | `sasl_mechanisms` | `sasl.mechanisms` | 예: `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
+| `KAFKA_SASL_USERNAME` | `sasl_username` | `sasl.username` | 민감 정보로 취급 |
+| `KAFKA_SASL_PASSWORD` | `sasl_password` | `sasl.password` | secret; 로그와 스냅샷에 노출 금지 |
+| `KAFKA_SSL_CA_LOCATION` | `ssl_ca_location` | `ssl.ca.location` | CA bundle 경로 |
+| `KAFKA_SSL_CERTIFICATE_LOCATION` | `ssl_certificate_location` | `ssl.certificate.location` | mTLS client certificate 경로 |
+| `KAFKA_SSL_KEY_LOCATION` | `ssl_key_location` | `ssl.key.location` | client private key 경로; 파일 권한 주의 |
+| `KAFKA_SSL_KEY_PASSWORD` | `ssl_key_password` | `ssl.key.password` | 암호화된 client key용 secret; 로그와 스냅샷에 노출 금지 |
+
+SASL over TLS 예시:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093,broker-2.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SASL_SSL
+KAFKA_SASL_MECHANISMS=SCRAM-SHA-512
+KAFKA_SASL_USERNAME=pyrallel-consumer
+KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD}
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+```
+
+mTLS 예시:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=broker-1.example.com:9093
+KAFKA_SECURITY_PROTOCOL=SSL
+KAFKA_SSL_CA_LOCATION=/etc/pyrallel/kafka/ca.pem
+KAFKA_SSL_CERTIFICATE_LOCATION=/etc/pyrallel/kafka/client.crt
+KAFKA_SSL_KEY_LOCATION=/etc/pyrallel/kafka/client.key
+KAFKA_SSL_KEY_PASSWORD=${KAFKA_SSL_KEY_PASSWORD}
+```
+
+운영 지침, review checklist, secret 취급 기준은
+[Secure Kafka configuration](./docs/operations/secure-kafka-config.md)을 참고하세요.
 
 ### 재시도 및 DLQ (Dead Letter Queue) 설정
 
@@ -455,7 +504,7 @@ uv run pytest tests/e2e -q
 - `localhost:9092`에 Kafka가 없으면 E2E 테스트는 즉시 실패하지 않고 skip 됩니다.
 - 실제 Kafka 경로를 확인하려면 로컬 `docker compose` 스택을 띄운 뒤 실행하면 됩니다.
 - Kafka-backed ordering 스위트는 이제 실제 브로커에서 `key_hash`/`partition` 정렬에 대해 `async`와 `process` 실행 모드를 모두 검증합니다.
-- `tests/e2e/test_process_recovery.py`를 통해 process 모드의 retry, DLQ, in-flight rebalance, restart/offset continuity도 실제 브로커 기준으로 검증합니다.
+- `tests/e2e/test_process_recovery.py`를 통해 `async`와 `process` 실행 모드 모두에서 retry, DLQ, in-flight rebalance, restart/offset continuity를 실제 브로커 기준으로 검증합니다.
 - 다만 이 증거는 broker-visible recovery invariant 범위에 한정되며, 장시간 soak이나 더 넓은 release-readiness 항목은 별도로 계속 추적합니다.
 - 테스트용 모니터링 스택은 `docker compose -f .github/e2e.compose.yml up -d`로 띄울 수 있습니다.
 - 테스트 스택 대시보드:

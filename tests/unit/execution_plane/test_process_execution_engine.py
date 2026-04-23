@@ -1,10 +1,12 @@
 import logging
 import queue
+from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import Mock
 
 import msgpack
 import pytest
+import pytest_asyncio
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import (
@@ -19,6 +21,9 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _completion_event_to_dict,
     _work_item_from_dict,
     _work_item_to_dict,
+)
+from tests.unit.execution_plane.test_execution_engine_contract import (
+    BaseExecutionEngineContractTest,
 )
 
 
@@ -35,6 +40,34 @@ async def _async_worker(_item) -> None:
 
 def _sync_worker(_item) -> None:
     return None
+
+
+def _contract_worker(item: WorkItem) -> None:
+    if item.payload == b"fail":
+        raise ValueError("simulated worker failure")
+
+
+class TestProcessExecutionEngineContract(BaseExecutionEngineContractTest):
+    """Shared execution-engine contract coverage for process mode."""
+
+    @pytest.fixture
+    def config(self) -> ExecutionConfig:
+        return ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_in_flight=2,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1, queue_size=8),
+        )
+
+    @pytest_asyncio.fixture
+    async def engine(
+        self, config: ExecutionConfig
+    ) -> AsyncGenerator[ProcessExecutionEngine, None]:
+        engine = ProcessExecutionEngine(config=config, worker_fn=_contract_worker)
+        try:
+            yield engine
+        finally:
+            await engine.shutdown()
 
 
 def test_process_work_item_serialization_preserves_poison_key() -> None:
@@ -385,7 +418,7 @@ def test_drain_shutdown_ipc_once_reuses_registry_event_rules_and_prefetches_comp
 
 @pytest.mark.asyncio
 async def test_poll_completed_events_ignores_queue_empty_race(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
