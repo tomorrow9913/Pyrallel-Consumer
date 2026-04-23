@@ -74,6 +74,7 @@ class _DummyPoller:
         self.wait_closed_called = False
         self.metrics = SimpleNamespace(source="dummy")
         self.runtime_snapshot = SimpleNamespace(source="runtime")
+        self.metrics_exporter = None
 
     async def start(self):
         self.started = True
@@ -89,6 +90,9 @@ class _DummyPoller:
 
     def get_runtime_snapshot(self):
         return self.runtime_snapshot
+
+    def set_metrics_exporter(self, metrics_exporter) -> None:
+        self.metrics_exporter = metrics_exporter
 
 
 class _DummyResourceSignalProvider:
@@ -338,6 +342,7 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
     exporter = cast(_DummyPrometheusExporter, consumer._metrics_exporter)
     assert exporter.config.port == 9911
     assert dummy_work_manager.metrics_exporter is exporter
+    assert dummy_poller.metrics_exporter is exporter
     await consumer.stop()
 
     assert exporter.system_metrics_updates == [
@@ -347,6 +352,7 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
     assert exporter.closed is True
     assert dummy_engine.shutdown_called is True
     assert dummy_work_manager.metrics_exporter is None
+    assert dummy_poller.metrics_exporter is None
     assert consumer._metrics_exporter is None
     assert consumer._metrics_task is None
 

@@ -598,11 +598,20 @@ async def run_pyrallel_consumer_test(
                 pass
 
         print("Stopping PyrallelConsumer...")
-        final_metrics = broker_poller.get_metrics()
-        _record_release_gate_metrics_from_snapshot(final_metrics)
         await broker_poller.stop()
+        get_last_shutdown_metrics = getattr(
+            broker_poller, "get_last_shutdown_metrics", None
+        )
+        final_metrics = (
+            get_last_shutdown_metrics()
+            if callable(get_last_shutdown_metrics)
+            else None
+        )
+        if final_metrics is None:
+            final_metrics = broker_poller.get_metrics()
         if prometheus_exporter is not None:
             prometheus_exporter.update_from_system_metrics(final_metrics)
+        _record_release_gate_metrics_from_snapshot(final_metrics)
         await engine.shutdown()
         if stats:
             stats.stop()

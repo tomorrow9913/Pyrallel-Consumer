@@ -25,6 +25,8 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | completion success/failure count |
+| `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | final offset commit failures grouped by fixed reason labels |
+| `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | terminal DLQ publish failures that leave offsets pending retry |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | submit to completion latency |
 | `consumer_in_flight_count` | Gauge | none | total in-flight count |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | true lag |
@@ -50,3 +52,8 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `consumer_adaptive_concurrency_scale_up_step` | Gauge | none | adaptive concurrency scale-up step |
 | `consumer_adaptive_concurrency_scale_down_step` | Gauge | none | adaptive concurrency scale-down step |
 | `consumer_adaptive_concurrency_cooldown_ms` | Gauge | none | adaptive concurrency cooldown (ms) |
+
+Failure alerting should key off the labeled counters above:
+`consumer_commit_failures_total{reason="kafka_exception"}` for final Kafka commit
+failures and `consumer_dlq_publish_failures_total` for terminal DLQ publish
+failures.

@@ -14,7 +14,7 @@ from benchmarks import (
     pyrallel_consumer_test,
     run_parallel_benchmark,
 )
-from benchmarks.stats import BenchmarkResult
+from benchmarks.stats import BenchmarkResult, BenchmarkStats
 from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
 
 
@@ -1603,3 +1603,95 @@ async def test_run_pyrallel_consumer_test_raises_clear_error_on_completion_failu
         )
 
     assert events == ["poller.start", "poller.stop", "engine.shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_uses_post_drain_shutdown_metrics_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        target_messages=1,
+    )
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=9,
+                        gap_count=2,
+                        queued_count=0,
+                    )
+                ],
+            )
+            self._last_shutdown_metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            return None
+
+        def get_last_shutdown_metrics(self):
+            return self._last_shutdown_metrics
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "AsyncExecutionEngine", lambda **kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "WorkManager", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    timed_out, _, summary = await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=0,
+        timeout_sec=0,
+        topic_name="demo-topic",
+        execution_mode="async",
+        stats_tracker=stats,
+    )
+
+    assert timed_out is True
+    assert summary is not None
+    assert summary.final_lag == 0
+    assert summary.final_gap_count == 0

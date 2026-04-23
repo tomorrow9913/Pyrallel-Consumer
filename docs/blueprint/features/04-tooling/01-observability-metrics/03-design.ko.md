@@ -19,6 +19,8 @@
 | Metric | Type | Labels | 의미 |
 | --- | --- | --- | --- |
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | completion 성공/실패 수 |
+| `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | 고정 reason label별 최종 offset commit 실패 수 |
+| `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | offset을 retry 대기 상태로 남기는 terminal DLQ publish 실패 수 |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | submit부터 completion까지 지연 |
 | `consumer_in_flight_count` | Gauge | 없음 | 전체 in-flight 수 |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | true lag |
@@ -44,6 +46,11 @@
 | `consumer_adaptive_concurrency_scale_up_step` | Gauge | 없음 | adaptive concurrency 상승 step |
 | `consumer_adaptive_concurrency_scale_down_step` | Gauge | 없음 | adaptive concurrency 하향 step |
 | `consumer_adaptive_concurrency_cooldown_ms` | Gauge | 없음 | adaptive concurrency 쿨다운(ms) |
+
+실패 알림은 위 label 기반 counter를 기준으로 구성합니다.
+최종 Kafka commit 실패는
+`consumer_commit_failures_total{reason="kafka_exception"}`를,
+terminal DLQ publish 실패는 `consumer_dlq_publish_failures_total`을 사용합니다.
 
 ## 4. 운영 해석 규칙
 

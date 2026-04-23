@@ -200,10 +200,14 @@ class BrokerPoller:
         ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
+        self._last_shutdown_metrics: Optional[SystemMetrics] = None
 
     # ------------------------------------------------------------------
     def set_metrics_exporter(self, metrics_exporter: Optional[Any]) -> None:
         self._metrics_exporter = metrics_exporter
+
+    def get_last_shutdown_metrics(self) -> Optional[SystemMetrics]:
+        return self._last_shutdown_metrics
 
     def _rebalance_state_strategy(self) -> str:
         return str(
@@ -712,8 +716,6 @@ class BrokerPoller:
         reason: str,
     ) -> None:
         metrics_exporter = self._metrics_exporter
-        if metrics_exporter is None:
-            metrics_exporter = getattr(self._work_manager, "_metrics_exporter", None)
         recorder = getattr(metrics_exporter, "record_commit_failure", None)
         if not callable(recorder):
             return
@@ -993,6 +995,7 @@ class BrokerPoller:
             shutdown_policy = self._shutdown_policy()
             logger.debug("Shutdown signal received with policy=%s", shutdown_policy)
             self._running = False
+            self._last_shutdown_metrics = None
             cleanup_after_drain = False
             try:
                 if self._consumer_task is not None:
@@ -1012,6 +1015,7 @@ class BrokerPoller:
                     await self._drain_shutdown_work(
                         timeout_seconds=self._shutdown_drain_timeout_seconds()
                     )
+                    self._last_shutdown_metrics = self.get_metrics()
             finally:
                 if cleanup_after_drain:
                     self._defer_consumer_cleanup_for_stop = False
