@@ -6,8 +6,8 @@ This repository implements a high-throughput Kafka consumer modeled after Conflu
 - **Python**: 3.12 (see `.pre-commit-config.yaml` default_language_version)
 - **Dependency manager**: `uv`
   - Install uv: `pip install uv`
-  - Sync runtime deps: `uv pip install -r requirements.txt`
-  - Sync dev deps: `uv pip install -r dev-requirements.txt`
+  - Sync runtime deps: `uv sync`
+  - Sync dev deps: `uv sync --group dev`
 - **Kafka**: Local Docker Compose cluster expected (see README + e2e tests). The repo includes helper scripts (`producer.py`, `baseline_consumer.py`, `pyrallel_consumer_test.py`).
 - **Docs to consult**: `prd_dev.md` (primary dev spec), `prd.md` (design rationale), `GEMINI.md` (handoff + process constraints). If instructions conflict: `prd_dev.md` > `prd.md`. GEMINI rules are mandatory.
 

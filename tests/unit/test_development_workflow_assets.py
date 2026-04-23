@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DOC = (
     REPO_ROOT / "docs" / "operations" / "development-verification-workflow.md"
 )
+AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 
 
 def test_development_verification_workflow_is_linked_from_doc_indexes() -> None:
@@ -45,6 +46,15 @@ def test_development_verification_workflow_lists_canonical_commands() -> None:
     assert "requirements.txt and dev-requirements.txt are not tracked" in text
     assert "`uv sync` creates the project `.venv`" in text
     assert "Do not rely on the system Python for project verification" in text
+
+
+def test_agents_setup_uses_uv_sync_instead_of_legacy_requirements_files() -> None:
+    text = AGENTS_DOC.read_text(encoding="utf-8", errors="strict")
+
+    assert "uv sync" in text
+    assert "uv sync --group dev" in text
+    assert "uv pip install -r requirements.txt" not in text
+    assert "uv pip install -r dev-requirements.txt" not in text
 
 
 def test_development_verification_workflow_defines_parallel_worktree_rules() -> None:
