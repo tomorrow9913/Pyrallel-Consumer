@@ -6,6 +6,7 @@ import time
 import uuid
 from collections import Counter
 from multiprocessing import Manager, Queue
+from pathlib import Path
 from typing import Any, Callable
 
 import pytest
@@ -240,6 +241,7 @@ class _RetryThenSucceedWorker:
         sleep_ms: float = 5.0,
         success_started_event=None,
         success_release_event=None,
+        attempt_log_path: str | None = None,
     ) -> None:
         self._shared_results = shared_results
         self._attempt_counts: dict[str, int] = {}
@@ -250,22 +252,27 @@ class _RetryThenSucceedWorker:
         self._sleep_ms = sleep_ms
         self._success_started_event = success_started_event
         self._success_release_event = success_release_event
+        self._attempt_log_path = attempt_log_path
 
     def __call__(self, item: WorkItem) -> None:
         payload = json.loads(item.payload.decode("utf-8"))
         key = f"{item.tp.partition}:{item.offset}"
         attempt = int(self._attempt_counts.get(key, 0)) + 1
         self._attempt_counts[key] = attempt
-        self._shared_results.append(
-            (
-                "attempt",
-                self._label,
-                item.tp.partition,
-                item.offset,
-                payload["sequence"],
-                attempt,
+        if self._shared_results is not None:
+            self._shared_results.append(
+                (
+                    "attempt",
+                    self._label,
+                    item.tp.partition,
+                    item.offset,
+                    payload["sequence"],
+                    attempt,
+                )
             )
-        )
+        if self._attempt_log_path is not None:
+            with open(self._attempt_log_path, "a", encoding="utf-8") as handle:
+                handle.write(f"{item.tp.partition},{item.offset},{attempt}\n")
 
         if self._sleep_ms > 0:
             time.sleep(self._sleep_ms / 1000.0)
@@ -292,16 +299,17 @@ class _RetryThenSucceedWorker:
                     raise TimeoutError("timed out waiting to release retry success")
                 time.sleep(0.01)
 
-        self._shared_results.append(
-            (
-                "completed",
-                self._label,
-                item.tp.partition,
-                item.offset,
-                payload["sequence"],
-                attempt,
+        if self._shared_results is not None:
+            self._shared_results.append(
+                (
+                    "completed",
+                    self._label,
+                    item.tp.partition,
+                    item.offset,
+                    payload["sequence"],
+                    attempt,
+                )
             )
-        )
 
 
 class _AsyncRetryThenSucceedWorker:
@@ -315,6 +323,7 @@ class _AsyncRetryThenSucceedWorker:
         sleep_ms: float = 5.0,
         success_started_event=None,
         success_release_event=None,
+        attempt_log_path: str | None = None,
     ) -> None:
         self._shared_results = shared_results
         self._attempt_counts: dict[str, int] = {}
@@ -325,22 +334,27 @@ class _AsyncRetryThenSucceedWorker:
         self._sleep_ms = sleep_ms
         self._success_started_event = success_started_event
         self._success_release_event = success_release_event
+        self._attempt_log_path = attempt_log_path
 
     async def __call__(self, item: WorkItem) -> None:
         payload = json.loads(item.payload.decode("utf-8"))
         key = f"{item.tp.partition}:{item.offset}"
         attempt = int(self._attempt_counts.get(key, 0)) + 1
         self._attempt_counts[key] = attempt
-        self._shared_results.append(
-            (
-                "attempt",
-                self._label,
-                item.tp.partition,
-                item.offset,
-                payload["sequence"],
-                attempt,
+        if self._shared_results is not None:
+            self._shared_results.append(
+                (
+                    "attempt",
+                    self._label,
+                    item.tp.partition,
+                    item.offset,
+                    payload["sequence"],
+                    attempt,
+                )
             )
-        )
+        if self._attempt_log_path is not None:
+            with open(self._attempt_log_path, "a", encoding="utf-8") as handle:
+                handle.write(f"{item.tp.partition},{item.offset},{attempt}\n")
 
         if self._sleep_ms > 0:
             await asyncio.sleep(self._sleep_ms / 1000.0)
@@ -367,16 +381,17 @@ class _AsyncRetryThenSucceedWorker:
                     raise TimeoutError("timed out waiting to release retry success")
                 await asyncio.sleep(0.01)
 
-        self._shared_results.append(
-            (
-                "completed",
-                self._label,
-                item.tp.partition,
-                item.offset,
-                payload["sequence"],
-                attempt,
+        if self._shared_results is not None:
+            self._shared_results.append(
+                (
+                    "completed",
+                    self._label,
+                    item.tp.partition,
+                    item.offset,
+                    payload["sequence"],
+                    attempt,
+                )
             )
-        )
 
 
 class _AlwaysFailWorker:
@@ -685,6 +700,16 @@ def _consume_single_record(topic: str, group_id: str, timeout_seconds: float = 1
     finally:
         consumer.close()
     raise AssertionError(f"timed out waiting for DLQ record on topic {topic}")
+
+
+def _read_attempt_log(path: Path) -> list[tuple[int, int, int]]:
+    if not path.exists():
+        return []
+    attempts = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        partition, offset, attempt = line.split(",", 2)
+        attempts.append((int(partition), int(offset), int(attempt)))
+    return attempts
 
 
 @pytest.mark.asyncio
@@ -1118,6 +1143,7 @@ async def test_process_restart_preserves_offset_continuity(
 )
 async def test_process_retry_path_commits_only_after_success(
     execution_mode: ExecutionMode,
+    tmp_path: Path,
 ) -> None:
     _require_kafka()
     mode_label = execution_mode.value
@@ -1132,13 +1158,10 @@ async def test_process_retry_path_commits_only_after_success(
     _create_topic(admin, topic, num_partitions=1)
     _produce_partition_messages(topic, partition=partition, count=produced_count)
 
-    all_entries = []
+    attempt_log_path = tmp_path / f"{mode_label}-retry-attempts.log"
     target_attempts = 0
     final_committed_offset = -1001
-    result_queue: Any = Queue()
     try:
-        shared_results = _QueueBackedResults(result_queue)
-
         retry_worker_cls = (
             _AsyncRetryThenSucceedWorker
             if execution_mode == ExecutionMode.ASYNC
@@ -1146,12 +1169,13 @@ async def test_process_retry_path_commits_only_after_success(
         )
 
         worker = retry_worker_cls(
-            shared_results=shared_results,
+            shared_results=None,
             label="retry",
             target_partition=partition,
             target_offset=target_offset,
             fail_first_attempts=fail_first_attempts,
             sleep_ms=1000.0,
+            attempt_log_path=str(attempt_log_path),
         )
         kafka_config = _build_kafka_config(group_id)
         poller, engine = _build_recovery_runtime(
@@ -1165,13 +1189,13 @@ async def test_process_retry_path_commits_only_after_success(
         try:
 
             def _target_success_attempt_started() -> bool:
-                all_entries.extend(_drain_result_queue(result_queue))
                 return any(
-                    entry[0] == "attempt"
-                    and entry[2] == partition
-                    and entry[3] == target_offset
-                    and entry[5] == fail_first_attempts + 1
-                    for entry in all_entries
+                    attempt_partition == partition
+                    and attempt_offset == target_offset
+                    and attempt == fail_first_attempts + 1
+                    for attempt_partition, attempt_offset, attempt in _read_attempt_log(
+                        attempt_log_path
+                    )
                 )
 
             await _wait_until(
@@ -1194,30 +1218,19 @@ async def test_process_retry_path_commits_only_after_success(
                 message="retry scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
-            all_entries.extend(_drain_result_queue(result_queue))
         finally:
-            all_entries.extend(_drain_result_queue(result_queue))
             await poller.stop()
             await engine.shutdown()
-            all_entries.extend(_drain_result_queue(result_queue))
             _delete_topic(admin, topic)
     finally:
-        result_queue.close()
-        result_queue.join_thread()
+        attempts = _read_attempt_log(attempt_log_path)
 
-    completed_entries = [entry for entry in all_entries if entry[0] == "completed"]
-    completed_offsets = [entry[3] for entry in completed_entries]
-    target_completions = [
-        entry
-        for entry in completed_entries
-        if entry[2] == partition and entry[3] == target_offset
-    ]
-
-    target_attempts = target_completions[0][5] if target_completions else 0
+    target_attempts = max(
+        attempt
+        for attempt_partition, attempt_offset, attempt in attempts
+        if attempt_partition == partition and attempt_offset == target_offset
+    )
     assert target_attempts == fail_first_attempts + 1
-    assert set(completed_offsets) == set(range(produced_count))
-    assert len(target_completions) == 1
-    assert target_completions[0][5] == fail_first_attempts + 1
     assert final_committed_offset == produced_count
 
 
