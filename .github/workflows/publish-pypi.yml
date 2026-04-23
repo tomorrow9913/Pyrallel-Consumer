@@ -10,6 +10,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,6 +25,14 @@ jobs:
       - name: Sync locked dependencies
         run: |
           uv sync --frozen --group dev
+      - name: Export locked requirements for SCA
+        run: |
+          mkdir -p .artifacts
+          uv export --frozen --format requirements.txt --all-groups --no-hashes --no-emit-project \
+            --output-file .artifacts/locked-requirements.txt
+      - name: Run lockfile SCA audit
+        run: |
+          uvx --from pip-audit pip-audit --no-deps --disable-pip -r .artifacts/locked-requirements.txt
       - name: Validate branch/version policy
         if: ${{ github.ref_type == 'branch' }}
         env:
@@ -78,6 +90,12 @@ jobs:
           uv run twine check \
             "${{ steps.release_artifacts.outputs.sdist_path }}" \
             "${{ steps.release_artifacts.outputs.wheel_path }}"
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-path: |
+            ${{ steps.release_artifacts.outputs.sdist_path }}
+            ${{ steps.release_artifacts.outputs.wheel_path }}
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
