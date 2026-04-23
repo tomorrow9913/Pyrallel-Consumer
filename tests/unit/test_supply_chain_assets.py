@@ -45,6 +45,10 @@ def _workflow_triggers(text: dict[str, Any]) -> dict[str, Any]:
     raise KeyError("Workflow trigger section not found")
 
 
+def _normalized_subject_lines(subject_text: str) -> list[str]:
+    return [line.strip() for line in subject_text.splitlines() if line.strip()]
+
+
 def test_ci_release_verify_and_publish_quality_jobs_run_lockfile_sca_gate() -> None:
     ci = _load_yaml(CI_WORKFLOW)
     _assert_sca_gate_steps(ci["jobs"], "quality")
@@ -69,18 +73,26 @@ def test_publish_workflow_attests_built_distribution_artifacts() -> None:
         step.get("uses") == "actions/attest-build-provenance@v4.1.0"
         for step in build_job["steps"]
     )
-    assert any(
-        step.get("with", {})
-        .get("subject-path", "")
-        .strip()
-        .count("${{ steps.release_artifacts.outputs.sdist_path }}")
-        and step.get("with", {})
-        .get("subject-path", "")
-        .strip()
-        .count("${{ steps.release_artifacts.outputs.wheel_path }}")
-        for step in build_job["steps"]
-        if isinstance(step, dict) and step.get("with")
+    attest_step = next(
+        (
+            step
+            for step in build_job["steps"]
+            if isinstance(step, dict)
+            and step.get("uses") == "actions/attest-build-provenance@v4.1.0"
+            and isinstance(step.get("with"), dict)
+            and "${{ steps.release_artifacts.outputs.sdist_path }}"
+            in step["with"].get("subject-path", "")
+        ),
+        None,
     )
+    assert attest_step is not None
+    subject_lines = _normalized_subject_lines(
+        attest_step["with"]["subject-path"]  # type: ignore[index]
+    )
+    assert subject_lines == [
+        "${{ steps.release_artifacts.outputs.sdist_path }}",
+        "${{ steps.release_artifacts.outputs.wheel_path }}",
+    ]
     assert any(
         step.get("uses") == "pypa/gh-action-pypi-publish@release/v1"
         for step in publish_job["steps"]
@@ -94,16 +106,26 @@ def test_release_verify_attests_built_distribution_artifacts() -> None:
 
     assert text["permissions"]["id-token"] == "write"
     assert text["permissions"]["attestations"] == "write"
-    assert any(
-        step.get("uses") == "actions/attest-build-provenance@v4.1.0"
-        for step in verify_job["steps"]
+    attest_step = next(
+        (
+            step
+            for step in verify_job["steps"]
+            if isinstance(step, dict)
+            and step.get("uses") == "actions/attest-build-provenance@v4.1.0"
+            and isinstance(step.get("with"), dict)
+            and "${{ steps.release_artifacts.outputs.sdist_path }}"
+            in step["with"].get("subject-path", "")
+        ),
+        None,
     )
-    assert any(
-        step.get("with", {}).get("subject-path", "").strip().count("sdist") > 0
-        and step.get("with", {}).get("subject-path", "").strip().count("wheel") > 0
-        for step in verify_job["steps"]
-        if isinstance(step, dict) and step.get("with")
+    assert attest_step is not None
+    subject_lines = _normalized_subject_lines(
+        attest_step["with"]["subject-path"]  # type: ignore[index]
     )
+    assert subject_lines == [
+        "${{ steps.release_artifacts.outputs.sdist_path }}",
+        "${{ steps.release_artifacts.outputs.wheel_path }}",
+    ]
 
 
 def test_release_verify_triggers_on_supply_chain_controls() -> None:
@@ -132,10 +154,27 @@ def test_ci_triggers_on_supply_chain_controls() -> None:
 
 
 def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:
-    text = DEPENDABOT_CONFIG.read_text(encoding="utf-8")
+    text = _load_yaml(DEPENDABOT_CONFIG)
+    updates = text["updates"]  # type: ignore[assignment]
 
-    assert 'package-ecosystem: "uv"' in text
-    assert 'package-ecosystem: "github-actions"' in text
-    assert 'directory: "/"' in text
-    assert 'target-branch: "develop"' in text
-    assert 'interval: "weekly"' in text
+    assert isinstance(updates, list)
+
+    uv_entry = next(
+        (entry for entry in updates if entry.get("package-ecosystem") == "uv"), None
+    )
+    actions_entry = next(
+        (
+            entry
+            for entry in updates
+            if entry.get("package-ecosystem") == "github-actions"
+        ),
+        None,
+    )
+    assert uv_entry is not None
+    assert actions_entry is not None
+
+    for entry in (uv_entry, actions_entry):
+        assert entry.get("directory") == "/"
+        assert entry.get("target-branch") == "develop"
+        assert isinstance(entry.get("schedule"), dict)
+        assert entry["schedule"].get("interval") == "weekly"  # type: ignore[index]
