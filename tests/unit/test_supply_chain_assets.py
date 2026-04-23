@@ -183,8 +183,14 @@ def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:
     assert isinstance(uv_entry, dict)
     assert isinstance(actions_entry, dict)
 
+    groups = text["multi-ecosystem-groups"]
+    assert isinstance(groups, dict)
+    weekly_group = groups["weekly-dependencies"]
+    assert isinstance(weekly_group, dict)
+    assert weekly_group.get("target-branch") == "develop"
+    assert isinstance(weekly_group.get("schedule"), dict)
+    assert weekly_group["schedule"].get("interval") == "weekly"  # type: ignore[index]
+
     for entry in (uv_entry, actions_entry):
         assert entry.get("directory") == "/"
-        assert entry.get("target-branch") == "develop"
-        assert isinstance(entry.get("schedule"), dict)
-        assert entry["schedule"].get("interval") == "weekly"  # type: ignore[index]
+        assert entry.get("multi-ecosystem-group") == "weekly-dependencies"
