@@ -49,7 +49,7 @@ def test_development_verification_workflow_lists_canonical_commands() -> None:
 
 
 def test_agents_setup_uses_uv_sync_instead_of_legacy_requirements_files() -> None:
-    text = AGENTS_DOC.read_text()
+    text = AGENTS_DOC.read_text(encoding="utf-8", errors="strict")
 
     assert "uv sync" in text
     assert "uv sync --group dev" in text
