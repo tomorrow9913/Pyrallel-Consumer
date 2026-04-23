@@ -6,6 +6,7 @@ import inspect
 import random
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
@@ -188,11 +189,15 @@ class BrokerPoller:
             log_change=False,
         )
 
-        self._message_cache: "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]" = OrderedDict()
+        self._message_cache: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
+        ) = OrderedDict()
         # BrokerPoller owns pending terminal DLQ failures across transient
         # BrokerCompletionSupport instances; support mutates this ledger while
         # retrying DLQ publication before offsets may be marked complete.
-        self._pending_dlq_events: "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]" = OrderedDict()
+        self._pending_dlq_events: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]"
+        ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
 
@@ -1107,6 +1112,24 @@ class BrokerPoller:
                     avg_completion_latency_seconds=avg_completion_latency
                 )
             )
+            # Avoid exposing a stale backpressure cap when adaptive concurrency has
+            # tightened MAX_IN_FLIGHT_MESSAGES after the backpressure evaluator ran.
+            if adaptive_backpressure_snapshot is not None:
+                normalized_backpressure_cap = max(
+                    1,
+                    min(
+                        int(self.MAX_IN_FLIGHT_MESSAGES),
+                        int(adaptive_backpressure_snapshot.effective_max_in_flight),
+                    ),
+                )
+                if (
+                    normalized_backpressure_cap
+                    != adaptive_backpressure_snapshot.effective_max_in_flight
+                ):
+                    adaptive_backpressure_snapshot = replace(
+                        adaptive_backpressure_snapshot,
+                        effective_max_in_flight=normalized_backpressure_cap,
+                    )
         adaptive_concurrency_snapshot = None
         if self._adaptive_concurrency_controller.enabled:
             adaptive_concurrency_snapshot = (
