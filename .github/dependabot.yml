@@ -3,6 +3,7 @@ multi-ecosystem-groups:
   weekly-dependencies:
     schedule:
       interval: "weekly"
+    target-branch: "develop"
     labels:
       - "dependencies"
       - "supply-chain"
@@ -10,7 +11,6 @@ multi-ecosystem-groups:
 updates:
   - package-ecosystem: "uv"
     directory: "/"
-    target-branch: "develop"
     patterns:
       - "*"
     multi-ecosystem-group: "weekly-dependencies"
@@ -20,7 +20,6 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "develop"
     patterns:
       - "*"
     multi-ecosystem-group: "weekly-dependencies"
