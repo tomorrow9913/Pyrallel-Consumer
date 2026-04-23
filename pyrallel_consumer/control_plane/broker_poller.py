@@ -188,15 +188,11 @@ class BrokerPoller:
             log_change=False,
         )
 
-        self._message_cache: (
-            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
-        ) = OrderedDict()
+        self._message_cache: "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]" = OrderedDict()
         # BrokerPoller owns pending terminal DLQ failures across transient
         # BrokerCompletionSupport instances; support mutates this ledger while
         # retrying DLQ publication before offsets may be marked complete.
-        self._pending_dlq_events: (
-            "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]"
-        ) = OrderedDict()
+        self._pending_dlq_events: "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]" = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
 
@@ -1087,6 +1083,8 @@ class BrokerPoller:
             total_in_flight=metrics.total_in_flight,
             is_paused=metrics.is_paused,
             partitions=metrics.partitions,
+            adaptive_backpressure=metrics.adaptive_backpressure,
+            adaptive_concurrency=metrics.adaptive_concurrency,
             process_batch_metrics=(
                 runtime_metrics
                 if isinstance(runtime_metrics, ProcessBatchMetrics)

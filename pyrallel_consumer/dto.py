@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
@@ -251,6 +253,12 @@ class SystemMetrics:
         total_in_flight (int): 시스템 전체에서 처리 중인 메시지 수
         is_paused (bool): 백프레셔로 인한 컨슈머 일시 정지 여부
         partitions (List[PartitionMetrics]): 각 파티션별 메트릭 목록
+        adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot]: 백프레셔/적응형
+            backpressure 제어 상태 스냅샷
+        adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot]:
+            적응형 동시성 제어 상태 스냅샷
+        process_batch_metrics (Optional[ProcessBatchMetrics]): process 모드 배치 메트릭
+        resource_signal: Optional[ResourceSignalSnapshot]: 리소스 signal 상태
     """
 
     total_in_flight: int
@@ -258,6 +266,8 @@ class SystemMetrics:
     partitions: list[PartitionMetrics]
     process_batch_metrics: Optional[ProcessBatchMetrics] = None
     resource_signal: Optional[ResourceSignalSnapshot] = None
+    adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot] = None
+    adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot] = None
 
 
 @dataclass(frozen=True)

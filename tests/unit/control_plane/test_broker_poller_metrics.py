@@ -2,7 +2,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.config import (
+    AdaptiveBackpressureConfig,
+    AdaptiveConcurrencyConfig,
+    KafkaConfig,
+)
+from pyrallel_consumer.control_plane.adaptive_backpressure import (
+    AdaptiveBackpressureController,
+)
+from pyrallel_consumer.control_plane.adaptive_concurrency import (
+    AdaptiveConcurrencyController,
+)
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
@@ -218,6 +228,56 @@ class TestBrokerPollerMetrics:
         assert metrics.process_batch_metrics is not None
         assert metrics.process_batch_metrics.size_flush_count == 3
         assert metrics.process_batch_metrics.buffered_items == 1
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_includes_adaptive_runtime_snapshots(
+        self, broker_poller_with_mocks
+    ):
+        broker_poller_with_mocks._adaptive_backpressure_controller = (
+            AdaptiveBackpressureController(
+                configured_max_in_flight=100,
+                config=AdaptiveBackpressureConfig(
+                    enabled=True,
+                    min_in_flight=8,
+                    scale_up_step=16,
+                    scale_down_step=16,
+                    cooldown_ms=1000,
+                    lag_scale_up_threshold=2500,
+                    low_latency_threshold_ms=25.0,
+                    high_latency_threshold_ms=125.0,
+                ),
+            )
+        )
+        broker_poller_with_mocks._adaptive_concurrency_controller = (
+            AdaptiveConcurrencyController(
+                AdaptiveConcurrencyConfig(
+                    enabled=True,
+                    min_in_flight=10,
+                    scale_up_step=8,
+                    scale_down_step=16,
+                    cooldown_ms=500,
+                ),
+                configured_max_in_flight=100,
+            )
+        )
+
+        metrics = broker_poller_with_mocks.get_metrics()
+
+        assert metrics.adaptive_backpressure is not None
+        assert metrics.adaptive_backpressure.configured_max_in_flight == 100
+        assert metrics.adaptive_backpressure.min_in_flight == 8
+        assert metrics.adaptive_backpressure.scale_up_step == 16
+        assert metrics.adaptive_backpressure.scale_down_step == 16
+        assert metrics.adaptive_backpressure.cooldown_ms == 1000
+        assert metrics.adaptive_backpressure.lag_scale_up_threshold == 2500
+        assert metrics.adaptive_backpressure.last_decision == "hold"
+
+        assert metrics.adaptive_concurrency is not None
+        assert metrics.adaptive_concurrency.configured_max_in_flight == 100
+        assert metrics.adaptive_concurrency.min_in_flight == 10
+        assert metrics.adaptive_concurrency.scale_up_step == 8
+        assert metrics.adaptive_concurrency.scale_down_step == 16
+        assert metrics.adaptive_concurrency.cooldown_ms == 500
 
     @pytest.mark.asyncio
     async def test_get_runtime_snapshot_projects_runtime_state(
