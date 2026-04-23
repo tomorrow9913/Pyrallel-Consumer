@@ -445,6 +445,14 @@ class KafkaConfig(BaseSettings):
         )
 
     def dump_to_rdkafka(self) -> dict[str, object]:
+        """Return a redacted librdkafka-style snapshot safe for logging/tests."""
+        return self._build_rdkafka_config(include_secrets=False)
+
+    def get_rdkafka_config(self) -> dict[str, object]:
+        """Return a full librdkafka-style config for live client construction."""
+        return self._build_rdkafka_config(include_secrets=True)
+
+    def _build_rdkafka_config(self, *, include_secrets: bool) -> dict[str, object]:
         data: dict[str, object] = self.model_dump(exclude_none=True)
 
         _exclude = {
@@ -457,16 +465,22 @@ class KafkaConfig(BaseSettings):
             "auto_offset_reset",
             "enable_auto_commit",
             "session_timeout_ms",
-            "sasl_password",
-            "ssl_key_password",
             "rebalance_protocol",
             "metrics",
             "parallel_consumer",
         }
+        if not include_secrets:
+            _exclude.update({"sasl_password", "ssl_key_password"})
 
         conf: dict[str, object] = {}
+        if include_secrets:
+            conf["bootstrap.servers"] = self._bootstrap_servers_csv()
+
         for k, v in data.items():
             if k in _exclude:
+                continue
+            if isinstance(v, SecretStr):
+                conf[k.replace("_", ".")] = v.get_secret_value()
                 continue
             conf[k.replace("_", ".")] = v
 

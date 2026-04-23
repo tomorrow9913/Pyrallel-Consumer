@@ -137,6 +137,31 @@ def test_evaluate_release_gate_reports_no_go_for_persistent_gap_observations(
     assert "persistent_gap" in failed_codes
 
 
+def test_evaluate_release_gate_resets_persistent_gap_timer_per_run_name(
+    tmp_path: Path,
+) -> None:
+    good = _passing_summary()
+    good["metrics_observations"] = [
+        {"run_name": "run-a", "elapsed_sec": 10, "consumer_gap_count": 1},
+        {"run_name": "run-a", "elapsed_sec": 50, "consumer_gap_count": 1},
+        {"run_name": "run-b", "elapsed_sec": 5, "consumer_gap_count": 1},
+        {"run_name": "run-b", "elapsed_sec": 45, "consumer_gap_count": 1},
+    ]
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-grouped-gap-%d.json" % index)
+        path.write_text(json.dumps(good), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "PASS"
+    assert all(
+        check["code"] != "persistent_gap" or check["status"] == "PASS"
+        for check in report["checks"]
+    )
+
+
 def test_evaluate_release_gate_requires_repeated_full_release_matrix(
     tmp_path: Path,
 ) -> None:
