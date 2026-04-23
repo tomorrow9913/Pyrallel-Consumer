@@ -15,6 +15,7 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     ExecutionMode,
     OrderingMode,
+    SystemMetrics,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
@@ -494,10 +495,9 @@ async def run_pyrallel_consumer_test(
     run_completed = False
     metrics_start = time.perf_counter()
 
-    def _record_release_gate_metrics() -> None:
+    def _record_release_gate_metrics_from_snapshot(metrics: SystemMetrics) -> None:
         if stats is None:
             return
-        metrics = broker_poller.get_metrics()
         stats.record_release_gate_observation(
             elapsed_sec=time.perf_counter() - metrics_start,
             consumer_parallel_lag=sum(pm.true_lag for pm in metrics.partitions),
@@ -598,10 +598,11 @@ async def run_pyrallel_consumer_test(
                 pass
 
         print("Stopping PyrallelConsumer...")
+        final_metrics = broker_poller.get_metrics()
+        _record_release_gate_metrics_from_snapshot(final_metrics)
         await broker_poller.stop()
         if prometheus_exporter is not None:
-            prometheus_exporter.update_from_system_metrics(broker_poller.get_metrics())
-        _record_release_gate_metrics()
+            prometheus_exporter.update_from_system_metrics(final_metrics)
         await engine.shutdown()
         if stats:
             stats.stop()

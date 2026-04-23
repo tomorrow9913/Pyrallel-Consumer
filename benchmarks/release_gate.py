@@ -167,6 +167,7 @@ def _evaluate_persistent_gap(
         ]
     positive_started_at: float | None = None
     longest_positive_gap_sec = 0.0
+    current_run_name: str | None = None
     for observation in observations:
         if not isinstance(observation, Mapping):
             return [
@@ -177,6 +178,16 @@ def _evaluate_persistent_gap(
                     path=str(path),
                 )
             ]
+        run_name_value = observation.get("run_name")
+        run_name = (
+            str(run_name_value)
+            if isinstance(run_name_value, str) and run_name_value
+            else None
+        )
+        if current_run_name != run_name:
+            current_run_name = run_name
+            positive_started_at = None
+
         elapsed_sec = _as_number(
             observation.get("elapsed_sec"), "elapsed_sec", path=path
         )
