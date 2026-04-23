@@ -80,15 +80,16 @@ def test_publish_workflow_attests_built_distribution_artifacts() -> None:
             if isinstance(step, dict)
             and step.get("uses") == "actions/attest-build-provenance@v4.1.0"
             and isinstance(step.get("with"), dict)
-            and "${{ steps.release_artifacts.outputs.sdist_path }}"
-            in step["with"].get("subject-path", "")
+            and "subject-path" in step["with"]
         ),
         None,
     )
     assert attest_step is not None
-    subject_lines = _normalized_subject_lines(
-        attest_step["with"]["subject-path"]  # type: ignore[index]
-    )
+    attest_with = attest_step.get("with")
+    assert isinstance(attest_with, dict)
+    subject_path = attest_with.get("subject-path")
+    assert isinstance(subject_path, str)
+    subject_lines = _normalized_subject_lines(subject_path)
     assert subject_lines == [
         "${{ steps.release_artifacts.outputs.sdist_path }}",
         "${{ steps.release_artifacts.outputs.wheel_path }}",
@@ -113,15 +114,16 @@ def test_release_verify_attests_built_distribution_artifacts() -> None:
             if isinstance(step, dict)
             and step.get("uses") == "actions/attest-build-provenance@v4.1.0"
             and isinstance(step.get("with"), dict)
-            and "${{ steps.release_artifacts.outputs.sdist_path }}"
-            in step["with"].get("subject-path", "")
+            and "subject-path" in step["with"]
         ),
         None,
     )
     assert attest_step is not None
-    subject_lines = _normalized_subject_lines(
-        attest_step["with"]["subject-path"]  # type: ignore[index]
-    )
+    attest_with = attest_step.get("with")
+    assert isinstance(attest_with, dict)
+    subject_path = attest_with.get("subject-path")
+    assert isinstance(subject_path, str)
+    subject_lines = _normalized_subject_lines(subject_path)
     assert subject_lines == [
         "${{ steps.release_artifacts.outputs.sdist_path }}",
         "${{ steps.release_artifacts.outputs.wheel_path }}",
@@ -155,23 +157,31 @@ def test_ci_triggers_on_supply_chain_controls() -> None:
 
 def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:
     text = _load_yaml(DEPENDABOT_CONFIG)
-    updates = text["updates"]  # type: ignore[assignment]
+    updates = text["updates"]
 
     assert isinstance(updates, list)
 
     uv_entry = next(
-        (entry for entry in updates if entry.get("package-ecosystem") == "uv"), None
+        (
+            entry
+            for entry in updates
+            if isinstance(entry, dict) and entry.get("package-ecosystem") == "uv"
+        ),
+        None,
     )
     actions_entry = next(
         (
             entry
             for entry in updates
-            if entry.get("package-ecosystem") == "github-actions"
+            if isinstance(entry, dict)
+            and entry.get("package-ecosystem") == "github-actions"
         ),
         None,
     )
     assert uv_entry is not None
     assert actions_entry is not None
+    assert isinstance(uv_entry, dict)
+    assert isinstance(actions_entry, dict)
 
     for entry in (uv_entry, actions_entry):
         assert entry.get("directory") == "/"
