@@ -5,7 +5,7 @@ import queue
 import time
 import uuid
 from collections import Counter
-from multiprocessing import Event, Manager, Queue
+from multiprocessing import Manager, Queue
 from typing import Any, Callable
 
 import pytest
@@ -1138,8 +1138,6 @@ async def test_process_retry_path_commits_only_after_success(
     result_queue: Any = Queue()
     try:
         shared_results = _QueueBackedResults(result_queue)
-        success_started_event = Event()
-        success_release_event = Event()
 
         retry_worker_cls = (
             _AsyncRetryThenSucceedWorker
@@ -1153,8 +1151,7 @@ async def test_process_retry_path_commits_only_after_success(
             target_partition=partition,
             target_offset=target_offset,
             fail_first_attempts=fail_first_attempts,
-            success_started_event=success_started_event,
-            success_release_event=success_release_event,
+            sleep_ms=1000.0,
         )
         kafka_config = _build_kafka_config(group_id)
         poller, engine = _build_recovery_runtime(
@@ -1166,8 +1163,19 @@ async def test_process_retry_path_commits_only_after_success(
         )
         await poller.start()
         try:
-            await _wait_for_event(
-                success_started_event,
+
+            def _target_success_attempt_started() -> bool:
+                all_entries.extend(_drain_result_queue(result_queue))
+                return any(
+                    entry[0] == "attempt"
+                    and entry[2] == partition
+                    and entry[3] == target_offset
+                    and entry[5] == fail_first_attempts + 1
+                    for entry in all_entries
+                )
+
+            await _wait_until(
+                _target_success_attempt_started,
                 timeout_seconds=20,
                 message="retry scenario never reached the blocked success attempt",
             )
@@ -1177,7 +1185,6 @@ async def test_process_retry_path_commits_only_after_success(
                 f"offset={blocked_commit}"
             )
 
-            success_release_event.set()
             await _wait_until(
                 lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
@@ -1187,9 +1194,8 @@ async def test_process_retry_path_commits_only_after_success(
                 message="retry scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
-            all_entries = _drain_result_queue(result_queue)
+            all_entries.extend(_drain_result_queue(result_queue))
         finally:
-            success_release_event.set()
             all_entries.extend(_drain_result_queue(result_queue))
             await poller.stop()
             await engine.shutdown()
