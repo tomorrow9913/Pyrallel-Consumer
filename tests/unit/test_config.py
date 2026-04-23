@@ -383,6 +383,19 @@ def test_kafka_config_omits_blank_security_fields_from_client_configs() -> None:
     assert "ssl.key.password" not in producer_config
 
 
+def test_kafka_config_preserves_boundary_whitespace_in_secret_fields() -> None:
+    config = KafkaConfig(
+        _env_file=None,
+        sasl_password=" leading-trailing ",
+        ssl_key_password="\tkey secret\n",
+    )
+
+    producer_config = config.get_producer_config()
+
+    assert producer_config["sasl.password"] == " leading-trailing "
+    assert producer_config["ssl.key.password"] == "\tkey secret\n"
+
+
 def test_kafka_config_keeps_legacy_uppercase_aliases() -> None:
     config = KafkaConfig(
         _env_file=None,

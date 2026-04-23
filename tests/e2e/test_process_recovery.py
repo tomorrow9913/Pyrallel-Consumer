@@ -242,6 +242,7 @@ class _RetryThenSucceedWorker:
         success_started_event=None,
         success_release_event=None,
         attempt_log_path: str | None = None,
+        success_release_path: str | None = None,
     ) -> None:
         self._shared_results = shared_results
         self._attempt_counts: dict[str, int] = {}
@@ -253,6 +254,7 @@ class _RetryThenSucceedWorker:
         self._success_started_event = success_started_event
         self._success_release_event = success_release_event
         self._attempt_log_path = attempt_log_path
+        self._success_release_path = success_release_path
 
     def __call__(self, item: WorkItem) -> None:
         payload = json.loads(item.payload.decode("utf-8"))
@@ -298,6 +300,21 @@ class _RetryThenSucceedWorker:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("timed out waiting to release retry success")
                 time.sleep(0.01)
+        success_release_path = self._success_release_path
+        should_wait_for_release_file = (
+            item.tp.partition == self._target_partition
+            and item.offset == self._target_offset
+            and attempt == self._fail_first_attempts + 1
+            and success_release_path is not None
+        )
+        if should_wait_for_release_file:
+            assert success_release_path is not None
+            deadline = time.monotonic() + 15
+            release_path = Path(success_release_path)
+            while not release_path.exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting to release retry success")
+                time.sleep(0.01)
 
         if self._shared_results is not None:
             self._shared_results.append(
@@ -324,6 +341,7 @@ class _AsyncRetryThenSucceedWorker:
         success_started_event=None,
         success_release_event=None,
         attempt_log_path: str | None = None,
+        success_release_path: str | None = None,
     ) -> None:
         self._shared_results = shared_results
         self._attempt_counts: dict[str, int] = {}
@@ -335,6 +353,7 @@ class _AsyncRetryThenSucceedWorker:
         self._success_started_event = success_started_event
         self._success_release_event = success_release_event
         self._attempt_log_path = attempt_log_path
+        self._success_release_path = success_release_path
 
     async def __call__(self, item: WorkItem) -> None:
         payload = json.loads(item.payload.decode("utf-8"))
@@ -377,6 +396,21 @@ class _AsyncRetryThenSucceedWorker:
             self._success_started_event.set()
             deadline = time.monotonic() + 15
             while not self._success_release_event.is_set():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting to release retry success")
+                await asyncio.sleep(0.01)
+        success_release_path = self._success_release_path
+        should_wait_for_release_file = (
+            item.tp.partition == self._target_partition
+            and item.offset == self._target_offset
+            and attempt == self._fail_first_attempts + 1
+            and success_release_path is not None
+        )
+        if should_wait_for_release_file:
+            assert success_release_path is not None
+            deadline = time.monotonic() + 15
+            release_path = Path(success_release_path)
+            while not release_path.exists():
                 if time.monotonic() >= deadline:
                     raise TimeoutError("timed out waiting to release retry success")
                 await asyncio.sleep(0.01)
@@ -523,8 +557,8 @@ def _build_kafka_config(group_id: str) -> KafkaConfig:
     kafka_config = KafkaConfig(
         bootstrap_servers=[BOOTSTRAP_SERVERS],
         consumer_group=group_id,
-        auto_offset_reset=E2E_CONF["auto.offset.reset"],
-        enable_auto_commit=E2E_CONF["enable.auto.commit"],
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
     )
     kafka_config.dlq_enabled = True
     kafka_config.dlq_topic_suffix = DLQ_SUFFIX
@@ -639,7 +673,8 @@ def _delete_topic(admin: AdminClient, topic_name: str) -> None:
         admin.delete_topics([topic_name])[topic_name].result(timeout=10)
         time.sleep(1)
     except KafkaException as exc:
-        if exc.args[0].code() != KafkaError.UNKNOWN_TOPIC_OR_PART:
+        unknown_topic_or_part = getattr(KafkaError, "UNKNOWN_TOPIC_OR_PART")
+        if exc.args[0].code() != unknown_topic_or_part:
             raise
 
 
@@ -1159,6 +1194,7 @@ async def test_process_retry_path_commits_only_after_success(
     _produce_partition_messages(topic, partition=partition, count=produced_count)
 
     attempt_log_path = tmp_path / f"{mode_label}-retry-attempts.log"
+    success_release_path = tmp_path / f"{mode_label}-retry-success-release"
     target_attempts = 0
     final_committed_offset = -1001
     try:
@@ -1174,8 +1210,9 @@ async def test_process_retry_path_commits_only_after_success(
             target_partition=partition,
             target_offset=target_offset,
             fail_first_attempts=fail_first_attempts,
-            sleep_ms=1000.0,
+            sleep_ms=5.0,
             attempt_log_path=str(attempt_log_path),
+            success_release_path=str(success_release_path),
         )
         kafka_config = _build_kafka_config(group_id)
         poller, engine = _build_recovery_runtime(
@@ -1209,6 +1246,7 @@ async def test_process_retry_path_commits_only_after_success(
                 f"offset={blocked_commit}"
             )
 
+            success_release_path.write_text("release", encoding="utf-8")
             await _wait_until(
                 lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
@@ -1219,6 +1257,7 @@ async def test_process_retry_path_commits_only_after_success(
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
         finally:
+            success_release_path.write_text("release", encoding="utf-8")
             await poller.stop()
             await engine.shutdown()
             _delete_topic(admin, topic)

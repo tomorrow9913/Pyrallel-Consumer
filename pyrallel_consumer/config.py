@@ -1,7 +1,7 @@
 import socket
 from typing import ClassVar, Literal, cast
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
@@ -404,11 +404,15 @@ class KafkaConfig(BaseSettings):
         mode="before",
     )
     @classmethod
-    def _normalize_optional_security_field(cls, v: object) -> object:
+    def _normalize_optional_security_field(
+        cls, v: object, info: ValidationInfo
+    ) -> object:
         if isinstance(v, str):
             cleaned = v.strip()
             if cleaned == "":
                 return None
+            if info.field_name in {"sasl_password", "ssl_key_password"}:
+                return v
             return cleaned
         return v
 
