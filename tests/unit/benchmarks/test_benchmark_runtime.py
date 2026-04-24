@@ -14,7 +14,7 @@ from benchmarks import (
     pyrallel_consumer_test,
     run_parallel_benchmark,
 )
-from benchmarks.stats import BenchmarkResult
+from benchmarks.stats import BenchmarkResult, BenchmarkStats
 from pyrallel_consumer.dto import (
     CompletionStatus,
     ExecutionMode,
@@ -588,6 +588,85 @@ async def test_run_pyrallel_consumer_test_skips_topic_creation_after_reset(
 
 
 @pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_records_metrics_after_poller_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            self._lag = 99
+
+        async def start(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=self._lag,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def stop(self) -> None:
+            self._lag = 0
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "AsyncExecutionEngine", lambda **kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "WorkManager", lambda **kwargs: object()
+    )
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda *args, **kwargs: None,
+    )
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="io",
+        topic="demo-topic",
+        ordering="key_hash",
+        target_messages=1,
+    )
+
+    (
+        _timed_out,
+        _stats,
+        summary,
+    ) = await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=1,
+        timeout_sec=0,
+        topic_name="demo-topic",
+        consumer_group="demo-group",
+        execution_mode="async",
+        stats_tracker=stats,
+    )
+
+    assert summary is not None
+    assert summary.final_lag == 0
+
+
+@pytest.mark.asyncio
 async def test_run_pyrallel_consumer_test_stops_poller_and_engine_when_assignment_wait_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -668,12 +747,14 @@ def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:
 
 def test_build_kafka_config_sets_process_batching_overrides() -> None:
     config = pyrallel_consumer_test.build_kafka_config(
+        process_count=2,
         process_batch_size=1,
         process_max_batch_wait_ms=0,
         process_flush_policy="demand_min_residence",
         process_demand_flush_min_residence_ms=2,
     )
 
+    assert config.parallel_consumer.execution.process_config.process_count == 2
     assert config.parallel_consumer.execution.process_config.batch_size == 1
     assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
     assert (
@@ -684,7 +765,6 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
         config.parallel_consumer.execution.process_config.demand_flush_min_residence_ms
         == 2
     )
-
 
 def test_build_kafka_config_keeps_shared_queue_default_transport_mode() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
@@ -702,6 +782,10 @@ def test_build_kafka_config_sets_process_transport_mode_override() -> None:
     assert config.parallel_consumer.execution.process_config.transport_mode == (
         "worker_pipes"
     )
+
+def test_build_kafka_config_rejects_non_positive_process_count() -> None:
+    with pytest.raises(ValueError, match="process_count must be greater than 0"):
+        pyrallel_consumer_test.build_kafka_config(process_count=0)
 
 
 def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
@@ -811,12 +895,14 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
         timeout_sec=0,
         execution_mode="process",
         process_worker_fn=lambda _item: None,
+        process_count=2,
         process_batch_size=1,
         process_max_batch_wait_ms=0,
         process_flush_policy="demand",
         process_demand_flush_min_residence_ms=2,
     )
 
+    assert captured["process_count"] == 2
     assert captured["process_batch_size"] == 1
     assert captured["process_max_batch_wait_ms"] == 0
     assert captured["process_flush_policy"] == "demand"
@@ -1031,11 +1117,11 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
     assert metrics_updates
 
 
-def test_run_benchmark_passes_process_batching_overrides_to_process_round(
+def test_run_benchmark_passes_process_overrides_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
-    process_calls: list[tuple[int, int, str | None, int | None]] = []
+    process_calls: list[tuple[int, int, int, str | None, int | None]] = []
 
     monkeypatch.setattr(
         run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
@@ -1070,6 +1156,7 @@ def test_run_benchmark_passes_process_batching_overrides_to_process_round(
                 (
                     kwargs["process_batch_size"],
                     kwargs["process_max_batch_wait_ms"],
+                    kwargs["process_count"],
                     kwargs["process_flush_policy"],
                     kwargs["process_demand_flush_min_residence_ms"],
                 )
@@ -1082,6 +1169,7 @@ def test_run_benchmark_passes_process_batching_overrides_to_process_round(
         _build_args(
             skip_async=True,
             skip_process=False,
+            process_count=2,
             process_batch_size=1,
             process_max_batch_wait_ms=0,
             process_flush_policy="demand_min_residence",
@@ -1089,6 +1177,8 @@ def test_run_benchmark_passes_process_batching_overrides_to_process_round(
         ),
         raw_argv=[
             "--skip-async",
+            "--process-count",
+            "2",
             "--process-batch-size",
             "1",
             "--process-max-batch-wait-ms",
@@ -1100,7 +1190,7 @@ def test_run_benchmark_passes_process_batching_overrides_to_process_round(
         ],
     )
 
-    assert process_calls == [(1, 0, "demand_min_residence", 2)]
+    assert process_calls == [(1, 0, 2, "demand_min_residence", 2)]
 
 
 def test_run_benchmark_passes_process_transport_mode_to_process_round(

@@ -350,6 +350,14 @@ ceiling. The control plane only adjusts the effective live limit reported by
 `get_runtime_snapshot().queue.max_in_flight`; it does not reconfigure async
 semaphores, process counts, or other engine-specific internals at runtime.
 
+Commit cadence controls:
+- `commit_debounce_completion_threshold`: dirty-partition commit attempt after this many processed completions. Default: `100`.
+- `commit_debounce_interval_ms`: dirty-partition commit attempt after this much elapsed time. Default: `100`. Set to `0` to make dirty completions eligible immediately.
+
+Completion release and refill remain immediate; these settings only debounce
+Kafka commit transmission. Revoke and graceful shutdown still force an immediate
+commit flush.
+
 Shutdown policy controls:
 - `shutdown_policy`: `graceful` (default) stops new fetches, waits for bounded drain, then escalates to cancellation / worker termination if the timeout expires. `abort` skips the drain window and goes straight to the forced-abort path.
 - `consumer_task_stop_timeout_ms`: how long `BrokerPoller.stop()` waits for the consumer loop to exit after fetches are halted.

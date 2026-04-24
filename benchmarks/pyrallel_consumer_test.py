@@ -235,6 +235,7 @@ def build_kafka_config(
     bootstrap_servers: Optional[str] = None,
     consumer_group: Optional[str] = None,
     strict_completion_monitor_enabled: bool = True,
+    process_count: Optional[int] = None,
     process_batch_size: Optional[int] = None,
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
@@ -265,6 +266,12 @@ def build_kafka_config(
     kafka_config.parallel_consumer.adaptive_concurrency.enabled = (
         adaptive_concurrency_enabled
     )
+    if process_count is not None:
+        if process_count <= 0:
+            raise ValueError("process_count must be greater than 0")
+        kafka_config.parallel_consumer.execution.process_config.process_count = (
+            process_count
+        )
     if process_batch_size is not None:
         kafka_config.parallel_consumer.execution.process_config.batch_size = (
             process_batch_size
@@ -307,6 +314,7 @@ async def run_pyrallel_consumer_test(
     ordering_mode: str = OrderingMode.KEY_HASH.value,
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_count: Optional[int] = None,
     process_batch_size: Optional[int] = None,
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
@@ -338,6 +346,7 @@ async def run_pyrallel_consumer_test(
         bootstrap_servers=bootstrap_servers,
         consumer_group=consumer_group,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_count=process_count,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
@@ -606,9 +615,9 @@ async def run_pyrallel_consumer_test(
                 pass
 
         print("Stopping PyrallelConsumer...")
+        await broker_poller.stop()
         final_metrics = broker_poller.get_metrics()
         _record_release_gate_metrics_from_snapshot(final_metrics)
-        await broker_poller.stop()
         if prometheus_exporter is not None:
             prometheus_exporter.update_from_system_metrics(final_metrics)
         await engine.shutdown()

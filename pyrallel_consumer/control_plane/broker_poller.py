@@ -200,10 +200,33 @@ class BrokerPoller:
         ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
+        self._dirty_commit_partitions: set[DtoTopicPartition] = set()
+        self._completions_since_last_commit = 0
+        self._commit_debounce_completion_threshold = (
+            self._resolve_commit_debounce_completion_threshold(pc_conf)
+        )
+        self._commit_debounce_interval_seconds = (
+            self._resolve_commit_debounce_interval_seconds(pc_conf)
+        )
+        self._last_commit_attempt_monotonic = time.monotonic()
 
     # ------------------------------------------------------------------
     def set_metrics_exporter(self, metrics_exporter: Optional[Any]) -> None:
         self._metrics_exporter = metrics_exporter
+
+    @staticmethod
+    def _resolve_commit_debounce_completion_threshold(pc_conf: Any) -> int:
+        raw_value = getattr(pc_conf, "commit_debounce_completion_threshold", 100)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            return 100
+        return max(1, int(raw_value))
+
+    @staticmethod
+    def _resolve_commit_debounce_interval_seconds(pc_conf: Any) -> float:
+        raw_value = getattr(pc_conf, "commit_debounce_interval_ms", 100)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            return 0.1
+        return max(0.0, float(raw_value) / 1000.0)
 
     def _rebalance_state_strategy(self) -> str:
         return str(
@@ -491,10 +514,13 @@ class BrokerPoller:
         try:
             while self._running:
                 if self._pending_dlq_events:
+                    had_pending_dlq_events = True
                     async with self._control_lock:
                         drained_completion = await self._drain_completion_events_once()
                     if drained_completion:
-                        await self._commit_ready_offsets()
+                        await self._maybe_commit_ready_offsets(
+                            had_pending_dlq_events=had_pending_dlq_events
+                        )
                     await self._check_backpressure()
                     cadence_messages: List[Message] = await asyncio.to_thread(
                         self.consumer.consume,
@@ -526,7 +552,7 @@ class BrokerPoller:
 
                     await self._drain_completion_events_once()
 
-                await self._commit_ready_offsets()
+                await self._maybe_commit_ready_offsets()
 
                 if not messages and consume_timeout > 0:
                     await asyncio.sleep(consume_timeout)
@@ -577,6 +603,7 @@ class BrokerPoller:
                     continue
 
                 has_completion = bool(self._pending_dlq_events)
+                had_pending_dlq_events = has_completion
                 if not has_completion:
                     has_completion = await self._execution_engine.wait_for_completion(
                         timeout_seconds=timeout_seconds,
@@ -587,20 +614,75 @@ class BrokerPoller:
                 async with self._control_lock:
                     has_completion = await self._drain_completion_events_once()
                 if has_completion:
-                    await self._commit_ready_offsets()
+                    await self._maybe_commit_ready_offsets(
+                        had_pending_dlq_events=had_pending_dlq_events
+                    )
                     if self._pending_dlq_events:
                         await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             raise
 
-    async def _commit_ready_offsets(self) -> None:
+    async def _maybe_commit_ready_offsets(
+        self, *, had_pending_dlq_events: bool = False
+    ) -> None:
+        force = await self._should_force_idle_commit()
+        if had_pending_dlq_events or force or self._should_attempt_ready_commit():
+            await self._commit_ready_offsets(force=force or had_pending_dlq_events)
+
+    async def _commit_ready_offsets(self, *, force: bool = False) -> None:
+        if not force and not self._should_attempt_ready_commit():
+            return
+
         async with self._commit_lock:
+            if not force and not self._should_attempt_ready_commit():
+                return
+
             async with self._control_lock:
                 commits_to_make = (
                     self._make_dispatch_support().build_commit_candidates()
                 )
+                if not force:
+                    commits_to_make = [
+                        (tp, offset)
+                        for tp, offset in commits_to_make
+                        if tp in self._dirty_commit_partitions
+                    ]
             if commits_to_make:
-                await self._commit_offsets(commits_to_make)
+                committed = await self._commit_offsets(commits_to_make)
+                if committed is not False:
+                    self._clear_committed_dirty_partitions(commits_to_make)
+            self._completions_since_last_commit = 0
+            self._last_commit_attempt_monotonic = time.monotonic()
+
+    def _should_attempt_ready_commit(self) -> bool:
+        if not self._dirty_commit_partitions:
+            return False
+        if (
+            self._completions_since_last_commit
+            >= self._commit_debounce_completion_threshold
+        ):
+            return True
+        if self._commit_debounce_interval_seconds <= 0:
+            return True
+        elapsed = time.monotonic() - self._last_commit_attempt_monotonic
+        return elapsed >= self._commit_debounce_interval_seconds
+
+    async def _should_force_idle_commit(self) -> bool:
+        if not self._dirty_commit_partitions:
+            return False
+        if self._pending_dlq_events:
+            return False
+        if self._work_manager.get_total_in_flight_count() > 0:
+            return False
+        return await self._get_total_queued_messages() <= 0
+
+    def _clear_committed_dirty_partitions(
+        self, commits_to_make: list[tuple[DtoTopicPartition, int]]
+    ) -> None:
+        for tp, _ in commits_to_make:
+            self._dirty_commit_partitions.discard(tp)
+        if not self._dirty_commit_partitions:
+            self._completions_since_last_commit = 0
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
@@ -627,11 +709,23 @@ class BrokerPoller:
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
+        managed_partitions = set(self._offset_trackers)
+        pending_retry_partitions = {
+            tp for tp, _ in self._pending_dlq_events.keys() if tp in managed_partitions
+        }
         processed_count = (
             await self._make_completion_support().process_completed_events(
                 completed_events
             )
         )
+
+        if processed_count > 0:
+            completed_partitions = {
+                event.tp for event in completed_events if event.tp in managed_partitions
+            }
+            dirty_partitions = completed_partitions | pending_retry_partitions
+            self._dirty_commit_partitions.update(dirty_partitions)
+            self._completions_since_last_commit += processed_count
 
         self._diag_events_since_log += processed_count
         if self._diag_events_since_log >= self._diag_log_every:
@@ -641,14 +735,14 @@ class BrokerPoller:
     # ------------------------------------------------------------------
     async def _commit_offsets(
         self, commits_to_make: List[tuple[DtoTopicPartition, int]]
-    ) -> None:
+    ) -> bool:
         """Build offset list and commit to Kafka with retry on transient failure.
 
         On success, advances each tracker's high water mark.
         On failure after retry, logs a warning and continues without crashing.
         """
         if self.consumer is None:
-            return
+            return False
 
         async with self._control_lock:
             tracked_commits: list[tuple[DtoTopicPartition, int]] = []
@@ -664,7 +758,7 @@ class BrokerPoller:
                 tracker_snapshot[tp] = tracker
 
         if not tracked_commits:
-            return
+            return True
 
         offsets_to_commit = self._commit_planner.build_offsets_to_commit(
             commits_to_make=tracked_commits,
@@ -686,7 +780,7 @@ class BrokerPoller:
                         if tracker is None:
                             continue
                         tracker.commit_through(safe_offset)
-                return
+                return True
             except KafkaException as exc:
                 if attempt < max_attempts - 1:
                     logger.warning(
@@ -705,6 +799,8 @@ class BrokerPoller:
                         tracked_commits,
                         self.COMMIT_FAILURE_REASON_KAFKA_EXCEPTION,
                     )
+                    return False
+        return False
 
     def _record_commit_failure(
         self,
@@ -839,6 +935,19 @@ class BrokerPoller:
         total_queued = await self._get_total_queued_messages()
         self._maybe_adjust_adaptive_backpressure(total_queued)
         self._maybe_adjust_adaptive_concurrency(total_queued)
+        total_in_flight = self._work_manager.get_total_in_flight_count()
+        current_load = total_in_flight + total_queued
+        queue_full = (
+            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        )
+        if (
+            not self._adaptive_backpressure_controller.enabled
+            and not self._adaptive_concurrency_controller.enabled
+            and not self._is_paused
+            and not queue_full
+            and current_load <= self.MAX_IN_FLIGHT_MESSAGES
+        ):
+            return
         self._is_paused = self._make_runtime_support().check_backpressure(
             total_queued=total_queued
         )
@@ -937,6 +1046,13 @@ class BrokerPoller:
             logger=logger,
             record_commit_failure=self._record_commit_failure_for_partition,
         )
+        for partition in partitions:
+            self._dirty_commit_partitions.discard(
+                DtoTopicPartition(
+                    topic=str(partition.topic),
+                    partition=int(partition.partition),
+                )
+            )
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
@@ -1027,13 +1143,13 @@ class BrokerPoller:
                 drained_completion = await self._drain_completion_events_once()
 
             if drained_completion:
-                await self._commit_ready_offsets()
+                await self._commit_ready_offsets(force=True)
 
             total_in_flight = self._work_manager.get_total_in_flight_count()
             total_queued = await self._get_total_queued_messages()
             pending_dlq_count = len(self._pending_dlq_events)
             if total_in_flight <= 0 and total_queued <= 0 and pending_dlq_count <= 0:
-                await self._commit_ready_offsets()
+                await self._commit_ready_offsets(force=True)
                 logger.debug(
                     "Graceful shutdown drain completed with in_flight=%d queued=%d pending_dlq=%d",
                     total_in_flight,

@@ -20,6 +20,8 @@ def test_parallel_consumer_config_defaults():
     assert config.max_blocking_duration_ms == 0
     assert config.ordering_mode == OrderingMode.KEY_HASH
     assert config.strict_completion_monitor_enabled is True
+    assert config.commit_debounce_completion_threshold == 100
+    assert config.commit_debounce_interval_ms == 100
     assert config.adaptive_concurrency.enabled is False
     assert config.adaptive_concurrency.min_in_flight == 0
     assert config.poison_message.enabled is False
@@ -185,6 +187,24 @@ def test_parallel_consumer_config_can_disable_strict_completion_monitor(
         "PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED",
         raising=False,
     )
+
+
+def test_parallel_consumer_config_commit_debounce_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD", "32")
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS", "25")
+
+    config = ParallelConsumerConfig()
+
+    assert config.commit_debounce_completion_threshold == 32
+    assert config.commit_debounce_interval_ms == 25
+
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD",
+        raising=False,
+    )
+    monkeypatch.delenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS", raising=False)
 
 
 def test_parallel_consumer_config_rejects_zero_batch_and_worker_pool_size() -> None:

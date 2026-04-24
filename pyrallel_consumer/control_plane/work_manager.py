@@ -474,7 +474,9 @@ class WorkManager:
             else:
                 return
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, *, schedule_after_release: bool = True
+    ) -> List[CompletionEvent]:
         """
         Updates the WorkManager by polling completed events from the ExecutionEngine.
         ExecutionEngine으로부터 완료 이벤트를 폴링하고 OffsetTracker를 업데이트합니다.
@@ -488,60 +490,72 @@ class WorkManager:
         for event in engine_completed_events:
             await self._completion_queue.put(event)
 
-        while not self._completion_queue.empty():
-            event = await self._completion_queue.get()
-            completed_events.append(event)
-
-            # Update OffsetTracker based on the completion event
-            if event.tp in self._offset_trackers:
-                offset_tracker = self._offset_trackers[event.tp]
-                current_epoch = offset_tracker.get_current_epoch()
-                if event.epoch != current_epoch:
-                    completed_item = self._in_flight_work_items.get(event.id)
-                    if completed_item is not None and completed_item.tp == event.tp:
-                        self._release_in_flight_item(event.id, reschedule=True)
-                    continue
-                if event.tp not in self._shared_offset_trackers:
-                    offset_tracker.mark_complete(event.offset)
-                    self._invalidate_blocking_cache()
-
-                # Decrement in-flight count if the work item was tracked
-                if (
-                    event.id in self._in_flight_work_items
-                ):  # Now CompletionEvent has 'id'
-                    completed_item = self._in_flight_work_items[event.id]
-                    if self._poison_message_circuit is not None:
-                        self._poison_message_circuit.record_completion(
-                            event, completed_item
-                        )
-                    _, dispatch_time = self._release_in_flight_item(event.id)
-                    if dispatch_time is not None:
-                        duration = max(0.0, time.perf_counter() - dispatch_time)
-                        self._record_completion_latency(
-                            duration_seconds=duration,
-                            now=time.perf_counter(),
-                        )
-                    if dispatch_time is not None and self._metrics_exporter is not None:
-                        completion_observer = getattr(
-                            self._metrics_exporter, "observe_work_completion", None
-                        )
-                        if callable(completion_observer):
-                            completion_observer(event, completed_item, duration)
-                        else:
-                            self._metrics_exporter.observe_completion(
-                                event.tp, event.status, duration
-                            )
-                    # After processing a completion, try to submit more tasks
-                    await self.schedule()
-            else:
-                # Log a warning if the topic-partition is not managed
-                # This could happen if a revoke happened between submission and completion
-                self._logger.warning(
-                    "Completion event for unmanaged TopicPartition %s", event.tp
+        while True:
+            should_schedule = False
+            while not self._completion_queue.empty():
+                event = await self._completion_queue.get()
+                completed_events.append(event)
+                should_schedule = (
+                    self._process_completion_event(event) or should_schedule
                 )
-            if event.id in self._dispatch_timestamps:
-                self._dispatch_timestamps.pop(event.id, None)
+
+            if not schedule_after_release or not should_schedule:
+                break
+
+            await self.schedule()
+            if self._completion_queue.empty():
+                break
         return completed_events
+
+    def _process_completion_event(self, event: CompletionEvent) -> bool:
+        if event.tp not in self._offset_trackers:
+            # Log a warning if the topic-partition is not managed.
+            # This could happen if a revoke happened between submission and completion.
+            self._logger.warning(
+                "Completion event for unmanaged TopicPartition %s", event.tp
+            )
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        offset_tracker = self._offset_trackers[event.tp]
+        current_epoch = offset_tracker.get_current_epoch()
+        if event.epoch != current_epoch:
+            completed_item = self._in_flight_work_items.get(event.id)
+            if completed_item is not None and completed_item.tp == event.tp:
+                self._release_in_flight_item(event.id, reschedule=True)
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        if event.tp not in self._shared_offset_trackers:
+            offset_tracker.mark_complete(event.offset)
+            self._invalidate_blocking_cache()
+
+        if event.id not in self._in_flight_work_items:
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        completed_item = self._in_flight_work_items[event.id]
+        if self._poison_message_circuit is not None:
+            self._poison_message_circuit.record_completion(event, completed_item)
+        _, dispatch_time = self._release_in_flight_item(event.id)
+        if dispatch_time is not None:
+            duration = max(0.0, time.perf_counter() - dispatch_time)
+            self._record_completion_latency(
+                duration_seconds=duration,
+                now=time.perf_counter(),
+            )
+        if dispatch_time is not None and self._metrics_exporter is not None:
+            completion_observer = getattr(
+                self._metrics_exporter, "observe_work_completion", None
+            )
+            if callable(completion_observer):
+                completion_observer(event, completed_item, duration)
+            else:
+                self._metrics_exporter.observe_completion(
+                    event.tp, event.status, duration
+                )
+        self._dispatch_timestamps.pop(event.id, None)
+        return True
 
     def get_blocking_offsets(self) -> Dict[DtoTopicPartition, Optional[OffsetRange]]:
         """
