@@ -176,6 +176,11 @@ class ProcessBatchMetrics:
         avg_worker_exec_seconds (float): Average worker execution time
         last_worker_to_main_ipc_seconds (float): Most recent worker-to-main IPC time
         avg_worker_to_main_ipc_seconds (float): Average worker-to-main IPC time
+        transport_mode (str): Active process transport mode
+        support_state (str): Support boundary classification for the active transport
+        timer_flush_supported (bool): Whether timer-based flushing is supported
+        demand_flush_supported (bool): Whether demand-based flushing is supported
+        recycle_supported (bool): Whether recycle settings are supported
     """
 
     size_flush_count: int
@@ -193,6 +198,11 @@ class ProcessBatchMetrics:
     avg_worker_exec_seconds: float = 0.0
     last_worker_to_main_ipc_seconds: float = 0.0
     avg_worker_to_main_ipc_seconds: float = 0.0
+    transport_mode: str = "shared_queue"
+    support_state: str = "full"
+    timer_flush_supported: bool = True
+    demand_flush_supported: bool = True
+    recycle_supported: bool = True
 
 
 class ResourceSignalStatus(str, Enum):

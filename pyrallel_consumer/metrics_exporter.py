@@ -34,7 +34,8 @@ COMMIT_FAILURE_REASONS = ("kafka_exception",)
 
 
 class _Joinable(Protocol):
-    def join(self, timeout: float | None = None) -> None: ...
+    def join(self, timeout: float | None = None) -> None:
+        ...
 
 
 class PrometheusMetricsExporter:
@@ -275,6 +276,33 @@ class PrometheusMetricsExporter:
             "Average observed worker-to-main IPC time for process completions",
             registry=self._registry,
         )
+        self._process_batch_transport_mode_gauge = Gauge(
+            "consumer_process_batch_transport_mode",
+            "Active process transport mode for batch metrics",
+            labelnames=("mode",),
+            registry=self._registry,
+        )
+        self._process_batch_support_state_gauge = Gauge(
+            "consumer_process_batch_support_state",
+            "Support boundary state for the active process transport",
+            labelnames=("state",),
+            registry=self._registry,
+        )
+        self._process_batch_timer_flush_supported_gauge = Gauge(
+            "consumer_process_batch_timer_flush_supported",
+            "Whether timer-based process batch flushing is supported for the active transport",
+            registry=self._registry,
+        )
+        self._process_batch_demand_flush_supported_gauge = Gauge(
+            "consumer_process_batch_demand_flush_supported",
+            "Whether demand-based process batch flushing is supported for the active transport",
+            registry=self._registry,
+        )
+        self._process_batch_recycle_supported_gauge = Gauge(
+            "consumer_process_batch_recycle_supported",
+            "Whether recycle settings are supported for the active process transport",
+            registry=self._registry,
+        )
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -464,6 +492,10 @@ class PrometheusMetricsExporter:
         if metrics is None:
             for reason in ("size", "timer", "close", "demand"):
                 self._process_batch_flush_count.labels(reason=reason).set(0)
+            for mode in ("shared_queue", "worker_pipes"):
+                self._process_batch_transport_mode_gauge.labels(mode=mode).set(0)
+            for state in ("full", "bounded"):
+                self._process_batch_support_state_gauge.labels(state=state).set(0)
             self._process_batch_avg_size_gauge.set(0)
             self._process_batch_last_size_gauge.set(0)
             self._process_batch_last_wait_seconds_gauge.set(0)
@@ -475,6 +507,9 @@ class PrometheusMetricsExporter:
             self._process_batch_avg_worker_exec_seconds_gauge.set(0)
             self._process_batch_last_worker_to_main_ipc_seconds_gauge.set(0)
             self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(0)
+            self._process_batch_timer_flush_supported_gauge.set(0)
+            self._process_batch_demand_flush_supported_gauge.set(0)
+            self._process_batch_recycle_supported_gauge.set(0)
             return
 
         self._process_batch_flush_count.labels(reason="size").set(
@@ -520,4 +555,21 @@ class PrometheusMetricsExporter:
         )
         self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(
             metrics.avg_worker_to_main_ipc_seconds
+        )
+        for mode in ("shared_queue", "worker_pipes"):
+            self._process_batch_transport_mode_gauge.labels(mode=mode).set(
+                1 if metrics.transport_mode == mode else 0
+            )
+        for state in ("full", "bounded"):
+            self._process_batch_support_state_gauge.labels(state=state).set(
+                1 if metrics.support_state == state else 0
+            )
+        self._process_batch_timer_flush_supported_gauge.set(
+            1 if metrics.timer_flush_supported else 0
+        )
+        self._process_batch_demand_flush_supported_gauge.set(
+            1 if metrics.demand_flush_supported else 0
+        )
+        self._process_batch_recycle_supported_gauge.set(
+            1 if metrics.recycle_supported else 0
         )

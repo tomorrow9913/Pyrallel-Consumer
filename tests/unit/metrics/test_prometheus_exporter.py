@@ -5,9 +5,9 @@ from prometheus_client import CollectorRegistry  # noqa: E402
 
 from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
-    CompletionStatus,
     AdaptiveBackpressureSnapshot,
     AdaptiveConcurrencyRuntimeSnapshot,
+    CompletionStatus,
     PartitionMetrics,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
@@ -76,6 +76,11 @@ def test_exporter_updates_metrics_and_observes_completion():
             avg_worker_exec_seconds=0.012,
             last_worker_to_main_ipc_seconds=0.004,
             avg_worker_to_main_ipc_seconds=0.003,
+            transport_mode="worker_pipes",
+            support_state="bounded",
+            timer_flush_supported=False,
+            demand_flush_supported=False,
+            recycle_supported=False,
         ),
         adaptive_backpressure=AdaptiveBackpressureSnapshot(
             configured_max_in_flight=128,
@@ -148,6 +153,25 @@ def test_exporter_updates_metrics_and_observes_completion():
         exporter._process_batch_avg_worker_to_main_ipc_seconds_gauge._value.get()
         == 0.003
     )
+    assert (
+        exporter._process_batch_transport_mode_gauge.labels(
+            mode="worker_pipes"
+        )._value.get()
+        == 1
+    )
+    assert (
+        exporter._process_batch_transport_mode_gauge.labels(
+            mode="shared_queue"
+        )._value.get()
+        == 0
+    )
+    assert (
+        exporter._process_batch_support_state_gauge.labels(state="bounded")._value.get()
+        == 1
+    )
+    assert exporter._process_batch_timer_flush_supported_gauge._value.get() == 0
+    assert exporter._process_batch_demand_flush_supported_gauge._value.get() == 0
+    assert exporter._process_batch_recycle_supported_gauge._value.get() == 0
     assert (
         exporter._adaptive_backpressure_configured_max_in_flight_gauge._value.get()
         == 128
@@ -244,6 +268,19 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
     assert (
         exporter._adaptive_concurrency_effective_max_in_flight_gauge._value.get() == 0
     )
+    assert (
+        exporter._process_batch_transport_mode_gauge.labels(
+            mode="shared_queue"
+        )._value.get()
+        == 0
+    )
+    assert (
+        exporter._process_batch_support_state_gauge.labels(state="bounded")._value.get()
+        == 0
+    )
+    assert exporter._process_batch_timer_flush_supported_gauge._value.get() == 0
+    assert exporter._process_batch_demand_flush_supported_gauge._value.get() == 0
+    assert exporter._process_batch_recycle_supported_gauge._value.get() == 0
 
 
 def test_exporter_registers_and_increments_failure_counters() -> None:
