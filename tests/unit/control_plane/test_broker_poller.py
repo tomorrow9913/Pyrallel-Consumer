@@ -939,6 +939,9 @@ class TestRunConsumerCommitExceptionDefense:
         tracker.last_fetched_offset = 0
         tracker.mark_complete(0)
         broker_poller._offset_trackers[tp] = tracker
+        broker_poller._dirty_commit_partitions.add(tp)
+        broker_poller._commit_debounce_completion_threshold = 1
+        broker_poller._completions_since_last_commit = 1
 
         iteration = 0
 

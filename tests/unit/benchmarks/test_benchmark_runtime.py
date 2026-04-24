@@ -14,7 +14,7 @@ from benchmarks import (
     pyrallel_consumer_test,
     run_parallel_benchmark,
 )
-from benchmarks.stats import BenchmarkResult
+from benchmarks.stats import BenchmarkResult, BenchmarkStats
 from pyrallel_consumer.dto import CompletionStatus, TopicPartition, WorkItem
 
 
@@ -514,6 +514,81 @@ async def test_run_pyrallel_consumer_test_skips_topic_creation_after_reset(
         )
     ]
     assert create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_records_metrics_after_poller_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            self._lag = 99
+
+        async def start(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=self._lag,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def stop(self) -> None:
+            self._lag = 0
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "AsyncExecutionEngine", lambda **kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "WorkManager", lambda **kwargs: object()
+    )
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda *args, **kwargs: None,
+    )
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="io",
+        topic="demo-topic",
+        ordering="key_hash",
+        target_messages=1,
+    )
+
+    _timed_out, _stats, summary = await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=1,
+        timeout_sec=0,
+        topic_name="demo-topic",
+        consumer_group="demo-group",
+        execution_mode="async",
+        stats_tracker=stats,
+    )
+
+    assert summary is not None
+    assert summary.final_lag == 0
 
 
 @pytest.mark.asyncio

@@ -160,6 +160,8 @@ class ParallelConsumerConfig(BaseSettings):
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     strict_completion_monitor_enabled: bool = True
+    commit_debounce_completion_threshold: int = Field(default=100, gt=0)
+    commit_debounce_interval_ms: int = Field(default=100, ge=0)
     adaptive_backpressure: AdaptiveBackpressureConfig = AdaptiveBackpressureConfig()
     adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
     poison_message: PoisonMessageConfig = PoisonMessageConfig()
