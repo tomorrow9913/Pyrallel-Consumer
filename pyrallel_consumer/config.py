@@ -26,6 +26,7 @@ class ProcessConfig(BaseSettings):
     require_picklable_worker: bool = True
     batch_size: int = Field(default=64, gt=0)
     batch_bytes: str = "256KB"
+    transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
     max_batch_wait_ms: int = 5
     flush_policy: Literal[
         "size_or_timer", "demand", "demand_min_residence"
