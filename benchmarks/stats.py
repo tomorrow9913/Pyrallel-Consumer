@@ -21,6 +21,7 @@ class BenchmarkResult:
     throughput_tps: float
     avg_processing_ms: float
     p99_processing_ms: float
+    process_transport_mode: str | None = None
     window_size_messages: int | None = None
     tps_p50_window: float | None = None
     tps_p10_window: float | None = None
@@ -41,6 +42,7 @@ class BenchmarkStats:
         workload: str,
         ordering: str,
         topic: str,
+        process_transport_mode: str | None = None,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
@@ -48,6 +50,7 @@ class BenchmarkStats:
         self.workload = workload
         self.ordering = ordering
         self.topic = topic
+        self.process_transport_mode = process_transport_mode
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
         self._end_time: Optional[float] = None
@@ -120,6 +123,7 @@ class BenchmarkStats:
             workload=self.workload,
             ordering=self.ordering,
             topic=self.topic,
+            process_transport_mode=self.process_transport_mode,
             messages_processed=self._processed,
             total_time_sec=total_time,
             throughput_tps=throughput,

@@ -111,6 +111,14 @@ def test_build_parser_accepts_process_flush_policy_overrides() -> None:
     assert args.process_demand_flush_min_residence_ms == 2
 
 
+def test_build_parser_accepts_process_transport_override() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--process-transport", "worker_pipes"])
+
+    assert args.process_transport == "worker_pipes"
+
+
 def test_build_parser_accepts_metrics_port() -> None:
     parser = run_parallel_benchmark.build_parser()
 

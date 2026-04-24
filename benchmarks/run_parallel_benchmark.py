@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, List, Sequence
+from typing import Any, Awaitable, Callable, Iterable, List, Literal, Sequence, cast
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -43,6 +43,8 @@ _PROCESS_FLUSH_POLICY_CHOICES = (
     "demand",
     "demand_min_residence",
 )
+_PROCESS_TRANSPORT_CHOICES = ("shared_queue", "worker_pipes")
+ProcessTransportMode = Literal["shared_queue", "worker_pipes"]
 
 
 def _parse_csv_selection(
@@ -372,9 +374,13 @@ async def _run_pyrparallel_round(
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
+    process_transport_mode: ProcessTransportMode | None = None,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
+    effective_process_transport_mode = (
+        process_transport_mode if mode == ExecutionMode.PROCESS else None
+    )
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -389,6 +395,7 @@ async def _run_pyrparallel_round(
         workload=workload,
         ordering=ordering,
         topic=topic_name,
+        process_transport_mode=effective_process_transport_mode,
         target_messages=num_messages,
     )
     timed_out, _, summary = await run_pyrallel_consumer_test(
@@ -410,6 +417,7 @@ async def _run_pyrparallel_round(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
+        process_transport_mode=effective_process_transport_mode,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
@@ -713,6 +721,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override minimum residence time before demand flush is allowed",
+    )
+    parser.add_argument(
+        "--process-transport",
+        choices=_PROCESS_TRANSPORT_CHOICES,
+        default="shared_queue",
+        help="Select process-mode input transport for benchmark runs",
     )
     parser.add_argument(
         "--metrics-port",
@@ -1019,6 +1033,7 @@ def run_benchmark(
                                         process_demand_flush_min_residence_ms=(
                                             args.process_demand_flush_min_residence_ms
                                         ),
+                                        process_transport_mode=None,
                                         metrics_port=metrics_port,
                                         adaptive_concurrency_enabled=(
                                             adaptive_concurrency_enabled
@@ -1082,6 +1097,9 @@ def run_benchmark(
                                     process_flush_policy=args.process_flush_policy,
                                     process_demand_flush_min_residence_ms=(
                                         args.process_demand_flush_min_residence_ms
+                                    ),
+                                    process_transport_mode=cast(
+                                        ProcessTransportMode, args.process_transport
                                     ),
                                     metrics_port=metrics_port,
                                     adaptive_concurrency_enabled=(
