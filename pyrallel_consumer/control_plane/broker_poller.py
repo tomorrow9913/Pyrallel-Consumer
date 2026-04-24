@@ -627,7 +627,7 @@ class BrokerPoller:
     ) -> None:
         force = await self._should_force_idle_commit()
         if had_pending_dlq_events or force or self._should_attempt_ready_commit():
-            await self._commit_ready_offsets(force=force)
+            await self._commit_ready_offsets(force=force or had_pending_dlq_events)
 
     async def _commit_ready_offsets(self, *, force: bool = False) -> None:
         if not force and not self._should_attempt_ready_commit():

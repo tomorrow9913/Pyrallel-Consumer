@@ -504,6 +504,20 @@ async def test_process_completed_events_does_not_mark_everything_dirty_for_untra
 
 
 @pytest.mark.asyncio
+async def test_maybe_commit_ready_offsets_forces_commit_after_pending_dlq_activity(
+    broker_poller,
+):
+    broker_poller._commit_debounce_completion_threshold = 100
+    broker_poller._commit_debounce_interval_seconds = 9999.0
+    broker_poller._last_commit_attempt_monotonic = time.monotonic()
+    broker_poller._commit_ready_offsets = AsyncMock()
+
+    await broker_poller._maybe_commit_ready_offsets(had_pending_dlq_events=True)
+
+    broker_poller._commit_ready_offsets.assert_awaited_once_with(force=True)
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_noops_when_wait_for_completion_times_out(
     broker_poller, topic_partition
 ):
