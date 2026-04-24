@@ -25,7 +25,7 @@ def _result(
     final_lag: int = 0,
     final_gap_count: int = 0,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "run_name": "%s-%s-pyrallel-%s" % (workload, ordering, run_type),
         "run_type": run_type,
         "workload": workload,
@@ -36,6 +36,9 @@ def _result(
         "final_lag": final_lag,
         "final_gap_count": final_gap_count,
     }
+    if run_type == "process":
+        payload["process_transport_mode"] = "shared_queue"
+    return payload
 
 
 def _passing_summary() -> dict[str, object]:
@@ -252,6 +255,45 @@ def test_evaluate_release_gate_reports_schema_failure_for_missing_num_messages(
     paths = []
     for index in range(2):
         path = tmp_path / ("release-gate-missing-options-%d.json" % index)
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "measurement_conditions" in failed_codes
+
+
+def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(
+    tmp_path: Path,
+) -> None:
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-transport-%d.json" % index)
+        path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "PASS"
+    assert report["summary"]["process_transport_modes"] == ["shared_queue"]
+
+
+def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
+    tmp_path: Path,
+) -> None:
+    bad = _passing_summary()
+    results = bad["results"]
+    assert isinstance(results, list)
+    for result in results:
+        if result["run_type"] == "process":
+            del result["process_transport_mode"]
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-missing-transport-%d.json" % index)
         path.write_text(json.dumps(bad), encoding="utf-8")
         paths.append(path)
 

@@ -308,6 +308,7 @@ balancing 설계는 이 문서 범위가 아니다.
 - release-gate가 같은 correctness 기준으로 GO/NO-GO를 판단했다는 증거
 - transport-specific benchmark metadata
 - reject/skip된 transport-config 조합을 설명할 수 있는 로그나 runtime metadata
+- release-gate summary가 관측된 `process_transport_mode` 목록을 포함해 artifact 비교 시 어떤 transport가 평가되었는지 드러내야 함
 
 Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 

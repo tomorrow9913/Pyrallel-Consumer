@@ -100,6 +100,13 @@ def _final_gap_count(result: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
+    value = result.get("process_transport_mode")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _evaluate_options(path: Path, options: Mapping[str, Any]) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     if options.get("num_messages") != RELEASE_GATE_MIN_MESSAGES:
@@ -224,11 +231,12 @@ def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
 
 def _group_results(
     summaries: Iterable[tuple[Path, Mapping[str, Any]]],
-) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]]]:
+) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]], set[str]]:
     grouped: dict[Combination, list[BenchmarkEntry]] = {
         combination: [] for combination in RELEASE_THRESHOLDS
     }
     checks: list[dict[str, Any]] = []
+    process_transport_modes: set[str] = set()
     for path, summary in summaries:
         expected_messages = None
         options = summary.get("options")
@@ -269,9 +277,23 @@ def _group_results(
                 )
                 continue
             combination = _result_combination(result, path=path)
+            if combination[0] == "process":
+                transport_mode = _process_transport_mode(result)
+                if transport_mode is None:
+                    checks.append(
+                        _check(
+                            "measurement_conditions",
+                            "FAIL",
+                            "process benchmark results must surface process_transport_mode",
+                            path=str(path),
+                            combination="/".join(combination),
+                        )
+                    )
+                    continue
+                process_transport_modes.add(transport_mode)
             if combination in grouped:
                 grouped[combination].append((path, result, expected_messages))
-    return grouped, checks
+    return grouped, checks, process_transport_modes
 
 
 def _evaluate_matrix(
@@ -403,7 +425,7 @@ def evaluate_release_gate(
             )
         )
     summaries = [(path, _load_summary(path)) for path in paths]
-    grouped, grouped_checks = _group_results(summaries)
+    grouped, grouped_checks, process_transport_modes = _group_results(summaries)
     checks.extend(grouped_checks)
     checks.extend(_evaluate_matrix(grouped, required_repetitions))
     verdict = "NO-GO" if any(check["status"] == "FAIL" for check in checks) else "PASS"
@@ -413,6 +435,7 @@ def evaluate_release_gate(
             "artifacts": [str(path) for path in paths],
             "required_repetitions": required_repetitions,
             "expected_combinations": len(RELEASE_THRESHOLDS),
+            "process_transport_modes": sorted(process_transport_modes),
         },
         "checks": checks,
     }
@@ -451,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
                 "artifacts": args.benchmark_json,
                 "required_repetitions": args.required_repetitions,
                 "expected_combinations": len(RELEASE_THRESHOLDS),
+                "process_transport_modes": [],
             },
             "checks": [
                 _check("schema", "FAIL", str(exc), artifacts=args.benchmark_json)
