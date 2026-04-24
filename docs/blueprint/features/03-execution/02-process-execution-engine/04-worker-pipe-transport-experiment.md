@@ -153,6 +153,11 @@ by `WorkItem`:
 route_identity = (work_item.tp.topic, work_item.tp.partition, work_item.key)
 ```
 
+This is not a new process-only hint. It is the same logical queue identity that
+`WorkManager` uses before the async and process engines diverge. The async engine
+can ignore it and call `create_task()` directly; the worker-pipe process
+transport hashes it to select a worker input channel.
+
 Routing rules:
 
 - use a stable hash, not Python built-in `hash()`,

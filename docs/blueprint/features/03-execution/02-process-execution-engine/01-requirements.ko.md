@@ -41,6 +41,8 @@ process execution engine의 목표 모델은 다음과 같다.
 - `WorkManager`가 ordering/eligibility를 판단한다.
 - process engine은 `submit(work_item)` 시점에 route identity를 사용해 적절한
   worker execution slot/channel을 선택한다.
+- route identity는 async와 다른 별도 scheduling hint가 아니라, `WorkManager`가
+  partition/key virtual queue에서 이미 사용한 logical queue identity다.
 - ordered mode에서는 sticky routing / affinity preservation이 기본 원칙이다.
 - `shared_queue`는 default compatibility path로 남는다.
 - `worker_pipes`는 ordering-preserving parallelism을 검증하고, 장기적으로는 기본

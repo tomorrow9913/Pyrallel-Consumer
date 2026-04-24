@@ -64,6 +64,9 @@ WorkManager virtual queues
 
 - current topology는 “submit된 item을 한 input queue로 모은 뒤 경쟁”한다.
 - target topology는 “submit 순간 적절한 worker channel을 선택”한다.
+- channel 선택에 쓰는 identity는 새로 만든 process-only hint가 아니라,
+  async path에서도 `WorkManager`가 safe-to-run queue를 고를 때 쓰는 같은
+  logical queue identity다.
 
 ## 5. 왜 input topology가 우선인가
 
@@ -117,6 +120,8 @@ route_identity = (topic, partition, key)
 원칙:
 
 - 같은 identity는 같은 worker channel로 간다.
+- identity는 `WorkManager` virtual queue의 `(TopicPartition, key)` 의미를 process
+  boundary 너머로 보존한 것이다.
 - ordered mode의 기본 원칙은 stealing이 아니라 affinity preservation이다.
 - unordered mode에서만 별도 balancing policy를 연구 대상으로 둘 수 있다.
 
