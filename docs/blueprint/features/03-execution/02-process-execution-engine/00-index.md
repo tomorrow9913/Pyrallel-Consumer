@@ -1,21 +1,53 @@
 # Process Execution Engine Index
 
-This index is the canonical English entry for the subfeature document set.
-For the preserved Korean source text, see [00-index.ko.md](./00-index.ko.md).
+This index is the canonical English entry for the process-execution-engine
+subfeature. For the preserved Korean source text, see
+[00-index.ko.md](./00-index.ko.md).
 
-## Subfeature summary
+## Long-term direction
 
-`process-execution-engine` covers picklable worker contracts, msgpack micro-batching, process lifecycle, and crash or timeout isolation. It belongs to the same blueprint family as the companion documents listed below.
+The process execution engine is not only a “process worker pool” document set.
+Its long-term direction is to preserve the ordered virtual-queue identity that
+`WorkManager` already computes before work crosses the process boundary.
 
-## Focus areas
+The intended model is:
 
-- Task and completion IPC boundaries between the control plane and worker processes.
-- Micro-batching, serialization, and worker recycle policy.
-- Crash handling, timeout recovery, and shutdown choreography.
+- `WorkManager` decides ordering and eligibility with partition/key virtual
+  queues,
+- the async engine spreads safe-to-run work immediately via `create_task()`
+  without re-merging it into one input queue,
+- the process engine should move toward the same shape by selecting the
+  appropriate worker execution channel at `submit(work_item)` time.
 
-## Companion documents
+## Why this matters
 
-- [00-index.md](./00-index.md)
-- [01-requirements.md](./01-requirements.md)
-- [02-architecture.md](./02-architecture.md)
-- [03-design.md](./03-design.md)
+The current `shared_queue` process path places every submitted item into one
+shared `multiprocessing.Queue`, so all workers compete on the same input queue.
+That compatibility path remains important, but benchmark and py-spy evidence
+suggest it is a bottleneck for ordered partition workloads.
+
+The evidence direction captured in these docs is:
+
+- worker-side time is dominated by
+  `_receive_task_payload -> multiprocessing.Queue.get -> synchronize.__enter__ -> connection.recv_bytes`,
+- `_io_worker_process` time is comparatively small,
+- therefore input dispatch topology is a higher-priority improvement target
+  than completion aggregation.
+
+## Document set
+
+| Document | Role |
+| --- | --- |
+| [01-requirements.md](./01-requirements.md) | Responsibilities, transport modes, and acceptance criteria |
+| [02-architecture.md](./02-architecture.md) | Current shared-queue topology vs target worker-affine topology |
+| [03-design.md](./03-design.md) | Config, routing identity, lifecycle, batching, and runtime contract |
+| [04-worker-pipe-transport-experiment.md](./04-worker-pipe-transport-experiment.md) | Bounded experiment blueprint for the worker-pipe direction |
+
+## Key principles
+
+- `shared_queue` remains the compatibility/default path.
+- `worker_pipes` is the ordering-preserving parallelism direction and an
+  eventual default candidate, not a mandated immediate default.
+- `WorkManager` and `BrokerPoller` stay transport-agnostic.
+- `BaseExecutionEngine.submit(work_item)` stays unchanged.
+- ordered modes prefer sticky routing and affinity preservation over stealing.
