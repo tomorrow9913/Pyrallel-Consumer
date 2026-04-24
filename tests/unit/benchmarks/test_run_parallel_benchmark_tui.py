@@ -81,6 +81,8 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
 
     args = parser.parse_args(
         [
+            "--process-count",
+            "2",
             "--process-batch-size",
             "1",
             "--process-max-batch-wait-ms",
@@ -88,6 +90,7 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
         ]
     )
 
+    assert args.process_count == 2
     assert args.process_batch_size == 1
     assert args.process_max_batch_wait_ms == 0
 

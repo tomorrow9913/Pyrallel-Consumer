@@ -17,9 +17,11 @@
 | [01-requirements.md](01-requirements.ko.md) | benchmark surface의 책임과 acceptance 기준 |
 | [02-architecture.md](02-architecture.ko.md) | runner, producer, baseline, pyrallel engine, stats, TUI 관계 |
 | [03-design.md](03-design.ko.md) | 핵심 CLI 옵션, workload semantics, outputs, 해석 규칙 |
+| [04-throughput-experiment-blueprint.md](04-throughput-experiment-blueprint.ko.md) | 연구 프레임과 첫 common-path throughput experiment |
 
 ## 빠른 읽기 분기
 
 - CLI 옵션과 workload 의미를 보려면 `03-design.md`
 - benchmark orchestration 구조를 보려면 `02-architecture.md`
 - 이 subfeature의 범위를 먼저 알고 싶으면 `01-requirements.md`
+- common-path benchmark 또는 completion-drain 동작을 바꾸기 전에는 `04-throughput-experiment-blueprint.md`

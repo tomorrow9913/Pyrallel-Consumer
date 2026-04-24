@@ -903,6 +903,93 @@ async def test_poll_completed_events(
 
 
 @pytest.mark.asyncio
+async def test_poll_completed_events_batches_internal_refill_scheduling(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    work_manager._current_in_flight_count = 2
+
+    events: list[CompletionEvent] = []
+    for offset in (10, 11):
+        work_item_id = str(uuid.uuid4())
+        work_manager._in_flight_work_items[work_item_id] = WorkItem(
+            id=work_item_id,
+            tp=mock_dto_topic_partition,
+            offset=offset,
+            epoch=tracker.get_current_epoch(),
+            key=b"",
+            payload=b"",
+        )
+        work_manager._dispatch_timestamps[work_item_id] = 0.0
+        events.append(
+            CompletionEvent(
+                id=work_item_id,
+                tp=mock_dto_topic_partition,
+                offset=offset,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            )
+        )
+    mock_execution_engine.poll_completed_events.return_value = events
+    work_manager.schedule = AsyncMock()
+
+    completed_events = await work_manager.poll_completed_events()
+
+    assert completed_events == events
+    work_manager.schedule.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_poll_completed_events_can_defer_refill_scheduling(
+    work_manager, mock_dto_topic_partition, mock_execution_engine
+):
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    tracker.increment_epoch()
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    work_manager._current_in_flight_count = 1
+    work_item_id = str(uuid.uuid4())
+    work_manager._in_flight_work_items[work_item_id] = WorkItem(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=tracker.get_current_epoch(),
+        key=b"",
+        payload=b"",
+    )
+    work_manager._dispatch_timestamps[work_item_id] = 0.0
+    event = CompletionEvent(
+        id=work_item_id,
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [event]
+    work_manager.schedule = AsyncMock()
+
+    completed_events = await work_manager.poll_completed_events(
+        schedule_after_release=False
+    )
+
+    assert completed_events == [event]
+    work_manager.schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_total_in_flight_count(
     work_manager,
     mock_dto_topic_partition,
