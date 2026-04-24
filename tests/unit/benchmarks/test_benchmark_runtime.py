@@ -788,6 +788,24 @@ def test_build_kafka_config_rejects_non_positive_process_count() -> None:
         pyrallel_consumer_test.build_kafka_config(process_count=0)
 
 
+def test_build_kafka_config_keeps_shared_queue_default_transport_mode() -> None:
+    config = pyrallel_consumer_test.build_kafka_config()
+
+    assert config.parallel_consumer.execution.process_config.transport_mode == (
+        "shared_queue"
+    )
+
+
+def test_build_kafka_config_sets_process_transport_mode_override() -> None:
+    config = pyrallel_consumer_test.build_kafka_config(
+        process_transport_mode="worker_pipes"
+    )
+
+    assert config.parallel_consumer.execution.process_config.transport_mode == (
+        "worker_pipes"
+    )
+
+
 def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
     config = pyrallel_consumer_test.build_kafka_config(
         adaptive_concurrency_enabled=True
