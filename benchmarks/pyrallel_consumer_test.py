@@ -265,6 +265,8 @@ def build_kafka_config(
         adaptive_concurrency_enabled
     )
     if process_count is not None:
+        if process_count <= 0:
+            raise ValueError("process_count must be greater than 0")
         kafka_config.parallel_consumer.execution.process_config.process_count = (
             process_count
         )

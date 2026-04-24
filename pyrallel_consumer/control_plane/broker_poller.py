@@ -723,9 +723,7 @@ class BrokerPoller:
             completed_partitions = {
                 event.tp for event in completed_events if event.tp in managed_partitions
             }
-            dirty_partitions = completed_partitions or pending_retry_partitions
-            if not dirty_partitions:
-                dirty_partitions = managed_partitions
+            dirty_partitions = completed_partitions | pending_retry_partitions
             self._dirty_commit_partitions.update(dirty_partitions)
             self._completions_since_last_commit += processed_count
 

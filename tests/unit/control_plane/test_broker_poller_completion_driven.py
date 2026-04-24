@@ -455,6 +455,55 @@ async def test_process_completed_events_marks_only_managed_partitions_dirty(
 
 
 @pytest.mark.asyncio
+async def test_process_completed_events_unions_retry_and_completion_partitions(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    retry_partition = DtoTopicPartition(topic="retry-topic", partition=2)
+    broker_poller._offset_trackers[retry_partition] = _make_tracker(retry_partition)
+    broker_poller._pending_dlq_events[(retry_partition, 7)] = completion_event
+
+    completion_support = MagicMock()
+    completion_support.process_completed_events = AsyncMock(return_value=1)
+    broker_poller._make_completion_support = MagicMock(return_value=completion_support)
+
+    await broker_poller._process_completed_events([completion_event])
+
+    assert broker_poller._dirty_commit_partitions == {
+        topic_partition,
+        retry_partition,
+    }
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_does_not_mark_everything_dirty_for_untracked_only(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    untracked_partition = DtoTopicPartition(topic="stale-topic", partition=1)
+
+    completion_support = MagicMock()
+    completion_support.process_completed_events = AsyncMock(return_value=1)
+    broker_poller._make_completion_support = MagicMock(return_value=completion_support)
+
+    await broker_poller._process_completed_events(
+        [
+            CompletionEvent(
+                id="stale-work",
+                tp=untracked_partition,
+                offset=99,
+                epoch=1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            )
+        ]
+    )
+
+    assert broker_poller._dirty_commit_partitions == set()
+
+
+@pytest.mark.asyncio
 async def test_completion_monitor_noops_when_wait_for_completion_times_out(
     broker_poller, topic_partition
 ):

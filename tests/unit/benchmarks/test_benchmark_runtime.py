@@ -696,6 +696,11 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
     )
 
 
+def test_build_kafka_config_rejects_non_positive_process_count() -> None:
+    with pytest.raises(ValueError, match="process_count must be greater than 0"):
+        pyrallel_consumer_test.build_kafka_config(process_count=0)
+
+
 def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
     config = pyrallel_consumer_test.build_kafka_config(
         adaptive_concurrency_enabled=True
