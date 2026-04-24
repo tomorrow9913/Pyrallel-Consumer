@@ -205,6 +205,34 @@ class _BatchAccumulator:
         self._last_flush_size = 0
         self._last_flush_wait_seconds = 0.0
 
+    def add_nowait_fast_path(self, work_item: WorkItem) -> bool:
+        """Flush single-item batches inline when the process queue has capacity."""
+        if self._batch_size != 1:
+            return False
+
+        with self._lock:
+            if self._closed or self._buffer:
+                return False
+
+            flush_enqueued_at = time.monotonic()
+            packed = _serialize_batch_payload([work_item], flush_enqueued_at)
+            put_nowait = getattr(self._task_queue, "put_nowait", None)
+            try:
+                if callable(put_nowait):
+                    put_nowait(packed)
+                else:
+                    self._task_queue.put(packed, block=False)
+            except queue.Full:
+                return False
+
+            self._size_flush_count += 1
+            self._total_flushed_items += 1
+            self._last_flush_size = 1
+            self._last_flush_wait_seconds = 0.0
+            if _logger.isEnabledFor(logging.DEBUG):
+                _logger.debug("Batch flush (%s): size=%d", "size", 1)
+            return True
+
     def add(self, work_item: WorkItem) -> None:
         with self._lock:
             if self._closed:
@@ -637,6 +665,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
         self._initialize_runtime_timing_state()
+        self._last_worker_liveness_check = 0.0
+        self._worker_liveness_check_interval_seconds = 0.05
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
             maxsize=config.process_config.queue_size
@@ -772,6 +802,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _ensure_workers_alive(self) -> None:
         self._drain_registry_events()
+        liveness_interval = getattr(
+            self,
+            "_worker_liveness_check_interval_seconds",
+            0.0,
+        )
+        if liveness_interval > 0:
+            now = time.monotonic()
+            last_check = getattr(self, "_last_worker_liveness_check", 0.0)
+            if now - last_check < liveness_interval:
+                return
+            self._last_worker_liveness_check = now
+
         for idx, worker in enumerate(self._workers):
             if worker.is_alive():
                 continue
@@ -878,7 +920,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
         self._drain_registry_events()
-        await asyncio.to_thread(self._batch_accumulator.add, work_item)
+        if not self._batch_accumulator.add_nowait_fast_path(work_item):
+            await asyncio.to_thread(self._batch_accumulator.add, work_item)
         with self._in_flight_lock:
             self._in_flight_count += 1
 
@@ -897,9 +940,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             completed_events.append(self._prefetched_completion_events.popleft())
             with self._in_flight_lock:
                 self._in_flight_count -= 1
-        while (
-            len(completed_events) < batch_limit and not self._completion_queue.empty()
-        ):
+        while len(completed_events) < batch_limit:
             try:
                 raw_event = self._completion_queue.get_nowait()
                 event = self._decode_completion_queue_item(raw_event)

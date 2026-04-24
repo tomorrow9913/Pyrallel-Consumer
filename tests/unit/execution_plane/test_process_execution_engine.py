@@ -1,5 +1,6 @@
 import logging
 import queue
+import time
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import Mock
@@ -32,6 +33,17 @@ class _DeadWorker:
 
     def is_alive(self) -> bool:
         return False
+
+
+class _CountingAliveWorker:
+    exitcode = None
+
+    def __init__(self) -> None:
+        self.is_alive_calls = 0
+
+    def is_alive(self) -> bool:
+        self.is_alive_calls += 1
+        return True
 
 
 async def _async_worker(_item) -> None:
@@ -218,6 +230,50 @@ def test_ensure_workers_alive_stops_requeueing_after_max_retries(
     assert event.status == CompletionStatus.FAILURE
     assert event.error == "worker_died_max_retries"
     assert event.attempt == 3
+
+
+def test_ensure_workers_alive_throttles_liveness_scan_but_drains_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    worker = _CountingAliveWorker()
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 100.0
+    engine_any._worker_liveness_check_interval_seconds = 1.0
+
+    key = (0, "topic", 1, 42)
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": key,
+            "payload": {
+                "id": "work-42",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+            },
+        }
+    )
+    monkeypatch.setattr(time, "monotonic", lambda: 100.5)
+
+    engine._ensure_workers_alive()
+
+    assert key in engine_any._in_flight_registry
+    assert worker.is_alive_calls == 0
+
+    monkeypatch.setattr(time, "monotonic", lambda: 101.1)
+    engine._ensure_workers_alive()
+
+    assert worker.is_alive_calls == 1
 
 
 def test_drain_registry_events_applies_start_and_timeout_sequence() -> None:

@@ -2,22 +2,27 @@
 
 import asyncio
 import queue
+import threading
 import time
 from collections import deque
 from typing import Any, Dict, cast
 
+import msgpack
 import pytest
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import (
+    CompletionEvent,
     CompletionStatus,
     ProcessBatchMetrics,
     TopicPartition,
     WorkItem,
 )
+from pyrallel_consumer.execution_plane import process_engine
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _BatchAccumulator,
+    _completion_event_to_dict,
     _decode_incoming_payloads,
 )
 
@@ -112,6 +117,149 @@ def retry_config() -> ExecutionConfig:
 
 
 class TestMicroBatching:
+    @pytest.mark.asyncio
+    async def test_submit_uses_inline_fast_path_for_single_item_batches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+        async def fail_to_thread(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("single-item process submit should avoid to_thread")
+
+        monkeypatch.setattr(process_engine.asyncio, "to_thread", fail_to_thread)
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                batch_size=1,
+                max_batch_wait_ms=0,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        try:
+            await engine.submit(_make_work_item(0))
+
+            metrics = engine.get_runtime_metrics()
+            assert isinstance(metrics, ProcessBatchMetrics)
+            assert metrics.size_flush_count == 1
+            assert metrics.total_flushed_items == 1
+            assert metrics.last_flush_size == 1
+        finally:
+            await engine.shutdown()
+
+    def test_single_item_fast_path_reports_full_queue_without_buffering(self) -> None:
+        task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+        task_queue.put_nowait(b"busy")
+        accumulator = _BatchAccumulator(
+            task_queue=task_queue,
+            batch_size=1,
+            max_batch_wait_ms=0,
+        )
+
+        accepted = accumulator.add_nowait_fast_path(_make_work_item(0))
+
+        assert accepted is False
+        metrics = accumulator.snapshot()
+        assert metrics.size_flush_count == 0
+        assert metrics.total_flushed_items == 0
+        assert metrics.buffered_items == 0
+
+    @pytest.mark.asyncio
+    async def test_submit_falls_back_to_threaded_add_when_fast_path_cannot_enqueue(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                batch_size=1,
+                max_batch_wait_ms=0,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+
+        class FallbackAccumulator:
+            def __init__(self) -> None:
+                self.fast_path_items: list[WorkItem] = []
+                self.threaded_add_items: list[WorkItem] = []
+
+            def add_nowait_fast_path(self, work_item: WorkItem) -> bool:
+                self.fast_path_items.append(work_item)
+                return False
+
+            def add(self, work_item: WorkItem) -> None:
+                self.threaded_add_items.append(work_item)
+
+            def close(self) -> None:
+                return None
+
+        accumulator = FallbackAccumulator()
+        threaded_calls = []
+
+        async def immediate_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+            threaded_calls.append(func)
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(process_engine.asyncio, "to_thread", immediate_to_thread)
+        engine._batch_accumulator = accumulator  # type: ignore[assignment]
+        item = _make_work_item(0)
+        try:
+            await engine.submit(item)
+
+            assert accumulator.fast_path_items == [item]
+            assert accumulator.threaded_add_items == [item]
+            assert threaded_calls == [accumulator.add]
+            assert engine.get_in_flight_count() == 1
+        finally:
+            await engine.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_poll_completed_events_does_not_depend_on_queue_empty(self) -> None:
+        event = CompletionEvent(
+            id="wi-0",
+            tp=TopicPartition("test", 0),
+            offset=0,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+
+        class LyingCompletionQueue:
+            def __init__(self) -> None:
+                self._items = [
+                    msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
+                ]
+
+            def empty(self) -> bool:
+                return True
+
+            def get_nowait(self) -> bytes:
+                if not self._items:
+                    raise queue.Empty()
+                return self._items.pop(0)
+
+        engine = cast(
+            ProcessExecutionEngine,
+            ProcessExecutionEngine.__new__(ProcessExecutionEngine),
+        )
+        engine._workers = []
+        engine._prefetched_completion_events = deque()
+        engine._completion_queue = cast(Any, LyingCompletionQueue())
+        engine._registry_event_queue = cast(Any, None)
+        engine._in_flight_lock = threading.Lock()
+        engine._in_flight_count = 1
+        engine._ensure_workers_alive = lambda: None  # type: ignore[method-assign]
+        engine._drain_registry_events = lambda: None  # type: ignore[method-assign]
+
+        events = await engine.poll_completed_events()
+
+        assert events == [event]
+        assert engine.get_in_flight_count() == 0
+
     def test_demand_flush_emits_existing_buffer_before_appending_new_item(self):
         task_queue: queue.Queue[bytes] = queue.Queue()
         accumulator = _BatchAccumulator(
