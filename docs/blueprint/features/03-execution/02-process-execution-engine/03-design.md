@@ -1,21 +1,25 @@
 # Process Execution Engine Design
 
-This document captures implementation-facing contracts and configuration or data-shape details for the subfeature.
-For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
+This document is the canonical English design summary for the
+process-execution-engine subfeature. For the preserved Korean source text, see
+[03-design.ko.md](./03-design.ko.md).
 
-## Subfeature summary
+## Design contract
 
-`process-execution-engine` covers picklable worker contracts, msgpack micro-batching, process lifecycle, and crash or timeout isolation. It belongs to the same blueprint family as the companion documents listed below.
+The process engine must document both:
 
-## Focus areas
+- `shared_queue` as the compatibility/default path
+- `worker_pipes` as the worker-affine direction
 
-- Task and completion IPC boundaries between the control plane and worker processes.
-- Micro-batching, serialization, and worker recycle policy.
-- Crash handling, timeout recovery, and shutdown choreography.
+while keeping `BaseExecutionEngine.submit(work_item)` unchanged and keeping the
+control plane transport-agnostic.
 
-## Companion documents
+## Key design surfaces
 
-- [00-index.md](./00-index.md)
-- [01-requirements.md](./01-requirements.md)
-- [02-architecture.md](./02-architecture.md)
-- [03-design.md](./03-design.md)
+- `ProcessConfig.transport_mode`
+- route identity based on `(topic, partition, key)`
+- transport-specific input dispatch
+- single completion aggregation in the first step
+- batching semantics and explicit unsupported combinations
+- `wait_for_completion()` parity
+- shutdown, recycle, restart, and runtime metrics semantics

@@ -1,21 +1,35 @@
 # Process Execution Engine Requirements
 
-This document records the scope, responsibilities, and acceptance focus for the subfeature.
-For the preserved Korean source text, see [01-requirements.ko.md](./01-requirements.ko.md).
+This document is the canonical English requirements summary for the
+process-execution-engine subfeature. For the preserved Korean source text, see
+[01-requirements.ko.md](./01-requirements.ko.md).
 
-## Subfeature summary
+## Directional requirement
 
-`process-execution-engine` covers picklable worker contracts, msgpack micro-batching, process lifecycle, and crash or timeout isolation. It belongs to the same blueprint family as the companion documents listed below.
+The process execution engine must evolve beyond a generic shared-queue process
+pool. Its long-term direction is to preserve the ordered virtual-queue identity
+that `WorkManager` already computes before work crosses the process boundary.
 
-## Focus areas
+## Required background
 
-- Task and completion IPC boundaries between the control plane and worker processes.
-- Micro-batching, serialization, and worker recycle policy.
-- Crash handling, timeout recovery, and shutdown choreography.
+- `WorkManager` already owns partition/key virtual queues and decides ordering
+  plus eligibility.
+- The async engine spreads safe-to-run work immediately via `create_task()`
+  instead of re-merging all work into one input queue.
+- The current process engine still sends submitted work through one shared
+  `multiprocessing.Queue`, so all workers compete on the same input source.
+- Benchmark and py-spy evidence point at input dispatch topology as a higher
+  priority improvement target than completion aggregation.
 
-## Companion documents
+## Mandatory requirements
 
-- [00-index.md](./00-index.md)
-- [01-requirements.md](./01-requirements.md)
-- [02-architecture.md](./02-architecture.md)
-- [03-design.md](./03-design.md)
+- `shared_queue` remains the compatibility/default path.
+- `worker_pipes` becomes the ordering-preserving parallelism direction and a
+  future default candidate.
+- `WorkManager` and `BrokerPoller` remain transport-agnostic.
+- `BaseExecutionEngine.submit(work_item)` remains unchanged.
+- The process engine chooses a worker channel internally by route identity.
+- Ordered modes favor sticky routing and affinity preservation over stealing.
+- Completion aggregation remains a single aggregator in the first step.
+- Config, batching, `wait_for_completion()`, shutdown, recycle, and metrics
+  surface must be documented explicitly.
