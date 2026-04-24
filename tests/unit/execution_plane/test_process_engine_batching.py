@@ -819,7 +819,7 @@ class TestShutdownLifecycle:
 
     @pytest.mark.asyncio
     async def test_shutdown_kills_worker_only_after_terminate_still_leaves_it_alive(
-        self
+        self,
     ):
         engine = self._build_shutdown_engine(
             _FakeShutdownWorker(pid=202, alive_states=[True, True, False])
