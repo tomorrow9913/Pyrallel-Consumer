@@ -50,7 +50,7 @@ jobs:
               tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success
               tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
