@@ -307,6 +307,8 @@ At minimum, implementation and evaluation should preserve or produce:
   final correctness criteria,
 - transport-specific benchmark metadata so results can be grouped by transport,
 - enough runtime metrics or logs to explain rejected/unsupported combinations.
+- release-gate summaries that surface the observed `process_transport_mode`
+  values so artifact comparisons remain interpretable.
 
 The benchmark report should make these questions easy to answer:
 
