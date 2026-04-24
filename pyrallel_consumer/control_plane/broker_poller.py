@@ -514,11 +514,12 @@ class BrokerPoller:
         try:
             while self._running:
                 if self._pending_dlq_events:
+                    had_pending_dlq_events = True
                     async with self._control_lock:
                         drained_completion = await self._drain_completion_events_once()
                     if drained_completion:
-                        await self._commit_ready_offsets(
-                            force=await self._should_force_idle_commit()
+                        await self._maybe_commit_ready_offsets(
+                            had_pending_dlq_events=had_pending_dlq_events
                         )
                     await self._check_backpressure()
                     cadence_messages: List[Message] = await asyncio.to_thread(
@@ -551,9 +552,7 @@ class BrokerPoller:
 
                     await self._drain_completion_events_once()
 
-                await self._commit_ready_offsets(
-                    force=await self._should_force_idle_commit()
-                )
+                await self._maybe_commit_ready_offsets()
 
                 if not messages and consume_timeout > 0:
                     await asyncio.sleep(consume_timeout)
@@ -604,6 +603,7 @@ class BrokerPoller:
                     continue
 
                 has_completion = bool(self._pending_dlq_events)
+                had_pending_dlq_events = has_completion
                 if not has_completion:
                     has_completion = await self._execution_engine.wait_for_completion(
                         timeout_seconds=timeout_seconds,
@@ -614,13 +614,20 @@ class BrokerPoller:
                 async with self._control_lock:
                     has_completion = await self._drain_completion_events_once()
                 if has_completion:
-                    await self._commit_ready_offsets(
-                        force=await self._should_force_idle_commit()
+                    await self._maybe_commit_ready_offsets(
+                        had_pending_dlq_events=had_pending_dlq_events
                     )
                     if self._pending_dlq_events:
                         await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             raise
+
+    async def _maybe_commit_ready_offsets(
+        self, *, had_pending_dlq_events: bool = False
+    ) -> None:
+        force = await self._should_force_idle_commit()
+        if had_pending_dlq_events or force or self._should_attempt_ready_commit():
+            await self._commit_ready_offsets(force=force)
 
     async def _commit_ready_offsets(self, *, force: bool = False) -> None:
         if not force and not self._should_attempt_ready_commit():
@@ -702,9 +709,7 @@ class BrokerPoller:
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
-        pending_retry_partitions = {
-            tp for tp, _ in self._pending_dlq_events.keys()
-        }
+        pending_retry_partitions = {tp for tp, _ in self._pending_dlq_events.keys()}
         processed_count = (
             await self._make_completion_support().process_completed_events(
                 completed_events
@@ -927,6 +932,19 @@ class BrokerPoller:
         total_queued = await self._get_total_queued_messages()
         self._maybe_adjust_adaptive_backpressure(total_queued)
         self._maybe_adjust_adaptive_concurrency(total_queued)
+        total_in_flight = self._work_manager.get_total_in_flight_count()
+        current_load = total_in_flight + total_queued
+        queue_full = (
+            self.QUEUE_MAX_MESSAGES > 0 and total_queued >= self.QUEUE_MAX_MESSAGES
+        )
+        if (
+            not self._adaptive_backpressure_controller.enabled
+            and not self._adaptive_concurrency_controller.enabled
+            and not self._is_paused
+            and not queue_full
+            and current_load <= self.MAX_IN_FLIGHT_MESSAGES
+        ):
+            return
         self._is_paused = self._make_runtime_support().check_backpressure(
             total_queued=total_queued
         )

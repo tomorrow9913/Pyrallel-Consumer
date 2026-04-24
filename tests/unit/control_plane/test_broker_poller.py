@@ -170,6 +170,35 @@ async def test_broker_poller_adapts_runtime_inflight_limit_when_enabled(
     assert mock_work_manager.set_max_in_flight_messages.call_args_list[-1].args == (80,)
 
 
+@pytest.mark.asyncio
+async def test_check_backpressure_skips_broker_calls_when_no_transition_possible(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    mock_kafka_config.parallel_consumer.execution.max_in_flight = 100
+    mock_kafka_config.parallel_consumer.adaptive_backpressure.enabled = False
+    mock_kafka_config.parallel_consumer.adaptive_concurrency.enabled = False
+
+    work_manager = MagicMock()
+    work_manager.get_total_in_flight_count.return_value = 10
+    work_manager.get_total_queued_messages.return_value = 0
+    work_manager.get_virtual_queue_sizes.return_value = {}
+
+    poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager=work_manager,
+    )
+    poller.consumer = mock_consumer
+    poller.QUEUE_MAX_MESSAGES = 0
+
+    await poller._check_backpressure()
+
+    mock_consumer.assignment.assert_not_called()
+    mock_consumer.pause.assert_not_called()
+    mock_consumer.resume.assert_not_called()
+
+
 def test_broker_poller_runtime_snapshot_exposes_adaptive_concurrency_when_enabled(
     mock_kafka_config, mock_execution_engine
 ):

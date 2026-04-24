@@ -262,6 +262,46 @@ async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
 
 
 @pytest.mark.asyncio
+async def test_completion_monitor_skips_commit_call_until_debounce_cadence(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._commit_debounce_completion_threshold = 100
+    broker_poller._commit_debounce_interval_seconds = 9999.0
+    broker_poller._last_commit_attempt_monotonic = time.monotonic()
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.poll_completed_events = AsyncMock(
+        side_effect=[[completion_event], []]
+    )
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 1
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._process_completed_events = AsyncMock(
+        side_effect=lambda events: broker_poller._dirty_commit_partitions.update(
+            event.tp for event in events
+        )
+    )
+    broker_poller._handle_blocking_timeouts = AsyncMock(return_value=[])
+    broker_poller._execution_engine = AsyncMock()
+    broker_poller._commit_ready_offsets = AsyncMock()
+
+    async def wait_for_completion(timeout_seconds=None):
+        del timeout_seconds
+        broker_poller._running = False
+        return True
+
+    broker_poller._execution_engine.wait_for_completion.side_effect = (
+        wait_for_completion
+    )
+
+    broker_poller._running = True
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await broker_poller._run_completion_monitor()
+
+    broker_poller._commit_ready_offsets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_commit_ready_offsets_serializes_commit_calls_and_releases_control_lock(
     broker_poller, topic_partition
 ):
