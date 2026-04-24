@@ -136,6 +136,7 @@ The experiment must preserve these invariants:
   - `poll_completed_events(batch_limit=1000)`
   - `wait_for_completion(timeout_seconds=None)`
   - `get_in_flight_count()`
+  - `get_min_inflight_offset()`
   - `get_runtime_metrics()`
   - `shutdown()`
 - `WorkManager` still decides which `WorkItem` instances are safe to execute.

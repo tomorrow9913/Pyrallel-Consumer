@@ -43,6 +43,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._increment_in_flight = increment_in_flight
         self._pipe_sentinel = pipe_sentinel
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
+        self._pending_dispatch_lock = threading.Lock()
 
     def dispatch_payload(
         self,
@@ -61,12 +62,14 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             payload["offset"],
         )
         pending_dispatch = self._get_pending_pipe_dispatch()
-        pending_dispatch[pending_key] = dict(payload)
+        with self._pending_dispatch_lock:
+            pending_dispatch[pending_key] = dict(payload)
         try:
             packed = self._serialize_batch_payload([work_item], time.monotonic())
             self._get_worker_pipe_senders()[worker_idx].send_bytes(packed)
         except Exception:
-            pending_dispatch.pop(pending_key, None)
+            with self._pending_dispatch_lock:
+                pending_dispatch.pop(pending_key, None)
             self._release_worker_pipe_queue_slot()
             raise
 
@@ -91,23 +94,26 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             return
         key = event.get("key")
         pending_dispatch = self._get_pending_pipe_dispatch()
-        if key in pending_dispatch:
+        with self._pending_dispatch_lock:
+            if key not in pending_dispatch:
+                return
             pending_dispatch.pop(key, None)
-            self._release_worker_pipe_queue_slot()
+        self._release_worker_pipe_queue_slot()
 
     def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         pending_dispatch = self._get_pending_pipe_dispatch()
         to_requeue: list[SerializedWorkItem] = []
-        for key, payload in list(pending_dispatch.items()):
-            if key[0] != idx:
-                continue
-            recovered_payload = dict(payload)
-            recovered_payload["requeue_attempts"] = (
-                recovered_payload.get("requeue_attempts", 0) + 1
-            )
-            to_requeue.append(recovered_payload)
-            pending_dispatch.pop(key, None)
-            self._release_worker_pipe_queue_slot()
+        with self._pending_dispatch_lock:
+            for key, payload in list(pending_dispatch.items()):
+                if key[0] != idx:
+                    continue
+                recovered_payload = dict(payload)
+                recovered_payload["requeue_attempts"] = (
+                    recovered_payload.get("requeue_attempts", 0) + 1
+                )
+                to_requeue.append(recovered_payload)
+                pending_dispatch.pop(key, None)
+                self._release_worker_pipe_queue_slot()
         return to_requeue
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
@@ -126,7 +132,10 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
     def signal_shutdown(self, worker_count: int) -> None:
         del worker_count
         for sender in self._get_worker_pipe_senders():
-            sender.send_bytes(self._pipe_sentinel)
+            try:
+                sender.send_bytes(self._pipe_sentinel)
+            except (BrokenPipeError, EOFError, OSError, ValueError):
+                continue
 
     def close(self) -> None:
         for sender in self._get_worker_pipe_senders():
