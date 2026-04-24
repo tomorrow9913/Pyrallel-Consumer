@@ -709,7 +709,10 @@ class BrokerPoller:
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
-        pending_retry_partitions = {tp for tp, _ in self._pending_dlq_events.keys()}
+        managed_partitions = set(self._offset_trackers)
+        pending_retry_partitions = {
+            tp for tp, _ in self._pending_dlq_events.keys() if tp in managed_partitions
+        }
         processed_count = (
             await self._make_completion_support().process_completed_events(
                 completed_events
@@ -717,10 +720,12 @@ class BrokerPoller:
         )
 
         if processed_count > 0:
-            completed_partitions = {event.tp for event in completed_events}
+            completed_partitions = {
+                event.tp for event in completed_events if event.tp in managed_partitions
+            }
             dirty_partitions = completed_partitions or pending_retry_partitions
             if not dirty_partitions:
-                dirty_partitions = set(self._offset_trackers)
+                dirty_partitions = managed_partitions
             self._dirty_commit_partitions.update(dirty_partitions)
             self._completions_since_last_commit += processed_count
 
