@@ -18,12 +18,14 @@ The English documents in this directory are the canonical contract; the preserve
 | [01-requirements.md](./01-requirements.md) | Scope, responsibilities, inputs/outputs, and acceptance criteria for benchmark tooling |
 | [02-architecture.md](./02-architecture.md) | Runtime component boundaries between the runner, reset helpers, execution rounds, stats pipeline, and TUI |
 | [03-design.md](./03-design.md) | Concrete CLI/TUI options, workload semantics, artifact contracts, and result interpretation rules |
+| [04-throughput-experiment-blueprint.md](./04-throughput-experiment-blueprint.md) | Research frame and first common-path throughput experiment |
 
 ## Quick reading guide
 
 - Start with [03-design.md](./03-design.md) for the current CLI surface and output contracts.
 - Read [02-architecture.md](./02-architecture.md) to understand when reset, produce, consume, stats, profiling, and metrics wiring happen.
 - Read [01-requirements.md](./01-requirements.md) first if you need the benchmark feature boundary before editing code or docs.
+- Read [04-throughput-experiment-blueprint.md](./04-throughput-experiment-blueprint.md) before changing common-path benchmark or completion-drain behavior.
 
 ## Current implementation anchors
 
