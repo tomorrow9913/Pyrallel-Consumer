@@ -30,6 +30,7 @@ topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
 DEFAULT_TIMEOUT_SEC = 60
 ProcessFlushPolicy = Literal["size_or_timer", "demand", "demand_min_residence"]
+ProcessTransportMode = Literal["shared_queue", "worker_pipes"]
 
 
 conf: Dict[str, Any] = {
@@ -238,6 +239,7 @@ def build_kafka_config(
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
+    process_transport_mode: Optional[ProcessTransportMode] = None,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> KafkaConfig:
@@ -279,6 +281,10 @@ def build_kafka_config(
         (
             kafka_config.parallel_consumer.execution.process_config.demand_flush_min_residence_ms
         ) = process_demand_flush_min_residence_ms
+    if process_transport_mode is not None:
+        kafka_config.parallel_consumer.execution.process_config.transport_mode = (
+            process_transport_mode
+        )
     if metrics_port is not None:
         kafka_config.metrics = MetricsConfig(enabled=True, port=metrics_port)
 
@@ -305,6 +311,7 @@ async def run_pyrallel_consumer_test(
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
+    process_transport_mode: Optional[ProcessTransportMode] = None,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
@@ -335,6 +342,7 @@ async def run_pyrallel_consumer_test(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
+        process_transport_mode=process_transport_mode,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
