@@ -93,7 +93,7 @@ jobs:
           uv run pytest ${{ matrix.suite.pytest_args }} -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit.xml
       - name: Upload broker-backed E2E report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-junit-${{ matrix.suite.name }}-${{ github.run_id }}
           path: .artifacts/e2e-junit.xml

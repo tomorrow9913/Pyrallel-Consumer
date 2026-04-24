@@ -142,13 +142,13 @@ jobs:
             ${{ steps.release_artifacts.outputs.wheel_path }}
       - name: Upload broker-backed E2E report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-verify-e2e-junit-${{ github.run_id }}
           path: .artifacts/release-e2e-junit.xml
       - name: Upload distributions
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
           path: dist/*
