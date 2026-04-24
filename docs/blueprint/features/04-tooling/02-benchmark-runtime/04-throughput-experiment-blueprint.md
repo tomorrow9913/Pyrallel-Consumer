@@ -204,6 +204,72 @@ Expected outcome:
 - process partition strict-on may improve less if IPC remains dominant, but it
   should not regress if refill overlap is preserved.
 
+### Experiment 1.1: caller-side commit/backpressure gating
+
+Run this immediately after commit debounce. The profile after debounce still
+showed tens of thousands of helper calls with far fewer real broker commits, so
+the next low-risk slice is to skip unchanged control-plane checks before they
+touch broker APIs.
+
+Implementation direction:
+
+- Call `_commit_ready_offsets()` only when dirty partitions exist and either the
+  debounce cadence is open or idle force flush is safe.
+- Preserve pending-DLQ as a force-commit veto.
+- Keep shutdown and revoke force paths outside the caller-side gate.
+- In `_check_backpressure()`, skip broker `assignment()/pause()/resume()` calls
+  when the consumer is not paused, adaptive controllers are disabled, and the
+  current load cannot cross a pause threshold.
+- If the consumer is paused, always keep the resume path open.
+
+Success criteria:
+
+- fewer `_commit_ready_offsets` calls per item
+- fewer Kafka assignment/pause/resume calls in unchanged unpaused loops
+- no delayed timer commit, idle flush, DLQ, shutdown, or resume regression
+
+### Experiment 1.2: process effective-width cap sweep
+
+The process strict single-partition profile showed effective WIP close to one
+while many workers waited on multiprocessing queues. Treat this first as an
+explicit benchmark variable rather than a control-plane policy.
+
+Implementation direction:
+
+- Add a benchmark-only `--process-count` override.
+- Sweep process counts `{1, 2, 4, 8}` across partition counts and active key
+  counts.
+- Keep `BrokerPoller` and `WorkManager` unaware of `process_count`; the override
+  belongs to benchmark/runtime config before engine construction.
+
+Success criteria:
+
+- strict `partition` with one assigned partition should prefer `process_count`
+  `1` or `2`.
+- `key_hash` should scale only as active keys and control-plane overhead allow.
+- the result should justify, or reject, a later automatic advisor/policy.
+
+### Experiment 1.3: dedicated broker I/O bridge design
+
+Design this before implementing. A bridge can remove repeated `asyncio.to_thread`
+submissions, but it also becomes the owner of Kafka callback and rebalance
+threading semantics.
+
+Design constraints:
+
+- Add a `BrokerConsumerIO`-style boundary for consume, commit, committed,
+  assignment snapshots, pause, resume, and close.
+- The broker thread may own Kafka calls, but event-loop state such as
+  `OffsetTracker`, `WorkManager`, dirty partitions, and message cache must remain
+  event-loop owned.
+- Rebalance callbacks must marshal control-plane mutations back to the event
+  loop; do not mutate state from the broker thread.
+- Do not enqueue bridge work from a rebalance callback and wait on the same
+  bridge thread.
+- Check synchronous commit per-partition errors.
+- Keep DLQ producer flush off the consumer bridge unless it is deliberately
+  modeled as a separate stage.
+
 ### Experiment 2: completion ingest stage
 
 Run this only after Experiment 1 or if profiler evidence shows completion

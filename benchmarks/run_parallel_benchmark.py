@@ -367,6 +367,7 @@ async def _run_pyrparallel_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_count: int | None = None,
     process_batch_size: int | None = None,
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
@@ -404,6 +405,7 @@ async def _run_pyrparallel_round(
         ordering_mode=ordering,
         ensure_topic_exists=ensure_topic_exists,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_count=process_count if mode == ExecutionMode.PROCESS else None,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
@@ -681,6 +683,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Sleep per message for IO workload (simulated IO wait)",
+    )
+    parser.add_argument(
+        "--process-count",
+        type=int,
+        default=None,
+        help="Override process-mode worker count for benchmark runs",
     )
     parser.add_argument(
         "--process-batch-size",
@@ -1000,6 +1008,7 @@ def run_benchmark(
                                         strict_completion_monitor_enabled=(
                                             strict_completion_monitor_enabled
                                         ),
+                                        process_count=None,
                                         process_batch_size=(
                                             effective_process_batch_size
                                         ),
@@ -1065,6 +1074,7 @@ def run_benchmark(
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
+                                    process_count=args.process_count,
                                     process_batch_size=effective_process_batch_size,
                                     process_max_batch_wait_ms=(
                                         effective_process_max_batch_wait_ms
