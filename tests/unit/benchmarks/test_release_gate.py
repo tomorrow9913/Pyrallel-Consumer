@@ -21,6 +21,7 @@ def _result(
     ordering: str,
     throughput_tps: float,
     p99_processing_ms: float,
+    process_transport_mode: str = "shared_queue",
     messages_processed: int = 10000,
     final_lag: int = 0,
     final_gap_count: int = 0,
@@ -37,7 +38,7 @@ def _result(
         "final_gap_count": final_gap_count,
     }
     if run_type == "process":
-        payload["process_transport_mode"] = "shared_queue"
+        payload["process_transport_mode"] = process_transport_mode
     return payload
 
 
@@ -48,15 +49,22 @@ def _passing_summary() -> dict[str, object]:
         workload,
         ordering,
     ), threshold in release_gate.RELEASE_THRESHOLDS.items():
-        results.append(
-            _result(
-                run_type=run_type,
-                workload=workload,
-                ordering=ordering,
-                throughput_tps=threshold.tps_floor + 1,
-                p99_processing_ms=threshold.p99_ceiling_ms - 0.1,
-            )
+        process_transport_modes = (
+            release_gate.REQUIRED_PROCESS_TRANSPORT_MODES
+            if run_type == "process"
+            else (None,)
         )
+        for process_transport_mode in process_transport_modes:
+            results.append(
+                _result(
+                    run_type=run_type,
+                    workload=workload,
+                    ordering=ordering,
+                    process_transport_mode=process_transport_mode or "shared_queue",
+                    throughput_tps=threshold.tps_floor + 1,
+                    p99_processing_ms=threshold.p99_ceiling_ms - 0.1,
+                )
+            )
     return {
         "options": {
             "num_messages": 10000,
@@ -279,7 +287,38 @@ def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(
     report = release_gate.evaluate_release_gate(paths)
 
     assert report["verdict"] == "PASS"
-    assert report["summary"]["process_transport_modes"] == ["shared_queue"]
+    assert report["summary"]["process_transport_modes"] == [
+        "shared_queue",
+        "worker_pipes",
+    ]
+
+
+def test_evaluate_release_gate_requires_each_process_transport_mode(
+    tmp_path: Path,
+) -> None:
+    summary = _passing_summary()
+    results = summary["results"]
+    assert isinstance(results, list)
+    summary["results"] = [
+        result
+        for result in results
+        if result.get("process_transport_mode") != "worker_pipes"
+    ]
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-shared-queue-only-%d.json" % index)
+        path.write_text(json.dumps(summary), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_combinations = {
+        check["details"]["combination"]
+        for check in report["checks"]
+        if check["status"] == "FAIL" and check["code"] == "repetitions"
+    }
+    assert "process/sleep/key_hash/worker_pipes" in failed_combinations
 
 
 def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
@@ -304,6 +343,31 @@ def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
     }
     assert "measurement_conditions" in failed_codes
+
+
+def test_evaluate_release_gate_rejects_unknown_process_transport_mode(
+    tmp_path: Path,
+) -> None:
+    bad = _passing_summary()
+    results = bad["results"]
+    assert isinstance(results, list)
+    for result in results:
+        if result.get("process_transport_mode") == "worker_pipes":
+            result["process_transport_mode"] = "experimental"
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-unknown-transport-%d.json" % index)
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "measurement_conditions" in failed_codes
+    assert "repetitions" in failed_codes
 
 
 def test_cli_emits_machine_readable_no_go_for_invalid_json(tmp_path: Path) -> None:

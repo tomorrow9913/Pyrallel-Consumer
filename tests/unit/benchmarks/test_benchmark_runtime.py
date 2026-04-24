@@ -804,6 +804,8 @@ def test_build_kafka_config_sets_process_transport_mode_override() -> None:
     assert config.parallel_consumer.execution.process_config.transport_mode == (
         "worker_pipes"
     )
+    assert config.parallel_consumer.execution.process_config.batch_size == 1
+    assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
 
 
 def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:

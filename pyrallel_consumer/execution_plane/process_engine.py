@@ -933,19 +933,21 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             apply_event=self._apply_registry_event,
         )
 
-    def _ensure_workers_alive(self) -> None:
+    def _ensure_workers_alive(self, *, force: bool = False) -> None:
         self._drain_registry_events()
         liveness_interval = getattr(
             self,
             "_worker_liveness_check_interval_seconds",
             0.0,
         )
-        if liveness_interval > 0:
+        if liveness_interval > 0 and not force:
             now = time.monotonic()
             last_check = getattr(self, "_last_worker_liveness_check", 0.0)
             if now - last_check < liveness_interval:
                 return
             self._last_worker_liveness_check = now
+        elif force:
+            self._last_worker_liveness_check = time.monotonic()
 
         for idx, worker in enumerate(self._workers):
             if worker.is_alive():
@@ -978,7 +980,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         transport = getattr(self, "_transport", None)
         if transport is not None:
-            return transport.recover_pending_dispatches(idx)
+            return self._filter_recoverable_pending_pipe_dispatches(
+                idx, transport.recover_pending_dispatches(idx)
+            )
         if self._get_transport_mode() != "worker_pipes":
             return []
         pending_dispatch = getattr(self, "_pending_pipe_dispatch", {})
@@ -993,7 +997,27 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             to_requeue.append(recovered_payload)
             pending_dispatch.pop(key, None)
             self._release_worker_pipe_queue_slot()
-        return to_requeue
+        return self._filter_recoverable_pending_pipe_dispatches(idx, to_requeue)
+
+    def _filter_recoverable_pending_pipe_dispatches(
+        self,
+        idx: int,
+        payloads: list[SerializedWorkItem],
+    ) -> list[SerializedWorkItem]:
+        recoverable: list[SerializedWorkItem] = []
+        max_retries = self._config.max_retries
+        for payload in payloads:
+            attempts = payload.get("requeue_attempts", 0)
+            if attempts > max_retries:
+                self._emit_worker_recovery_failure(
+                    idx,
+                    payload,
+                    error="worker_died_max_retries",
+                    attempt=max_retries,
+                )
+                continue
+            recoverable.append(payload)
+        return recoverable
 
     def _requeue_recovered_payloads(self, payloads: list[SerializedWorkItem]) -> None:
         if not payloads:
@@ -1100,6 +1124,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
         self._drain_registry_events()
+        if self._get_transport_mode() == "worker_pipes":
+            await asyncio.to_thread(self._ensure_workers_alive, force=True)
+        else:
+            self._ensure_workers_alive()
         await self._transport.submit_work_item(
             work_item,
             route_identity=resolve_route_identity(work_item),
@@ -1112,7 +1140,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
-        self._ensure_workers_alive()
+        await asyncio.to_thread(self._ensure_workers_alive)
         self._drain_registry_events()
         completed_events: List[CompletionEvent] = []
         while (
@@ -1140,7 +1168,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
-        self._ensure_workers_alive()
+        await asyncio.to_thread(self._ensure_workers_alive)
         self._drain_registry_events()
 
         if self._prefetched_completion_events:

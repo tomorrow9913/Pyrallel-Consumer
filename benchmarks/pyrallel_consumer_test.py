@@ -289,9 +289,17 @@ def build_kafka_config(
             kafka_config.parallel_consumer.execution.process_config.demand_flush_min_residence_ms
         ) = process_demand_flush_min_residence_ms
     if process_transport_mode is not None:
-        kafka_config.parallel_consumer.execution.process_config.transport_mode = (
-            process_transport_mode
-        )
+        process_config = kafka_config.parallel_consumer.execution.process_config
+        process_config.transport_mode = process_transport_mode
+        if process_transport_mode == "worker_pipes":
+            if process_batch_size is None:
+                process_config.batch_size = 1
+            if process_max_batch_wait_ms is None:
+                process_config.max_batch_wait_ms = 0
+            if process_flush_policy is None:
+                process_config.flush_policy = "size_or_timer"
+            if process_demand_flush_min_residence_ms is None:
+                process_config.demand_flush_min_residence_ms = 0
     if metrics_port is not None:
         kafka_config.metrics = MetricsConfig(enabled=True, port=metrics_port)
 

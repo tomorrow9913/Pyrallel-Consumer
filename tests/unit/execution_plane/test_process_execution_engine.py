@@ -4,8 +4,9 @@ import queue
 import threading
 import time
 from collections.abc import AsyncGenerator
+from multiprocessing.connection import Connection
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import msgpack
 import pytest
@@ -53,6 +54,11 @@ class _CountingAliveWorker:
     def is_alive(self) -> bool:
         self.is_alive_calls += 1
         return True
+
+
+class _BrokenPipeSender:
+    def send_bytes(self, _payload: bytes) -> None:
+        raise BrokenPipeError("boom")
 
 
 async def _async_worker(_item) -> None:
@@ -725,6 +731,72 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
     assert engine_any._workers == [replacement_worker]
 
 
+def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._pending_pipe_dispatch = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 3,
+        }
+    }
+    engine_any._worker_pipe_queue_slots = threading.BoundedSemaphore(value=1)
+    assert engine_any._worker_pipe_queue_slots.acquire(blocking=False) is True
+    engine_any._completion_queue = queue.Queue()
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        get_pending_pipe_dispatch=lambda: engine_any._pending_pipe_dispatch,
+        release_worker_pipe_queue_slot=engine._release_worker_pipe_queue_slot,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(
+        engine,
+        "_requeue_recovered_payloads",
+        lambda payloads: requeued.append(payloads),
+    )
+    monkeypatch.setattr(engine, "_start_worker", lambda idx: Mock())
+
+    engine._ensure_workers_alive()
+
+    assert requeued == []
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "worker_died_max_retries"
+    assert event.attempt == 3
+
+
 def test_ensure_workers_alive_throttles_liveness_scan_but_drains_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1078,6 +1150,67 @@ async def test_wait_for_completion_detects_item_even_when_empty_lies_true() -> N
     assert completed is True
     assert len(engine_any._prefetched_completion_events) == 1
     assert engine_any._prefetched_completion_events[0].offset == 42
+
+
+@pytest.mark.asyncio
+async def test_submit_checks_worker_liveness_before_transport_dispatch() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._drain_registry_events = Mock()
+    engine_any._ensure_workers_alive = Mock()
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._transport = Mock()
+    engine_any._transport.submit_work_item = AsyncMock()
+
+    item = WorkItem(
+        id="work-1",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=3,
+        key=b"key",
+        payload=b"payload",
+    )
+
+    await engine.submit(item)
+
+    engine_any._ensure_workers_alive.assert_called_once_with(force=True)
+    engine_any._transport.submit_work_item.assert_awaited_once()
+
+
+def test_ensure_workers_alive_force_bypasses_liveness_throttle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    worker = _CountingAliveWorker()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 100.0
+    engine_any._worker_liveness_check_interval_seconds = 1.0
+    monkeypatch.setattr(time, "monotonic", lambda: 100.5)
+
+    engine._ensure_workers_alive(force=True)
+
+    assert worker.is_alive_calls == 1
+    assert engine_any._last_worker_liveness_check == 100.5
+
+
+def test_worker_pipe_shutdown_ignores_broken_senders() -> None:
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [cast(Connection, _BrokenPipeSender())],
+        get_pending_pipe_dispatch=lambda: {},
+        release_worker_pipe_queue_slot=lambda: None,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+
+    transport.signal_shutdown(1)
 
 
 @pytest.mark.asyncio

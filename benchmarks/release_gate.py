@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 RELEASE_GATE_MIN_MESSAGES = 10000
 RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
+REQUIRED_PROCESS_TRANSPORT_MODES = ("shared_queue", "worker_pipes")
 
 Combination = tuple[str, str, str]
 BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
@@ -102,7 +103,7 @@ def _final_gap_count(result: Mapping[str, Any]) -> int | None:
 
 def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
     value = result.get("process_transport_mode")
-    if isinstance(value, str) and value:
+    if isinstance(value, str) and value in REQUIRED_PROCESS_TRANSPORT_MODES:
         return value
     return None
 
@@ -303,90 +304,109 @@ def _evaluate_matrix(
     checks: list[dict[str, Any]] = []
     for combination, threshold in RELEASE_THRESHOLDS.items():
         entries = grouped[combination]
-        label = "/".join(combination)
-        distinct_artifact_count = len({path.resolve() for path, _result, _ in entries})
-        if distinct_artifact_count < required_repetitions:
-            checks.append(
-                _check(
-                    "repetitions",
-                    "FAIL",
-                    "release gate requires repeated runs per combination",
-                    combination=label,
-                    expected=required_repetitions,
-                    actual=distinct_artifact_count,
-                )
-            )
-            continue
+        entries_by_label: dict[str, list[BenchmarkEntry]]
+        if combination[0] == "process":
+            entries_by_label = {
+                "%s/%s" % ("/".join(combination), transport_mode): [
+                    entry
+                    for entry in entries
+                    if _process_transport_mode(entry[1]) == transport_mode
+                ]
+                for transport_mode in REQUIRED_PROCESS_TRANSPORT_MODES
+            }
+        else:
+            entries_by_label = {"/".join(combination): entries}
 
-        tps_values = []
-        p99_values = []
-        for path, result, expected_messages in entries:
-            if expected_messages is None:
+        for label, labeled_entries in entries_by_label.items():
+            distinct_artifact_count = len(
+                {path.resolve() for path, _result, _ in labeled_entries}
+            )
+            if distinct_artifact_count < required_repetitions:
                 checks.append(
                     _check(
-                        "measurement_conditions",
+                        "repetitions",
                         "FAIL",
-                        "options.num_messages must be an integer",
-                        path=str(path),
+                        "release gate requires repeated runs per combination",
                         combination=label,
+                        expected=required_repetitions,
+                        actual=distinct_artifact_count,
                     )
                 )
                 continue
-            messages_processed = _as_int(
-                result.get("messages_processed"), "messages_processed", path=path
-            )
-            if messages_processed != expected_messages:
-                checks.append(
-                    _check(
-                        "completion",
-                        "FAIL",
-                        "messages_processed must equal num_messages",
-                        path=str(path),
-                        combination=label,
-                        expected=expected_messages,
-                        actual=messages_processed,
-                    )
-                )
-            final_lag = _final_lag(result)
-            final_gap_count = _final_gap_count(result)
-            if final_lag != 0 or final_gap_count != 0:
-                checks.append(
-                    _check(
-                        "lag_gap",
-                        "FAIL",
-                        "final lag and final gap count must be explicitly zero",
-                        path=str(path),
-                        combination=label,
-                        final_lag=final_lag,
-                        final_gap_count=final_gap_count,
-                    )
-                )
-            tps_values.append(
-                _as_number(result.get("throughput_tps"), "throughput_tps", path=path)
-            )
-            p99_values.append(
-                _as_number(
-                    result.get("p99_processing_ms"), "p99_processing_ms", path=path
-                )
-            )
 
-        if not tps_values or not p99_values:
-            continue
-        worst_tps = min(tps_values)
-        worst_p99 = max(p99_values)
-        if worst_tps < threshold.tps_floor or worst_p99 > threshold.p99_ceiling_ms:
-            checks.append(
-                _check(
-                    "thresholds",
-                    "FAIL",
-                    "worst-case TPS and p99 must satisfy release thresholds",
-                    combination=label,
-                    tps_floor=threshold.tps_floor,
-                    worst_tps=worst_tps,
-                    p99_ceiling_ms=threshold.p99_ceiling_ms,
-                    worst_p99_ms=worst_p99,
+            tps_values = []
+            p99_values = []
+            for path, result, expected_messages in labeled_entries:
+                if expected_messages is None:
+                    checks.append(
+                        _check(
+                            "measurement_conditions",
+                            "FAIL",
+                            "options.num_messages must be an integer",
+                            path=str(path),
+                            combination=label,
+                        )
+                    )
+                    continue
+                messages_processed = _as_int(
+                    result.get("messages_processed"), "messages_processed", path=path
                 )
-            )
+                if messages_processed != expected_messages:
+                    checks.append(
+                        _check(
+                            "completion",
+                            "FAIL",
+                            "messages_processed must equal num_messages",
+                            path=str(path),
+                            combination=label,
+                            expected=expected_messages,
+                            actual=messages_processed,
+                        )
+                    )
+                final_lag = _final_lag(result)
+                final_gap_count = _final_gap_count(result)
+                if final_lag != 0 or final_gap_count != 0:
+                    checks.append(
+                        _check(
+                            "lag_gap",
+                            "FAIL",
+                            "final lag and final gap count must be explicitly zero",
+                            path=str(path),
+                            combination=label,
+                            final_lag=final_lag,
+                            final_gap_count=final_gap_count,
+                        )
+                    )
+                tps_values.append(
+                    _as_number(
+                        result.get("throughput_tps"), "throughput_tps", path=path
+                    )
+                )
+                p99_values.append(
+                    _as_number(
+                        result.get("p99_processing_ms"),
+                        "p99_processing_ms",
+                        path=path,
+                    )
+                )
+
+            if not tps_values or not p99_values:
+                continue
+            worst_tps = min(tps_values)
+            worst_p99 = max(p99_values)
+            if worst_tps < threshold.tps_floor or worst_p99 > threshold.p99_ceiling_ms:
+                checks.append(
+                    _check(
+                        "thresholds",
+                        "FAIL",
+                        "worst-case TPS and p99 must satisfy release thresholds",
+                        combination=label,
+                        tps_floor=threshold.tps_floor,
+                        worst_tps=worst_tps,
+                        p99_ceiling_ms=threshold.p99_ceiling_ms,
+                        worst_p99_ms=worst_p99,
+                    )
+                )
     if not checks:
         checks.append(
             _check(
@@ -435,6 +455,7 @@ def evaluate_release_gate(
             "artifacts": [str(path) for path in paths],
             "required_repetitions": required_repetitions,
             "expected_combinations": len(RELEASE_THRESHOLDS),
+            "required_process_transport_modes": list(REQUIRED_PROCESS_TRANSPORT_MODES),
             "process_transport_modes": sorted(process_transport_modes),
         },
         "checks": checks,
