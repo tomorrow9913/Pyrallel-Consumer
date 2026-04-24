@@ -1078,3 +1078,37 @@ async def test_wait_for_completion_detects_item_even_when_empty_lies_true() -> N
     assert completed is True
     assert len(engine_any._prefetched_completion_events) == 1
     assert engine_any._prefetched_completion_events[0].offset == 42
+
+
+@pytest.mark.asyncio
+async def test_shutdown_delegates_signal_and_close_through_transport_seam() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = [Mock()]
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): {"offset": 42}}
+    engine_any._pending_pipe_dispatch = {(0, "topic", 1, 42): {"offset": 42}}
+    engine_any._workers = [Mock(), Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = None
+    engine_any._registry_event_queue = None
+    engine_any._batch_accumulator = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._drain_shutdown_ipc_once = Mock(return_value=(0, 0))
+    engine_any._join_worker_with_escalation = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 3
+    engine_any._worker_pid_by_index = {}
+    transport = Mock()
+    engine_any._transport = transport
+
+    await engine.shutdown()
+
+    transport.signal_shutdown.assert_called_once_with(2)
+    transport.close.assert_called_once_with()
+    engine_any._batch_accumulator.close.assert_called_once_with()
+    assert engine_any._prefetched_completion_events == []
+    assert engine_any._in_flight_registry == {}
+    assert engine_any._pending_pipe_dispatch == {}
+    assert engine.get_in_flight_count() == 0
