@@ -20,13 +20,13 @@ class SharedQueueProcessTransport(ProcessTransport):
         self,
         *,
         task_queue: Queue[Any],
-        batch_accumulator: Any,
+        get_batch_accumulator: Callable[[], Any],
         work_item_from_dict: Callable[[SerializedWorkItem], WorkItem],
         increment_in_flight: Callable[[], None],
         sentinel: Any,
     ) -> None:
         self._task_queue = task_queue
-        self._batch_accumulator = batch_accumulator
+        self._get_batch_accumulator = get_batch_accumulator
         self._work_item_from_dict = work_item_from_dict
         self._increment_in_flight = increment_in_flight
         self._sentinel = sentinel
@@ -39,8 +39,9 @@ class SharedQueueProcessTransport(ProcessTransport):
         count_in_flight: bool,
     ) -> None:
         del route_identity
-        if not self._batch_accumulator.add_nowait_fast_path(work_item):
-            await asyncio.to_thread(self._batch_accumulator.add, work_item)
+        batch_accumulator = self._get_batch_accumulator()
+        if not batch_accumulator.add_nowait_fast_path(work_item):
+            await asyncio.to_thread(batch_accumulator.add, work_item)
         if count_in_flight:
             self._increment_in_flight()
 
@@ -52,9 +53,10 @@ class SharedQueueProcessTransport(ProcessTransport):
         count_in_flight: bool,
     ) -> None:
         del route_identity
+        batch_accumulator = self._get_batch_accumulator()
         work_item = self._work_item_from_dict(payload)
-        if not self._batch_accumulator.add_nowait_fast_path(work_item):
-            self._batch_accumulator.add(work_item)
+        if not batch_accumulator.add_nowait_fast_path(work_item):
+            batch_accumulator.add(work_item)
         if count_in_flight:
             self._increment_in_flight()
 

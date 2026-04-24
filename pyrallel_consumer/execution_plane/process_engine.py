@@ -758,7 +758,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 raise RuntimeError("shared_queue transport requires a task queue")
             self._transport: ProcessTransport = SharedQueueProcessTransport(
                 task_queue=self._task_queue,
-                batch_accumulator=self._batch_accumulator,
+                get_batch_accumulator=lambda: self._batch_accumulator,
                 work_item_from_dict=_work_item_from_dict,
                 increment_in_flight=self._increment_in_flight_count,
                 sentinel=_SENTINEL,
@@ -1050,6 +1050,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
         self._drain_registry_events()
         base_metrics = self._batch_accumulator.snapshot()
+        transport_mode = self._get_transport_mode()
+        support_state = "bounded" if transport_mode == "worker_pipes" else "full"
+        timer_flush_supported = transport_mode != "worker_pipes"
+        demand_flush_supported = transport_mode != "worker_pipes"
+        recycle_supported = transport_mode != "worker_pipes"
         self._initialize_runtime_timing_state()
         with self._runtime_timing_lock:
             main_to_worker_avg = (
@@ -1083,6 +1088,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 avg_worker_exec_seconds=worker_exec_avg,
                 last_worker_to_main_ipc_seconds=self._last_worker_to_main_ipc_seconds,
                 avg_worker_to_main_ipc_seconds=worker_to_main_avg,
+                transport_mode=transport_mode,
+                support_state=support_state,
+                timer_flush_supported=timer_flush_supported,
+                demand_flush_supported=demand_flush_supported,
+                recycle_supported=recycle_supported,
             )
 
     async def submit(self, work_item: WorkItem) -> None:

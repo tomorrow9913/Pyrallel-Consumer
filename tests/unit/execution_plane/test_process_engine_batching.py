@@ -25,6 +25,9 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _completion_event_to_dict,
     _decode_incoming_payloads,
 )
+from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
+    SharedQueueProcessTransport,
+)
 
 
 class _RetryCounter:
@@ -376,6 +379,11 @@ class TestMicroBatching:
             assert metrics.last_flush_size == 2
             assert metrics.buffered_items == 0
             assert metrics.last_flush_wait_seconds >= 0.0
+            assert metrics.transport_mode == "shared_queue"
+            assert metrics.support_state == "full"
+            assert metrics.timer_flush_supported is True
+            assert metrics.demand_flush_supported is True
+            assert metrics.recycle_supported is True
         finally:
             await engine.shutdown()
 
@@ -410,6 +418,35 @@ class TestMicroBatching:
             assert metrics.avg_worker_exec_seconds > 0.0
             assert metrics.last_worker_to_main_ipc_seconds >= 0.0
             assert metrics.avg_worker_to_main_ipc_seconds >= 0.0
+            assert metrics.transport_mode == "shared_queue"
+        finally:
+            await engine.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_metrics_marks_worker_pipes_as_bounded_support(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+        config = ExecutionConfig(
+            mode="process",
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=16,
+                transport_mode="worker_pipes",
+                batch_size=1,
+                max_batch_wait_ms=0,
+            ),
+        )
+        engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        try:
+            metrics = engine.get_runtime_metrics()
+
+            assert isinstance(metrics, ProcessBatchMetrics)
+            assert metrics.transport_mode == "worker_pipes"
+            assert metrics.support_state == "bounded"
+            assert metrics.timer_flush_supported is False
+            assert metrics.demand_flush_supported is False
+            assert metrics.recycle_supported is False
         finally:
             await engine.shutdown()
 
@@ -729,6 +766,13 @@ class TestShutdownLifecycle:
         engine._in_flight_lock = __import__("threading").Lock()
         engine._logger = __import__("logging").getLogger(__name__)
         engine._is_shutdown = False
+        engine._transport = SharedQueueProcessTransport(
+            task_queue=cast(Any, engine._task_queue),
+            get_batch_accumulator=lambda: cast(Any, engine._batch_accumulator),
+            work_item_from_dict=process_engine._work_item_from_dict,
+            increment_in_flight=lambda: None,
+            sentinel=process_engine._SENTINEL,
+        )
         setattr(engine, "_drain_registry_events", lambda: None)
         return engine
 
