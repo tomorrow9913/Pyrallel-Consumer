@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import queue
 import threading
@@ -23,6 +24,13 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _completion_event_to_dict,
     _work_item_from_dict,
     _work_item_to_dict,
+)
+from pyrallel_consumer.execution_plane.process_transport import RouteIdentity
+from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
+    SharedQueueProcessTransport,
+)
+from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
+    WorkerPipesProcessTransport,
 )
 from tests.unit.execution_plane.test_execution_engine_contract import (
     BaseExecutionEngineContractTest,
@@ -70,6 +78,60 @@ class _PipeSender:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _FakeProcess:
+    def __init__(self, target=None, args=()) -> None:
+        self.target = target
+        self.args = args
+        self.pid = 4321
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+
+class _RequeueRecordingTransport:
+    def __init__(self) -> None:
+        self.requeued_payloads: list[list[dict[str, Any]]] = []
+
+    async def submit_work_item(
+        self,
+        work_item: WorkItem,
+        *,
+        route_identity: RouteIdentity,
+        count_in_flight: bool,
+    ) -> None:
+        del work_item, route_identity, count_in_flight
+
+    def dispatch_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        route_identity: RouteIdentity,
+        count_in_flight: bool,
+    ) -> None:
+        del payload, route_identity, count_in_flight
+
+    def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
+        del idx
+        return object(), False
+
+    def handle_registry_event(self, event: dict[str, Any]) -> None:
+        del event
+
+    def recover_pending_dispatches(self, idx: int) -> list[dict[str, Any]]:
+        del idx
+        return []
+
+    def signal_shutdown(self, worker_count: int) -> None:
+        del worker_count
+
+    def close(self) -> None:
+        return None
+
+    def requeue_payloads(self, payloads: list[dict[str, Any]]) -> None:
+        self.requeued_payloads.append(payloads)
 
 
 class TestProcessExecutionEngineContract(BaseExecutionEngineContractTest):
@@ -220,6 +282,232 @@ def test_process_execution_engine_rejects_worker_pipe_batching_configs() -> None
         ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
 
 
+@pytest.mark.parametrize(
+    ("process_kwargs", "match"),
+    [
+        (
+            {
+                "batch_size": 1,
+                "max_batch_wait_ms": 1,
+            },
+            "rejects timer batching",
+        ),
+        (
+            {
+                "batch_size": 1,
+                "max_batch_wait_ms": 0,
+                "flush_policy": "demand",
+            },
+            "rejects flush_policy=demand",
+        ),
+        (
+            {
+                "batch_size": 1,
+                "max_batch_wait_ms": 0,
+                "demand_flush_min_residence_ms": 1,
+            },
+            "demand_flush_min_residence_ms>0",
+        ),
+        (
+            {
+                "batch_size": 1,
+                "max_batch_wait_ms": 0,
+                "max_tasks_per_child": 1,
+            },
+            "max_tasks_per_child",
+        ),
+        (
+            {
+                "batch_size": 1,
+                "max_batch_wait_ms": 0,
+                "recycle_jitter_ms": 1,
+            },
+            "recycle_jitter_ms",
+        ),
+    ],
+)
+def test_process_execution_engine_rejects_unsupported_worker_pipe_slice_combinations(
+    process_kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=7,
+            transport_mode="worker_pipes",
+            **process_kwargs,
+        ),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+
+
+def test_process_execution_engine_defaults_to_shared_queue_transport_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    engine = ProcessExecutionEngine(
+        config=ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            process_config=ProcessConfig(process_count=1, queue_size=7),
+        ),
+        worker_fn=_sync_worker,
+    )
+
+    try:
+        assert isinstance(cast(Any, engine)._transport, SharedQueueProcessTransport)
+    finally:
+        asyncio.run(engine.shutdown())
+
+
+def test_requeue_recovered_payloads_uses_shared_queue_transport_seam() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport_mode = "shared_queue"
+    engine_any._task_queue = None
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+
+    payloads = [
+        {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+        }
+    ]
+
+    engine._requeue_recovered_payloads(payloads)
+
+    assert transport.requeued_payloads == [payloads]
+
+
+def test_process_execution_engine_selects_worker_pipe_transport_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    engine = ProcessExecutionEngine(
+        config=ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            process_config=ProcessConfig(
+                process_count=2,
+                queue_size=7,
+                transport_mode="worker_pipes",
+                batch_size=1,
+                max_batch_wait_ms=0,
+            ),
+        ),
+        worker_fn=_sync_worker,
+    )
+
+    try:
+        assert isinstance(cast(Any, engine)._transport, WorkerPipesProcessTransport)
+    finally:
+        asyncio.run(engine.shutdown())
+
+
+@pytest.mark.parametrize("transport_mode", ["shared_queue", "worker_pipes"])
+def test_start_worker_keeps_single_parent_completion_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    transport_mode: str,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._completion_queue = object()
+    engine_any._registry_event_queue = object()
+    engine_any._worker_fn = _sync_worker
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=7,
+            transport_mode=cast(Any, transport_mode),
+            batch_size=1 if transport_mode == "worker_pipes" else 64,
+            max_batch_wait_ms=0 if transport_mode == "worker_pipes" else 5,
+        ),
+    )
+    engine_any._log_queue = object()
+    engine_any._worker_pid_by_index = {}
+    engine_any._logger = logging.getLogger(__name__)
+
+    task_source = object()
+    engine_any._transport = Mock()
+    engine_any._transport.start_worker_task_source.return_value = (task_source, False)
+
+    created_processes: list[_FakeProcess] = []
+
+    def _fake_process(*, target, args):
+        process = _FakeProcess(target=target, args=args)
+        created_processes.append(process)
+        return process
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.Process",
+        _fake_process,
+    )
+
+    worker = cast(_FakeProcess, engine._start_worker(0))
+
+    assert worker is created_processes[0]
+    assert worker.started is True
+    assert worker.args[1] is engine_any._completion_queue
+
+
+@pytest.mark.asyncio
+async def test_submit_resolves_route_identity_before_transport_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    engine = ProcessExecutionEngine(
+        config=ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            process_config=ProcessConfig(process_count=1, queue_size=7),
+        ),
+        worker_fn=_sync_worker,
+    )
+    captured: list[tuple[RouteIdentity, bool]] = []
+
+    class _FakeTransport:
+        async def submit_work_item(
+            self,
+            work_item: WorkItem,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del work_item
+            captured.append((route_identity, count_in_flight))
+
+        def signal_shutdown(self, worker_count: int) -> None:
+            del worker_count
+
+        def close(self) -> None:
+            return None
+
+    cast(Any, engine)._transport = _FakeTransport()
+    item = WorkItem(
+        id="work-route",
+        tp=TopicPartition("topic", 3),
+        offset=11,
+        epoch=2,
+        key=b"route-key",
+        payload=b"payload",
+    )
+
+    try:
+        await engine.submit(item)
+    finally:
+        await engine.shutdown()
+
+    assert captured == [(RouteIdentity("topic", 3, b"route-key"), True)]
+
+
 @pytest.mark.asyncio
 async def test_submit_routes_matching_identities_to_same_worker_pipe(
     monkeypatch: pytest.MonkeyPatch,
@@ -239,7 +527,8 @@ async def test_submit_routes_matching_identities_to_same_worker_pipe(
     engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
     senders = [_PipeSender(), _PipeSender()]
     engine_any = cast(Any, engine)
-    engine_any._worker_pipe_senders = senders
+    engine_any._worker_pipe_senders.clear()
+    engine_any._worker_pipe_senders.extend(senders)
 
     item_a = WorkItem(
         id="work-a",
@@ -284,6 +573,18 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
     engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
     engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        get_pending_pipe_dispatch=lambda: engine_any._pending_pipe_dispatch,
+        release_worker_pipe_queue_slot=engine._release_worker_pipe_queue_slot,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
 
     acquired = engine_any._worker_pipe_queue_slots.acquire(blocking=False)
     assert acquired is True
@@ -383,6 +684,18 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
     engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
     engine_any._last_worker_liveness_check = 0.0
     engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        get_pending_pipe_dispatch=lambda: engine_any._pending_pipe_dispatch,
+        release_worker_pipe_queue_slot=engine._release_worker_pipe_queue_slot,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
 
     requeued: list[list[dict[str, Any]]] = []
     monkeypatch.setattr(

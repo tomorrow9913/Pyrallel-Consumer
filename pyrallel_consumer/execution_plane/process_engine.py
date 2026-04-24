@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import logging
 import logging.handlers
@@ -14,8 +13,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from multiprocessing import Pipe, Process, Queue
-from multiprocessing.connection import Connection
+from multiprocessing import Process, Queue
 from typing import Any, Deque, List, Optional
 
 import msgpack  # type: ignore[import-untyped]
@@ -32,6 +30,16 @@ from pyrallel_consumer.dto import (
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_registry_support import (
     ProcessRegistrySupport,
+)
+from pyrallel_consumer.execution_plane.process_transport import (
+    ProcessTransport,
+    resolve_route_identity,
+)
+from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
+    SharedQueueProcessTransport,
+)
+from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
+    WorkerPipesProcessTransport,
 )
 from pyrallel_consumer.logger import LogManager
 
@@ -359,31 +367,6 @@ class _NoOpBatchAccumulator:
             buffered_age_seconds=0.0,
             demand_flush_count=0,
         )
-
-
-def _pending_dispatch_key_for_payload(
-    worker_idx: int,
-    payload: SerializedWorkItem,
-) -> tuple[int, str, int, int]:
-    return (
-        worker_idx,
-        payload["topic"],
-        payload["partition"],
-        payload["offset"],
-    )
-
-
-def _stable_worker_index_for_item(work_item: WorkItem, process_count: int) -> int:
-    route_identity = {
-        "topic": work_item.tp.topic,
-        "partition": work_item.tp.partition,
-        "key": work_item.key,
-    }
-    digest = hashlib.blake2b(
-        msgpack.packb(route_identity, use_bin_type=True),
-        digest_size=8,
-    ).digest()
-    return int.from_bytes(digest, "big") % process_count
 
 
 def _receive_task_payload(task_source: Any) -> Any:
@@ -744,13 +727,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._initialize_runtime_timing_state()
         self._last_worker_liveness_check = 0.0
         self._worker_liveness_check_interval_seconds = 0.05
-        self._worker_pipe_senders: list[Connection] = []
+        self._worker_pipe_senders: list[Any] = []
         self._pending_pipe_dispatch: dict[
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
-        self._worker_pipe_queue_slots = threading.BoundedSemaphore(
-            value=config.process_config.queue_size
-        )
+        self._worker_pipe_queue_slots: threading.BoundedSemaphore | None = None
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
             maxsize=config.process_config.queue_size
@@ -773,8 +754,33 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     config.process_config.demand_flush_min_residence_ms
                 ),
             )
+            if self._task_queue is None:
+                raise RuntimeError("shared_queue transport requires a task queue")
+            self._transport: ProcessTransport = SharedQueueProcessTransport(
+                task_queue=self._task_queue,
+                batch_accumulator=self._batch_accumulator,
+                work_item_from_dict=_work_item_from_dict,
+                increment_in_flight=self._increment_in_flight_count,
+                sentinel=_SENTINEL,
+            )
         else:
             self._batch_accumulator = _NoOpBatchAccumulator()
+            worker_pipe_transport = WorkerPipesProcessTransport(
+                process_count=config.process_config.process_count,
+                queue_size=config.process_config.queue_size,
+                serialize_work_item=_work_item_to_dict,
+                serialize_batch_payload=_serialize_batch_payload,
+                work_item_from_dict=_work_item_from_dict,
+                get_worker_pipe_senders=lambda: self._worker_pipe_senders,
+                get_pending_pipe_dispatch=lambda: self._pending_pipe_dispatch,
+                release_worker_pipe_queue_slot=self._release_worker_pipe_queue_slot,
+                increment_in_flight=self._increment_in_flight_count,
+                pipe_sentinel=_PIPE_SENTINEL,
+            )
+            self._transport = worker_pipe_transport
+            self._worker_pipe_queue_slots = (
+                worker_pipe_transport._worker_pipe_queue_slots
+            )
 
         self._start_workers()
 
@@ -809,24 +815,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _start_worker(self, idx: int) -> Process:
-        task_source: Any
-        close_parent_after_start = False
-        if self._get_transport_mode() == "worker_pipes":
-            worker_receiver, parent_sender = Pipe(duplex=False)
-            if idx < len(self._worker_pipe_senders):
-                existing_sender = self._worker_pipe_senders[idx]
-                close_existing = getattr(existing_sender, "close", None)
-                if callable(close_existing):
-                    close_existing()
-                self._worker_pipe_senders[idx] = parent_sender
-            else:
-                self._worker_pipe_senders.append(parent_sender)
-            task_source = worker_receiver
-            close_parent_after_start = True
-        else:
-            if self._task_queue is None:
-                raise RuntimeError("shared_queue transport requires a task queue")
-            task_source = self._task_queue
+        (
+            task_source,
+            close_parent_after_start,
+        ) = self._transport.start_worker_task_source(idx)
         worker = Process(
             target=_worker_loop,
             args=(
@@ -984,6 +976,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._workers[idx] = new_worker
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
+        transport = getattr(self, "_transport", None)
+        if transport is not None:
+            return transport.recover_pending_dispatches(idx)
         if self._get_transport_mode() != "worker_pipes":
             return []
         pending_dispatch = getattr(self, "_pending_pipe_dispatch", {})
@@ -1003,18 +998,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     def _requeue_recovered_payloads(self, payloads: list[SerializedWorkItem]) -> None:
         if not payloads:
             return
-        if self._get_transport_mode() == "worker_pipes":
-            for payload in payloads:
-                self._dispatch_payload_to_transport(payload, count_in_flight=False)
-            return
-        if self._task_queue is None:
-            raise RuntimeError("shared_queue transport requires a task queue")
-        packed = msgpack.packb(payloads, use_bin_type=True)
-        self._task_queue.put(packed)
+        self._transport.requeue_payloads(payloads)
 
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
         self._initialize_runtime_timing_state()
-        if (
+        transport = getattr(self, "_transport", None)
+        if transport is not None:
+            transport.handle_registry_event(event)
+        elif (
             event.get("kind") == "start"
             and self._get_transport_mode() == "worker_pipes"
         ):
@@ -1099,17 +1090,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         제출된 작업 항목을 태스크 큐에 넣습니다.
         """
         self._drain_registry_events()
-        if self._get_transport_mode() == "shared_queue":
-            if not self._batch_accumulator.add_nowait_fast_path(work_item):
-                await asyncio.to_thread(self._batch_accumulator.add, work_item)
-            with self._in_flight_lock:
-                self._in_flight_count += 1
-            return
-
-        await asyncio.to_thread(
-            self._dispatch_payload_to_transport,
-            _work_item_to_dict(work_item),
-            True,
+        await self._transport.submit_work_item(
+            work_item,
+            route_identity=resolve_route_identity(work_item),
+            count_in_flight=True,
         )
 
     async def poll_completed_events(
@@ -1247,43 +1231,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         payload: SerializedWorkItem,
         count_in_flight: bool = False,
     ) -> None:
-        if self._get_transport_mode() == "shared_queue":
-            if self._task_queue is None:
-                raise RuntimeError("shared_queue transport requires a task queue")
-            work_item = _work_item_from_dict(payload)
-            if not self._batch_accumulator.add_nowait_fast_path(work_item):
-                self._batch_accumulator.add(work_item)
-            if count_in_flight:
-                with self._in_flight_lock:
-                    self._in_flight_count += 1
-            return
-
-        self._dispatch_payload_to_worker_pipe(payload, count_in_flight=count_in_flight)
-
-    def _dispatch_payload_to_worker_pipe(
-        self,
-        payload: SerializedWorkItem,
-        *,
-        count_in_flight: bool,
-    ) -> None:
         work_item = _work_item_from_dict(payload)
-        worker_idx = _stable_worker_index_for_item(
-            work_item, self._config.process_config.process_count
+        self._transport.dispatch_payload(
+            payload,
+            route_identity=resolve_route_identity(work_item),
+            count_in_flight=count_in_flight,
         )
-        self._worker_pipe_queue_slots.acquire()
-        pending_key = _pending_dispatch_key_for_payload(worker_idx, payload)
-        self._pending_pipe_dispatch[pending_key] = dict(payload)
-        try:
-            packed = _serialize_batch_payload([work_item], time.monotonic())
-            self._worker_pipe_senders[worker_idx].send_bytes(packed)
-        except Exception:
-            self._pending_pipe_dispatch.pop(pending_key, None)
-            self._release_worker_pipe_queue_slot()
-            raise
-
-        if count_in_flight:
-            with self._in_flight_lock:
-                self._in_flight_count += 1
 
     def _release_worker_pipe_queue_slot(self) -> None:
         worker_pipe_queue_slots = getattr(self, "_worker_pipe_queue_slots", None)
@@ -1320,15 +1273,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker_count,
         )
         self._batch_accumulator.close()
-        # Send sentinel to all workers to signal shutdown
-        if self._get_transport_mode() == "worker_pipes":
-            for sender in self._worker_pipe_senders:
-                sender.send_bytes(_PIPE_SENTINEL)
-        else:
-            if self._task_queue is None:
-                raise RuntimeError("shared_queue transport requires a task queue")
-            for _ in self._workers:
-                self._task_queue.put(_SENTINEL)
+        self._transport.signal_shutdown(len(self._workers))
 
         shutdown_drain_deadline = time.monotonic() + 1.0
         total_registry_drained = 0
@@ -1397,7 +1342,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             close = getattr(queue_obj, "close", None)
             if callable(close):
                 close()
-        for sender in getattr(self, "_worker_pipe_senders", []):
-            close = getattr(sender, "close", None)
-            if callable(close):
-                close()
+        self._transport.close()
+
+    def _increment_in_flight_count(self) -> None:
+        with self._in_flight_lock:
+            self._in_flight_count += 1

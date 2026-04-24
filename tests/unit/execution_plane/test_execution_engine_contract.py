@@ -11,6 +11,27 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
+ALLOWED_ENGINE_CONTRACT_METHODS = {
+    "submit",
+    "poll_completed_events",
+    "wait_for_completion",
+    "get_in_flight_count",
+    "get_min_inflight_offset",
+    "get_runtime_metrics",
+    "shutdown",
+}
+
+
+def test_base_execution_engine_contract_surface_excludes_transport_helpers() -> None:
+    public_methods = {
+        name for name in dir(BaseExecutionEngine) if not name.startswith("_")
+    }
+
+    assert ALLOWED_ENGINE_CONTRACT_METHODS <= public_methods
+    assert "dispatch_payload" not in public_methods
+    assert "start_worker_task_source" not in public_methods
+    assert "signal_shutdown" not in public_methods
+
 
 class BaseExecutionEngineContractTest(ABC):
     """
