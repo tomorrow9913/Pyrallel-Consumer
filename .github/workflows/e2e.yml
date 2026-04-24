@@ -51,7 +51,7 @@ jobs:
               tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
