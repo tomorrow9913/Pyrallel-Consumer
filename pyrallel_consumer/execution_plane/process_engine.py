@@ -1133,7 +1133,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._ensure_workers_alive()
         self._drain_registry_events()
 
-        if self._prefetched_completion_events or not self._completion_queue.empty():
+        if self._prefetched_completion_events:
+            return True
+
+        try:
+            raw_event = self._completion_queue.get_nowait()
+        except queue.Empty:
+            raw_event = None
+
+        if raw_event is not None:
+            self._prefetched_completion_events.append(
+                self._decode_completion_queue_item(raw_event)
+            )
             return True
 
         if timeout_seconds is not None and timeout_seconds <= 0:
