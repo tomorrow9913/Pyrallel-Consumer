@@ -53,6 +53,12 @@ process engine 내부는 ordered mode에서 route identity를 사용한다.
 route_identity = (work_item.tp.topic, work_item.tp.partition, work_item.key)
 ```
 
+이 identity는 process engine만을 위한 별도 hint가 아니다. `WorkManager`가
+partition/key virtual queue를 만들고 async engine에 safe-to-run item을 넘길 때
+이미 사용한 logical queue identity를, process transport가 worker channel 선택에
+재사용하는 것이다. async engine은 IPC channel이 없으므로 이 identity를 별도
+routing에 쓰지 않고 `create_task()`로 바로 실행한다.
+
 규칙:
 
 - 같은 identity는 같은 worker execution slot/channel로 간다.

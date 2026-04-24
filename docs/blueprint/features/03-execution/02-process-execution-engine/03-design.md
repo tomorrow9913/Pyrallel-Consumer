@@ -23,3 +23,8 @@ control plane transport-agnostic.
 - batching semantics and explicit unsupported combinations
 - `wait_for_completion()` parity
 - shutdown, recycle, restart, and runtime metrics semantics
+
+The route identity is not a new process-only scheduling hint. It reuses the same
+logical queue identity that `WorkManager` already uses to select safe-to-run
+work. Async execution ignores it because there is no IPC route; worker-pipe
+process execution hashes it to select the worker input channel.

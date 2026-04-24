@@ -162,6 +162,12 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
 route_identity = (work_item.tp.topic, work_item.tp.partition, work_item.key)
 ```
 
+이것은 새 hint를 도입하는 것이 아니라, async path와 process path가 같은
+`WorkManager` logical queue identity를 공유한다는 뜻이다. `WorkManager`는 이미
+partition/key별 virtual queue에서 safe-to-run item을 고르고, async engine은 그
+item을 `create_task()`로 바로 실행한다. process `worker_pipes` transport는 같은
+identity를 stable hash하여 worker input channel을 선택한다.
+
 Routing 규칙:
 
 - Python built-in `hash()`가 아니라 stable hash를 사용한다.

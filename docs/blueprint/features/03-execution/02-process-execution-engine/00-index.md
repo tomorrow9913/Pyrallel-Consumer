@@ -19,6 +19,10 @@ The intended model is:
 - the process engine should move toward the same shape by selecting the
   appropriate worker execution channel at `submit(work_item)` time.
 
+The route identity is not a process-only scheduling hint. It is the same logical
+queue identity that `WorkManager` already uses before async and process execution
+diverge.
+
 ## Why this matters
 
 The current `shared_queue` process path places every submitted item into one

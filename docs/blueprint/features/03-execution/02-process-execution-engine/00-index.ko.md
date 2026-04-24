@@ -16,6 +16,9 @@
 - process engine도 장기적으로는 같은 철학을 따라야 한다.
 - 즉, `WorkManager`가 safe-to-run item을 고르면 process engine은 submit 순간
   route identity를 사용해 적절한 worker execution slot/channel로 보내야 한다.
+- 이 route identity는 process 전용 새 scheduling hint가 아니다. async path에서도
+  `WorkManager`가 이미 사용하는 동일한 logical queue identity를 process IPC
+  routing에 재사용하는 것이다.
 
 이 문서 세트는 그 방향을 다음 두 경로로 정리한다.
 
