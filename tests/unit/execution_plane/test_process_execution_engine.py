@@ -1000,3 +1000,81 @@ async def test_poll_completed_events_ignores_queue_empty_race(
 
     assert completed == []
     assert error_messages == []
+
+
+@pytest.mark.asyncio
+async def test_wait_for_completion_ignores_false_empty_signal() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._prefetched_completion_events = []
+    engine_any._drain_registry_events = Mock()
+    engine_any._ensure_workers_alive = Mock()
+
+    class _LyingEmptyQueue:
+        def empty(self) -> bool:
+            return False
+
+        def get_nowait(self):
+            raise queue.Empty()
+
+        def get(self, *_args, **_kwargs):
+            raise queue.Empty()
+
+    engine_any._completion_queue = _LyingEmptyQueue()
+
+    completed = await engine.wait_for_completion(timeout_seconds=0)
+
+    assert completed is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_completion_detects_item_even_when_empty_lies_true() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._prefetched_completion_events = []
+    engine_any._drain_registry_events = Mock()
+    engine_any._ensure_workers_alive = Mock()
+
+    packed_event = msgpack.packb(
+        _completion_event_to_dict(
+            _completion_event_from_dict(
+                {
+                    "id": "work-42",
+                    "topic": "topic",
+                    "partition": 1,
+                    "offset": 42,
+                    "epoch": 7,
+                    "status": "success",
+                    "attempt": 1,
+                }
+            )
+        ),
+        use_bin_type=True,
+    )
+
+    class _HiddenItemQueue:
+        def __init__(self, raw_event: bytes) -> None:
+            self._raw_event = raw_event
+            self._drained = False
+
+        def empty(self) -> bool:
+            return True
+
+        def get_nowait(self):
+            if self._drained:
+                raise queue.Empty()
+            self._drained = True
+            return self._raw_event
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError(
+                "blocking get should not be used when get_nowait succeeds"
+            )
+
+    engine_any._completion_queue = _HiddenItemQueue(packed_event)
+
+    completed = await engine.wait_for_completion(timeout_seconds=0)
+
+    assert completed is True
+    assert len(engine_any._prefetched_completion_events) == 1
+    assert engine_any._prefetched_completion_events[0].offset == 42
