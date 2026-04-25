@@ -619,6 +619,16 @@ class WorkManager:
             counts[work_item.tp] = counts.get(work_item.tp, 0) + 1
         return counts
 
+    def get_min_in_flight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
+        min_offset: Optional[int] = None
+        for work_item_id in self._dispatch_timestamps:
+            work_item = self._in_flight_work_items.get(work_item_id)
+            if work_item is None or work_item.tp != tp:
+                continue
+            if min_offset is None or work_item.offset < min_offset:
+                min_offset = work_item.offset
+        return min_offset
+
     def _invalidate_blocking_cache(self) -> None:
         self._blocking_cache_counter = 0
 

@@ -18,7 +18,6 @@ ALLOWED_ENGINE_METHODS = {
     "poll_completed_events",
     "wait_for_completion",
     "get_in_flight_count",
-    "get_min_inflight_offset",
     "get_runtime_metrics",
     "shutdown",
 }
@@ -80,6 +79,5 @@ def test_control_plane_only_uses_base_execution_engine_contract_methods() -> Non
         "submit",
         "poll_completed_events",
         "wait_for_completion",
-        "get_min_inflight_offset",
         "get_runtime_metrics",
     }

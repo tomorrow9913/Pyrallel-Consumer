@@ -1014,6 +1014,216 @@ async def test_get_total_in_flight_count(
         assert total_in_flight == 8
 
 
+def test_get_min_in_flight_offset_returns_none_for_queued_but_not_dispatched_items(
+    work_manager,
+    mock_dto_topic_partition,
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    queued_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=21,
+        epoch=1,
+        key=b"queued",
+        payload=b"payload",
+    )
+    work_manager._in_flight_work_items[queued_item.id] = queued_item
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+
+
+def test_get_min_in_flight_offset_uses_dispatch_timestamps_only(
+    work_manager,
+    mock_dto_topic_partition,
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    dispatched_a = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=8,
+        epoch=1,
+        key=b"a",
+        payload=b"payload-a",
+    )
+    dispatched_b = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=5,
+        epoch=1,
+        key=b"b",
+        payload=b"payload-b",
+    )
+    queued_only = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=3,
+        epoch=1,
+        key=b"queued",
+        payload=b"payload-c",
+    )
+
+    for item in (dispatched_a, dispatched_b, queued_only):
+        work_manager._in_flight_work_items[item.id] = item
+    work_manager._dispatch_timestamps[dispatched_a.id] = 1.0
+    work_manager._dispatch_timestamps[dispatched_b.id] = 2.0
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) == 5
+
+
+def test_get_min_in_flight_offset_ignores_stale_dispatch_ids(
+    work_manager,
+    mock_dto_topic_partition,
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    stale_item_id = str(uuid.uuid4())
+    work_manager._dispatch_timestamps[stale_item_id] = 1.0
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+
+
+@pytest.mark.asyncio
+async def test_get_min_in_flight_offset_updates_after_completion_cleanup(
+    work_manager,
+    mock_dto_topic_partition,
+    mock_execution_engine,
+):
+    tracker = MagicMock(spec=OffsetTracker)
+    tracker.get_current_epoch.return_value = 1
+    tracker.get_gaps.return_value = []
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    first_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=5,
+        epoch=1,
+        key=b"first",
+        payload=b"payload-first",
+    )
+    second_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=8,
+        epoch=1,
+        key=b"second",
+        payload=b"payload-second",
+    )
+    for item, dispatch_time in ((first_item, 1.0), (second_item, 2.0)):
+        work_manager._in_flight_work_items[item.id] = item
+        work_manager._dispatch_timestamps[item.id] = dispatch_time
+        work_manager._work_item_ids_by_tp_offset[(item.tp, item.offset)] = item.id
+    work_manager._current_in_flight_count = 2
+
+    mock_execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id=first_item.id,
+            tp=mock_dto_topic_partition,
+            offset=first_item.offset,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) == 5
+
+    await work_manager.poll_completed_events()
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) == 8
+
+    mock_execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id=second_item.id,
+            tp=mock_dto_topic_partition,
+            offset=second_item.offset,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    await work_manager.poll_completed_events()
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+
+
+def test_get_min_in_flight_offset_clears_revoked_partition_dispatches(
+    work_manager,
+    mock_dto_topic_partition,
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    work_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=13,
+        epoch=1,
+        key=b"revoked",
+        payload=b"payload",
+    )
+    work_manager._in_flight_work_items[work_item.id] = work_item
+    work_manager._dispatch_timestamps[work_item.id] = 1.0
+    work_manager._work_item_ids_by_tp_offset[
+        (work_item.tp, work_item.offset)
+    ] = work_item.id
+    work_manager._current_in_flight_count = 1
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) == 13
+
+    work_manager.on_revoke([mock_dto_topic_partition])
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+
+
+@pytest.mark.asyncio
+async def test_get_min_in_flight_offset_clears_stale_epoch_dispatches(
+    work_manager,
+    mock_dto_topic_partition,
+    mock_execution_engine,
+):
+    tracker = MagicMock(spec=OffsetTracker)
+    tracker.get_current_epoch.return_value = 2
+    tracker.get_gaps.return_value = []
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    stale_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=mock_dto_topic_partition,
+        offset=34,
+        epoch=1,
+        key=b"stale",
+        payload=b"payload",
+    )
+    work_manager._in_flight_work_items[stale_item.id] = stale_item
+    work_manager._dispatch_timestamps[stale_item.id] = 1.0
+    work_manager._work_item_ids_by_tp_offset[
+        (stale_item.tp, stale_item.offset)
+    ] = stale_item.id
+    work_manager._current_in_flight_count = 1
+    mock_execution_engine.poll_completed_events.return_value = [
+        CompletionEvent(
+            id=stale_item.id,
+            tp=mock_dto_topic_partition,
+            offset=stale_item.offset,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) == 34
+
+    await work_manager.poll_completed_events()
+
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+
+
 @pytest.mark.asyncio
 async def test_prioritize_blocking_offset(
     work_manager,
@@ -1272,6 +1482,7 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
     work_item: WorkItem = await queue.get()
     work_manager._total_queued_messages = 0
     work_manager._current_in_flight_count = 1
+    work_manager._dispatch_timestamps[work_item.id] = 1.0
 
     event = CompletionEvent(
         id=work_item.id,
@@ -1284,11 +1495,15 @@ async def test_cleanup_removes_empty_virtual_queue(work_manager):
     )
 
     await work_manager._completion_queue.put(event)
+
+    assert work_manager.get_min_in_flight_offset(tp) == 0
+
     await work_manager.poll_completed_events()
 
     assert tp in work_manager._virtual_partition_queues
     assert work_manager._virtual_partition_queues[tp] == {}
     assert work_manager.get_total_queued_messages() == 0
+    assert work_manager.get_min_in_flight_offset(tp) is None
 
 
 @pytest.mark.asyncio
@@ -1403,6 +1618,14 @@ async def test_on_revoke_cleans_revoked_in_flight_state(
     revoked_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
     kept_item = work_manager._execution_engine.submit.await_args_list[1].args[0]
     assert work_manager._current_in_flight_count == 2
+    assert (
+        work_manager.get_min_in_flight_offset(mock_dto_topic_partition)
+        == revoked_item.offset
+    )
+    assert (
+        work_manager.get_min_in_flight_offset(mock_dto_topic_partition_1)
+        == kept_item.offset
+    )
     assert (mock_dto_topic_partition, b"revoked-key") in work_manager._keys_in_flight
     assert (
         mock_dto_topic_partition_1,
@@ -1416,6 +1639,11 @@ async def test_on_revoke_cleans_revoked_in_flight_state(
     assert kept_item.id in work_manager._in_flight_work_items
     assert kept_item.id in work_manager._dispatch_timestamps
     assert work_manager._current_in_flight_count == 1
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
+    assert (
+        work_manager.get_min_in_flight_offset(mock_dto_topic_partition_1)
+        == kept_item.offset
+    )
     assert (
         mock_dto_topic_partition,
         b"revoked-key",
@@ -1480,6 +1708,10 @@ async def test_poll_completed_events_cleans_stale_epoch_in_flight_state(
 
     submitted_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
     assert work_manager._current_in_flight_count == 1
+    assert (
+        work_manager.get_min_in_flight_offset(mock_dto_topic_partition)
+        == submitted_item.offset
+    )
     assert (mock_dto_topic_partition, b"key-A") in work_manager._keys_in_flight
 
     tracker.increment_epoch()
@@ -1501,6 +1733,7 @@ async def test_poll_completed_events_cleans_stale_epoch_in_flight_state(
     assert submitted_item.id not in work_manager._in_flight_work_items
     assert submitted_item.id not in work_manager._dispatch_timestamps
     assert work_manager._current_in_flight_count == 0
+    assert work_manager.get_min_in_flight_offset(mock_dto_topic_partition) is None
     assert (mock_dto_topic_partition, b"key-A") not in work_manager._keys_in_flight
     assert tracker.last_committed_offset == -1
 
