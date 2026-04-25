@@ -1065,6 +1065,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return drained_registry, drained_completion
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        """
+        Deprecated compatibility hook.
+
+        Commit safety is now computed from WorkManager's submitted-work ledger.
+        This method only surfaces process-private recovery state for diagnostics
+        and compatibility callers that still expect the method to exist.
+        """
         self._drain_registry_events()
         return ProcessRegistrySupport.get_min_inflight_offset(
             in_flight_registry=self._in_flight_registry,

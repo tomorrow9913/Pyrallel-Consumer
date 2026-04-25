@@ -188,6 +188,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         return len(self._in_flight_tasks)
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        del tp
         return None
 
     async def shutdown(self) -> None:

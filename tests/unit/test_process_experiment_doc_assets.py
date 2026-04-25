@@ -27,7 +27,7 @@ def test_process_transport_experiment_doc_keeps_bounded_scope_and_invariants() -
     assert "The default must remain `shared_queue`." in document
     assert "--process-transport shared_queue|worker_pipes" in document
     assert "Control-plane invariants" in document
-    assert "get_min_inflight_offset()" in document
+    assert "WorkManager` dispatch ledger" in document
     assert "Unsupported matrix for the first slice" in document
     assert "benchmark and release-gate evidence" in document
     assert "not quietly reinterpret" in document

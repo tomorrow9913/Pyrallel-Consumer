@@ -73,14 +73,18 @@ class BaseExecutionEngine(ABC):
 
     def get_min_inflight_offset(self, _tp: TopicPartition) -> Optional[int]:
         """
-        Returns the minimum in-flight offset for a partition when the engine
-        can expose that detail. Engines that do not track it return None.
+        Deprecated compatibility hook for engine-private in-flight offset detail.
+
+        Commit safety is owned by the control-plane WorkManager dispatch ledger,
+        not by engine-specific capability methods. Engines that still track
+        private recovery registries may expose a best-effort value here, but
+        control-plane commit clamping must not depend on it.
 
         Args:
             _tp (TopicPartition): 조회할 토픽/파티션
 
         Returns:
-            Optional[int]: 최소 in-flight offset 또는 None
+            Optional[int]: engine-private 최소 in-flight offset 또는 None
         """
         return None
 
