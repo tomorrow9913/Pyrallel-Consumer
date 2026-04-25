@@ -20,7 +20,6 @@ from ..dto import (
     CompletionEvent,
     DLQPayloadMode,
     OrderingMode,
-    ProcessBatchMetrics,
     RuntimeSnapshot,
     SystemMetrics,
 )
@@ -1206,10 +1205,8 @@ class BrokerPoller:
             partitions=metrics.partitions,
             adaptive_backpressure=metrics.adaptive_backpressure,
             adaptive_concurrency=metrics.adaptive_concurrency,
-            process_batch_metrics=(
+            process_batch_metrics=BrokerRuntimeSupport._project_process_batch_metrics(
                 runtime_metrics
-                if isinstance(runtime_metrics, ProcessBatchMetrics)
-                else None
             ),
         )
 

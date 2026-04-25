@@ -6,6 +6,8 @@ from multiprocessing import Pipe
 from multiprocessing.connection import Connection
 from typing import Any, Callable
 
+import msgpack  # type: ignore[import-untyped]
+
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.process_transport import (
     AsyncToThreadSubmitMixin,
@@ -22,6 +24,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         *,
         process_count: int,
         queue_size: int,
+        max_payload_bytes: int,
         serialize_work_item: Callable[[WorkItem], SerializedWorkItem],
         serialize_batch_payload: Callable[[list[WorkItem], float], bytes],
         work_item_from_dict: Callable[[SerializedWorkItem], WorkItem],
@@ -34,6 +37,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         pipe_sentinel: bytes,
     ) -> None:
         self._process_count = process_count
+        self._max_payload_bytes = max_payload_bytes
         self._serialize_work_item = serialize_work_item
         self._serialize_batch_payload = serialize_batch_payload
         self._work_item_from_dict = work_item_from_dict
@@ -66,6 +70,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             pending_dispatch[pending_key] = dict(payload)
         try:
             packed = self._serialize_batch_payload([work_item], time.monotonic())
+            self._validate_packed_payload(packed)
             self._get_worker_pipe_senders()[worker_idx].send_bytes(packed)
         except Exception:
             with self._pending_dispatch_lock:
@@ -142,3 +147,20 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             close = getattr(sender, "close", None)
             if callable(close):
                 close()
+
+    def _validate_packed_payload(self, payload: bytes) -> None:
+        if len(payload) > self._max_payload_bytes:
+            raise ValueError("payload_too_large")
+
+        unpacker = msgpack.Unpacker(
+            raw=False,
+            max_buffer_size=self._max_payload_bytes,
+        )
+        try:
+            unpacker.feed(payload)
+            decoded_items = list(unpacker)
+        except Exception as exc:
+            raise ValueError("invalid_worker_pipe_payload") from exc
+
+        if not decoded_items:
+            raise ValueError("invalid_worker_pipe_payload")

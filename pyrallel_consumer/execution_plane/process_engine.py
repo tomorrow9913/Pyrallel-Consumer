@@ -770,6 +770,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker_pipe_transport = WorkerPipesProcessTransport(
                 process_count=config.process_config.process_count,
                 queue_size=config.process_config.queue_size,
+                max_payload_bytes=config.process_config.msgpack_max_bytes,
                 serialize_work_item=_work_item_to_dict,
                 serialize_batch_payload=_serialize_batch_payload,
                 work_item_from_dict=_work_item_from_dict,
