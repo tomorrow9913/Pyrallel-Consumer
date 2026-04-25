@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from pyrallel_consumer.dto import (
     CompletionEvent,
-    ProcessBatchMetrics,
+    EngineRuntimeDiagnostics,
     TopicPartition,
     WorkItem,
 )
@@ -88,7 +88,7 @@ class BaseExecutionEngine(ABC):
         """
         return None
 
-    def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
+    def get_runtime_metrics(self) -> Optional[EngineRuntimeDiagnostics]:
         """Returns optional engine-specific runtime metrics."""
         return None
 

@@ -6,8 +6,11 @@ from pyrallel_consumer.config import ExecutionConfig, PoisonMessageConfig
 from pyrallel_consumer.dto import (
     AdaptiveConcurrencyRuntimeSnapshot,
     DLQPayloadMode,
+    EngineRuntimeDiagnostics,
     OffsetRange,
     OrderingMode,
+    ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
@@ -109,8 +112,20 @@ def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None
     work_manager.is_rebalancing.return_value = True
 
     execution_engine = MagicMock()
-    runtime_metrics = MagicMock()
-    execution_engine.get_runtime_metrics.return_value = runtime_metrics
+    runtime_metrics = ProcessBatchMetrics(
+        size_flush_count=1,
+        timer_flush_count=0,
+        close_flush_count=0,
+        total_flushed_items=1,
+        last_flush_size=1,
+        last_flush_wait_seconds=0.0,
+        buffered_items=0,
+        buffered_age_seconds=0.0,
+    )
+    execution_engine.get_runtime_metrics.return_value = EngineRuntimeDiagnostics(
+        engine_type="process",
+        process=ProcessRuntimeDiagnostics(batch_metrics=runtime_metrics),
+    )
 
     execution_config = ExecutionConfig(
         max_retries=5,
@@ -174,7 +189,7 @@ def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None
     assert snapshot.dlq.payload_mode == DLQPayloadMode.METADATA_ONLY
     assert snapshot.dlq.message_cache_size_bytes == 128
     assert snapshot.dlq.message_cache_entry_count == 2
-    assert snapshot.process_batch_metrics is runtime_metrics
+    assert snapshot.process_batch_metrics == runtime_metrics
     assert snapshot.adaptive_concurrency is not None
     assert snapshot.adaptive_concurrency.configured_max_in_flight == 100
     assert snapshot.adaptive_concurrency.effective_max_in_flight == 64
