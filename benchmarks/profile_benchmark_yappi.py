@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Awaitable, Callable, List, Sequence
 
-import yappi
+import yappi  # type: ignore[import-untyped]
 
 from benchmarks.baseline_consumer import consume_messages
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups

@@ -236,7 +236,7 @@ def _profile_session(
         yield
         return
     try:
-        import yappi
+        import yappi  # type: ignore[import-untyped]
     except ImportError as exc:  # noqa: BLE001
         raise RuntimeError("yappi is required for profiling; install dev deps") from exc
 

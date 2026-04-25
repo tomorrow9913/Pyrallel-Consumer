@@ -131,14 +131,22 @@ class OptionsScreen(Screen[None]):
             yield cls._option_help(option_id)
             if option.browse:
                 with Container(classes="input-with-browse"):
-                    yield Input(value=value, id=widget_id, placeholder=placeholder)
+                    yield Input(
+                        value=value,
+                        id=widget_id,
+                        placeholder="" if placeholder is None else placeholder,
+                    )
                     yield Button(
                         "Browse",
                         id="browse-%s" % widget_id,
                         classes="browse-button",
                     )
             else:
-                yield Input(value=value, id=widget_id, placeholder=placeholder)
+                yield Input(
+                    value=value,
+                    id=widget_id,
+                    placeholder="" if placeholder is None else placeholder,
+                )
             yield Static("", id=cls._error_id(widget_id), classes="field-error")
 
     @classmethod
@@ -474,7 +482,9 @@ class OptionsScreen(Screen[None]):
             )
 
     def _render_errors(self, errors: dict[str, str]) -> None:
-        for widget in self.query(".field-error"):
+        for widget in self.query(Static):
+            if "field-error" not in widget.classes:
+                continue
             widget.update("")
         for widget_id, message in errors.items():
             self.query_one("#%s" % self._error_id(widget_id), Static).update(message)
@@ -705,7 +715,10 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
         if event.tabs.id == "results-ordering-tabs":
-            self._selected_ordering = event.tab.id.removeprefix("ordering-tab-")
+            tab_id = event.tab.id
+            if tab_id is None:
+                return
+            self._selected_ordering = tab_id.removeprefix("ordering-tab-")
             self._refresh_ordering_summary()
 
     def _refresh_ordering_summary(self) -> None:
