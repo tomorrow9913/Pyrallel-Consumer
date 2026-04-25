@@ -7,10 +7,13 @@ from pyrallel_consumer.dto import (
     AdaptiveConcurrencyRuntimeSnapshot,
     DLQPayloadMode,
     DlqRuntimeSnapshot,
+    EngineRuntimeDiagnostics,
     OrderingMode,
     PartitionMetrics,
     PartitionRuntimeSnapshot,
     PoisonMessageRuntimeSnapshot,
+    ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
     QueueRuntimeSnapshot,
     RetryPolicySnapshot,
     RuntimeSnapshot,
@@ -71,6 +74,20 @@ class BrokerRuntimeSupport:
         self._adaptive_concurrency = adaptive_concurrency
         self._poison_message_config = poison_message_config
         self._poison_message_open_circuit_count = poison_message_open_circuit_count
+
+    @staticmethod
+    def _project_process_batch_metrics(
+        metrics: EngineRuntimeDiagnostics | ProcessBatchMetrics | None,
+    ) -> ProcessBatchMetrics | None:
+        if metrics is None:
+            return None
+        if isinstance(metrics, ProcessBatchMetrics):
+            return metrics
+        if isinstance(metrics, EngineRuntimeDiagnostics) and isinstance(
+            metrics.process, ProcessRuntimeDiagnostics
+        ):
+            return metrics.process.batch_metrics
+        return None
 
     def log_partition_diagnostics(self) -> None:
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
@@ -229,7 +246,7 @@ class BrokerRuntimeSupport:
                 )
             )
 
-        runtime_metrics = (
+        runtime_diagnostics = (
             self._execution_engine.get_runtime_metrics()
             if self._execution_engine is not None
             else None
@@ -275,6 +292,8 @@ class BrokerRuntimeSupport:
             partitions=partition_snapshots,
             adaptive_backpressure=self._adaptive_backpressure,
             adaptive_concurrency=self._adaptive_concurrency,
-            process_batch_metrics=runtime_metrics,
+            process_batch_metrics=self._project_process_batch_metrics(
+                runtime_diagnostics
+            ),
             poison_message=poison_message_snapshot,
         )

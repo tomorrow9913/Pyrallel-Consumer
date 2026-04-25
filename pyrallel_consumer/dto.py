@@ -205,6 +205,25 @@ class ProcessBatchMetrics:
     recycle_supported: bool = True
 
 
+@dataclass(frozen=True)
+class ProcessRuntimeDiagnostics:
+    """
+    Process-engine-specific runtime diagnostics envelope.
+    """
+
+    batch_metrics: ProcessBatchMetrics
+
+
+@dataclass(frozen=True)
+class EngineRuntimeDiagnostics:
+    """
+    Engine-agnostic runtime diagnostics envelope.
+    """
+
+    engine_type: str
+    process: Optional[ProcessRuntimeDiagnostics] = None
+
+
 class ResourceSignalStatus(str, Enum):
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"

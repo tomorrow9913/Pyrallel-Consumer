@@ -14,7 +14,7 @@ from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
-    ProcessBatchMetrics,
+    EngineRuntimeDiagnostics,
     TopicPartition,
     WorkItem,
 )
@@ -143,8 +143,10 @@ class TestMicroBatching:
         try:
             await engine.submit(_make_work_item(0))
 
-            metrics = engine.get_runtime_metrics()
-            assert isinstance(metrics, ProcessBatchMetrics)
+            diagnostics = engine.get_runtime_metrics()
+            assert isinstance(diagnostics, EngineRuntimeDiagnostics)
+            assert diagnostics.process is not None
+            metrics = diagnostics.process.batch_metrics
             assert metrics.size_flush_count == 1
             assert metrics.total_flushed_items == 1
             assert metrics.last_flush_size == 1
@@ -255,7 +257,11 @@ class TestMicroBatching:
         engine._registry_event_queue = cast(Any, None)
         engine._in_flight_lock = threading.Lock()
         engine._in_flight_count = 1
-        engine._ensure_workers_alive = lambda: None  # type: ignore[method-assign]
+
+        def _noop_ensure_workers_alive(*, force: bool = False) -> None:
+            del force
+
+        engine._ensure_workers_alive = _noop_ensure_workers_alive  # type: ignore[method-assign]
         engine._drain_registry_events = lambda: None  # type: ignore[method-assign]
 
         events = await engine.poll_completed_events()
@@ -340,9 +346,11 @@ class TestMicroBatching:
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
         try:
             await engine.submit(_make_work_item(0))
-            metrics = engine.get_runtime_metrics()
+            diagnostics = engine.get_runtime_metrics()
 
-            assert isinstance(metrics, ProcessBatchMetrics)
+            assert isinstance(diagnostics, EngineRuntimeDiagnostics)
+            assert diagnostics.process is not None
+            metrics = diagnostics.process.batch_metrics
             assert metrics.buffered_items == 1
             assert metrics.size_flush_count == 0
             assert metrics.timer_flush_count == 0
@@ -369,9 +377,11 @@ class TestMicroBatching:
             await engine.submit(_make_work_item(0))
             await engine.submit(_make_work_item(1))
 
-            metrics = engine.get_runtime_metrics()
+            diagnostics = engine.get_runtime_metrics()
 
-            assert isinstance(metrics, ProcessBatchMetrics)
+            assert isinstance(diagnostics, EngineRuntimeDiagnostics)
+            assert diagnostics.process is not None
+            metrics = diagnostics.process.batch_metrics
             assert metrics.size_flush_count == 1
             assert metrics.timer_flush_count == 0
             assert metrics.close_flush_count == 0
@@ -408,10 +418,12 @@ class TestMicroBatching:
             assert await engine.wait_for_completion(timeout_seconds=2.0) is True
 
             events = await engine.poll_completed_events()
-            metrics = engine.get_runtime_metrics()
+            diagnostics = engine.get_runtime_metrics()
 
             assert len(events) == 1
-            assert isinstance(metrics, ProcessBatchMetrics)
+            assert isinstance(diagnostics, EngineRuntimeDiagnostics)
+            assert diagnostics.process is not None
+            metrics = diagnostics.process.batch_metrics
             assert metrics.last_main_to_worker_ipc_seconds >= 0.0
             assert metrics.avg_main_to_worker_ipc_seconds >= 0.0
             assert metrics.last_worker_exec_seconds > 0.0
@@ -439,9 +451,11 @@ class TestMicroBatching:
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
         try:
-            metrics = engine.get_runtime_metrics()
+            diagnostics = engine.get_runtime_metrics()
 
-            assert isinstance(metrics, ProcessBatchMetrics)
+            assert isinstance(diagnostics, EngineRuntimeDiagnostics)
+            assert diagnostics.process is not None
+            metrics = diagnostics.process.batch_metrics
             assert metrics.transport_mode == "worker_pipes"
             assert metrics.support_state == "bounded"
             assert metrics.timer_flush_supported is False

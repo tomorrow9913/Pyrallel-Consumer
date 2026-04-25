@@ -23,7 +23,9 @@ from pyrallel_consumer.dto import (
     WORK_ITEM_POISON_KEY_UNSET,
     CompletionEvent,
     CompletionStatus,
+    EngineRuntimeDiagnostics,
     ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
     TopicPartition,
     WorkItem,
 )
@@ -1078,7 +1080,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             tp=tp,
         )
 
-    def get_runtime_metrics(self) -> Optional[ProcessBatchMetrics]:
+    def get_runtime_metrics(self) -> Optional[EngineRuntimeDiagnostics]:
         self._drain_registry_events()
         base_metrics = self._batch_accumulator.snapshot()
         transport_mode = self._get_transport_mode()
@@ -1103,27 +1105,32 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 if self._worker_to_main_ipc_samples > 0
                 else 0.0
             )
-            return ProcessBatchMetrics(
-                size_flush_count=base_metrics.size_flush_count,
-                timer_flush_count=base_metrics.timer_flush_count,
-                close_flush_count=base_metrics.close_flush_count,
-                total_flushed_items=base_metrics.total_flushed_items,
-                last_flush_size=base_metrics.last_flush_size,
-                last_flush_wait_seconds=base_metrics.last_flush_wait_seconds,
-                buffered_items=base_metrics.buffered_items,
-                buffered_age_seconds=base_metrics.buffered_age_seconds,
-                demand_flush_count=base_metrics.demand_flush_count,
-                last_main_to_worker_ipc_seconds=self._last_main_to_worker_ipc_seconds,
-                avg_main_to_worker_ipc_seconds=main_to_worker_avg,
-                last_worker_exec_seconds=self._last_worker_exec_seconds,
-                avg_worker_exec_seconds=worker_exec_avg,
-                last_worker_to_main_ipc_seconds=self._last_worker_to_main_ipc_seconds,
-                avg_worker_to_main_ipc_seconds=worker_to_main_avg,
-                transport_mode=transport_mode,
-                support_state=support_state,
-                timer_flush_supported=timer_flush_supported,
-                demand_flush_supported=demand_flush_supported,
-                recycle_supported=recycle_supported,
+            return EngineRuntimeDiagnostics(
+                engine_type="process",
+                process=ProcessRuntimeDiagnostics(
+                    batch_metrics=ProcessBatchMetrics(
+                        size_flush_count=base_metrics.size_flush_count,
+                        timer_flush_count=base_metrics.timer_flush_count,
+                        close_flush_count=base_metrics.close_flush_count,
+                        total_flushed_items=base_metrics.total_flushed_items,
+                        last_flush_size=base_metrics.last_flush_size,
+                        last_flush_wait_seconds=base_metrics.last_flush_wait_seconds,
+                        buffered_items=base_metrics.buffered_items,
+                        buffered_age_seconds=base_metrics.buffered_age_seconds,
+                        demand_flush_count=base_metrics.demand_flush_count,
+                        last_main_to_worker_ipc_seconds=self._last_main_to_worker_ipc_seconds,
+                        avg_main_to_worker_ipc_seconds=main_to_worker_avg,
+                        last_worker_exec_seconds=self._last_worker_exec_seconds,
+                        avg_worker_exec_seconds=worker_exec_avg,
+                        last_worker_to_main_ipc_seconds=self._last_worker_to_main_ipc_seconds,
+                        avg_worker_to_main_ipc_seconds=worker_to_main_avg,
+                        transport_mode=transport_mode,
+                        support_state=support_state,
+                        timer_flush_supported=timer_flush_supported,
+                        demand_flush_supported=demand_flush_supported,
+                        recycle_supported=recycle_supported,
+                    )
+                ),
             )
 
     async def submit(self, work_item: WorkItem) -> None:
