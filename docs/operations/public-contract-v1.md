@@ -84,6 +84,17 @@ The adaptive sections are opt-in policy/runtime snapshots. They report the confi
 ceiling, the current control-plane live limit, and tuning guardrails; they do not
 expose process counts, CPU pressure, async semaphores, or engine-private queues.
 
+Commit clamping is computed from the control-plane `WorkManager` dispatch ledger.
+Engine-private registries may still support recovery or transport diagnostics, but
+they are not part of the canonical commit-safety rule.
+
+`process_batch_metrics` remains the frozen v1 compatibility projection for
+process-mode batching and IPC/runtime counters.
+
+Generic engine diagnostics remain an additive internal direction for future runtime
+observability, but the documented v1 `RuntimeSnapshot` field boundary above stays
+frozen until a future major-version contract change.
+
 ## 3) Contract Regression Tests
 
 The v1 frozen contract is guarded by the following regression tests.

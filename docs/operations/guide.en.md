@@ -89,8 +89,8 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 
 ### 1.9. Engine Capability Boundary
 - **Definition**: The control plane only depends on the shared execution-engine contract.
-- **Meaning**: Process-only safety data such as minimum in-flight offsets should be exposed as an optional engine capability, not by branching on a concrete engine class inside `BrokerPoller`.
-- **Tip**: When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
+- **Meaning**: Commit clamping is computed from the control-plane `WorkManager` dispatch ledger. This commit clamping rule belongs to the control plane, while process-private registries remain recovery/diagnostics state rather than a required engine capability.
+- **Tip**: Keep `process_batch_metrics` documented as a v1 compatibility projection while generic engine diagnostics evolve internally. When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
 
 ### 1.10. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
 - **Prometheus queries**:

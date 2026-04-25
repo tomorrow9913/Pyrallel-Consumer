@@ -160,6 +160,27 @@ def test_failure_counter_metric_names_are_documented() -> None:
         assert "consumer_dlq_publish_failures_total" in doc_text
 
 
+def test_operations_guides_document_control_plane_commit_clamp_boundary() -> None:
+    guide_en = (REPO_ROOT / "docs" / "operations" / "guide.en.md").read_text(
+        encoding="utf-8", errors="strict"
+    )
+    guide_ko = (REPO_ROOT / "docs" / "operations" / "guide.ko.md").read_text(
+        encoding="utf-8", errors="strict"
+    )
+
+    assert (
+        "Commit clamping is computed from the control-plane `WorkManager` "
+        "dispatch ledger"
+    ) in guide_en
+    assert "optional engine capability" not in guide_en
+
+    assert (
+        "commit clamp용 최소 in-flight offset은 control-plane `WorkManager` "
+        "dispatch ledger에서 계산한다."
+    ) in guide_ko
+    assert "선택적 엔진 capability" not in guide_ko
+
+
 def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> None:
     workflow_text = (
         REPO_ROOT / ".github" / "workflows" / "ci_monitoring.yml"

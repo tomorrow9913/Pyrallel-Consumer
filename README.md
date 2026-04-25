@@ -125,9 +125,12 @@ The Control Plane manages Kafka communication and offsets independently from exe
 The Execution Plane runs user workers via `asyncio` tasks or multiprocessing.
 
 The control plane talks to execution engines through the shared `BaseExecutionEngine`
-contract. Commit clamping is computed from the control-plane `WorkManager`
+contract. The commit clamping rule is computed from the control-plane `WorkManager`
 dispatch ledger, while engine-private registries remain recovery/diagnostics
 state rather than the canonical source of commit safety.
+
+For runtime observability, `process_batch_metrics` remains the v1 compatibility projection
+while generic engine diagnostics evolve behind the same stable public snapshot boundary.
 
 ```mermaid
 graph TD
