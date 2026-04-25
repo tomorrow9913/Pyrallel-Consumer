@@ -223,10 +223,8 @@ class BrokerRuntimeSupport:
                     ),
                     queued_count=sum(queue_sizes.get(tp, {}).values()),
                     in_flight_count=in_flight_counts.get(tp, 0),
-                    min_in_flight_offset=(
-                        self._execution_engine.get_min_inflight_offset(tp)
-                        if self._execution_engine is not None
-                        else None
+                    min_in_flight_offset=self._work_manager.get_min_in_flight_offset(
+                        tp
                     ),
                 )
             )

@@ -105,10 +105,10 @@ def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None
     work_manager.get_total_queued_messages.return_value = 7
     work_manager.get_virtual_queue_sizes.return_value = {tp: {"key1": 2, "key2": 3}}
     work_manager.get_in_flight_counts.return_value = {tp: 4}
+    work_manager.get_min_in_flight_offset.return_value = 92
     work_manager.is_rebalancing.return_value = True
 
     execution_engine = MagicMock()
-    execution_engine.get_min_inflight_offset.return_value = 92
     runtime_metrics = MagicMock()
     execution_engine.get_runtime_metrics.return_value = runtime_metrics
 

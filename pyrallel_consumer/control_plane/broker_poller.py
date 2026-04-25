@@ -854,7 +854,7 @@ class BrokerPoller:
         return total
 
     def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
-        min_inflight = self._execution_engine.get_min_inflight_offset(tp)
+        min_inflight = self._work_manager.get_min_in_flight_offset(tp)
         return min_inflight if isinstance(min_inflight, int) else None
 
     def _log_partition_diagnostics(self) -> None:

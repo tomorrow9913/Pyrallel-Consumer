@@ -400,7 +400,9 @@ class TestBrokerPollerMetrics:
         broker_poller_with_mocks._execution_engine.get_runtime_metrics.return_value = (
             process_metrics
         )
-        broker_poller_with_mocks._execution_engine.get_min_inflight_offset.return_value = 92
+        broker_poller_with_mocks._work_manager.get_min_in_flight_offset.return_value = (
+            92
+        )
         broker_poller_with_mocks._message_cache_size_bytes = 64
         broker_poller_with_mocks._message_cache = {(tp, 91): (b"k", b"v")}
         broker_poller_with_mocks.ORDERING_MODE = OrderingMode.PARTITION
