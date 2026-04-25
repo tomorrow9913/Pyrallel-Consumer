@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import pytest
 from rich.text import Text
@@ -17,7 +18,12 @@ from textual.widgets import (
     Switch,
 )
 
-from benchmarks.tui.app import BenchmarkTuiApp, RunScreen
+from benchmarks.tui.app import (
+    BenchmarkTuiApp,
+    OptionsScreen,
+    ResultsSummaryModalScreen,
+    RunScreen,
+)
 from benchmarks.tui.log_parser import BenchmarkProgressSnapshot
 from benchmarks.tui.state import BenchmarkTuiState
 
@@ -44,6 +50,18 @@ class _FakeController:
     async def cancel(self) -> None:
         self.cancel_called = True
         self._done.set()
+
+
+def _run_screen(app: BenchmarkTuiApp) -> RunScreen:
+    return cast(RunScreen, app.screen)
+
+
+def _options_screen(app: BenchmarkTuiApp) -> OptionsScreen:
+    return cast(OptionsScreen, app.screen)
+
+
+def _results_modal_screen(app: BenchmarkTuiApp) -> ResultsSummaryModalScreen:
+    return cast(ResultsSummaryModalScreen, app.screen)
 
 
 def _block_child_types(app, block_id: str) -> list[str]:
@@ -148,7 +166,8 @@ async def test_options_screen_uses_prominent_title_and_helper_text() -> None:
         del pilot
         title = app.screen.query_one("#options-title", Static)
         help_texts = [
-            str(widget.content) for widget in app.screen.query(".option-help")
+            str(cast(Static, widget).content)
+            for widget in app.screen.query(".option-help")
         ]
         field_labels = [str(label.render()) for label in app.screen.query(Label)]
         switches = list(app.screen.query(Switch))
@@ -234,7 +253,7 @@ async def test_options_screen_exposes_output_path_fields_with_browse_buttons() -
         profile_dir = app.screen.query_one("#profile-dir", Input)
         py_spy_output = app.screen.query_one("#py-spy-output", Input)
         browse_buttons = {
-            button.id: str(button.label)
+            cast(Button, button).id: str(cast(Button, button).label)
             for button in app.screen.query(".browse-button")
         }
 
@@ -259,7 +278,7 @@ async def test_browse_button_opens_directory_picker_modal() -> None:
         app.screen_stack[-1]
         selected_path = Path.cwd()
         app.pop_screen()
-        app.screen.apply_selected_path("profile-dir", selected_path)
+        _options_screen(app).apply_selected_path("profile-dir", selected_path)
         await pilot.pause()
 
         profile_dir = app.screen.query_one("#profile-dir", Input)
@@ -386,7 +405,7 @@ async def test_failed_run_returns_to_options_with_existing_values(
         await pilot.pause()
         await pilot.pause()
 
-        await app.screen.action_settings()
+        await _run_screen(app).action_settings()
 
         restored_messages = app.screen.query_one("#num-messages", Input)
 
@@ -406,7 +425,7 @@ async def test_run_screen_back_stays_on_active_benchmark(monkeypatch) -> None:
         app.push_screen(RunScreen(BenchmarkTuiState()))
         await pilot.pause()
 
-        await app.screen.action_back()
+        await _run_screen(app).action_back()
         await pilot.pause()
 
         assert _FakeController.instances[0].cancel_called is False
@@ -426,7 +445,7 @@ async def test_run_screen_preserves_cancelled_status(monkeypatch) -> None:
         app.push_screen(RunScreen(BenchmarkTuiState()))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         await run_screen.action_cancel()
         await pilot.pause()
 
@@ -530,7 +549,7 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
         )
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 completed_runs=2,
@@ -608,7 +627,7 @@ async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -
         )
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
@@ -700,7 +719,7 @@ async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_
         )
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
@@ -783,7 +802,7 @@ async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
         app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 completed_runs=0,
@@ -813,7 +832,7 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
         app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
@@ -901,7 +920,7 @@ async def test_run_screen_back_does_not_leave_screen_while_running(monkeypatch) 
         app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         await run_screen.action_back()
         await pilot.pause()
 
@@ -922,7 +941,7 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
         app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 status_message="Running async benchmark",
@@ -970,7 +989,7 @@ async def test_run_screen_surfaces_last_error_line_in_failure_status(
         app.push_screen(RunScreen(BenchmarkTuiState(workloads=("sleep",))))
         await pilot.pause()
 
-        run_screen = app.screen
+        run_screen = _run_screen(app)
         run_screen._append_log("RuntimeError: boom", is_error=True)
         run_screen._on_complete(1)
         await pilot.pause()
@@ -1011,7 +1030,7 @@ async def test_run_screen_exposes_report_and_exit_controls_after_success(
         await pilot.pause()
         await pilot.pause()
 
-        modal_screen = app.screen
+        modal_screen = _results_modal_screen(app)
         assert hasattr(modal_screen, "action_close")
         modal_screen.action_close()
         await pilot.pause()
@@ -1057,12 +1076,12 @@ async def test_run_screen_reopens_results_modal_from_terminal_report_button(
         await pilot.pause()
         await pilot.pause()
 
-        modal_screen = app.screen
+        modal_screen = _results_modal_screen(app)
         assert hasattr(modal_screen, "action_close")
         modal_screen.action_close()
         await pilot.pause()
 
-        await app.screen.action_cancel()
+        await _run_screen(app).action_cancel()
         await pilot.pause()
 
         assert app.screen.__class__.__name__ == "ResultsSummaryModalScreen"
@@ -1107,11 +1126,11 @@ async def test_run_screen_exit_control_quits_app_after_success(
         await pilot.pause()
         await pilot.pause()
 
-        modal_screen = app.screen
+        modal_screen = _results_modal_screen(app)
         assert hasattr(modal_screen, "action_close")
         modal_screen.action_close()
         await pilot.pause()
 
-        await app.screen.action_exit()
+        await _run_screen(app).action_exit()
 
     assert len(exit_calls) == 1

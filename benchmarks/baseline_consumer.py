@@ -3,11 +3,16 @@ import sys
 import time
 from typing import Any, Callable, Dict
 
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, KafkaError
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic  # Corrected import for NewTopic
 
 from benchmarks.stats import BenchmarkResult, BenchmarkStats
+
+PARTITION_EOF_CODE: int = getattr(KafkaError, "_PARTITION_EOF")
+TRANSACTIONAL_ID_AUTHORIZATION_FAILED_CODE: int = getattr(
+    KafkaError, "TRANSACTIONAL_ID_AUTHORIZATION_FAILED"
+)
 
 # Kafka configuration for KRAFT mode
 conf: Dict[str, Any] = {
@@ -96,23 +101,21 @@ def consume_messages(
                     break
                 continue
 
-            if msg.error():
+            error = msg.error()
+            if error is not None:
                 # Access error codes via public constants
-                if msg.error().code() == KafkaException.PARTITION_EOF:
+                if error.code() == PARTITION_EOF_CODE:
                     sys.stderr.write(
-                        "%% %s [%s] reached end at offset %d\n"
+                        "%% %s [%s] reached end at offset %s\n"
                         % (msg.topic(), msg.partition(), msg.offset())
                     )
-                elif (
-                    msg.error().code()
-                    == KafkaException.TRANSACTIONAL_ID_AUTHORIZATION_FAILED
-                ):
+                elif error.code() == TRANSACTIONAL_ID_AUTHORIZATION_FAILED_CODE:
                     print(
                         "Transaction authorization failed. Is transaction.id configured correctly?"
                     )
                     break
                 else:
-                    sys.stderr.write(f"%% Message error: {msg.error()}\n")
+                    sys.stderr.write("%% Message error: %s\n" % error)
                 continue
 
             # Ensure msg.value() is not None before decoding
