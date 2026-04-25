@@ -777,8 +777,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 get_worker_pipe_senders=lambda: self._worker_pipe_senders,
                 get_pending_pipe_dispatch=lambda: self._pending_pipe_dispatch,
                 release_worker_pipe_queue_slot=self._release_worker_pipe_queue_slot,
+                ensure_workers_alive=self._ensure_workers_alive,
                 increment_in_flight=self._increment_in_flight_count,
                 pipe_sentinel=_PIPE_SENTINEL,
+                slot_acquire_timeout_ms=config.process_config.task_timeout_ms,
             )
             self._transport = worker_pipe_transport
             self._worker_pipe_queue_slots = (
