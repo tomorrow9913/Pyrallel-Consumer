@@ -21,6 +21,13 @@ class ReleaseThreshold:
     p99_ceiling_ms: float
 
 
+@dataclass(frozen=True)
+class ArtifactProvenanceBinding:
+    repository: str
+    git_ref: str
+    git_sha: str
+
+
 RELEASE_THRESHOLDS: dict[Combination, ReleaseThreshold] = {
     ("async", "sleep", "key_hash"): ReleaseThreshold(4900, 13),
     ("async", "sleep", "partition"): ReleaseThreshold(2950, 2),
@@ -418,6 +425,71 @@ def _evaluate_matrix(
     return checks
 
 
+def _artifact_provenance_binding(
+    path: Path, summary: Mapping[str, Any]
+) -> tuple[ArtifactProvenanceBinding | None, list[dict[str, Any]]]:
+    metadata = summary.get("artifact_metadata")
+    values: dict[str, str] = {}
+    if isinstance(metadata, Mapping):
+        metadata_field_map = {
+            "repository": "github_repository",
+            "git_ref": "git_ref",
+            "git_sha": "git_commit_sha",
+        }
+        missing_fields = []
+        for field, metadata_field in metadata_field_map.items():
+            value = metadata.get(metadata_field)
+            if not isinstance(value, str) or not value:
+                missing_fields.append(metadata_field)
+                continue
+            values[field] = value
+        if not missing_fields:
+            return (
+                ArtifactProvenanceBinding(
+                    repository=values["repository"],
+                    git_ref=values["git_ref"],
+                    git_sha=values["git_sha"],
+                ),
+                [],
+            )
+
+    provenance = summary.get("artifact_provenance")
+    if not isinstance(provenance, Mapping):
+        return None, [
+            _check(
+                "provenance_binding",
+                "FAIL",
+                (
+                    "benchmark summary must include artifact_metadata "
+                    "(github_repository/git_ref/git_commit_sha) or legacy "
+                    "artifact_provenance binding metadata"
+                ),
+                path=str(path),
+            )
+        ]
+
+    for field in ("repository", "git_ref", "git_sha"):
+        value = provenance.get(field)
+        if not isinstance(value, str) or not value:
+            return None, [
+                _check(
+                    "provenance_binding",
+                    "FAIL",
+                    "artifact_provenance.%s must be a non-empty string" % field,
+                    path=str(path),
+                )
+            ]
+        values[field] = value
+    return (
+        ArtifactProvenanceBinding(
+            repository=values["repository"],
+            git_ref=values["git_ref"],
+            git_sha=values["git_sha"],
+        ),
+        [],
+    )
+
+
 def evaluate_release_gate(
     benchmark_json_paths: Iterable[str | Path],
     *,
@@ -445,6 +517,34 @@ def evaluate_release_gate(
             )
         )
     summaries = [(path, _load_summary(path)) for path in paths]
+    provenance_binding: ArtifactProvenanceBinding | None = None
+    for path, summary in summaries:
+        candidate_binding, binding_checks = _artifact_provenance_binding(path, summary)
+        checks.extend(binding_checks)
+        if candidate_binding is None:
+            continue
+        if provenance_binding is None:
+            provenance_binding = candidate_binding
+            continue
+        if candidate_binding != provenance_binding:
+            checks.append(
+                _check(
+                    "provenance_binding",
+                    "FAIL",
+                    "release-gate artifacts must bind to the same repository/ref/sha",
+                    path=str(path),
+                    expected={
+                        "repository": provenance_binding.repository,
+                        "git_ref": provenance_binding.git_ref,
+                        "git_sha": provenance_binding.git_sha,
+                    },
+                    actual={
+                        "repository": candidate_binding.repository,
+                        "git_ref": candidate_binding.git_ref,
+                        "git_sha": candidate_binding.git_sha,
+                    },
+                )
+            )
     grouped, grouped_checks, process_transport_modes = _group_results(summaries)
     checks.extend(grouped_checks)
     checks.extend(_evaluate_matrix(grouped, required_repetitions))
@@ -457,6 +557,15 @@ def evaluate_release_gate(
             "expected_combinations": len(RELEASE_THRESHOLDS),
             "required_process_transport_modes": list(REQUIRED_PROCESS_TRANSPORT_MODES),
             "process_transport_modes": sorted(process_transport_modes),
+            "provenance_binding": (
+                {
+                    "repository": provenance_binding.repository,
+                    "git_ref": provenance_binding.git_ref,
+                    "git_sha": provenance_binding.git_sha,
+                }
+                if provenance_binding is not None
+                else None
+            ),
         },
         "checks": checks,
     }
@@ -496,6 +605,7 @@ def main(argv: list[str] | None = None) -> int:
                 "required_repetitions": args.required_repetitions,
                 "expected_combinations": len(RELEASE_THRESHOLDS),
                 "process_transport_modes": [],
+                "provenance_binding": None,
             },
             "checks": [
                 _check("schema", "FAIL", str(exc), artifacts=args.benchmark_json)

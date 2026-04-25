@@ -66,6 +66,17 @@ def _passing_summary() -> dict[str, object]:
                 )
             )
     return {
+        "artifact_metadata": {
+            "artifact_name": "release-gate-develop-123",
+            "artifact_path": "benchmarks/results/release-gate.json",
+            "execution_context": "github_actions",
+            "generated_at_utc": "2026-04-25T05:00:00Z",
+            "git_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+            "git_ref": "refs/heads/develop",
+            "git_ref_name": "develop",
+            "git_ref_type": "branch",
+            "github_repository": "mqueue/Pyrallel-Consumer",
+        },
         "options": {
             "num_messages": 10000,
             "num_partitions": 8,
@@ -273,6 +284,90 @@ def test_evaluate_release_gate_reports_schema_failure_for_missing_num_messages(
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
     }
     assert "measurement_conditions" in failed_codes
+
+
+def test_evaluate_release_gate_requires_artifact_metadata_provenance_binding(
+    tmp_path: Path,
+) -> None:
+    bad = _passing_summary()
+    bad.pop("artifact_metadata")
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-no-provenance-%d.json" % index)
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "provenance_binding" in failed_codes
+
+
+def test_evaluate_release_gate_rejects_mismatched_artifact_metadata_provenance_binding(
+    tmp_path: Path,
+) -> None:
+    first = _passing_summary()
+    second = _passing_summary()
+    artifact_metadata = second["artifact_metadata"]
+    assert isinstance(artifact_metadata, dict)
+    artifact_metadata["git_ref"] = "refs/heads/release"
+    artifact_metadata["git_commit_sha"] = "fedcba9876543210fedcba9876543210fedcba98"
+    paths = []
+    for index, payload in enumerate((first, second)):
+        path = tmp_path / ("release-gate-provenance-%d.json" % index)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "NO-GO"
+    failed_codes = {
+        check["code"] for check in report["checks"] if check["status"] == "FAIL"
+    }
+    assert "provenance_binding" in failed_codes
+
+
+def test_evaluate_release_gate_surfaces_artifact_metadata_provenance_binding_in_summary(
+    tmp_path: Path,
+) -> None:
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-provenance-summary-%d.json" % index)
+        path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "PASS"
+    assert report["summary"]["provenance_binding"] == {
+        "repository": "mqueue/Pyrallel-Consumer",
+        "git_ref": "refs/heads/develop",
+        "git_sha": "0123456789abcdef0123456789abcdef01234567",
+    }
+
+
+def test_evaluate_release_gate_accepts_legacy_artifact_provenance_binding(
+    tmp_path: Path,
+) -> None:
+    payload = _passing_summary()
+    payload.pop("artifact_metadata")
+    payload["artifact_provenance"] = {
+        "repository": "mqueue/Pyrallel-Consumer",
+        "git_ref": "refs/heads/develop",
+        "git_sha": "0123456789abcdef0123456789abcdef01234567",
+    }
+    paths = []
+    for index in range(2):
+        path = tmp_path / ("release-gate-legacy-provenance-%d.json" % index)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths.append(path)
+
+    report = release_gate.evaluate_release_gate(paths)
+
+    assert report["verdict"] == "PASS"
 
 
 def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(

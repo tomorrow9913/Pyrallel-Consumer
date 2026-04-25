@@ -22,6 +22,13 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 
+BENCHMARK_WORKFLOW = (
+    run_parallel_benchmark.Path(__file__).resolve().parents[3]
+    / ".github"
+    / "workflows"
+    / "ci_monitoring.yml"
+)
+
 
 @pytest.fixture
 def benchmark_result() -> BenchmarkResult:
@@ -93,7 +100,7 @@ def test_run_benchmark_resets_each_mode_immediately_before_round(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
 
     def _record_reset(*, topics, consumer_groups, **_kwargs) -> None:
@@ -152,7 +159,7 @@ def test_run_benchmark_expands_selected_workloads_and_orderings(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -220,7 +227,7 @@ def test_run_benchmark_expands_strict_completion_monitor_modes(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -292,7 +299,7 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -335,6 +342,115 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
             "async-group-sleep-key_hash-adaptive-on",
         ),
     ]
+
+
+def test_build_artifact_metadata_prefers_github_environment() -> None:
+    metadata = run_parallel_benchmark._build_artifact_metadata(
+        output_path="benchmarks/results/release-gate.json",
+        environ={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_SHA": "deadbeef",
+            "GITHUB_REF": "refs/heads/develop",
+            "GITHUB_REF_NAME": "develop",
+            "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REPOSITORY": "tomorrow9913/Pyrallel-Consumer",
+            "GITHUB_WORKFLOW": "benchmarks",
+            "GITHUB_WORKFLOW_REF": (
+                "tomorrow9913/Pyrallel-Consumer/.github/workflows/benchmarks.yml"
+                "@refs/heads/develop"
+            ),
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "GITHUB_JOB": "release-candidate-gate",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "PYRALLEL_BENCHMARK_ARTIFACT_NAME": "release-gate-develop-123",
+        },
+    )
+
+    assert metadata == {
+        "artifact_name": "release-gate-develop-123",
+        "artifact_path": "benchmarks/results/release-gate.json",
+        "execution_context": "github_actions",
+        "generated_at_utc": metadata["generated_at_utc"],
+        "git_commit_sha": "deadbeef",
+        "git_ref": "refs/heads/develop",
+        "git_ref_name": "develop",
+        "git_ref_type": "branch",
+        "github_event_name": "workflow_dispatch",
+        "github_job": "release-candidate-gate",
+        "github_repository": "tomorrow9913/Pyrallel-Consumer",
+        "github_run_attempt": "2",
+        "github_run_id": "123",
+        "github_workflow": "benchmarks",
+        "github_workflow_ref": (
+            "tomorrow9913/Pyrallel-Consumer/.github/workflows/benchmarks.yml"
+            "@refs/heads/develop"
+        ),
+    }
+
+
+def test_run_benchmark_writes_artifact_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_build_artifact_metadata",
+        lambda *, output_path, environ=None: {
+            "artifact_path": output_path,
+            "git_commit_sha": "deadbeef",
+        },
+    )
+
+    def _capture_results_json(_results, _path, options=None, artifact_metadata=None):
+        captured["options"] = options
+        captured["artifact_metadata"] = artifact_metadata
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "write_results_json", _capture_results_json
+    )
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(skip_async=True, skip_process=True),
+        raw_argv=["--skip-async", "--skip-process"],
+    )
+
+    assert captured["artifact_metadata"] == {
+        "artifact_path": "benchmarks/results/test-runtime.json",
+        "git_commit_sha": "deadbeef",
+    }
+
+
+def test_ci_monitoring_workflow_uploads_benchmark_artifact_with_bound_name() -> None:
+    text = BENCHMARK_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "PYRALLEL_BENCHMARK_ARTIFACT_NAME" in text
+    assert "actions/upload-artifact@v7" in text
+    assert "name: ${{ env.PYRALLEL_BENCHMARK_ARTIFACT_NAME }}" in text
+    assert "path: benchmarks/results/ci-monitoring.json" in text
 
 
 def test_produce_messages_skips_topic_creation_when_disabled(
@@ -1143,7 +1259,7 @@ def test_run_benchmark_passes_process_overrides_to_process_round(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1219,7 +1335,7 @@ def test_run_benchmark_passes_process_transport_mode_to_process_round(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1275,7 +1391,7 @@ def test_run_benchmark_does_not_forward_process_transport_mode_to_async_round(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1330,7 +1446,7 @@ def test_run_benchmark_warns_for_tiny_partition_process_defaults(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1388,7 +1504,7 @@ def test_run_benchmark_auto_tunes_tiny_partition_strict_process_defaults(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1457,7 +1573,7 @@ def test_run_benchmark_resolves_process_batching_per_strict_mode(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
@@ -1527,7 +1643,7 @@ def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     monkeypatch.setattr(
         run_parallel_benchmark,
         "write_results_json",
-        lambda _results, _path, options=None: None,
+        lambda _results, _path, options=None, artifact_metadata=None: None,
     )
     monkeypatch.setattr(
         run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
