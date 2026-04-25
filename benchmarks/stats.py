@@ -198,10 +198,12 @@ def write_results_json(
     results: list[BenchmarkResult],
     output_path: Path,
     options: dict[str, Any] | None = None,
+    artifact_metadata: dict[str, Any] | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "options": options or {},
+        "artifact_metadata": artifact_metadata or {},
         "performance_improvements": _build_performance_improvements(results),
         "metrics_observations": _merge_metrics_observations(results),
         "results": [result.to_dict() for result in results],
