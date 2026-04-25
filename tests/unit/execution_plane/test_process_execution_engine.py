@@ -86,6 +86,14 @@ class _PipeSender:
         self.closed = True
 
 
+class _ExplodingSerializer:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __call__(self, _batch: list[WorkItem], _flush_enqueued_at: float) -> bytes:
+        return self.payload
+
+
 class _FakeProcess:
     def __init__(self, target=None, args=()) -> None:
         self.target = target
@@ -582,6 +590,7 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     engine_any._transport = WorkerPipesProcessTransport(
         process_count=1,
         queue_size=1,
+        max_payload_bytes=1024,
         serialize_work_item=_work_item_to_dict,
         serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
         work_item_from_dict=_work_item_from_dict,
@@ -693,6 +702,7 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
     engine_any._transport = WorkerPipesProcessTransport(
         process_count=1,
         queue_size=1,
+        max_payload_bytes=1024,
         serialize_work_item=_work_item_to_dict,
         serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
         work_item_from_dict=_work_item_from_dict,
@@ -769,6 +779,7 @@ def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
     engine_any._transport = WorkerPipesProcessTransport(
         process_count=1,
         queue_size=1,
+        max_payload_bytes=1024,
         serialize_work_item=_work_item_to_dict,
         serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
         work_item_from_dict=_work_item_from_dict,
@@ -1200,6 +1211,7 @@ def test_worker_pipe_shutdown_ignores_broken_senders() -> None:
     transport = WorkerPipesProcessTransport(
         process_count=1,
         queue_size=1,
+        max_payload_bytes=1024,
         serialize_work_item=_work_item_to_dict,
         serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"",
         work_item_from_dict=_work_item_from_dict,
@@ -1211,6 +1223,84 @@ def test_worker_pipe_shutdown_ignores_broken_senders() -> None:
     )
 
     transport.signal_shutdown(1)
+
+
+def test_worker_pipe_dispatch_rejects_oversized_payload_before_send() -> None:
+    sender = _PipeSender()
+    pending_dispatch: dict[tuple[int, str, int, int], dict[str, Any]] = {}
+    released_slots: list[str] = []
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=2,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_ExplodingSerializer(b"abc"),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [cast(Connection, sender)],
+        get_pending_pipe_dispatch=lambda: pending_dispatch,
+        release_worker_pipe_queue_slot=lambda: released_slots.append("released"),
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+
+    with pytest.raises(ValueError, match="payload_too_large"):
+        transport.dispatch_payload(
+            _work_item_to_dict(
+                WorkItem(
+                    id="work-1",
+                    tp=TopicPartition("topic", 1),
+                    offset=42,
+                    epoch=3,
+                    key=b"key",
+                    payload=b"payload",
+                )
+            ),
+            route_identity=RouteIdentity("topic", 1, b"key"),
+            count_in_flight=True,
+        )
+
+    assert sender.payloads == []
+    assert pending_dispatch == {}
+    assert released_slots == ["released"]
+
+
+def test_worker_pipe_dispatch_rejects_invalid_payload_before_send() -> None:
+    sender = _PipeSender()
+    pending_dispatch: dict[tuple[int, str, int, int], dict[str, Any]] = {}
+    released_slots: list[str] = []
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_ExplodingSerializer(b"\xc1"),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [cast(Connection, sender)],
+        get_pending_pipe_dispatch=lambda: pending_dispatch,
+        release_worker_pipe_queue_slot=lambda: released_slots.append("released"),
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+
+    with pytest.raises(ValueError, match="invalid_worker_pipe_payload"):
+        transport.dispatch_payload(
+            _work_item_to_dict(
+                WorkItem(
+                    id="work-1",
+                    tp=TopicPartition("topic", 1),
+                    offset=42,
+                    epoch=3,
+                    key=b"key",
+                    payload=b"payload",
+                )
+            ),
+            route_identity=RouteIdentity("topic", 1, b"key"),
+            count_in_flight=True,
+        )
+
+    assert sender.payloads == []
+    assert pending_dispatch == {}
+    assert released_slots == ["released"]
 
 
 @pytest.mark.asyncio

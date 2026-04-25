@@ -18,9 +18,11 @@ from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
     DLQPayloadMode,
+    EngineRuntimeDiagnostics,
     OffsetRange,
     OrderingMode,
     ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
     SystemMetrics,
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
@@ -228,6 +230,31 @@ class TestBrokerPollerMetrics:
         assert metrics.process_batch_metrics is not None
         assert metrics.process_batch_metrics.size_flush_count == 3
         assert metrics.process_batch_metrics.buffered_items == 1
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_projects_process_batch_metrics_from_runtime_envelope(
+        self, broker_poller_with_mocks, mock_execution_engine
+    ):
+        process_metrics = ProcessBatchMetrics(
+            size_flush_count=3,
+            timer_flush_count=2,
+            close_flush_count=1,
+            total_flushed_items=12,
+            last_flush_size=4,
+            last_flush_wait_seconds=0.05,
+            buffered_items=1,
+            buffered_age_seconds=0.2,
+        )
+        mock_execution_engine.get_runtime_metrics.return_value = (
+            EngineRuntimeDiagnostics(
+                engine_type="process",
+                process=ProcessRuntimeDiagnostics(batch_metrics=process_metrics),
+            )
+        )
+
+        metrics = broker_poller_with_mocks.get_metrics()
+
+        assert metrics.process_batch_metrics == process_metrics
 
     @pytest.mark.asyncio
     async def test_get_metrics_includes_adaptive_runtime_snapshots(
