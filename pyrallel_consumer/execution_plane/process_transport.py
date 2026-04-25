@@ -84,6 +84,10 @@ class ProcessTransport(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def clear_pending_dispatches(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def signal_shutdown(self, worker_count: int) -> None:
         raise NotImplementedError
 
