@@ -151,6 +151,9 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
   - `shutdown()`
 - 실행 가능한 `WorkItem`을 고르는 책임은 계속 `WorkManager`에 있다.
 - completion aggregation과 offset commit 판단은 parent/control plane에 남는다.
+- commit clamp용 최소 in-flight offset은 control-plane `WorkManager`
+  dispatch ledger에서 계산한다. engine-level `get_min_inflight_offset()`는
+  있더라도 compatibility/private recovery state일 뿐 canonical source가 아니다.
 - transport는 ordering correctness를 새로 판단하지 않는다. 이미 safe-to-run으로
   내려온 item을 어느 worker channel로 보낼지만 결정한다.
 

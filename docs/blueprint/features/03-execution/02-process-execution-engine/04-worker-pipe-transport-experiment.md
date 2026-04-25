@@ -136,12 +136,14 @@ The experiment must preserve these invariants:
   - `poll_completed_events(batch_limit=1000)`
   - `wait_for_completion(timeout_seconds=None)`
   - `get_in_flight_count()`
-  - `get_min_inflight_offset()`
   - `get_runtime_metrics()`
   - `shutdown()`
 - `WorkManager` still decides which `WorkItem` instances are safe to execute.
 - completion aggregation and offset-commit decisions stay in the parent/control
   plane.
+- minimum in-flight offset for commit clamping is computed from the
+  control-plane `WorkManager` dispatch ledger; any engine-level
+  `get_min_inflight_offset()` hook is compatibility-only private state.
 - transport selection must not change ordering guarantees on its own; it only
   changes how already-safe work reaches a worker process.
 
