@@ -423,6 +423,34 @@ def test_requeue_recovered_payloads_uses_shared_queue_transport_seam() -> None:
     assert transport.requeued_payloads == [payloads]
 
 
+def test_worker_pipe_transport_slot_timeout_is_independent_of_task_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    engine = ProcessExecutionEngine(
+        config=ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            process_config=ProcessConfig(
+                process_count=1,
+                queue_size=1,
+                transport_mode="worker_pipes",
+                batch_size=1,
+                max_batch_wait_ms=0,
+                task_timeout_ms=0,
+            ),
+        ),
+        worker_fn=_sync_worker,
+    )
+
+    try:
+        transport = cast(Any, engine)._transport
+        assert isinstance(transport, WorkerPipesProcessTransport)
+        assert transport._slot_acquire_timeout_ms == 30000
+    finally:
+        asyncio.run(engine.shutdown())
+
+
 def test_process_execution_engine_selects_worker_pipe_transport_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -621,7 +649,7 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
         pipe_sentinel=b"sentinel",
     )
     engine_any._transport = transport
-    transport._pending_dispatch[(0, "topic", 1, 42)] = {"offset": 42}
+    cast(Any, transport._pending_dispatch)[(0, "topic", 1, 42)] = {"offset": 42}
 
     acquired = transport._worker_pipe_queue_slots.acquire(blocking=False)
     assert acquired is True
@@ -643,6 +671,61 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     )
 
     assert (0, "topic", 1, 42) not in transport._pending_dispatch
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() -> None:
+    senders = [_PipeSender()]
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=2,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-first",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    redelivered_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-redelivered",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=8,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+
+    for payload in (first_payload, redelivered_payload):
+        transport.dispatch_payload(
+            payload,
+            route_identity=RouteIdentity("topic", 1, b"same-key"),
+            count_in_flight=False,
+        )
+
+    assert len(transport._pending_dispatch) == 2
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+
+    assert list(transport._pending_dispatch.values()) == [redelivered_payload]
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
@@ -686,7 +769,7 @@ def test_worker_pipe_transport_retries_slot_acquire_after_liveness_check() -> No
     assert semaphore.acquire_calls[0][0] is True
     assert senders[0].payloads == [b"packed"]
     assert transport._pending_dispatch == {
-        (0, "topic", 1, 42): payload,
+        (0, "topic", 1, 42, "work-42", 7): payload,
     }
 
 
@@ -844,7 +927,7 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
         pipe_sentinel=b"sentinel",
     )
     engine_any._transport = transport
-    transport._pending_dispatch[(0, "topic", 1, 42)] = {
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = {
         "id": "work-42",
         "topic": "topic",
         "partition": 1,
@@ -917,7 +1000,7 @@ def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
         pipe_sentinel=b"sentinel",
     )
     engine_any._transport = transport
-    transport._pending_dispatch[(0, "topic", 1, 42)] = {
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = {
         "id": "work-42",
         "topic": "topic",
         "partition": 1,

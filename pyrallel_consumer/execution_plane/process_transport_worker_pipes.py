@@ -45,7 +45,9 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._slot_acquire_timeout_ms = max(0, slot_acquire_timeout_ms)
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
-        self._pending_dispatch: dict[tuple[int, str, int, int], SerializedWorkItem] = {}
+        self._pending_dispatch: dict[
+            tuple[int, str, int, int, str, int], SerializedWorkItem
+        ] = {}
 
     def dispatch_payload(
         self,
@@ -57,12 +59,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         work_item = self._work_item_from_dict(payload)
         worker_idx = stable_worker_index_for_route(route_identity, self._process_count)
         self._acquire_worker_pipe_queue_slot(worker_idx=worker_idx, payload=payload)
-        pending_key = (
-            worker_idx,
-            payload["topic"],
-            payload["partition"],
-            payload["offset"],
-        )
+        pending_key = self._pending_dispatch_key(worker_idx, payload)
         with self._pending_dispatch_lock:
             self._pending_dispatch[pending_key] = dict(payload)
         try:
@@ -99,10 +96,18 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         if event.get("kind") != "start":
             return
         key = event.get("key")
+        payload = event.get("payload")
+        pending_key = None
+        if isinstance(key, tuple) and key and isinstance(payload, dict):
+            pending_key = self._pending_dispatch_key(key[0], payload)
+
         with self._pending_dispatch_lock:
-            if key not in self._pending_dispatch:
+            if pending_key in self._pending_dispatch:
+                self._pending_dispatch.pop(pending_key, None)
+            elif key in self._pending_dispatch:
+                self._pending_dispatch.pop(key, None)
+            else:
                 return
-            self._pending_dispatch.pop(key, None)
         self._release_worker_pipe_queue_slot()
 
     def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
@@ -151,6 +156,20 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             close = getattr(sender, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _pending_dispatch_key(
+        worker_idx: int,
+        payload: SerializedWorkItem,
+    ) -> tuple[int, str, int, int, str, int]:
+        return (
+            worker_idx,
+            payload["topic"],
+            payload["partition"],
+            payload["offset"],
+            str(payload.get("id", "")),
+            int(payload.get("epoch", 0)),
+        )
 
     def _release_worker_pipe_queue_slot(self) -> None:
         try:
