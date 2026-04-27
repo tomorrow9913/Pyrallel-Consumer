@@ -34,6 +34,17 @@ class WorkerExecutionIdentity(NamedTuple):
     work: LogicalWorkIdentity
 
 
+@dataclass(frozen=True)
+class ProcessTransportCapabilities:
+    pending_dispatch_recovery: bool = False
+
+
+@dataclass(frozen=True)
+class PendingDispatchRecovery:
+    identity: WorkerExecutionIdentity
+    payload: SerializedWorkItem
+
+
 def resolve_route_identity(work_item: WorkItem) -> RouteIdentity:
     return RouteIdentity(
         topic=work_item.tp.topic,
@@ -129,6 +140,10 @@ def stable_worker_index_for_route(
 
 
 class ProcessTransport(ABC):
+    @property
+    def capabilities(self) -> ProcessTransportCapabilities:
+        return ProcessTransportCapabilities()
+
     @abstractmethod
     async def submit_work_item(
         self,
@@ -158,7 +173,7 @@ class ProcessTransport(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         raise NotImplementedError
 
     @abstractmethod

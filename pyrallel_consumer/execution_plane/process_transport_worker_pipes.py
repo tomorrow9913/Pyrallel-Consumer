@@ -10,7 +10,9 @@ import msgpack  # type: ignore[import-untyped]
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.process_transport import (
     AsyncToThreadSubmitMixin,
+    PendingDispatchRecovery,
     ProcessTransport,
+    ProcessTransportCapabilities,
     RouteIdentity,
     SerializedWorkItem,
     stable_worker_index_for_route,
@@ -93,6 +95,10 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             senders.append(parent_sender)
         return worker_receiver, True
 
+    @property
+    def capabilities(self) -> ProcessTransportCapabilities:
+        return ProcessTransportCapabilities(pending_dispatch_recovery=True)
+
     def handle_registry_event(self, event: dict[str, Any]) -> None:
         if event.get("kind") != "start":
             return
@@ -109,8 +115,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                 return
         self._release_worker_pipe_queue_slot()
 
-    def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
-        to_requeue: list[SerializedWorkItem] = []
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
+        recovered: list[PendingDispatchRecovery] = []
         with self._pending_dispatch_lock:
             for key, payload in list(self._pending_dispatch.items()):
                 if key[0] != idx:
@@ -119,10 +125,18 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                 recovered_payload["requeue_attempts"] = (
                     recovered_payload.get("requeue_attempts", 0) + 1
                 )
-                to_requeue.append(recovered_payload)
+                recovered.append(
+                    PendingDispatchRecovery(
+                        identity=worker_execution_identity_from_payload(
+                            idx,
+                            recovered_payload,
+                        ),
+                        payload=recovered_payload,
+                    )
+                )
                 self._pending_dispatch.pop(key, None)
                 self._release_worker_pipe_queue_slot()
-        return to_requeue
+        return recovered
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
         for payload in payloads:
