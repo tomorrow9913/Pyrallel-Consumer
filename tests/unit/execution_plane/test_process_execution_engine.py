@@ -113,6 +113,33 @@ class _FakeProcess:
         self.started = True
 
 
+class _JoinedWorker:
+    pid = 9876
+    exitcode = 0
+
+    def __init__(self) -> None:
+        self.join_calls = 0
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+        self.join_calls += 1
+
+    def is_alive(self) -> bool:
+        return False
+
+
+class _Closable:
+    def __init__(self) -> None:
+        self.closed = False
+        self.stopped = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class _RequeueRecordingTransport:
     def __init__(self) -> None:
         self.requeued_payloads: list[list[dict[str, Any]]] = []
@@ -2592,6 +2619,104 @@ def test_drain_shutdown_ipc_once_reuses_registry_event_rules_and_prefetches_comp
     assert prefetched.offset == 42
 
 
+def _make_shutdown_engine() -> (
+    tuple[ProcessExecutionEngine, _RequeueRecordingTransport]
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(process_count=1, worker_join_timeout_ms=1),
+    )
+    engine_any._batch_accumulator = _Closable()
+    engine_any._task_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {0: 9876}
+    engine_any._workers = [_JoinedWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._log_listener = _Closable()
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+    return engine, transport
+
+
+@pytest.mark.asyncio
+async def test_shutdown_residual_work_is_diagnostic_only(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    residual_payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): residual_payload,
+    }
+    engine_any._in_flight_count = 1
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    monotonic_values = iter([100.0, 100.0, 102.0])
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.time.monotonic",
+        lambda: next(monotonic_values, 102.0),
+    )
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
+
+    assert "Residual in-flight registry after shutdown drain" in caplog.text
+    assert "topic-1@42 id=work-42 epoch=7" in caplog.text
+    assert engine_any._completion_queue.empty()
+    assert list(engine_any._prefetched_completion_events) == []
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_preserves_visible_completion_drained_before_cleanup() -> None:
+    engine, _transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+    engine_any._in_flight_count = 1
+
+    await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert engine.get_in_flight_count() == 1
+    assert await engine.wait_for_completion(timeout_seconds=0) is True
+    assert await engine.poll_completed_events() == [completion]
+    assert engine.get_in_flight_count() == 0
+
+
 @pytest.mark.asyncio
 async def test_poll_completed_events_ignores_queue_empty_race(
     monkeypatch: pytest.MonkeyPatch,
@@ -2998,6 +3123,135 @@ async def test_shutdown_worker_pipes_drains_completion_before_joining_workers() 
     engine_any._join_worker_with_escalation.assert_called_once()
     transport.clear_pending_dispatches.assert_called_once_with()
     transport.close.assert_called_once_with()
-    assert engine_any._prefetched_completion_events == []
+    assert engine_any._prefetched_completion_events == [completion]
     assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_runs_post_join_drain_before_local_cleanup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {}
+    order: list[str] = []
+
+    def drain_once() -> tuple[int, int]:
+        order.append("drain")
+        if order.count("drain") == 1:
+            return (0, 0)
+        return (0, 1)
+
+    def join_worker(_worker: object) -> None:
+        order.append("join")
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = lambda: order.append("clear")
+    transport.close.side_effect = lambda: order.append("close")
+    engine_any._transport = transport
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+    engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+
+    with caplog.at_level(logging.DEBUG):
+        await engine.shutdown()
+
+    assert order == ["drain", "join", "drain", "clear", "close"]
+    assert engine_any._drain_shutdown_ipc_once.call_count == 2
+    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
+    assert "completion_events=1" in caplog.text
+    transport.signal_shutdown.assert_called_once_with(1)
     assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanup(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+
+    engine_any._prefetched_completion_events = []
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    monotonic_values = iter([0.0, 2.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 2.0))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    def join_worker(_worker: object) -> None:
+        engine_any._completion_queue.put(
+            msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+        )
+
+    def assert_reconciled_before_local_cleanup() -> None:
+        assert engine_any._in_flight_registry == {}
+        assert engine_any._prefetched_completion_events == [completion]
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = (
+        assert_reconciled_before_local_cleanup
+    )
+    engine_any._transport = transport
+    engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+
+    with caplog.at_level(logging.DEBUG):
+        await engine.shutdown()
+
+    engine_any._join_worker_with_escalation.assert_called_once()
+    transport.clear_pending_dispatches.assert_called_once_with()
+    transport.close.assert_called_once_with()
+    assert engine_any._prefetched_completion_events == [completion]
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
+    assert "completion_events=1" in caplog.text
+    assert "residual_in_flight_registry=0" in caplog.text
