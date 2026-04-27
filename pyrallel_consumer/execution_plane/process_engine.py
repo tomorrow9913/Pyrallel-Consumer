@@ -1473,13 +1473,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 key=lambda item: item[0],
             ):
                 registry_summary.append(
-                    "%d(pid=%s):%s-%d@%d timed_out=%s attempts=%s"
+                    "%d(pid=%s):%s-%d@%d id=%s epoch=%s timed_out=%s attempts=%s"
                     % (
                         worker_idx,
                         self._worker_pid_by_index.get(worker_idx),
                         topic,
                         partition,
                         offset,
+                        payload.get("id", ""),
+                        payload.get("epoch", 0),
                         payload.get("timed_out", False),
                         payload.get("requeue_attempts", 0),
                     )

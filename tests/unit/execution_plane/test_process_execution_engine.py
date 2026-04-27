@@ -2838,16 +2838,26 @@ def test_worker_pipe_dispatch_rejects_invalid_payload_before_send() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_delegates_signal_and_close_through_transport_seam() -> None:
+async def test_shutdown_delegates_signal_and_close_through_transport_seam(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     engine_any._is_shutdown = False
     engine_any._prefetched_completion_events = [Mock()]
-    engine_any._in_flight_registry = {(0, "topic", 1, 42): {"offset": 42}}
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+        }
+    }
     engine_any._workers = [Mock(), Mock()]
     engine_any._task_queue = None
-    engine_any._completion_queue = None
-    engine_any._registry_event_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
     engine_any._batch_accumulator = Mock()
     engine_any._drain_registry_events = Mock()
     engine_any._drain_shutdown_ipc_once = Mock(return_value=(0, 0))
@@ -2856,14 +2866,138 @@ async def test_shutdown_delegates_signal_and_close_through_transport_seam() -> N
     engine_any._in_flight_lock = threading.Lock()
     engine_any._in_flight_count = 3
     engine_any._worker_pid_by_index = {}
+    engine_any._emit_worker_recovery_failure = Mock()
     transport = Mock()
     engine_any._transport = transport
 
-    await engine.shutdown()
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
 
     transport.signal_shutdown.assert_called_once_with(2)
     transport.close.assert_called_once_with()
     engine_any._batch_accumulator.close.assert_called_once_with()
+    assert engine_any._prefetched_completion_events == []
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 0
+    engine_any._emit_worker_recovery_failure.assert_not_called()
+    assert engine_any._completion_queue.empty()
+    assert "Residual in-flight registry after shutdown drain" in caplog.text
+    assert "id=work-42 epoch=7" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_worker_pipes_clears_pending_dispatches_without_requeueing() -> (
+    None
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._join_worker_with_escalation = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    engine_any._ensure_workers_alive = Mock()
+    engine_any._recover_pending_pipe_dispatches = Mock()
+    engine_any._requeue_recovered_payloads = Mock()
+    engine_any._emit_worker_recovery_failure = Mock()
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-pending",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"key",
+            payload=b"payload",
+        )
+    )
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-pending", 7)] = payload
+    engine_any._transport = transport
+
+    await engine.shutdown()
+
+    assert sender.payloads == [b"sentinel"]
+    assert transport._pending_dispatch == {}
+    engine_any._ensure_workers_alive.assert_not_called()
+    engine_any._recover_pending_pipe_dispatches.assert_not_called()
+    engine_any._requeue_recovered_payloads.assert_not_called()
+    engine_any._emit_worker_recovery_failure.assert_not_called()
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_worker_pipes_drains_completion_before_joining_workers() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    transport = Mock()
+    engine_any._transport = transport
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    def assert_drained_before_join(_worker: object) -> None:
+        assert engine_any._in_flight_registry == {}
+        assert engine_any._prefetched_completion_events == [completion]
+
+    engine_any._join_worker_with_escalation = Mock(
+        side_effect=assert_drained_before_join
+    )
+
+    await engine.shutdown()
+
+    transport.signal_shutdown.assert_called_once_with(1)
+    engine_any._join_worker_with_escalation.assert_called_once()
+    transport.clear_pending_dispatches.assert_called_once_with()
+    transport.close.assert_called_once_with()
     assert engine_any._prefetched_completion_events == []
     assert engine_any._in_flight_registry == {}
     assert engine.get_in_flight_count() == 0
