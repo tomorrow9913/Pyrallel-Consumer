@@ -723,17 +723,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
         self._in_flight_count: int = 0
         self._in_flight_lock = threading.Lock()
+        self._registry_state_lock = threading.RLock()
 
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
         self._initialize_runtime_timing_state()
         self._last_worker_liveness_check = 0.0
         self._worker_liveness_check_interval_seconds = 0.05
+        self._worker_slot_wait_liveness_lock = threading.RLock()
         self._worker_pipe_senders: list[Any] = []
-        self._pending_pipe_dispatch: dict[
-            tuple[int, str, int, int], SerializedWorkItem
-        ] = {}
-        self._worker_pipe_queue_slots: threading.BoundedSemaphore | None = None
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
             maxsize=config.process_config.queue_size
@@ -775,15 +773,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 serialize_batch_payload=_serialize_batch_payload,
                 work_item_from_dict=_work_item_from_dict,
                 get_worker_pipe_senders=lambda: self._worker_pipe_senders,
-                get_pending_pipe_dispatch=lambda: self._pending_pipe_dispatch,
-                release_worker_pipe_queue_slot=self._release_worker_pipe_queue_slot,
                 increment_in_flight=self._increment_in_flight_count,
                 pipe_sentinel=_PIPE_SENTINEL,
+                slot_wait_liveness_check=self._signal_worker_pipe_slot_wait,
             )
             self._transport = worker_pipe_transport
-            self._worker_pipe_queue_slots = (
-                worker_pipe_transport._worker_pipe_queue_slots
-            )
 
         self._start_workers()
 
@@ -922,22 +916,46 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     push_exc,
                 )
 
+    def _get_registry_state_lock(self) -> Any:
+        lock = getattr(self, "_registry_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._registry_state_lock = lock
+        return lock
+
     def _recover_dead_worker_items(self, idx: int) -> list[SerializedWorkItem]:
-        return ProcessRegistrySupport.recover_dead_worker_items(
-            worker_index=idx,
-            in_flight_registry=self._in_flight_registry,
-            max_retries=self._config.max_retries,
-            emit_worker_recovery_failure=self._emit_worker_recovery_failure,
-        )
+        with self._get_registry_state_lock():
+            return ProcessRegistrySupport.recover_dead_worker_items(
+                worker_index=idx,
+                in_flight_registry=self._in_flight_registry,
+                max_retries=self._config.max_retries,
+                emit_worker_recovery_failure=self._emit_worker_recovery_failure,
+            )
+
+    def _emit_worker_restart_failures(
+        self,
+        idx: int,
+        payloads: list[SerializedWorkItem],
+        restart_exc: Exception,
+    ) -> None:
+        for payload in payloads:
+            self._emit_worker_recovery_failure(
+                idx,
+                payload,
+                error=f"worker_restart_failed: {restart_exc}",
+                attempt=self._config.max_retries,
+            )
 
     def _drain_registry_event_queue(self) -> int:
-        return ProcessRegistrySupport.drain_registry_event_queue(
-            registry_event_queue=getattr(self, "_registry_event_queue", None),
-            apply_event=self._apply_registry_event,
-        )
+        with self._get_registry_state_lock():
+            return ProcessRegistrySupport.drain_registry_event_queue(
+                registry_event_queue=getattr(self, "_registry_event_queue", None),
+                apply_event=self._apply_registry_event,
+            )
 
     def _ensure_workers_alive(self, *, force: bool = False) -> None:
         self._drain_registry_events()
+        self._prefetch_completed_events_from_queue()
         liveness_interval = getattr(
             self,
             "_worker_liveness_check_interval_seconds",
@@ -956,9 +974,32 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             if worker.is_alive():
                 continue
             exitcode = worker.exitcode
+            to_requeue: list[SerializedWorkItem] = []
             try:
                 to_requeue = self._recover_dead_worker_items(idx)
                 to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
+            except Exception as recovery_exc:
+                self._logger.error(
+                    "Failed to recover work from worker %d: %s", idx, recovery_exc
+                )
+            self._logger.error(
+                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                idx,
+                exitcode,
+            )
+            try:
+                new_worker = self._start_worker(idx)
+            except Exception as restart_exc:
+                self._logger.error(
+                    "Failed to restart worker %d after exitcode=%s: %s",
+                    idx,
+                    exitcode,
+                    restart_exc,
+                )
+                self._emit_worker_restart_failures(idx, to_requeue, restart_exc)
+                continue
+            self._workers[idx] = new_worker
+            try:
                 if to_requeue:
                     self._requeue_recovered_payloads(to_requeue)
                     offsets = [entry.get("offset") for entry in to_requeue]
@@ -972,35 +1013,26 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 self._logger.error(
                     "Failed to requeue work from worker %d: %s", idx, requeue_exc
                 )
-            self._logger.error(
-                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
-                idx,
-                exitcode,
-            )
-            new_worker = self._start_worker(idx)
-            self._workers[idx] = new_worker
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         transport = getattr(self, "_transport", None)
-        if transport is not None:
-            return self._filter_recoverable_pending_pipe_dispatches(
-                idx, transport.recover_pending_dispatches(idx)
-            )
-        if self._get_transport_mode() != "worker_pipes":
+        if transport is None:
             return []
-        pending_dispatch = getattr(self, "_pending_pipe_dispatch", {})
-        to_requeue: list[SerializedWorkItem] = []
-        for key, payload in list(pending_dispatch.items()):
-            if key[0] != idx:
-                continue
-            recovered_payload = dict(payload)
-            recovered_payload["requeue_attempts"] = (
-                recovered_payload.get("requeue_attempts", 0) + 1
-            )
-            to_requeue.append(recovered_payload)
-            pending_dispatch.pop(key, None)
-            self._release_worker_pipe_queue_slot()
-        return self._filter_recoverable_pending_pipe_dispatches(idx, to_requeue)
+        return self._filter_recoverable_pending_pipe_dispatches(
+            idx, transport.recover_pending_dispatches(idx)
+        )
+
+    def _signal_worker_pipe_slot_wait(self) -> None:
+        lock = getattr(self, "_worker_slot_wait_liveness_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._worker_slot_wait_liveness_lock = lock
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            self._ensure_workers_alive(force=True)
+        finally:
+            lock.release()
 
     def _filter_recoverable_pending_pipe_dispatches(
         self,
@@ -1032,15 +1064,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         transport = getattr(self, "_transport", None)
         if transport is not None:
             transport.handle_registry_event(event)
-        elif (
-            event.get("kind") == "start"
-            and self._get_transport_mode() == "worker_pipes"
-        ):
-            key = event.get("key")
-            pending_dispatch = getattr(self, "_pending_pipe_dispatch", {})
-            if key in pending_dispatch:
-                pending_dispatch.pop(key, None)
-                self._release_worker_pipe_queue_slot()
         ProcessRegistrySupport.apply_registry_event(
             event=event,
             in_flight_registry=self._in_flight_registry,
@@ -1050,6 +1073,36 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _drain_registry_events(self) -> None:
         self._drain_registry_event_queue()
+
+    def _prefetch_completed_events_from_queue(self) -> int:
+        with self._get_registry_state_lock():
+            completion_queue = getattr(self, "_completion_queue", None)
+            prefetched_events = getattr(self, "_prefetched_completion_events", None)
+            if completion_queue is None or prefetched_events is None:
+                return 0
+            prefetched = 0
+            while True:
+                try:
+                    raw_event = completion_queue.get_nowait()
+                except queue.Empty:
+                    return prefetched
+                event = self._decode_completion_queue_item(raw_event)
+                prefetched_events.append(event)
+                prefetched += 1
+                self._discard_registry_entry_for_completion(event)
+
+    def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
+        with self._get_registry_state_lock():
+            for key, payload in list(self._in_flight_registry.items()):
+                _worker_index, topic, partition, offset = key
+                if (
+                    topic == event.tp.topic
+                    and partition == event.tp.partition
+                    and offset == event.offset
+                    and payload.get("epoch", 0) == event.epoch
+                    and payload.get("id", "") == event.id
+                ):
+                    self._in_flight_registry.pop(key, None)
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
         drained_registry = self._drain_registry_event_queue()
@@ -1302,15 +1355,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             count_in_flight=count_in_flight,
         )
 
-    def _release_worker_pipe_queue_slot(self) -> None:
-        worker_pipe_queue_slots = getattr(self, "_worker_pipe_queue_slots", None)
-        if worker_pipe_queue_slots is None:
-            return
-        try:
-            worker_pipe_queue_slots.release()
-        except ValueError:
-            return
-
     def _get_transport_mode(self) -> str:
         return getattr(self, "_transport_mode", "shared_queue")
 
@@ -1388,9 +1432,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         self._prefetched_completion_events.clear()
         self._in_flight_registry.clear()
-        pending_pipe_dispatch = getattr(self, "_pending_pipe_dispatch", None)
-        if pending_pipe_dispatch is not None:
-            pending_pipe_dispatch.clear()
+        self._transport.clear_pending_dispatches()
         with self._in_flight_lock:
             self._in_flight_count = 0
 

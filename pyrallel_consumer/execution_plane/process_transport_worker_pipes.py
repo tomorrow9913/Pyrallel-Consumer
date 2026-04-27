@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 from multiprocessing import Pipe
-from multiprocessing.connection import Connection
 from typing import Any, Callable
 
 import msgpack  # type: ignore[import-untyped]
@@ -28,13 +27,11 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         serialize_work_item: Callable[[WorkItem], SerializedWorkItem],
         serialize_batch_payload: Callable[[list[WorkItem], float], bytes],
         work_item_from_dict: Callable[[SerializedWorkItem], WorkItem],
-        get_worker_pipe_senders: Callable[[], list[Connection]],
-        get_pending_pipe_dispatch: Callable[
-            [], dict[tuple[int, str, int, int], SerializedWorkItem]
-        ],
-        release_worker_pipe_queue_slot: Callable[[], None],
+        get_worker_pipe_senders: Callable[[], list[Any]],
         increment_in_flight: Callable[[], None],
         pipe_sentinel: bytes,
+        slot_wait_liveness_check: Callable[[], None] | None = None,
+        slot_wait_timeout_seconds: float = 0.05,
     ) -> None:
         self._process_count = process_count
         self._max_payload_bytes = max_payload_bytes
@@ -42,12 +39,15 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._serialize_batch_payload = serialize_batch_payload
         self._work_item_from_dict = work_item_from_dict
         self._get_worker_pipe_senders = get_worker_pipe_senders
-        self._get_pending_pipe_dispatch = get_pending_pipe_dispatch
-        self._release_worker_pipe_queue_slot = release_worker_pipe_queue_slot
         self._increment_in_flight = increment_in_flight
         self._pipe_sentinel = pipe_sentinel
+        self._slot_wait_liveness_check = slot_wait_liveness_check
+        self._slot_wait_timeout_seconds = slot_wait_timeout_seconds
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
+        self._pending_dispatch: dict[
+            tuple[int, str, int, int, str, int], SerializedWorkItem
+        ] = {}
 
     def dispatch_payload(
         self,
@@ -58,23 +58,21 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
     ) -> None:
         work_item = self._work_item_from_dict(payload)
         worker_idx = stable_worker_index_for_route(route_identity, self._process_count)
-        self._worker_pipe_queue_slots.acquire()
-        pending_key = (
-            worker_idx,
-            payload["topic"],
-            payload["partition"],
-            payload["offset"],
-        )
-        pending_dispatch = self._get_pending_pipe_dispatch()
+        self._acquire_worker_pipe_queue_slot(worker_idx=worker_idx, payload=payload)
+        pending_key = self._pending_dispatch_key(worker_idx, payload)
         with self._pending_dispatch_lock:
-            pending_dispatch[pending_key] = dict(payload)
+            self._pending_dispatch[pending_key] = dict(payload)
         try:
             packed = self._serialize_batch_payload([work_item], time.monotonic())
             self._validate_packed_payload(packed)
-            self._get_worker_pipe_senders()[worker_idx].send_bytes(packed)
+            self._send_packed_payload(
+                worker_idx=worker_idx,
+                payload=payload,
+                packed_payload=packed,
+            )
         except Exception:
             with self._pending_dispatch_lock:
-                pending_dispatch.pop(pending_key, None)
+                self._pending_dispatch.pop(pending_key, None)
             self._release_worker_pipe_queue_slot()
             raise
 
@@ -98,18 +96,24 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         if event.get("kind") != "start":
             return
         key = event.get("key")
-        pending_dispatch = self._get_pending_pipe_dispatch()
+        payload = event.get("payload")
+        pending_key = None
+        if isinstance(key, tuple) and key and isinstance(payload, dict):
+            pending_key = self._pending_dispatch_key(key[0], payload)
+
         with self._pending_dispatch_lock:
-            if key not in pending_dispatch:
+            if pending_key in self._pending_dispatch:
+                self._pending_dispatch.pop(pending_key, None)
+            elif key in self._pending_dispatch:
+                self._pending_dispatch.pop(key, None)
+            else:
                 return
-            pending_dispatch.pop(key, None)
         self._release_worker_pipe_queue_slot()
 
     def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
-        pending_dispatch = self._get_pending_pipe_dispatch()
         to_requeue: list[SerializedWorkItem] = []
         with self._pending_dispatch_lock:
-            for key, payload in list(pending_dispatch.items()):
+            for key, payload in list(self._pending_dispatch.items()):
                 if key[0] != idx:
                     continue
                 recovered_payload = dict(payload)
@@ -117,7 +121,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                     recovered_payload.get("requeue_attempts", 0) + 1
                 )
                 to_requeue.append(recovered_payload)
-                pending_dispatch.pop(key, None)
+                self._pending_dispatch.pop(key, None)
                 self._release_worker_pipe_queue_slot()
         return to_requeue
 
@@ -142,11 +146,36 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             except (BrokenPipeError, EOFError, OSError, ValueError):
                 continue
 
+    def clear_pending_dispatches(self) -> None:
+        with self._pending_dispatch_lock:
+            self._pending_dispatch.clear()
+
     def close(self) -> None:
+        self.clear_pending_dispatches()
         for sender in self._get_worker_pipe_senders():
             close = getattr(sender, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _pending_dispatch_key(
+        worker_idx: int,
+        payload: SerializedWorkItem,
+    ) -> tuple[int, str, int, int, str, int]:
+        return (
+            worker_idx,
+            payload["topic"],
+            payload["partition"],
+            payload["offset"],
+            str(payload.get("id", "")),
+            int(payload.get("epoch", 0)),
+        )
+
+    def _release_worker_pipe_queue_slot(self) -> None:
+        try:
+            self._worker_pipe_queue_slots.release()
+        except ValueError:
+            return
 
     def _validate_packed_payload(self, payload: bytes) -> None:
         if len(payload) > self._max_payload_bytes:
@@ -164,3 +193,52 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
 
         if not decoded_items:
             raise ValueError("invalid_worker_pipe_payload")
+
+    def _acquire_worker_pipe_queue_slot(
+        self,
+        *,
+        worker_idx: int,
+        payload: SerializedWorkItem,
+    ) -> None:
+        del worker_idx, payload
+        liveness_check = self._slot_wait_liveness_check
+        timeout_seconds = self._slot_wait_timeout_seconds
+        if liveness_check is None or timeout_seconds <= 0:
+            self._worker_pipe_queue_slots.acquire()
+            return
+
+        while True:
+            if self._worker_pipe_queue_slots.acquire(timeout=timeout_seconds):
+                return
+            liveness_check()
+
+    def _send_packed_payload(
+        self,
+        *,
+        worker_idx: int,
+        payload: SerializedWorkItem,
+        packed_payload: bytes,
+    ) -> None:
+        senders = self._get_worker_pipe_senders()
+        try:
+            sender = senders[worker_idx]
+        except IndexError as exc:
+            raise RuntimeError(
+                "Missing worker pipe sender for worker=%d offset=%d"
+                % (worker_idx, payload["offset"])
+            ) from exc
+
+        send_bytes = getattr(sender, "send_bytes", None)
+        if not callable(send_bytes):
+            raise RuntimeError(
+                "Worker pipe sender for worker=%d offset=%d is not writable"
+                % (worker_idx, payload["offset"])
+            )
+
+        try:
+            send_bytes(packed_payload)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to dispatch worker pipe payload worker=%d offset=%d"
+                % (worker_idx, payload["offset"])
+            ) from exc

@@ -82,6 +82,9 @@ class SharedQueueProcessTransport(ProcessTransport):
                 "shared_queue transport queue is full during requeue"
             ) from exc
 
+    def clear_pending_dispatches(self) -> None:
+        return None
+
     def signal_shutdown(self, worker_count: int) -> None:
         for _ in range(worker_count):
             self._task_queue.put(self._sentinel)
