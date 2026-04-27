@@ -25,6 +25,7 @@ from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
     _completion_event_to_dict,
+    _serialize_batch_payload,
     _work_item_from_dict,
     _work_item_to_dict,
 )
@@ -661,6 +662,179 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
+def test_worker_pipe_slot_wait_blocks_until_start_event_releases_capacity() -> None:
+    sender = _PipeSender()
+    liveness_checks = 0
+
+    def record_liveness_check() -> None:
+        nonlocal liveness_checks
+        liveness_checks += 1
+
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=record_liveness_check,
+        slot_wait_timeout_seconds=0.01,
+    )
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-1",
+        )
+    )
+    second_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-43",
+            tp=TopicPartition("topic", 1),
+            offset=43,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-2",
+        )
+    )
+
+    transport.dispatch_payload(
+        first_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    errors: list[BaseException] = []
+
+    def dispatch_second() -> None:
+        try:
+            transport.dispatch_payload(
+                second_payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch_second)
+    thread.start()
+
+    released_by_start_event = False
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if liveness_checks > 0:
+                break
+            time.sleep(0.01)
+
+        assert liveness_checks > 0
+        assert len(sender.payloads) == 1
+
+        transport.handle_registry_event(
+            {"kind": "start", "key": (0, "topic", 1, 42), "payload": first_payload}
+        )
+        released_by_start_event = True
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            if not released_by_start_event:
+                transport.handle_registry_event(
+                    {
+                        "kind": "start",
+                        "key": (0, "topic", 1, 42),
+                        "payload": first_payload,
+                    }
+                )
+            thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(sender.payloads) == 2
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 43, "work-43", 7): second_payload,
+    }
+
+
+def test_worker_pipe_start_event_requires_matching_identity_to_release_capacity() -> (
+    None
+):
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    original_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-original",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-original",
+        )
+    )
+    redelivered_payload = {
+        **original_payload,
+        "id": "work-redelivered",
+        "epoch": 8,
+    }
+
+    transport.dispatch_payload(
+        original_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": redelivered_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-original", 7): original_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 43),
+            "payload": original_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-original", 7): original_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": original_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
 def test_prefetch_completion_discards_only_matching_in_flight_identity() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
@@ -1109,6 +1283,104 @@ def test_worker_pipe_transport_blocks_for_slot_without_reentrant_recovery() -> N
 
     transport._worker_pipe_queue_slots.release()
     thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert senders[0].payloads == [b"packed"]
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-42", 7): payload,
+    }
+
+
+def test_worker_pipe_backpressure_waits_for_healthy_slot_without_recovery() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    worker = _CountingAliveWorker()
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._start_worker = Mock()  # type: ignore[method-assign]
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    errors: list[BaseException] = []
+
+    def dispatch() -> None:
+        try:
+            transport.dispatch_payload(
+                payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch)
+    thread.start()
+
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if worker.is_alive_calls > 0:
+                break
+            time.sleep(0.01)
+
+        assert thread.is_alive()
+        assert errors == []
+        assert senders[0].payloads == []
+        assert worker.is_alive_calls > 0
+        engine_any._start_worker.assert_not_called()
+        assert engine_any._in_flight_registry == {}
+        assert list(engine_any._prefetched_completion_events) == []
+        assert engine_any._completion_queue.empty()
+
+        transport._worker_pipe_queue_slots.release()
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            transport._worker_pipe_queue_slots.release()
+            thread.join(timeout=1.0)
 
     assert not thread.is_alive()
     assert errors == []
@@ -1682,7 +1954,141 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     }
 
 
-def test_worker_pipe_slot_wait_drains_events_for_reentrant_recovery_owner() -> None:
+def test_worker_pipe_slot_wait_blocks_healthy_worker_until_start_event() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    worker = _CountingAliveWorker()
+
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._record_main_to_worker_ipc = lambda *_args, **_kwargs: None
+    engine_any._record_worker_exec = lambda *_args, **_kwargs: None
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda batch, _flush_enqueued_at: (
+            f"packed:{batch[0].offset}".encode()
+        ),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-1",
+        )
+    )
+    second_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-43",
+            tp=TopicPartition("topic", 1),
+            offset=43,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-2",
+        )
+    )
+    transport.dispatch_payload(
+        first_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    errors: list[BaseException] = []
+
+    def dispatch_second() -> None:
+        try:
+            transport.dispatch_payload(
+                second_payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch_second)
+    thread.start()
+
+    start_event_enqueued = False
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if worker.is_alive_calls > 0:
+                break
+            time.sleep(0.01)
+
+        assert worker.is_alive_calls > 0
+        assert thread.is_alive()
+        assert errors == []
+        assert senders[0].payloads == [b"packed:42"]
+        assert transport._pending_dispatch == {
+            (0, "topic", 1, 42, "work-42", 7): first_payload,
+        }
+
+        engine_any._registry_event_queue.put(
+            {
+                "kind": "start",
+                "key": (0, "topic", 1, 42),
+                "payload": {**first_payload, "requeue_attempts": 0},
+            }
+        )
+        start_event_enqueued = True
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            if not start_event_enqueued:
+                engine_any._registry_event_queue.put(
+                    {
+                        "kind": "start",
+                        "key": (0, "topic", 1, 42),
+                        "payload": {**first_payload, "requeue_attempts": 0},
+                    }
+                )
+            thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert senders[0].payloads == [b"packed:42", b"packed:43"]
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 43, "work-43", 7): second_payload,
+    }
+    assert engine_any._registry_event_queue.empty()
+
+
+def test_worker_pipe_slot_wait_reentrant_owner_drains_events_and_releases_slot() -> (
+    None
+):
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     senders = [_PipeSender()]
@@ -1772,7 +2178,7 @@ def test_worker_pipe_slot_wait_drains_events_for_reentrant_recovery_owner() -> N
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
-def test_worker_pipe_slot_wait_is_side_effect_free_when_another_thread_owns_lock() -> (
+def test_worker_pipe_slot_wait_cross_thread_contention_noops_until_owner_releases() -> (
     None
 ):
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
@@ -1864,16 +2270,23 @@ def test_worker_pipe_slot_wait_is_side_effect_free_when_another_thread_owns_lock
     thread = threading.Thread(target=signal_from_other_thread)
     thread.start()
     thread.join(timeout=1.0)
-    liveness_lock.release()
 
     assert not thread.is_alive()
     assert errors == []
     assert not engine_any._registry_event_queue.empty()
-    assert engine_any._completion_queue.get_nowait() == packed_completion
     assert list(engine_any._prefetched_completion_events) == []
     assert engine_any._in_flight_registry == {}
     assert worker.is_alive_calls == 0
     assert transport._pending_dispatch != {}
+
+    liveness_lock.release()
+    engine._signal_worker_pipe_slot_wait()
+
+    assert engine_any._registry_event_queue.empty()
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert worker.is_alive_calls == 1
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
 def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
