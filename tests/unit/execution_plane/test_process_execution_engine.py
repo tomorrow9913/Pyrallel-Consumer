@@ -28,7 +28,12 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _work_item_from_dict,
     _work_item_to_dict,
 )
-from pyrallel_consumer.execution_plane.process_transport import RouteIdentity
+from pyrallel_consumer.execution_plane.process_transport import (
+    PendingDispatchRecovery,
+    RouteIdentity,
+    WorkerExecutionIdentity,
+    logical_work_identity_from_payload,
+)
 from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
     SharedQueueProcessTransport,
 )
@@ -136,7 +141,7 @@ class _RequeueRecordingTransport:
     def handle_registry_event(self, event: dict[str, Any]) -> None:
         del event
 
-    def recover_pending_dispatches(self, idx: int) -> list[dict[str, Any]]:
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         del idx
         return []
 
@@ -1148,6 +1153,62 @@ def test_worker_pipe_transport_releases_pending_slot_when_send_fails() -> None:
 
     assert transport._pending_dispatch == {}
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_recover_pending_dispatches_returns_identity_metadata() -> None:
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [_PipeSender()],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = payload
+    assert transport.capabilities.pending_dispatch_recovery is True
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    recovered = transport.recover_pending_dispatches(0)
+
+    assert recovered == [
+        PendingDispatchRecovery(
+            identity=WorkerExecutionIdentity(
+                worker_index=0,
+                work=logical_work_identity_from_payload(payload),
+            ),
+            payload={**payload, "requeue_attempts": 1},
+        )
+    ]
+    assert transport._pending_dispatch == {}
+    assert transport.recover_pending_dispatches(0) == []
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+
+def test_shared_queue_transport_declares_no_pending_dispatch_recovery() -> None:
+    transport = SharedQueueProcessTransport(
+        task_queue=cast(Any, queue.Queue()),
+        get_batch_accumulator=Mock(),
+        work_item_from_dict=_work_item_from_dict,
+        increment_in_flight=lambda: None,
+        sentinel=b"sentinel",
+    )
+
+    assert transport.capabilities.pending_dispatch_recovery is False
+    assert transport.recover_pending_dispatches(0) == []
 
 
 def test_ensure_workers_alive_stops_requeueing_after_max_retries(

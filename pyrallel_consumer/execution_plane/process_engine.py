@@ -1025,8 +1025,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         transport = getattr(self, "_transport", None)
         if transport is None:
             return []
+        if not transport.capabilities.pending_dispatch_recovery:
+            return []
+        recovered_dispatches = transport.recover_pending_dispatches(idx)
+        if recovered_dispatches:
+            identities = [entry.identity for entry in recovered_dispatches]
+            self._logger.warning(
+                "Recovered %d pending worker-pipe dispatch(es) identities=%s",
+                len(recovered_dispatches),
+                identities,
+            )
         return self._filter_recoverable_pending_pipe_dispatches(
-            idx, transport.recover_pending_dispatches(idx)
+            idx, [entry.payload for entry in recovered_dispatches]
         )
 
     def _signal_worker_pipe_slot_wait(self) -> None:
