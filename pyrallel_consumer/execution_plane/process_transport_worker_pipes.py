@@ -190,7 +190,13 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         key: Any,
         payload: Any,
     ) -> PendingDispatchKey | None:
-        if not isinstance(key, tuple) or not key or not isinstance(payload, dict):
+        if not isinstance(key, tuple) or len(key) < 4 or not isinstance(payload, dict):
+            return None
+        if (
+            payload.get("topic") != key[1]
+            or payload.get("partition") != key[2]
+            or payload.get("offset") != key[3]
+        ):
             return None
         return WorkerPipesProcessTransport._pending_dispatch_key(key[0], payload)
 
