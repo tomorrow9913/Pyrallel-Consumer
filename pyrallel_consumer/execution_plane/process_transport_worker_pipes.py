@@ -14,7 +14,10 @@ from pyrallel_consumer.execution_plane.process_transport import (
     RouteIdentity,
     SerializedWorkItem,
     stable_worker_index_for_route,
+    worker_execution_identity_from_payload,
 )
+
+PendingDispatchKey = tuple[int, str, int, int, str, int]
 
 
 class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
@@ -45,9 +48,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._slot_wait_timeout_seconds = slot_wait_timeout_seconds
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
-        self._pending_dispatch: dict[
-            tuple[int, str, int, int, str, int], SerializedWorkItem
-        ] = {}
+        self._pending_dispatch: dict[PendingDispatchKey, SerializedWorkItem] = {}
 
     def dispatch_payload(
         self,
@@ -97,9 +98,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             return
         key = event.get("key")
         payload = event.get("payload")
-        pending_key = None
-        if isinstance(key, tuple) and key and isinstance(payload, dict):
-            pending_key = self._pending_dispatch_key(key[0], payload)
+        pending_key = self._pending_dispatch_key_for_registry_start(key, payload)
 
         with self._pending_dispatch_lock:
             if pending_key in self._pending_dispatch:
@@ -161,15 +160,25 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
     def _pending_dispatch_key(
         worker_idx: int,
         payload: SerializedWorkItem,
-    ) -> tuple[int, str, int, int, str, int]:
+    ) -> PendingDispatchKey:
+        identity = worker_execution_identity_from_payload(worker_idx, payload)
         return (
-            worker_idx,
-            payload["topic"],
-            payload["partition"],
-            payload["offset"],
-            str(payload.get("id", "")),
-            int(payload.get("epoch", 0)),
+            identity.worker_index,
+            identity.work.topic,
+            identity.work.partition,
+            identity.work.offset,
+            identity.work.id,
+            identity.work.epoch,
         )
+
+    @staticmethod
+    def _pending_dispatch_key_for_registry_start(
+        key: Any,
+        payload: Any,
+    ) -> PendingDispatchKey | None:
+        if not isinstance(key, tuple) or not key or not isinstance(payload, dict):
+            return None
+        return WorkerPipesProcessTransport._pending_dispatch_key(key[0], payload)
 
     def _release_worker_pipe_queue_slot(self) -> None:
         try:

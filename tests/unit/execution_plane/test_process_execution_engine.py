@@ -750,6 +750,206 @@ def test_prefetch_completion_keeps_in_flight_when_identity_differs() -> None:
     }
 
 
+def test_registry_done_event_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "done",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_registry_start_event_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_registry_done_event_removes_only_matching_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    redelivered_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        },
+        (1, "topic", 1, 42): redelivered_payload,
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "done",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(1, "topic", 1, 42): redelivered_payload}
+
+
+def test_registry_timeout_event_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "timeout",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+            "attempt": 2,
+            "timeout_error": "task_timeout",
+        }
+    )
+
+    assert "timed_out" not in engine_any._in_flight_registry[(0, "topic", 1, 42)]
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["id"] == (
+        "work-redelivered"
+    )
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["epoch"] == 8
+
+
+def test_registry_timeout_event_marks_only_matching_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        },
+        (1, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        },
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "timeout",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+            "attempt": 2,
+            "timeout_error": "task_timeout",
+        }
+    )
+
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["timed_out"] is True
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["attempt"] == 2
+    assert "timed_out" not in engine_any._in_flight_registry[(1, "topic", 1, 42)]
+
+
 def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() -> None:
     senders = [_PipeSender()]
     transport = WorkerPipesProcessTransport(
@@ -803,6 +1003,58 @@ def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() ->
 
     assert list(transport._pending_dispatch.values()) == [redelivered_payload]
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_start_event_keeps_pending_dispatch_when_identity_differs() -> None:
+    senders = [_PipeSender()]
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-first",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    redelivered_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-redelivered",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=8,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    cast(Any, transport._pending_dispatch)[
+        (0, "topic", 1, 42, "work-redelivered", 8)
+    ] = redelivered_payload
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-redelivered", 8): redelivered_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
 
 
 def test_worker_pipe_transport_blocks_for_slot_without_reentrant_recovery() -> None:

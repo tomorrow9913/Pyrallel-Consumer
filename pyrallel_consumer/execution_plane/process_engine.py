@@ -550,6 +550,7 @@ def _worker_loop(
                         {
                             "kind": "timeout",
                             "key": in_flight_key,
+                            "payload": dict(payload),
                             "attempt": attempt,
                             "timeout_error": error,
                         }
@@ -632,7 +633,13 @@ def _worker_loop(
                         put_exc,
                     )
                 finally:
-                    registry_event_queue.put({"kind": "done", "key": in_flight_key})
+                    registry_event_queue.put(
+                        {
+                            "kind": "done",
+                            "key": in_flight_key,
+                            "payload": dict(payload),
+                        }
+                    )
 
             # Check worker recycling after task completion
             if recycle_limit is not None:
@@ -1087,22 +1094,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 except queue.Empty:
                     return prefetched
                 event = self._decode_completion_queue_item(raw_event)
-                prefetched_events.append(event)
+                self._prefetch_completion_event(event)
                 prefetched += 1
-                self._discard_registry_entry_for_completion(event)
+
+    def _prefetch_completion_event(self, event: CompletionEvent) -> None:
+        self._prefetched_completion_events.append(event)
+        self._discard_registry_entry_for_completion(event)
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         with self._get_registry_state_lock():
-            for key, payload in list(self._in_flight_registry.items()):
-                _worker_index, topic, partition, offset = key
-                if (
-                    topic == event.tp.topic
-                    and partition == event.tp.partition
-                    and offset == event.offset
-                    and payload.get("epoch", 0) == event.epoch
-                    and payload.get("id", "") == event.id
-                ):
-                    self._in_flight_registry.pop(key, None)
+            in_flight_registry = getattr(self, "_in_flight_registry", None)
+            if in_flight_registry is None:
+                return
+            ProcessRegistrySupport.discard_completion_from_registry(
+                in_flight_registry=in_flight_registry,
+                event=event,
+            )
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
         drained_registry = self._drain_registry_event_queue()
@@ -1114,7 +1121,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             except queue.Empty:
                 break
             drained_completion += 1
-            self._prefetched_completion_events.append(
+            self._prefetch_completion_event(
                 self._decode_completion_queue_item(raw_event)
             )
 
@@ -1221,6 +1228,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             try:
                 raw_event = self._completion_queue.get_nowait()
                 event = self._decode_completion_queue_item(raw_event)
+                self._discard_registry_entry_for_completion(event)
                 completed_events.append(event)
                 with self._in_flight_lock:
                     self._in_flight_count -= 1
@@ -1248,7 +1256,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             raw_event = None
 
         if raw_event is not None:
-            self._prefetched_completion_events.append(
+            self._prefetch_completion_event(
                 self._decode_completion_queue_item(raw_event)
             )
             return True
@@ -1265,9 +1273,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         except queue.Empty:
             return False
 
-        self._prefetched_completion_events.append(
-            self._decode_completion_queue_item(raw_event)
-        )
+        self._prefetch_completion_event(self._decode_completion_queue_item(raw_event))
         return True
 
     def _initialize_runtime_timing_state(self) -> None:
