@@ -961,8 +961,25 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _ensure_workers_alive(self, *, force: bool = False) -> None:
+        self._drain_visible_worker_events()
+        if not self._should_run_worker_liveness_scan(force=force):
+            return
+
+        for idx, exitcode in self._collect_dead_worker_recovery_candidates():
+            to_requeue = self._collect_recoverable_worker_payloads(idx)
+            self._logger.error(
+                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                idx,
+                exitcode,
+            )
+            if self._restart_dead_worker(idx, exitcode, to_requeue):
+                self._publish_recovered_worker_payloads(idx, to_requeue)
+
+    def _drain_visible_worker_events(self) -> None:
         self._drain_registry_events()
         self._prefetch_completed_events_from_queue()
+
+    def _should_run_worker_liveness_scan(self, *, force: bool) -> bool:
         liveness_interval = getattr(
             self,
             "_worker_liveness_check_interval_seconds",
@@ -972,60 +989,90 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             now = time.monotonic()
             last_check = getattr(self, "_last_worker_liveness_check", 0.0)
             if now - last_check < liveness_interval:
-                return
+                return False
             self._last_worker_liveness_check = now
-        elif force:
+            return True
+        if force:
             self._last_worker_liveness_check = time.monotonic()
+        return True
 
+    def _collect_dead_worker_recovery_candidates(self) -> list[tuple[int, Any]]:
+        candidates: list[tuple[int, Any]] = []
         for idx, worker in enumerate(self._workers):
-            if worker.is_alive():
-                continue
-            exitcode = worker.exitcode
-            to_requeue: list[SerializedWorkItem] = []
-            try:
-                to_requeue = self._recover_dead_worker_items(idx)
-                to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
-            except Exception as recovery_exc:
-                self._logger.error(
-                    "Failed to recover work from worker %d: %s", idx, recovery_exc
-                )
+            if not worker.is_alive():
+                candidates.append((idx, worker.exitcode))
+        return candidates
+
+    def _collect_recoverable_worker_payloads(
+        self,
+        idx: int,
+    ) -> list[SerializedWorkItem]:
+        to_requeue: list[SerializedWorkItem] = []
+        try:
+            to_requeue.extend(self._recover_dead_worker_items(idx))
+        except Exception as recovery_exc:
             self._logger.error(
-                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                "Failed to recover in-flight work from worker %d: %s",
+                idx,
+                recovery_exc,
+            )
+        try:
+            to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
+        except Exception as recovery_exc:
+            self._logger.error(
+                "Failed to recover pending dispatches from worker %d: %s",
+                idx,
+                recovery_exc,
+            )
+        return to_requeue
+
+    def _restart_dead_worker(
+        self,
+        idx: int,
+        exitcode: Any,
+        recovered_payloads: list[SerializedWorkItem],
+    ) -> bool:
+        try:
+            new_worker = self._start_worker(idx)
+        except Exception as restart_exc:
+            self._logger.error(
+                "Failed to restart worker %d after exitcode=%s: %s",
                 idx,
                 exitcode,
+                restart_exc,
             )
-            try:
-                new_worker = self._start_worker(idx)
-            except Exception as restart_exc:
-                self._logger.error(
-                    "Failed to restart worker %d after exitcode=%s: %s",
-                    idx,
-                    exitcode,
-                    restart_exc,
-                )
-                self._emit_worker_restart_failures(idx, to_requeue, restart_exc)
-                continue
-            self._workers[idx] = new_worker
-            try:
-                if to_requeue:
-                    self._requeue_recovered_payloads(to_requeue)
-                    offsets = [entry.get("offset") for entry in to_requeue]
-                    self._logger.warning(
-                        "Requeued %d lost work item(s) offsets=%s from dead worker %d",
-                        len(to_requeue),
-                        offsets,
-                        idx,
-                    )
-            except Exception as requeue_exc:
-                self._logger.error(
-                    "Failed to requeue work from worker %d: %s", idx, requeue_exc
-                )
+            self._emit_worker_restart_failures(idx, recovered_payloads, restart_exc)
+            return False
+        self._workers[idx] = new_worker
+        return True
+
+    def _publish_recovered_worker_payloads(
+        self,
+        idx: int,
+        payloads: list[SerializedWorkItem],
+    ) -> None:
+        if not payloads:
+            return
+        try:
+            self._requeue_recovered_payloads(payloads)
+            offsets = [entry.get("offset") for entry in payloads]
+            self._logger.warning(
+                "Requeued %d lost work item(s) offsets=%s from dead worker %d",
+                len(payloads),
+                offsets,
+                idx,
+            )
+        except Exception as requeue_exc:
+            self._logger.error(
+                "Failed to requeue work from worker %d: %s", idx, requeue_exc
+            )
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         transport = getattr(self, "_transport", None)
         if transport is None:
             return []
-        if not transport.capabilities.pending_dispatch_recovery:
+        capabilities = getattr(transport, "capabilities", None)
+        if capabilities is None or not capabilities.pending_dispatch_recovery:
             return []
         recovered_dispatches = transport.recover_pending_dispatches(idx)
         if recovered_dispatches:
