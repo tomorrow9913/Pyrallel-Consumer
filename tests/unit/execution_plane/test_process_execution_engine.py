@@ -984,6 +984,121 @@ def test_ensure_workers_alive_restarts_dead_worker_before_pipe_requeue(
     assert order == ["restart", "requeue"]
 
 
+def test_ensure_workers_alive_emits_failures_when_restart_fails_after_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    engine_any._transport = transport
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+
+    def fail_start(_idx: int) -> None:
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(engine, "_start_worker", fail_start)
+
+    engine._ensure_workers_alive()
+
+    assert requeued == []
+    assert transport._pending_dispatch == {}
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "worker_restart_failed: spawn failed"
+    assert event.offset == 42
+    assert event.attempt == 3
+
+
+def test_ensure_workers_alive_emits_failures_for_in_flight_work_when_restart_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+
+    def fail_start(_idx: int) -> None:
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(engine, "_start_worker", fail_start)
+
+    engine._ensure_workers_alive()
+
+    assert transport.requeued_payloads == []
+    assert engine_any._in_flight_registry == {}
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "worker_restart_failed: spawn failed"
+    assert event.offset == 42
+    assert event.attempt == 3
+
+
 def test_ensure_workers_alive_prefetches_completion_before_dead_worker_requeue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1158,6 +1273,96 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     assert transport._pending_dispatch == {
         (0, "topic", 1, 43, "work-43", 7): second_payload,
     }
+
+
+def test_worker_pipe_slot_wait_drains_events_when_recovery_lock_is_held() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    worker = _CountingAliveWorker()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    held_lock = threading.Lock()
+    held_lock.acquire()
+    engine_any._worker_slot_wait_liveness_lock = held_lock
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda batch, _flush_enqueued_at: (
+            f"packed:{batch[0].offset}".encode()
+        ),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    transport.dispatch_payload(
+        payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {**payload, "requeue_attempts": 0},
+        }
+    )
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    try:
+        engine._signal_worker_pipe_slot_wait()
+    finally:
+        held_lock.release()
+
+    assert engine_any._registry_event_queue.empty()
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert worker.is_alive_calls == 0
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
 def test_ensure_workers_alive_caps_pending_worker_pipe_retries(

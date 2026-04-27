@@ -923,6 +923,24 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             emit_worker_recovery_failure=self._emit_worker_recovery_failure,
         )
 
+    def _emit_worker_restart_failures(
+        self,
+        idx: int,
+        payloads: list[SerializedWorkItem],
+        restart_exc: Exception,
+    ) -> None:
+        for payload in payloads:
+            self._emit_worker_recovery_failure(
+                idx,
+                payload,
+                error=f"worker_restart_failed: {restart_exc}",
+                attempt=self._config.max_retries,
+            )
+
+    def _drain_worker_pipe_slot_wait_events(self) -> None:
+        self._drain_registry_events()
+        self._prefetch_completed_events_from_queue()
+
     def _drain_registry_event_queue(self) -> int:
         return ProcessRegistrySupport.drain_registry_event_queue(
             registry_event_queue=getattr(self, "_registry_event_queue", None),
@@ -963,7 +981,17 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 idx,
                 exitcode,
             )
-            new_worker = self._start_worker(idx)
+            try:
+                new_worker = self._start_worker(idx)
+            except Exception as restart_exc:
+                self._logger.error(
+                    "Failed to restart worker %d after exitcode=%s: %s",
+                    idx,
+                    exitcode,
+                    restart_exc,
+                )
+                self._emit_worker_restart_failures(idx, to_requeue, restart_exc)
+                continue
             self._workers[idx] = new_worker
             try:
                 if to_requeue:
@@ -994,6 +1022,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             lock = threading.Lock()
             self._worker_slot_wait_liveness_lock = lock
         if not lock.acquire(blocking=False):
+            self._drain_worker_pipe_slot_wait_events()
             return
         try:
             self._ensure_workers_alive(force=True)
