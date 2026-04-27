@@ -242,8 +242,21 @@ A work item can be in exactly one canonical phase per execution identity:
   - cross-thread lock contention is side-effect free and retries later.
 
 ### V2.5: Shutdown policy decision
-- Decide whether shutdown residual work should remain diagnostic or become terminal synthetic completions.
-- If terminal completions are emitted, document control-plane implications and DLQ behavior.
+- Decision: keep shutdown residual work diagnostic-only for V2.5; do not emit new terminal synthetic completions from shutdown.
+- Rationale:
+  - Shutdown is an operator/application lifecycle boundary, not evidence that a work item failed in the worker execution model.
+  - Emitting synthetic failures during shutdown would make commit/DLQ behavior depend on teardown timing and could publish DLQ records after the caller has already decided to stop consuming.
+  - Current shutdown already drains visible registry/completion IPC before join, logs residual in-flight work with worker/topic/partition/offset/timeout/attempt diagnostics, then clears local state.
+  - Worker-pipes transport shutdown is mechanical: it sends sentinels and ignores broken senders, while pending dispatch cleanup remains local transport state cleanup.
+- Minimal contract tests:
+  - shutdown drains queued registry and completion events before cleanup, preserving any already-visible completion for the control plane;
+  - shutdown logs residual in-flight registry diagnostics when work remains after the bounded drain;
+  - shutdown delegates sentinel/close behavior through the transport seam and clears pending dispatches after joins;
+  - worker-pipes shutdown ignores broken senders without converting that condition into synthetic failures.
+- Minimal implementation, if needed:
+  - keep existing diagnostic-only semantics;
+  - add/strengthen the residual-log test before changing code;
+  - include full logical identity (`id/epoch`) in the residual diagnostic string so same-offset redeliveries remain distinguishable in shutdown logs.
 
 ## Recommended next instruction for agents
 
