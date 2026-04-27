@@ -3,6 +3,7 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from multiprocessing.connection import Connection
 from typing import Any, cast
@@ -14,6 +15,7 @@ import pytest_asyncio
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import (
+    CompletionEvent,
     CompletionStatus,
     ExecutionMode,
     TopicPartition,
@@ -859,6 +861,8 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
     )
     engine_any._transport_mode = "worker_pipes"
     engine_any._in_flight_registry = {}
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
     engine_any._workers = [_DeadWorker()]
     engine_any._logger = logging.getLogger(__name__)
     engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
@@ -932,6 +936,8 @@ def test_ensure_workers_alive_restarts_dead_worker_before_pipe_requeue(
     )
     engine_any._transport_mode = "worker_pipes"
     engine_any._in_flight_registry = {}
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
     engine_any._workers = [_DeadWorker()]
     engine_any._logger = logging.getLogger(__name__)
     engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
@@ -978,6 +984,58 @@ def test_ensure_workers_alive_restarts_dead_worker_before_pipe_requeue(
     assert order == ["restart", "requeue"]
 
 
+def test_ensure_workers_alive_prefetches_completion_before_dead_worker_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+    monkeypatch.setattr(engine, "_start_worker", lambda _idx: Mock())
+
+    engine._ensure_workers_alive()
+
+    assert requeued == []
+    assert engine_any._in_flight_registry == {}
+    assert list(engine_any._prefetched_completion_events) == [completion]
+
+
 def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -999,6 +1057,8 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     )
     engine_any._transport_mode = "worker_pipes"
     engine_any._in_flight_registry = {}
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
     engine_any._workers = [_DeadWorker()]
     engine_any._logger = logging.getLogger(__name__)
     engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
