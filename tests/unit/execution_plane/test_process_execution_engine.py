@@ -915,6 +915,191 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
     assert engine_any._workers == [replacement_worker]
 
 
+def test_ensure_workers_alive_restarts_dead_worker_before_pipe_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    engine_any._transport = transport
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    order: list[str] = []
+
+    def start_worker(_idx: int) -> Mock:
+        order.append("restart")
+        return Mock()
+
+    def requeue_payloads(_payloads: list[dict[str, Any]]) -> None:
+        order.append("requeue")
+        assert order == ["restart", "requeue"]
+
+    monkeypatch.setattr(engine, "_start_worker", start_worker)
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeue_payloads)
+
+    engine._ensure_workers_alive()
+
+    assert order == ["restart", "requeue"]
+
+
+def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    replacement_worker = Mock()
+    senders = [_PipeSender()]
+
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [_DeadWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._drain_registry_events = lambda: None  # type: ignore[method-assign]
+    engine_any._drain_registry_event_queue = lambda: 0  # type: ignore[method-assign]
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda batch, _flush_enqueued_at: (
+            f"packed:{batch[0].offset}".encode()
+        ),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+    monkeypatch.setattr(engine, "_start_worker", lambda idx: replacement_worker)
+
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-1",
+        )
+    )
+    second_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-43",
+            tp=TopicPartition("topic", 1),
+            offset=43,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-2",
+        )
+    )
+
+    transport.dispatch_payload(
+        first_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    errors: list[BaseException] = []
+
+    def dispatch_second() -> None:
+        try:
+            transport.dispatch_payload(
+                second_payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch_second)
+    thread.start()
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if engine_any._workers == [replacement_worker]:
+            break
+        time.sleep(0.01)
+
+    assert engine_any._workers == [replacement_worker]
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if len(senders[0].payloads) >= 2:
+            break
+        time.sleep(0.01)
+    assert senders[0].payloads[:2] == [b"packed:42", b"packed:42"]
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                **first_payload,
+                "requeue_attempts": 1,
+            },
+        }
+    )
+
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert senders[0].payloads == [b"packed:42", b"packed:42", b"packed:43"]
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 43, "work-43", 7): second_payload,
+    }
+
+
 def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

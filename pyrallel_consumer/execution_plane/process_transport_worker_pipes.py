@@ -30,6 +30,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         get_worker_pipe_senders: Callable[[], list[Any]],
         increment_in_flight: Callable[[], None],
         pipe_sentinel: bytes,
+        slot_wait_liveness_check: Callable[[], None] | None = None,
+        slot_wait_timeout_seconds: float = 0.05,
     ) -> None:
         self._process_count = process_count
         self._max_payload_bytes = max_payload_bytes
@@ -39,6 +41,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._get_worker_pipe_senders = get_worker_pipe_senders
         self._increment_in_flight = increment_in_flight
         self._pipe_sentinel = pipe_sentinel
+        self._slot_wait_liveness_check = slot_wait_liveness_check
+        self._slot_wait_timeout_seconds = slot_wait_timeout_seconds
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
         self._pending_dispatch: dict[
@@ -197,7 +201,16 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         payload: SerializedWorkItem,
     ) -> None:
         del worker_idx, payload
-        self._worker_pipe_queue_slots.acquire()
+        liveness_check = self._slot_wait_liveness_check
+        timeout_seconds = self._slot_wait_timeout_seconds
+        if liveness_check is None or timeout_seconds <= 0:
+            self._worker_pipe_queue_slots.acquire()
+            return
+
+        while True:
+            if self._worker_pipe_queue_slots.acquire(timeout=timeout_seconds):
+                return
+            liveness_check()
 
     def _send_packed_payload(
         self,

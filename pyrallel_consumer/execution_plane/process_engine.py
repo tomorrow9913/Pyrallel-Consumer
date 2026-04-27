@@ -729,6 +729,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._initialize_runtime_timing_state()
         self._last_worker_liveness_check = 0.0
         self._worker_liveness_check_interval_seconds = 0.05
+        self._worker_slot_wait_liveness_lock = threading.Lock()
         self._worker_pipe_senders: list[Any] = []
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
@@ -773,6 +774,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 get_worker_pipe_senders=lambda: self._worker_pipe_senders,
                 increment_in_flight=self._increment_in_flight_count,
                 pipe_sentinel=_PIPE_SENTINEL,
+                slot_wait_liveness_check=self._signal_worker_pipe_slot_wait,
             )
             self._transport = worker_pipe_transport
 
@@ -947,9 +949,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             if worker.is_alive():
                 continue
             exitcode = worker.exitcode
+            to_requeue: list[SerializedWorkItem] = []
             try:
                 to_requeue = self._recover_dead_worker_items(idx)
                 to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
+            except Exception as recovery_exc:
+                self._logger.error(
+                    "Failed to recover work from worker %d: %s", idx, recovery_exc
+                )
+            self._logger.error(
+                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                idx,
+                exitcode,
+            )
+            new_worker = self._start_worker(idx)
+            self._workers[idx] = new_worker
+            try:
                 if to_requeue:
                     self._requeue_recovered_payloads(to_requeue)
                     offsets = [entry.get("offset") for entry in to_requeue]
@@ -963,13 +978,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 self._logger.error(
                     "Failed to requeue work from worker %d: %s", idx, requeue_exc
                 )
-            self._logger.error(
-                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
-                idx,
-                exitcode,
-            )
-            new_worker = self._start_worker(idx)
-            self._workers[idx] = new_worker
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         transport = getattr(self, "_transport", None)
@@ -978,6 +986,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return self._filter_recoverable_pending_pipe_dispatches(
             idx, transport.recover_pending_dispatches(idx)
         )
+
+    def _signal_worker_pipe_slot_wait(self) -> None:
+        lock = getattr(self, "_worker_slot_wait_liveness_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._worker_slot_wait_liveness_lock = lock
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            self._ensure_workers_alive(force=True)
+        finally:
+            lock.release()
 
     def _filter_recoverable_pending_pipe_dispatches(
         self,
