@@ -86,26 +86,6 @@ class _PipeSender:
         self.closed = True
 
 
-class _ScriptedSemaphore:
-    def __init__(self, acquire_results: list[bool]) -> None:
-        self.acquire_results = acquire_results
-        self.acquire_calls: list[tuple[bool, float | None]] = []
-        self.release_calls = 0
-
-    def acquire(
-        self,
-        blocking: bool = True,
-        timeout: float | None = None,
-    ) -> bool:
-        self.acquire_calls.append((blocking, timeout))
-        if self.acquire_results:
-            return self.acquire_results.pop(0)
-        return False
-
-    def release(self) -> None:
-        self.release_calls += 1
-
-
 class _ExplodingSerializer:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
@@ -423,7 +403,7 @@ def test_requeue_recovered_payloads_uses_shared_queue_transport_seam() -> None:
     assert transport.requeued_payloads == [payloads]
 
 
-def test_worker_pipe_transport_slot_timeout_is_independent_of_task_timeout(
+def test_worker_pipe_transport_creation_does_not_reuse_task_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
@@ -446,7 +426,7 @@ def test_worker_pipe_transport_slot_timeout_is_independent_of_task_timeout(
     try:
         transport = cast(Any, engine)._transport
         assert isinstance(transport, WorkerPipesProcessTransport)
-        assert transport._slot_acquire_timeout_ms == 30000
+        assert not hasattr(transport, "_slot_acquire_timeout_ms")
     finally:
         asyncio.run(engine.shutdown())
 
@@ -729,10 +709,8 @@ def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() ->
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
-def test_worker_pipe_transport_retries_slot_acquire_after_liveness_check() -> None:
+def test_worker_pipe_transport_blocks_for_slot_without_reentrant_recovery() -> None:
     senders = [_PipeSender()]
-    ensure_calls: list[str] = []
-    semaphore = _ScriptedSemaphore([False, True])
     transport = WorkerPipesProcessTransport(
         process_count=1,
         queue_size=1,
@@ -741,12 +719,10 @@ def test_worker_pipe_transport_retries_slot_acquire_after_liveness_check() -> No
         serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
         work_item_from_dict=_work_item_from_dict,
         get_worker_pipe_senders=lambda: senders,
-        ensure_workers_alive=lambda: ensure_calls.append("called"),
         increment_in_flight=lambda: None,
         pipe_sentinel=b"sentinel",
-        slot_acquire_timeout_ms=100,
     )
-    transport._worker_pipe_queue_slots = semaphore  # type: ignore[assignment]
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
     payload = _work_item_to_dict(
         WorkItem(
@@ -758,60 +734,35 @@ def test_worker_pipe_transport_retries_slot_acquire_after_liveness_check() -> No
             payload=b"payload",
         )
     )
+    errors: list[BaseException] = []
 
-    transport.dispatch_payload(
-        payload,
-        route_identity=RouteIdentity("topic", 1, b"same-key"),
-        count_in_flight=False,
-    )
+    def dispatch() -> None:
+        try:
+            transport.dispatch_payload(
+                payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
 
-    assert ensure_calls == ["called"]
-    assert semaphore.acquire_calls[0][0] is True
+    thread = threading.Thread(target=dispatch)
+    thread.start()
+    time.sleep(0.15)
+
+    assert thread.is_alive()
+    assert not hasattr(transport, "_ensure_workers_alive")
+    assert senders[0].payloads == []
+
+    transport._worker_pipe_queue_slots.release()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
     assert senders[0].payloads == [b"packed"]
     assert transport._pending_dispatch == {
         (0, "topic", 1, 42, "work-42", 7): payload,
     }
-
-
-def test_worker_pipe_transport_fails_fast_when_slot_never_opens() -> None:
-    senders = [_PipeSender()]
-    ensure_calls: list[str] = []
-    transport = WorkerPipesProcessTransport(
-        process_count=1,
-        queue_size=1,
-        max_payload_bytes=1024,
-        serialize_work_item=_work_item_to_dict,
-        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
-        work_item_from_dict=_work_item_from_dict,
-        get_worker_pipe_senders=lambda: senders,
-        ensure_workers_alive=lambda: ensure_calls.append("called"),
-        increment_in_flight=lambda: None,
-        pipe_sentinel=b"sentinel",
-        slot_acquire_timeout_ms=0,
-    )
-    transport._worker_pipe_queue_slots = _ScriptedSemaphore([False])  # type: ignore[assignment]
-
-    payload = _work_item_to_dict(
-        WorkItem(
-            id="work-42",
-            tp=TopicPartition("topic", 1),
-            offset=42,
-            epoch=7,
-            key=b"same-key",
-            payload=b"payload",
-        )
-    )
-
-    with pytest.raises(TimeoutError, match="worker pipe slot worker=0 offset=42"):
-        transport.dispatch_payload(
-            payload,
-            route_identity=RouteIdentity("topic", 1, b"same-key"),
-            count_in_flight=False,
-        )
-
-    assert ensure_calls == []
-    assert senders[0].payloads == []
-    assert transport._pending_dispatch == {}
 
 
 def test_worker_pipe_transport_releases_pending_slot_when_send_fails() -> None:
@@ -825,7 +776,6 @@ def test_worker_pipe_transport_releases_pending_slot_when_send_fails() -> None:
         get_worker_pipe_senders=lambda: [_BrokenPipeSender()],
         increment_in_flight=lambda: None,
         pipe_sentinel=b"sentinel",
-        slot_acquire_timeout_ms=0,
     )
 
     payload = _work_item_to_dict(

@@ -28,10 +28,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         serialize_batch_payload: Callable[[list[WorkItem], float], bytes],
         work_item_from_dict: Callable[[SerializedWorkItem], WorkItem],
         get_worker_pipe_senders: Callable[[], list[Any]],
-        ensure_workers_alive: Callable[[], None] | None = None,
         increment_in_flight: Callable[[], None],
         pipe_sentinel: bytes,
-        slot_acquire_timeout_ms: int = 30000,
     ) -> None:
         self._process_count = process_count
         self._max_payload_bytes = max_payload_bytes
@@ -39,10 +37,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._serialize_batch_payload = serialize_batch_payload
         self._work_item_from_dict = work_item_from_dict
         self._get_worker_pipe_senders = get_worker_pipe_senders
-        self._ensure_workers_alive = ensure_workers_alive or (lambda: None)
         self._increment_in_flight = increment_in_flight
         self._pipe_sentinel = pipe_sentinel
-        self._slot_acquire_timeout_ms = max(0, slot_acquire_timeout_ms)
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
         self._pending_dispatch: dict[
@@ -200,33 +196,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         worker_idx: int,
         payload: SerializedWorkItem,
     ) -> None:
-        if self._slot_acquire_timeout_ms <= 0:
-            acquired = self._worker_pipe_queue_slots.acquire(blocking=False)
-            if acquired:
-                return
-            raise TimeoutError(
-                "Timed out waiting for worker pipe slot worker=%d offset=%d"
-                % (worker_idx, payload["offset"])
-            )
-
-        deadline = time.monotonic() + (self._slot_acquire_timeout_ms / 1000.0)
-        wait_slice_seconds = min(0.05, self._slot_acquire_timeout_ms / 1000.0)
-
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            acquired = self._worker_pipe_queue_slots.acquire(
-                timeout=min(wait_slice_seconds, remaining)
-            )
-            if acquired:
-                return
-            self._ensure_workers_alive()
-
-        raise TimeoutError(
-            "Timed out waiting for worker pipe slot worker=%d offset=%d"
-            % (worker_idx, payload["offset"])
-        )
+        del worker_idx, payload
+        self._worker_pipe_queue_slots.acquire()
 
     def _send_packed_payload(
         self,

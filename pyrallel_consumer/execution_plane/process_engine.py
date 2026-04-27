@@ -52,7 +52,6 @@ SerializedBatchEnvelope = dict[str, Any]
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
-_WORKER_PIPE_SLOT_ACQUIRE_TIMEOUT_MS = 30000
 _logger = logging.getLogger(__name__)
 
 
@@ -772,10 +771,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 serialize_batch_payload=_serialize_batch_payload,
                 work_item_from_dict=_work_item_from_dict,
                 get_worker_pipe_senders=lambda: self._worker_pipe_senders,
-                ensure_workers_alive=self._ensure_workers_alive,
                 increment_in_flight=self._increment_in_flight_count,
                 pipe_sentinel=_PIPE_SENTINEL,
-                slot_acquire_timeout_ms=_WORKER_PIPE_SLOT_ACQUIRE_TIMEOUT_MS,
             )
             self._transport = worker_pipe_transport
 
