@@ -14,7 +14,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from multiprocessing import Process, Queue
-from typing import Any, Deque, List, Optional
+from typing import Any, Deque, List, Optional, cast
 
 import msgpack  # type: ignore[import-untyped]
 
@@ -1272,8 +1272,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
-        await asyncio.to_thread(self._ensure_workers_alive)
-        self._drain_registry_events()
+        if not getattr(self, "_is_shutdown", False):
+            await asyncio.to_thread(self._ensure_workers_alive)
+            self._drain_registry_events()
+
         completed_events: List[CompletionEvent] = []
         while (
             len(completed_events) < batch_limit and self._prefetched_completion_events
@@ -1281,6 +1283,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             completed_events.append(self._prefetched_completion_events.popleft())
             with self._in_flight_lock:
                 self._in_flight_count -= 1
+        if getattr(self, "_is_shutdown", False):
+            return completed_events
         while len(completed_events) < batch_limit:
             try:
                 raw_event = self._completion_queue.get_nowait()
@@ -1301,6 +1305,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
+        if getattr(self, "_is_shutdown", False):
+            return bool(self._prefetched_completion_events)
+
         await asyncio.to_thread(self._ensure_workers_alive)
         self._drain_registry_events()
 
@@ -1466,6 +1473,21 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             total_completion_drained,
             len(self._in_flight_registry),
         )
+
+        # Wait for all workers to finish
+        for worker in self._workers:
+            self._join_worker_with_escalation(worker)
+
+        (
+            post_join_registry_drained,
+            post_join_completion_drained,
+        ) = self._drain_shutdown_ipc_once()
+        _logger.debug(
+            "ProcessExecutionEngine shutdown post-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
+            post_join_registry_drained,
+            post_join_completion_drained,
+            len(self._in_flight_registry),
+        )
         if self._in_flight_registry:
             registry_summary = []
             for (worker_idx, topic, partition, offset), payload in sorted(
@@ -1491,15 +1513,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 "; ".join(registry_summary),
             )
 
-        # Wait for all workers to finish
-        for worker in self._workers:
-            self._join_worker_with_escalation(worker)
-
-        self._prefetched_completion_events.clear()
+        for _ in range(min(prefetched_count, len(self._prefetched_completion_events))):
+            popleft = getattr(self._prefetched_completion_events, "popleft", None)
+            if callable(popleft):
+                popleft()
+            else:
+                cast(Any, self._prefetched_completion_events).pop(0)
         self._in_flight_registry.clear()
         self._transport.clear_pending_dispatches()
         with self._in_flight_lock:
-            self._in_flight_count = 0
+            self._in_flight_count = len(self._prefetched_completion_events)
 
         _logger.debug("ProcessExecutionEngine shutdown complete.")
         self._log_listener.stop()
