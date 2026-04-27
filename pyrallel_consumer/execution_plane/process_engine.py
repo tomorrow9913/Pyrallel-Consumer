@@ -1093,12 +1093,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         with self._get_registry_state_lock():
-            for key in list(self._in_flight_registry):
+            for key, payload in list(self._in_flight_registry.items()):
                 _worker_index, topic, partition, offset = key
                 if (
                     topic == event.tp.topic
                     and partition == event.tp.partition
                     and offset == event.offset
+                    and payload.get("epoch", 0) == event.epoch
+                    and payload.get("id", "") == event.id
                 ):
                     self._in_flight_registry.pop(key, None)
 

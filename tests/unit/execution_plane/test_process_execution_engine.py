@@ -656,6 +656,100 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
+def test_prefetch_completion_discards_only_matching_in_flight_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        },
+        (1, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        },
+    }
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    completion = CompletionEvent(
+        id="work-first",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    assert engine._prefetch_completed_events_from_queue() == 1
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert engine_any._in_flight_registry == {
+        (1, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+
+
+def test_prefetch_completion_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    completion = CompletionEvent(
+        id="work-first",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    assert engine._prefetch_completed_events_from_queue() == 1
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert engine_any._in_flight_registry == {
+        (0, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+
+
 def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() -> None:
     senders = [_PipeSender()]
     transport = WorkerPipesProcessTransport(
