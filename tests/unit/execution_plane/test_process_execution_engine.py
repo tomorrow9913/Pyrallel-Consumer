@@ -1275,7 +1275,7 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     }
 
 
-def test_worker_pipe_slot_wait_drains_events_when_recovery_lock_is_held() -> None:
+def test_worker_pipe_slot_wait_drains_events_for_reentrant_recovery_owner() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     senders = [_PipeSender()]
@@ -1298,7 +1298,7 @@ def test_worker_pipe_slot_wait_drains_events_when_recovery_lock_is_held() -> Non
     worker = _CountingAliveWorker()
     engine_any._workers = [worker]
     engine_any._logger = logging.getLogger(__name__)
-    held_lock = threading.Lock()
+    held_lock = threading.RLock()
     held_lock.acquire()
     engine_any._worker_slot_wait_liveness_lock = held_lock
     transport = WorkerPipesProcessTransport(
@@ -1360,9 +1360,113 @@ def test_worker_pipe_slot_wait_drains_events_when_recovery_lock_is_held() -> Non
 
     assert engine_any._registry_event_queue.empty()
     assert list(engine_any._prefetched_completion_events) == [completion]
-    assert worker.is_alive_calls == 0
+    assert worker.is_alive_calls == 1
     assert transport._pending_dispatch == {}
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_slot_wait_is_side_effect_free_when_another_thread_owns_lock() -> (
+    None
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    worker = _CountingAliveWorker()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    liveness_lock = threading.RLock()
+    liveness_lock.acquire()
+    engine_any._worker_slot_wait_liveness_lock = liveness_lock
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda batch, _flush_enqueued_at: (
+            f"packed:{batch[0].offset}".encode()
+        ),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    transport.dispatch_payload(
+        payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {**payload, "requeue_attempts": 0},
+        }
+    )
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    packed_completion = msgpack.packb(
+        _completion_event_to_dict(completion), use_bin_type=True
+    )
+    engine_any._completion_queue.put(packed_completion)
+
+    errors: list[BaseException] = []
+
+    def signal_from_other_thread() -> None:
+        try:
+            engine._signal_worker_pipe_slot_wait()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=signal_from_other_thread)
+    thread.start()
+    thread.join(timeout=1.0)
+    liveness_lock.release()
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert not engine_any._registry_event_queue.empty()
+    assert engine_any._completion_queue.get_nowait() == packed_completion
+    assert list(engine_any._prefetched_completion_events) == []
+    assert engine_any._in_flight_registry == {}
+    assert worker.is_alive_calls == 0
+    assert transport._pending_dispatch != {}
 
 
 def test_ensure_workers_alive_caps_pending_worker_pipe_retries(

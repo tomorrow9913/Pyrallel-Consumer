@@ -723,13 +723,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
         self._in_flight_count: int = 0
         self._in_flight_lock = threading.Lock()
+        self._registry_state_lock = threading.RLock()
 
         self._logger = logging.getLogger(__name__)
         self._is_shutdown: bool = False
         self._initialize_runtime_timing_state()
         self._last_worker_liveness_check = 0.0
         self._worker_liveness_check_interval_seconds = 0.05
-        self._worker_slot_wait_liveness_lock = threading.Lock()
+        self._worker_slot_wait_liveness_lock = threading.RLock()
         self._worker_pipe_senders: list[Any] = []
 
         self._log_queue: Queue[logging.LogRecord] = Queue(
@@ -915,13 +916,21 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     push_exc,
                 )
 
+    def _get_registry_state_lock(self) -> Any:
+        lock = getattr(self, "_registry_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._registry_state_lock = lock
+        return lock
+
     def _recover_dead_worker_items(self, idx: int) -> list[SerializedWorkItem]:
-        return ProcessRegistrySupport.recover_dead_worker_items(
-            worker_index=idx,
-            in_flight_registry=self._in_flight_registry,
-            max_retries=self._config.max_retries,
-            emit_worker_recovery_failure=self._emit_worker_recovery_failure,
-        )
+        with self._get_registry_state_lock():
+            return ProcessRegistrySupport.recover_dead_worker_items(
+                worker_index=idx,
+                in_flight_registry=self._in_flight_registry,
+                max_retries=self._config.max_retries,
+                emit_worker_recovery_failure=self._emit_worker_recovery_failure,
+            )
 
     def _emit_worker_restart_failures(
         self,
@@ -937,15 +946,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 attempt=self._config.max_retries,
             )
 
-    def _drain_worker_pipe_slot_wait_events(self) -> None:
-        self._drain_registry_events()
-        self._prefetch_completed_events_from_queue()
-
     def _drain_registry_event_queue(self) -> int:
-        return ProcessRegistrySupport.drain_registry_event_queue(
-            registry_event_queue=getattr(self, "_registry_event_queue", None),
-            apply_event=self._apply_registry_event,
-        )
+        with self._get_registry_state_lock():
+            return ProcessRegistrySupport.drain_registry_event_queue(
+                registry_event_queue=getattr(self, "_registry_event_queue", None),
+                apply_event=self._apply_registry_event,
+            )
 
     def _ensure_workers_alive(self, *, force: bool = False) -> None:
         self._drain_registry_events()
@@ -1019,10 +1025,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     def _signal_worker_pipe_slot_wait(self) -> None:
         lock = getattr(self, "_worker_slot_wait_liveness_lock", None)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             self._worker_slot_wait_liveness_lock = lock
         if not lock.acquire(blocking=False):
-            self._drain_worker_pipe_slot_wait_events()
             return
         try:
             self._ensure_workers_alive(force=True)
@@ -1070,30 +1075,32 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._drain_registry_event_queue()
 
     def _prefetch_completed_events_from_queue(self) -> int:
-        completion_queue = getattr(self, "_completion_queue", None)
-        prefetched_events = getattr(self, "_prefetched_completion_events", None)
-        if completion_queue is None or prefetched_events is None:
-            return 0
-        prefetched = 0
-        while True:
-            try:
-                raw_event = completion_queue.get_nowait()
-            except queue.Empty:
-                return prefetched
-            event = self._decode_completion_queue_item(raw_event)
-            prefetched_events.append(event)
-            prefetched += 1
-            self._discard_registry_entry_for_completion(event)
+        with self._get_registry_state_lock():
+            completion_queue = getattr(self, "_completion_queue", None)
+            prefetched_events = getattr(self, "_prefetched_completion_events", None)
+            if completion_queue is None or prefetched_events is None:
+                return 0
+            prefetched = 0
+            while True:
+                try:
+                    raw_event = completion_queue.get_nowait()
+                except queue.Empty:
+                    return prefetched
+                event = self._decode_completion_queue_item(raw_event)
+                prefetched_events.append(event)
+                prefetched += 1
+                self._discard_registry_entry_for_completion(event)
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
-        for key in list(self._in_flight_registry):
-            _worker_index, topic, partition, offset = key
-            if (
-                topic == event.tp.topic
-                and partition == event.tp.partition
-                and offset == event.offset
-            ):
-                self._in_flight_registry.pop(key, None)
+        with self._get_registry_state_lock():
+            for key in list(self._in_flight_registry):
+                _worker_index, topic, partition, offset = key
+                if (
+                    topic == event.tp.topic
+                    and partition == event.tp.partition
+                    and offset == event.offset
+                ):
+                    self._in_flight_registry.pop(key, None)
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
         drained_registry = self._drain_registry_event_queue()
