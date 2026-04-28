@@ -260,8 +260,8 @@ A work item can be in exactly one canonical phase per execution identity:
 
 ### V2.6: Post-join shutdown diagnostic drain
 - Keep the V2.5 diagnostic-only shutdown policy.
-- Add one final best-effort post-join IPC drain before local shutdown cleanup so registry/completion events that become visible while workers are joining are reconciled, counted, and preserved when they are real worker completions.
-- This final drain is diagnostic/reconciliation only:
+- Add a short bounded stable-empty post-join IPC drain before local shutdown cleanup so registry/completion events that become visible while workers are joining or immediately after the first empty post-join pass are reconciled, counted, and preserved when they are real worker completions.
+- This post-join drain is diagnostic/reconciliation only:
   - it must not start worker recovery;
   - it must not requeue pending dispatches;
   - it must not synthesize terminal failure completions;
@@ -269,6 +269,7 @@ A work item can be in exactly one canonical phase per execution identity:
 - Real completions drained during shutdown remain prefetched so the control plane can poll already-produced outcomes; residual work without completions remains diagnostic-only.
 - Tests:
   - shutdown calls the post-join drain after worker joins and before local cleanup;
+  - post-join draining exits after a bounded stable-empty observation rather than waiting on residual in-flight registry state;
   - late completions drained post-join clear only matching registry entries and remain available to `poll_completed_events`;
   - post-join drain counts are logged;
   - existing diagnostic-only shutdown tests continue to prove no synthetic shutdown completion/requeue is emitted.

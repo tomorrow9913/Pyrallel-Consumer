@@ -2969,7 +2969,8 @@ async def test_shutdown_delegates_signal_and_close_through_transport_seam(
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     engine_any._is_shutdown = False
-    engine_any._prefetched_completion_events = [Mock()]
+    prefetched_event = Mock()
+    engine_any._prefetched_completion_events = [prefetched_event]
     engine_any._in_flight_registry = {
         (0, "topic", 1, 42): {
             "id": "work-42",
@@ -3001,9 +3002,9 @@ async def test_shutdown_delegates_signal_and_close_through_transport_seam(
     transport.signal_shutdown.assert_called_once_with(2)
     transport.close.assert_called_once_with()
     engine_any._batch_accumulator.close.assert_called_once_with()
-    assert engine_any._prefetched_completion_events == []
+    assert engine_any._prefetched_completion_events == [prefetched_event]
     assert engine_any._in_flight_registry == {}
-    assert engine.get_in_flight_count() == 0
+    assert engine.get_in_flight_count() == 1
     engine_any._emit_worker_recovery_failure.assert_not_called()
     assert engine_any._completion_queue.empty()
     assert "Residual in-flight registry after shutdown drain" in caplog.text
@@ -3153,7 +3154,9 @@ async def test_shutdown_runs_post_join_drain_before_local_cleanup(
         order.append("drain")
         if order.count("drain") == 1:
             return (0, 0)
-        return (0, 1)
+        if order.count("drain") == 2:
+            return (0, 1)
+        return (0, 0)
 
     def join_worker(_worker: object) -> None:
         order.append("join")
@@ -3168,11 +3171,114 @@ async def test_shutdown_runs_post_join_drain_before_local_cleanup(
     with caplog.at_level(logging.DEBUG):
         await engine.shutdown()
 
-    assert order == ["drain", "join", "drain", "clear", "close"]
-    assert engine_any._drain_shutdown_ipc_once.call_count == 2
+    assert order == ["drain", "join", "drain", "drain", "drain", "clear", "close"]
+    assert engine_any._drain_shutdown_ipc_once.call_count == 4
     assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
     assert "completion_events=1" in caplog.text
     transport.signal_shutdown.assert_called_once_with(1)
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_waits_for_stable_empty_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {}
+    drain_results = [
+        (0, 0),  # pre-join bounded drain observes no visible IPC
+        (0, 0),  # first post-join pass is empty but not yet stable
+        (0, 1),  # late completion becomes visible after one empty pass
+        (0, 0),
+        (0, 0),  # stable-empty post-join exit
+    ]
+    drain_calls: list[tuple[int, int]] = []
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    def drain_once() -> tuple[int, int]:
+        result = drain_results.pop(0) if drain_results else (0, 0)
+        drain_calls.append(result)
+        return result
+
+    def assert_stable_empty_before_local_cleanup() -> None:
+        assert drain_calls == [(0, 0), (0, 0), (0, 1), (0, 0), (0, 0)]
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = (
+        assert_stable_empty_before_local_cleanup
+    )
+    engine_any._transport = transport
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+    engine_any._join_worker_with_escalation = Mock()
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    await engine.shutdown()
+
+    assert drain_calls == [(0, 0), (0, 0), (0, 1), (0, 0), (0, 0)]
+    transport.clear_pending_dispatches.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_stable_empty_prefetches_real_late_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_count = 1
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    sleep_calls = 0
+
+    async def enqueue_after_first_post_join_empty(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            engine_any._completion_queue.put(
+                msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+            )
+
+    def assert_prefetched_before_local_cleanup() -> None:
+        assert list(engine_any._prefetched_completion_events) == [completion]
+
+    monkeypatch.setattr(
+        transport,
+        "clear_pending_dispatches",
+        Mock(side_effect=assert_prefetched_before_local_cleanup),
+    )
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        enqueue_after_first_post_join_empty,
+    )
+
+    await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert await engine.wait_for_completion(timeout_seconds=0) is True
+    assert await engine.poll_completed_events() == [completion]
     assert engine.get_in_flight_count() == 0
 
 

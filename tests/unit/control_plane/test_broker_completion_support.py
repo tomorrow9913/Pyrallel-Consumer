@@ -163,6 +163,64 @@ async def test_process_completed_events_falls_back_to_metadata_only_dlq() -> Non
 
 
 @pytest.mark.asyncio
+async def test_shutdown_preserved_failure_completion_uses_normal_dlq_boundary() -> None:
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=100,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    kafka_config = KafkaConfig()
+    kafka_config.dlq_enabled = True
+    kafka_config.parallel_consumer.execution.max_retries = 3
+    publish_to_dlq = AsyncMock(return_value=True)
+    popped_cache_keys: list[tuple[DtoTopicPartition, int]] = []
+
+    support = BrokerCompletionSupport(
+        kafka_config=kafka_config,
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict({(tp, 100): (b"k", b"v")}),
+        should_cache_message_payloads=lambda: True,
+        pop_cached_message=lambda cache_key: popped_cache_keys.append(cache_key),
+        publish_to_dlq=publish_to_dlq,
+        logger=MagicMock(),
+    )
+
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="shutdown-preserved-failure",
+                tp=tp,
+                offset=100,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=3,
+            )
+        ]
+    )
+
+    publish_to_dlq.assert_awaited_once_with(
+        tp=tp,
+        offset=100,
+        epoch=tracker.get_current_epoch(),
+        key=b"k",
+        value=b"v",
+        error="boom",
+        attempt=3,
+    )
+    assert 100 in tracker.completed_offsets
+    assert popped_cache_keys == [(tp, 100)]
+
+
+@pytest.mark.asyncio
 async def test_process_completed_events_retries_pending_dlq_failure_and_marks_complete() -> (
     None
 ):
