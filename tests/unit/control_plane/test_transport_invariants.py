@@ -105,3 +105,25 @@ def test_worker_pipe_blueprint_documents_shutdown_completion_boundary() -> None:
     ]
 
     assert [phrase for phrase in required_phrases if phrase not in blueprint] == []
+
+
+def test_worker_pipe_blueprint_documents_shutdown_diagnostic_interpretation() -> None:
+    blueprint = (
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "03-execution"
+        / "02-process-execution-engine"
+        / "04-worker-pipe-transport-experiment.md"
+    ).read_text(encoding="utf-8")
+
+    required_phrases = [
+        "diagnostic evidence",
+        "Pre-join and post-join drain counts",
+        "stable-empty post-join",
+        "not a retry ledger",
+        "audit log for commit safety",
+    ]
+
+    assert [phrase for phrase in required_phrases if phrase not in blueprint] == []

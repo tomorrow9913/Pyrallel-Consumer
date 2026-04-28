@@ -294,6 +294,14 @@ decisions based only on teardown timing. Any future policy that turns shutdown
 residuals into terminal outcomes must be designed as an explicit control-plane
 contract change, not as a worker-pipe transport side effect.
 
+Shutdown drain logs and metrics should be interpreted as diagnostic evidence
+only. Pre-join and post-join drain counts explain how many registry and
+completion events were reconciled before local cleanup; stable-empty post-join
+passes explain that no immediately visible IPC remained within the bounded
+window. They are not a retry ledger, an audit log for commit safety, or evidence
+that residual work failed. Commit, DLQ, and rebalance outcomes continue to be
+derived only from normal completion handling in the control plane.
+
 ### Crash, restart, and recycle guardrails
 
 - the first slice may preserve current dead-worker recovery only when it is

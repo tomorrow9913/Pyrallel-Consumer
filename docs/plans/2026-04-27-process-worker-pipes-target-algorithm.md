@@ -274,6 +274,18 @@ A work item can be in exactly one canonical phase per execution identity:
   - post-join drain counts are logged;
   - existing diagnostic-only shutdown tests continue to prove no synthetic shutdown completion/requeue is emitted.
 
+### V2.7: Shutdown diagnostics interpretation and boundary hardening
+- Keep shutdown drain observability diagnostic-only:
+  - pre-join and post-join `registry_events` / `completion_events` counts report visible IPC reconciled before local cleanup;
+  - post-join `passes` reports bounded stable-empty observation, not proof that no hidden worker outcome exists;
+  - residual in-flight registry logs are operator diagnostics, not a retry ledger, DLQ trigger, or commit-safety source.
+- Preserve the control-plane boundary:
+  - real shutdown-preserved completions continue through normal `WorkManager`, `BrokerPoller`, commit, DLQ, and rebalance/epoch fencing;
+  - stale-epoch shutdown-preserved completions must remain fenced before DLQ publish, commit advancement, or cache cleanup.
+- Registry key migration review:
+  - keep the transitional `(worker_index, topic, partition, offset)` in-flight key for now because V2.1 centralized full logical identity matching at mutation boundaries;
+  - defer full worker-scoped key migration until all registry, timeout, recovery, residual logging, and tests can move together in one explicit migration slice.
+
 ## Recommended next instruction for agents
 
 Use this prompt for the next implementation pass:
