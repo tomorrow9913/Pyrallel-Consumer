@@ -1204,11 +1204,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         stable_empty_passes: int,
     ) -> tuple[int, int, int]:
         deadline = time.monotonic() + max(0.0, max_seconds)
+        hard_deadline = deadline + (
+            _SHUTDOWN_DRAIN_SLEEP_SECONDS * max(1, stable_empty_passes + 2)
+        )
         total_registry_drained = 0
         total_completion_drained = 0
         total_passes = 0
         empty_passes = 0
-        drained_any_events = False
 
         while True:
             drained_registry, drained_completion = self._drain_shutdown_ipc_once()
@@ -1220,22 +1222,28 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 empty_passes += 1
             else:
                 empty_passes = 0
-                drained_any_events = True
 
             if empty_passes >= stable_empty_passes:
                 break
-            remaining_seconds = deadline - time.monotonic()
-            # Once shutdown has observed post-join IPC, the safety boundary is
-            # stable-empty observation after that event rather than the original
-            # time budget. Otherwise a completion that arrives on the last
-            # budgeted pass could be prefetched without proving the queue then
-            # became empty before local cleanup closes the shutdown boundary.
-            if remaining_seconds <= 0 and not drained_any_events:
-                break
+            now = time.monotonic()
+            remaining_seconds = deadline - now
+            # The shutdown safety boundary is stable-empty observation, not
+            # merely the original time budget.  A multiprocessing.Queue feeder
+            # can make the first late IPC event visible just after the budget,
+            # so still perform non-zero post-deadline waits until the queue has
+            # been observed empty for the configured consecutive passes.  Keep
+            # that post-deadline grace bounded so shutdown cannot hang forever
+            # if a buggy or hostile queue source never reaches stable-empty.
             if remaining_seconds > 0:
                 sleep_seconds = min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds)
             else:
-                sleep_seconds = _SHUTDOWN_DRAIN_SLEEP_SECONDS
+                remaining_grace_seconds = hard_deadline - now
+                if remaining_grace_seconds <= 0:
+                    break
+                sleep_seconds = min(
+                    _SHUTDOWN_DRAIN_SLEEP_SECONDS,
+                    remaining_grace_seconds,
+                )
             await asyncio.sleep(sleep_seconds)
 
         return total_registry_drained, total_completion_drained, total_passes

@@ -3435,7 +3435,7 @@ async def test_shutdown_post_join_drain_observes_stable_empty_after_deadline_eve
     async def record_sleep(delay: float) -> None:
         sleep_calls.append(delay)
 
-    monotonic_values = iter([0.0, 1.0, 1.0, 1.0])
+    monotonic_values = iter([0.0, 0.06, 0.07])
     monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 1.0))
     monkeypatch.setattr(
         "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
@@ -3451,6 +3451,82 @@ async def test_shutdown_post_join_drain_observes_stable_empty_after_deadline_eve
     assert result == (0, 1, 3)
     assert drain_calls == [(0, 1), (0, 0), (0, 0)]
     assert sleep_calls == [0.01, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_waits_for_first_late_event_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    drain_results = [
+        (0, 0),
+        (0, 1),
+        (0, 0),
+        (0, 0),
+    ]
+    drain_calls: list[tuple[int, int]] = []
+    sleep_calls: list[float] = []
+
+    def drain_once() -> tuple[int, int]:
+        result = drain_results.pop(0) if drain_results else (0, 0)
+        drain_calls.append(result)
+        return result
+
+    async def record_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monotonic_values = iter([0.0, 0.055, 0.065, 0.075])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 1.0))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        record_sleep,
+    )
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+
+    result = await engine._drain_shutdown_ipc_until_stable_empty(
+        max_seconds=0.05,
+        stable_empty_passes=2,
+    )
+
+    assert result == (0, 1, 4)
+    assert drain_calls == [(0, 0), (0, 1), (0, 0), (0, 0)]
+    assert sleep_calls == [0.01, 0.01, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_has_bounded_post_deadline_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    drain_calls: list[tuple[int, int]] = []
+    sleep_calls: list[float] = []
+
+    def drain_once() -> tuple[int, int]:
+        result = (0, 1)
+        drain_calls.append(result)
+        return result
+
+    async def record_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monotonic_values = iter([0.0, 0.055, 0.065, 0.075, 0.095])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 0.095))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        record_sleep,
+    )
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+
+    result = await engine._drain_shutdown_ipc_until_stable_empty(
+        max_seconds=0.05,
+        stable_empty_passes=2,
+    )
+
+    assert result == (0, 4, 4)
+    assert drain_calls == [(0, 1), (0, 1), (0, 1), (0, 1)]
+    assert sleep_calls == [0.01, 0.01, 0.01]
 
 
 @pytest.mark.asyncio
