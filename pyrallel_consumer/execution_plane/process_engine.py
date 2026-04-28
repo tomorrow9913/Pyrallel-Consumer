@@ -1198,6 +1198,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         total_completion_drained = 0
         total_passes = 0
         empty_passes = 0
+        drained_any_events = False
 
         while True:
             drained_registry, drained_completion = self._drain_shutdown_ipc_once()
@@ -1209,13 +1210,24 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 empty_passes += 1
             else:
                 empty_passes = 0
+                drained_any_events = True
 
             if empty_passes >= stable_empty_passes:
                 break
             remaining_seconds = deadline - time.monotonic()
-            if remaining_seconds <= 0:
+            # Once shutdown has observed post-join IPC, the safety boundary is
+            # stable-empty observation after that event rather than the original
+            # time budget. Otherwise a completion that arrives on the last
+            # budgeted pass could be prefetched without proving the queue then
+            # became empty before local cleanup closes the shutdown boundary.
+            if remaining_seconds <= 0 and not drained_any_events:
                 break
-            await asyncio.sleep(min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds))
+            await asyncio.sleep(
+                min(
+                    _SHUTDOWN_DRAIN_SLEEP_SECONDS,
+                    max(0.0, remaining_seconds),
+                )
+            )
 
         return total_registry_drained, total_completion_drained, total_passes
 
