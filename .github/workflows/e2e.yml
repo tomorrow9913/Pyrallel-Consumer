@@ -90,6 +90,8 @@ jobs:
           PYRALLEL_E2E_REQUIRE_BROKER: "1"
         run: |
           mkdir -p .artifacts
+          # Isolate Issue #112 retry/DLQ process-mode cases into fresh pytest
+          # interpreters to avoid fork-after-thread Queue feeder contamination.
           if [ "${{ matrix.suite.name }}" = "recovery-retry-dlq" ]; then
             uv run pytest 'tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success[async]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-retry-async.xml
             uv run pytest 'tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success[process]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-retry-process.xml
