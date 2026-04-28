@@ -206,4 +206,4 @@ class ProcessRegistrySupport:
             return True
         if incoming_identity[:3] != existing_identity[:3]:
             return False
-        return incoming_identity.epoch >= existing_identity.epoch
+        return incoming_identity.epoch > existing_identity.epoch

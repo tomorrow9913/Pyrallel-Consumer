@@ -1928,6 +1928,7 @@ async def test_stale_completion_same_offset_keeps_new_identity_mapping(
         (mock_dto_topic_partition, 10)
     ] = new_item.id
     work_manager._keys_in_flight.add((mock_dto_topic_partition, b"key-A"))
+    work_manager._key_in_flight_counts[(mock_dto_topic_partition, b"key-A")] = 2
 
     stale_completion = CompletionEvent(
         id=old_item.id,
@@ -1953,4 +1954,5 @@ async def test_stale_completion_same_offset_keeps_new_identity_mapping(
     )
     assert work_manager._current_in_flight_count == 1
     assert (mock_dto_topic_partition, b"key-A") in work_manager._keys_in_flight
+    assert work_manager._key_in_flight_counts[(mock_dto_topic_partition, b"key-A")] == 1
     assert tracker.last_committed_offset == -1

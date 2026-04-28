@@ -1120,6 +1120,40 @@ def test_registry_start_event_overwrites_stale_identity_when_epoch_advances() ->
     }
 
 
+def test_registry_start_event_ignores_equal_epoch_identity_mismatch() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 8,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
 def test_dead_worker_recovery_uses_superseding_start_identity() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
@@ -3416,7 +3450,7 @@ async def test_shutdown_post_join_drain_observes_stable_empty_after_deadline_eve
 
     assert result == (0, 1, 3)
     assert drain_calls == [(0, 1), (0, 0), (0, 0)]
-    assert sleep_calls == [0.0, 0.0]
+    assert sleep_calls == [0.01, 0.01]
 
 
 @pytest.mark.asyncio

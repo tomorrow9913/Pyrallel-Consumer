@@ -1232,12 +1232,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             # became empty before local cleanup closes the shutdown boundary.
             if remaining_seconds <= 0 and not drained_any_events:
                 break
-            await asyncio.sleep(
-                min(
-                    _SHUTDOWN_DRAIN_SLEEP_SECONDS,
-                    max(0.0, remaining_seconds),
-                )
-            )
+            if remaining_seconds > 0:
+                sleep_seconds = min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds)
+            else:
+                sleep_seconds = _SHUTDOWN_DRAIN_SLEEP_SECONDS
+            await asyncio.sleep(sleep_seconds)
 
         return total_registry_drained, total_completion_drained, total_passes
 
