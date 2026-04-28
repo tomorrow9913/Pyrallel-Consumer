@@ -286,6 +286,23 @@ A work item can be in exactly one canonical phase per execution identity:
   - keep the transitional `(worker_index, topic, partition, offset)` in-flight key for now because V2.1 centralized full logical identity matching at mutation boundaries;
   - defer full worker-scoped key migration until all registry, timeout, recovery, residual logging, and tests can move together in one explicit migration slice.
 
+### V2.8: Registry key full identity migration review
+- Decision for the current PR: do not widen the in-flight registry key yet.
+- Rationale:
+  - mutation boundaries now compare full logical identity (`id/epoch`) before discarding registry or pending-dispatch state;
+  - widening keys independently would touch registry start/done/timeout paths, pending-dispatch recovery, residual logging, and tests in one cross-cutting migration;
+  - keeping the transitional key avoids mixing a mechanical key migration with shutdown/control-plane boundary hardening.
+- Next explicit migration slice, if chosen, must move these together:
+  - registry key construction and worker `start/done` event payloads;
+  - timeout scan and completion-driven registry discard;
+  - pending-dispatch recovery and slot-release matching;
+  - residual diagnostics and same-offset redelivery tests.
+
+### V2.9: Timeout policy convergence / e2e boundary
+- Keep timeout policy convergence out of the shutdown-preservation PR unless CI proves a direct regression from these changes.
+- Future PR scope should decide whether worker timeout, blocking timeout, shutdown residual diagnostics, and retry/DLQ outcomes need a single operator-facing policy model.
+- E2E failures should be triaged in that separate PR only when they exercise timeout/recovery semantics; otherwise treat them as environment or harness issues first.
+
 ## Recommended next instruction for agents
 
 Use this prompt for the next implementation pass:

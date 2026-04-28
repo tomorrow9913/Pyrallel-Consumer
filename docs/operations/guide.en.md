@@ -92,7 +92,15 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: Commit clamping is computed from the control-plane `WorkManager` dispatch ledger. This commit clamping rule belongs to the control plane, while process-private registries remain recovery/diagnostics state rather than a required engine capability.
 - **Tip**: Keep `process_batch_metrics` documented as a v1 compatibility projection while generic engine diagnostics evolve internally. When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
 
-### 1.10. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
+### 1.10. Shutdown Drain Diagnostics
+- **Log lines**:
+    - `ProcessExecutionEngine shutdown pre-join drain: registry_events=... completion_events=... residual_in_flight_registry=...`
+    - `ProcessExecutionEngine shutdown post-join drain: registry_events=... completion_events=... passes=... residual_in_flight_registry=...`
+    - `Residual in-flight registry after shutdown drain: ...`
+- **Meaning**: These entries describe visible IPC reconciliation during shutdown and remaining process-private diagnostic state. They are not Prometheus counters, a retry ledger, a DLQ trigger, or commit-safety evidence.
+- **Tip**: Treat non-zero `completion_events` as evidence that already-visible real completions were moved into the normal prefetched completion path. Treat `passes` as a bounded stable-empty observation only; it is not proof that no hidden worker outcome can still exist outside the shutdown boundary. Commit advancement, DLQ publish, and epoch fencing remain control-plane decisions driven by normal completion handling.
+
+### 1.11. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
 - **Prometheus queries**:
     - `consumer_adaptive_backpressure_configured_max_in_flight`
     - `consumer_adaptive_backpressure_effective_max_in_flight`

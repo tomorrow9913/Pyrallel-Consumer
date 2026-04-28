@@ -1055,6 +1055,68 @@ async def test_shutdown_preserved_stale_success_releases_state_without_dirty_com
 
 
 @pytest.mark.asyncio
+async def test_shutdown_preserved_stale_failure_skips_dlq_commit_and_cache_cleanup(
+    broker_poller, topic_partition, caplog
+):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._work_manager.on_assign({topic_partition: tracker})
+    broker_poller._kafka_config.dlq_enabled = True
+    broker_poller._kafka_config.parallel_consumer.execution.max_retries = 1
+    broker_poller._publish_to_dlq = AsyncMock(return_value=True)
+
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=0,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+    await broker_poller._work_manager.schedule()
+
+    first_item = broker_poller._execution_engine.submit.await_args_list[0].args[0]
+    broker_poller._message_cache[(topic_partition, first_item.offset)] = (
+        b"key-A",
+        b"payload-0",
+    )
+    tracker.increment_epoch()
+    stale_completion = CompletionEvent(
+        id=first_item.id,
+        tp=topic_partition,
+        offset=first_item.offset,
+        epoch=first_item.epoch,
+        status=CompletionStatus.FAILURE,
+        error="worker failed before shutdown boundary",
+        attempt=1,
+    )
+    broker_poller._execution_engine.poll_completed_events.return_value = [
+        stale_completion
+    ]
+
+    with caplog.at_level("WARNING"):
+        completed_events = await broker_poller._work_manager.poll_completed_events()
+        await broker_poller._process_completed_events(completed_events)
+
+    assert first_item.id not in broker_poller._work_manager._in_flight_work_items
+    assert first_item.id not in broker_poller._work_manager._dispatch_timestamps
+    assert broker_poller._work_manager.get_total_in_flight_count() == 0
+    assert first_item.offset not in tracker.completed_offsets
+    assert tracker.last_committed_offset == -1
+    assert broker_poller._dirty_commit_partitions == set()
+    assert broker_poller._completions_since_last_commit == 0
+    assert broker_poller._pending_dlq_events == {}
+    assert (topic_partition, first_item.offset) in broker_poller._message_cache
+    broker_poller._publish_to_dlq.assert_not_awaited()
+    assert "Discarding zombie completion" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_on_assign_shared_tracker_allows_key_hash_backlog_to_resume(
     broker_poller, topic_partition
 ):
