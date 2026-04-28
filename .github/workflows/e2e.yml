@@ -90,13 +90,20 @@ jobs:
           PYRALLEL_E2E_REQUIRE_BROKER: "1"
         run: |
           mkdir -p .artifacts
-          uv run pytest ${{ matrix.suite.pytest_args }} -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit.xml
+          if [ "${{ matrix.suite.name }}" = "recovery-retry-dlq" ]; then
+            uv run pytest 'tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success[async]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-retry-async.xml
+            uv run pytest 'tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success[process]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-retry-process.xml
+            uv run pytest 'tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion[async]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-dlq-async.xml
+            uv run pytest 'tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion[process]' -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit-dlq-process.xml
+          else
+            uv run pytest ${{ matrix.suite.pytest_args }} -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit.xml
+          fi
       - name: Upload broker-backed E2E report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-junit-${{ matrix.suite.name }}-${{ github.run_id }}
-          path: .artifacts/e2e-junit.xml
+          path: .artifacts/e2e-junit*.xml
       - name: Stop Kafka
         if: always()
         env:
