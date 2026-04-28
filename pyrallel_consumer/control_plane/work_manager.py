@@ -180,14 +180,24 @@ class WorkManager:
         dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
         if completed_item is None:
             return False, dispatch_time
-        self._work_item_ids_by_tp_offset.pop(
-            (completed_item.tp, completed_item.offset), None
-        )
+        tp_offset_key = (completed_item.tp, completed_item.offset)
+        if self._work_item_ids_by_tp_offset.get(tp_offset_key) == work_item_id:
+            self._work_item_ids_by_tp_offset.pop(tp_offset_key, None)
 
         if self._ordering_mode == OrderingMode.KEY_HASH:
-            self._keys_in_flight.discard((completed_item.tp, completed_item.key))
+            if not any(
+                item.tp == completed_item.tp and item.key == completed_item.key
+                for item_id, item in self._in_flight_work_items.items()
+                if item_id in self._dispatch_timestamps
+            ):
+                self._keys_in_flight.discard((completed_item.tp, completed_item.key))
         elif self._ordering_mode == OrderingMode.PARTITION:
-            self._partitions_in_flight.discard(completed_item.tp)
+            if not any(
+                item.tp == completed_item.tp
+                for item_id, item in self._in_flight_work_items.items()
+                if item_id in self._dispatch_timestamps
+            ):
+                self._partitions_in_flight.discard(completed_item.tp)
 
         self._cleanup_empty_queue(completed_item.tp, completed_item.key)
         if dispatch_time is not None:

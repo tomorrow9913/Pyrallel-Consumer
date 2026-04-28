@@ -8,6 +8,9 @@ from confluent_kafka import Consumer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.control_plane.broker_completion_support import (
+    CompletionProcessingResult,
+)
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus
@@ -367,7 +370,12 @@ async def test_commit_ready_offsets_waits_for_completion_cadence_before_commit(
     broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
 
     completion_support = MagicMock()
-    completion_support.process_completed_events = AsyncMock(side_effect=[1, 2])
+    completion_support.process_completed_events = AsyncMock(
+        side_effect=[
+            CompletionProcessingResult(1, frozenset({topic_partition})),
+            CompletionProcessingResult(2, frozenset({topic_partition})),
+        ]
+    )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
 
     await broker_poller._process_completed_events([completion_event])
@@ -416,7 +424,9 @@ async def test_commit_ready_offsets_force_flushes_dirty_partitions(
     broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
 
     completion_support = MagicMock()
-    completion_support.process_completed_events = AsyncMock(return_value=1)
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(1, frozenset({topic_partition}))
+    )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
 
     await broker_poller._process_completed_events([completion_event])
@@ -433,7 +443,9 @@ async def test_process_completed_events_marks_only_managed_partitions_dirty(
     untracked_partition = DtoTopicPartition(topic="stale-topic", partition=1)
 
     completion_support = MagicMock()
-    completion_support.process_completed_events = AsyncMock(return_value=1)
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(1, frozenset({topic_partition}))
+    )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
 
     await broker_poller._process_completed_events(
@@ -464,7 +476,9 @@ async def test_process_completed_events_unions_retry_and_completion_partitions(
     broker_poller._pending_dlq_events[(retry_partition, 7)] = completion_event
 
     completion_support = MagicMock()
-    completion_support.process_completed_events = AsyncMock(return_value=1)
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(1, frozenset({topic_partition}))
+    )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
 
     await broker_poller._process_completed_events([completion_event])
@@ -483,7 +497,9 @@ async def test_process_completed_events_does_not_mark_everything_dirty_for_untra
     untracked_partition = DtoTopicPartition(topic="stale-topic", partition=1)
 
     completion_support = MagicMock()
-    completion_support.process_completed_events = AsyncMock(return_value=1)
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(0, frozenset())
+    )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
 
     await broker_poller._process_completed_events(
@@ -501,6 +517,39 @@ async def test_process_completed_events_does_not_mark_everything_dirty_for_untra
     )
 
     assert broker_poller._dirty_commit_partitions == set()
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_dirties_only_accepted_mixed_batch_partitions(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    stale_partition = DtoTopicPartition(topic="stale-topic", partition=1)
+    broker_poller._offset_trackers[stale_partition] = _make_tracker(stale_partition)
+
+    completion_support = MagicMock()
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(1, frozenset({topic_partition}))
+    )
+    broker_poller._make_completion_support = MagicMock(return_value=completion_support)
+
+    await broker_poller._process_completed_events(
+        [
+            completion_event,
+            CompletionEvent(
+                id="stale-work",
+                tp=stale_partition,
+                offset=99,
+                epoch=0,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+        ]
+    )
+
+    assert broker_poller._dirty_commit_partitions == {topic_partition}
+    assert broker_poller._completions_since_last_commit == 1
 
 
 @pytest.mark.asyncio
@@ -950,6 +999,58 @@ async def test_stale_completion_does_not_resubmit_next_same_key_work(
         await broker_poller._process_completed_events(completed_events)
 
     assert broker_poller._execution_engine.submit.await_count == 1
+    assert "Discarding zombie completion" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_preserved_stale_success_releases_state_without_dirty_commit(
+    broker_poller, topic_partition, caplog
+):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._work_manager.on_assign({topic_partition: tracker})
+
+    await broker_poller._work_manager.submit_message(
+        tp=topic_partition,
+        offset=0,
+        epoch=tracker.get_current_epoch(),
+        key=b"key-A",
+        payload=b"payload-0",
+    )
+    await broker_poller._work_manager.schedule()
+
+    first_item = broker_poller._execution_engine.submit.await_args_list[0].args[0]
+    tracker.increment_epoch()
+    stale_completion = CompletionEvent(
+        id=first_item.id,
+        tp=topic_partition,
+        offset=first_item.offset,
+        epoch=first_item.epoch,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    broker_poller._execution_engine.poll_completed_events.return_value = [
+        stale_completion
+    ]
+
+    with caplog.at_level("WARNING"):
+        completed_events = await broker_poller._work_manager.poll_completed_events()
+        await broker_poller._process_completed_events(completed_events)
+
+    assert first_item.id not in broker_poller._work_manager._in_flight_work_items
+    assert first_item.id not in broker_poller._work_manager._dispatch_timestamps
+    assert broker_poller._work_manager.get_total_in_flight_count() == 0
+    assert first_item.offset not in tracker.completed_offsets
+    assert tracker.last_committed_offset == -1
+    assert broker_poller._dirty_commit_partitions == set()
+    assert broker_poller._completions_since_last_commit == 0
     assert "Discarding zombie completion" in caplog.text
 
 

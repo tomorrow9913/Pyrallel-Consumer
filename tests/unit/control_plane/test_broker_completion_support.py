@@ -272,6 +272,55 @@ async def test_shutdown_preserved_stale_failure_completion_is_epoch_fenced() -> 
 
 
 @pytest.mark.asyncio
+async def test_shutdown_preserved_stale_success_completion_does_not_mark_complete() -> (
+    None
+):
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=100,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    tracker.increment_epoch()
+    popped_cache_keys: list[tuple[DtoTopicPartition, int]] = []
+
+    support = BrokerCompletionSupport(
+        kafka_config=KafkaConfig(),
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict({(tp, 100): (b"k", b"v")}),
+        should_cache_message_payloads=lambda: True,
+        pop_cached_message=lambda cache_key: popped_cache_keys.append(cache_key),
+        publish_to_dlq=AsyncMock(return_value=True),
+        logger=MagicMock(),
+    )
+
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="shutdown-preserved-stale-success",
+                tp=tp,
+                offset=100,
+                epoch=tracker.get_current_epoch() - 1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            )
+        ]
+    )
+
+    assert 100 not in tracker.completed_offsets
+    assert tracker.last_committed_offset == 99
+    assert popped_cache_keys == []
+
+
+@pytest.mark.asyncio
 async def test_process_completed_events_retries_pending_dlq_failure_and_marks_complete() -> (
     None
 ):

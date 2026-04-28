@@ -3283,6 +3283,64 @@ async def test_shutdown_post_join_stable_empty_prefetches_real_late_completion(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_post_join_late_completion_keeps_different_identity_registry(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._in_flight_count = 1
+    stale_completion = CompletionEvent(
+        id="work-first",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    sleep_calls = 0
+
+    async def enqueue_after_first_post_join_empty(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            engine_any._completion_queue.put(
+                msgpack.packb(
+                    _completion_event_to_dict(stale_completion),
+                    use_bin_type=True,
+                )
+            )
+
+    monotonic_values = iter([0.0, 2.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 2.0))
+    clear_pending_dispatches = Mock()
+    monkeypatch.setattr(transport, "clear_pending_dispatches", clear_pending_dispatches)
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        enqueue_after_first_post_join_empty,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [stale_completion]
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+    assert "topic-1@42 id=work-redelivered epoch=8" in caplog.text
+    clear_pending_dispatches.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanup(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
