@@ -4,13 +4,14 @@ import asyncio
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import msgpack  # type: ignore[import-untyped]
 
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import CompletionEvent, WorkItem
 
 SerializedWorkItem = dict[str, Any]
+InFlightRegistryKey = tuple[int, str, int, int]
 
 
 @dataclass(frozen=True)
@@ -20,12 +21,104 @@ class RouteIdentity:
     key: Any
 
 
+class LogicalWorkIdentity(NamedTuple):
+    topic: str
+    partition: int
+    offset: int
+    id: str
+    epoch: int
+
+
+class WorkerExecutionIdentity(NamedTuple):
+    worker_index: int
+    work: LogicalWorkIdentity
+
+
+@dataclass(frozen=True)
+class ProcessTransportCapabilities:
+    pending_dispatch_recovery: bool = False
+
+
+@dataclass(frozen=True)
+class PendingDispatchRecovery:
+    identity: WorkerExecutionIdentity
+    payload: SerializedWorkItem
+
+
 def resolve_route_identity(work_item: WorkItem) -> RouteIdentity:
     return RouteIdentity(
         topic=work_item.tp.topic,
         partition=work_item.tp.partition,
         key=work_item.key,
     )
+
+
+def logical_work_identity_from_payload(
+    payload: SerializedWorkItem,
+) -> LogicalWorkIdentity:
+    return LogicalWorkIdentity(
+        topic=str(payload["topic"]),
+        partition=int(payload["partition"]),
+        offset=int(payload["offset"]),
+        id=str(payload.get("id", "")),
+        epoch=int(payload.get("epoch", 0)),
+    )
+
+
+def logical_work_identity_from_completion_event(
+    event: CompletionEvent,
+) -> LogicalWorkIdentity:
+    return LogicalWorkIdentity(
+        topic=event.tp.topic,
+        partition=event.tp.partition,
+        offset=event.offset,
+        id=event.id,
+        epoch=event.epoch,
+    )
+
+
+def logical_work_identity_from_registry_entry(
+    key: InFlightRegistryKey,
+    payload: SerializedWorkItem,
+) -> LogicalWorkIdentity:
+    _worker_index, topic, partition, offset = key
+    return LogicalWorkIdentity(
+        topic=topic,
+        partition=partition,
+        offset=offset,
+        id=str(payload.get("id", "")),
+        epoch=int(payload.get("epoch", 0)),
+    )
+
+
+def worker_execution_identity_from_payload(
+    worker_index: int,
+    payload: SerializedWorkItem,
+) -> WorkerExecutionIdentity:
+    return WorkerExecutionIdentity(
+        worker_index=worker_index,
+        work=logical_work_identity_from_payload(payload),
+    )
+
+
+def worker_execution_identity_from_registry_entry(
+    key: InFlightRegistryKey,
+    payload: SerializedWorkItem,
+) -> WorkerExecutionIdentity:
+    return WorkerExecutionIdentity(
+        worker_index=key[0],
+        work=logical_work_identity_from_registry_entry(key, payload),
+    )
+
+
+def registry_entry_matches_payload(
+    key: InFlightRegistryKey,
+    registry_payload: SerializedWorkItem,
+    expected_payload: SerializedWorkItem,
+) -> bool:
+    return logical_work_identity_from_registry_entry(
+        key, registry_payload
+    ) == logical_work_identity_from_payload(expected_payload)
 
 
 def stable_worker_index_for_route(
@@ -47,6 +140,10 @@ def stable_worker_index_for_route(
 
 
 class ProcessTransport(ABC):
+    @property
+    def capabilities(self) -> ProcessTransportCapabilities:
+        return ProcessTransportCapabilities()
+
     @abstractmethod
     async def submit_work_item(
         self,
@@ -76,7 +173,7 @@ class ProcessTransport(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         raise NotImplementedError
 
     @abstractmethod

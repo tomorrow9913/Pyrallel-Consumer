@@ -52,6 +52,9 @@ SerializedBatchEnvelope = dict[str, Any]
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
+_SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
+_POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
+_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
 _logger = logging.getLogger(__name__)
 
 
@@ -82,6 +85,16 @@ def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
         requeue_attempts=payload.get("requeue_attempts", 0),
         poison_key=payload.get("poison_key", WORK_ITEM_POISON_KEY_UNSET),
     )
+
+
+def _work_item_identity_payload(payload: SerializedWorkItem) -> SerializedWorkItem:
+    return {
+        "id": payload["id"],
+        "topic": payload["topic"],
+        "partition": payload["partition"],
+        "offset": payload["offset"],
+        "epoch": payload["epoch"],
+    }
 
 
 def _completion_event_to_dict(
@@ -550,6 +563,7 @@ def _worker_loop(
                         {
                             "kind": "timeout",
                             "key": in_flight_key,
+                            "payload": dict(payload),
                             "attempt": attempt,
                             "timeout_error": error,
                         }
@@ -632,7 +646,13 @@ def _worker_loop(
                         put_exc,
                     )
                 finally:
-                    registry_event_queue.put({"kind": "done", "key": in_flight_key})
+                    registry_event_queue.put(
+                        {
+                            "kind": "done",
+                            "key": in_flight_key,
+                            "payload": _work_item_identity_payload(payload),
+                        }
+                    )
 
             # Check worker recycling after task completion
             if recycle_limit is not None:
@@ -954,8 +974,25 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _ensure_workers_alive(self, *, force: bool = False) -> None:
+        self._drain_visible_worker_events()
+        if not self._should_run_worker_liveness_scan(force=force):
+            return
+
+        for idx, exitcode in self._collect_dead_worker_recovery_candidates():
+            to_requeue = self._collect_recoverable_worker_payloads(idx)
+            self._logger.error(
+                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                idx,
+                exitcode,
+            )
+            if self._restart_dead_worker(idx, exitcode, to_requeue):
+                self._publish_recovered_worker_payloads(idx, to_requeue)
+
+    def _drain_visible_worker_events(self) -> None:
         self._drain_registry_events()
         self._prefetch_completed_events_from_queue()
+
+    def _should_run_worker_liveness_scan(self, *, force: bool) -> bool:
         liveness_interval = getattr(
             self,
             "_worker_liveness_check_interval_seconds",
@@ -965,61 +1002,101 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             now = time.monotonic()
             last_check = getattr(self, "_last_worker_liveness_check", 0.0)
             if now - last_check < liveness_interval:
-                return
+                return False
             self._last_worker_liveness_check = now
-        elif force:
+            return True
+        if force:
             self._last_worker_liveness_check = time.monotonic()
+        return True
 
+    def _collect_dead_worker_recovery_candidates(self) -> list[tuple[int, Any]]:
+        candidates: list[tuple[int, Any]] = []
         for idx, worker in enumerate(self._workers):
-            if worker.is_alive():
-                continue
-            exitcode = worker.exitcode
-            to_requeue: list[SerializedWorkItem] = []
-            try:
-                to_requeue = self._recover_dead_worker_items(idx)
-                to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
-            except Exception as recovery_exc:
-                self._logger.error(
-                    "Failed to recover work from worker %d: %s", idx, recovery_exc
-                )
+            if not worker.is_alive():
+                candidates.append((idx, worker.exitcode))
+        return candidates
+
+    def _collect_recoverable_worker_payloads(
+        self,
+        idx: int,
+    ) -> list[SerializedWorkItem]:
+        to_requeue: list[SerializedWorkItem] = []
+        try:
+            to_requeue.extend(self._recover_dead_worker_items(idx))
+        except Exception as recovery_exc:
             self._logger.error(
-                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
+                "Failed to recover in-flight work from worker %d: %s",
+                idx,
+                recovery_exc,
+            )
+        try:
+            to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
+        except Exception as recovery_exc:
+            self._logger.error(
+                "Failed to recover pending dispatches from worker %d: %s",
+                idx,
+                recovery_exc,
+            )
+        return to_requeue
+
+    def _restart_dead_worker(
+        self,
+        idx: int,
+        exitcode: Any,
+        recovered_payloads: list[SerializedWorkItem],
+    ) -> bool:
+        try:
+            new_worker = self._start_worker(idx)
+        except Exception as restart_exc:
+            self._logger.error(
+                "Failed to restart worker %d after exitcode=%s: %s",
                 idx,
                 exitcode,
+                restart_exc,
             )
-            try:
-                new_worker = self._start_worker(idx)
-            except Exception as restart_exc:
-                self._logger.error(
-                    "Failed to restart worker %d after exitcode=%s: %s",
-                    idx,
-                    exitcode,
-                    restart_exc,
-                )
-                self._emit_worker_restart_failures(idx, to_requeue, restart_exc)
-                continue
-            self._workers[idx] = new_worker
-            try:
-                if to_requeue:
-                    self._requeue_recovered_payloads(to_requeue)
-                    offsets = [entry.get("offset") for entry in to_requeue]
-                    self._logger.warning(
-                        "Requeued %d lost work item(s) offsets=%s from dead worker %d",
-                        len(to_requeue),
-                        offsets,
-                        idx,
-                    )
-            except Exception as requeue_exc:
-                self._logger.error(
-                    "Failed to requeue work from worker %d: %s", idx, requeue_exc
-                )
+            self._emit_worker_restart_failures(idx, recovered_payloads, restart_exc)
+            return False
+        self._workers[idx] = new_worker
+        return True
+
+    def _publish_recovered_worker_payloads(
+        self,
+        idx: int,
+        payloads: list[SerializedWorkItem],
+    ) -> None:
+        if not payloads:
+            return
+        try:
+            self._requeue_recovered_payloads(payloads)
+            offsets = [entry.get("offset") for entry in payloads]
+            self._logger.warning(
+                "Requeued %d lost work item(s) offsets=%s from dead worker %d",
+                len(payloads),
+                offsets,
+                idx,
+            )
+        except Exception as requeue_exc:
+            self._logger.error(
+                "Failed to requeue work from worker %d: %s", idx, requeue_exc
+            )
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         transport = getattr(self, "_transport", None)
         if transport is None:
             return []
+        capabilities = getattr(transport, "capabilities", None)
+        if capabilities is None or not capabilities.pending_dispatch_recovery:
+            return []
+        recovered_dispatches = transport.recover_pending_dispatches(idx)
+        if recovered_dispatches:
+            identities = [entry.identity for entry in recovered_dispatches]
+            self._logger.warning(
+                "Recovered %d pending worker-pipe dispatch(es) identities=%s",
+                len(recovered_dispatches),
+                identities,
+            )
         return self._filter_recoverable_pending_pipe_dispatches(
-            idx, transport.recover_pending_dispatches(idx)
+            idx, [entry.payload for entry in recovered_dispatches]
         )
 
     def _signal_worker_pipe_slot_wait(self) -> None:
@@ -1087,22 +1164,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 except queue.Empty:
                     return prefetched
                 event = self._decode_completion_queue_item(raw_event)
-                prefetched_events.append(event)
+                self._prefetch_completion_event(event)
                 prefetched += 1
-                self._discard_registry_entry_for_completion(event)
+
+    def _prefetch_completion_event(self, event: CompletionEvent) -> None:
+        self._prefetched_completion_events.append(event)
+        self._discard_registry_entry_for_completion(event)
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         with self._get_registry_state_lock():
-            for key, payload in list(self._in_flight_registry.items()):
-                _worker_index, topic, partition, offset = key
-                if (
-                    topic == event.tp.topic
-                    and partition == event.tp.partition
-                    and offset == event.offset
-                    and payload.get("epoch", 0) == event.epoch
-                    and payload.get("id", "") == event.id
-                ):
-                    self._in_flight_registry.pop(key, None)
+            in_flight_registry = getattr(self, "_in_flight_registry", None)
+            if in_flight_registry is None:
+                return
+            ProcessRegistrySupport.discard_completion_from_registry(
+                in_flight_registry=in_flight_registry,
+                event=event,
+            )
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
         drained_registry = self._drain_registry_event_queue()
@@ -1114,11 +1191,62 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             except queue.Empty:
                 break
             drained_completion += 1
-            self._prefetched_completion_events.append(
+            self._prefetch_completion_event(
                 self._decode_completion_queue_item(raw_event)
             )
 
         return drained_registry, drained_completion
+
+    async def _drain_shutdown_ipc_until_stable_empty(
+        self,
+        *,
+        max_seconds: float,
+        stable_empty_passes: int,
+    ) -> tuple[int, int, int]:
+        deadline = time.monotonic() + max(0.0, max_seconds)
+        hard_deadline = deadline + (
+            _SHUTDOWN_DRAIN_SLEEP_SECONDS * max(1, stable_empty_passes + 2)
+        )
+        total_registry_drained = 0
+        total_completion_drained = 0
+        total_passes = 0
+        empty_passes = 0
+
+        while True:
+            drained_registry, drained_completion = self._drain_shutdown_ipc_once()
+            total_registry_drained += drained_registry
+            total_completion_drained += drained_completion
+            total_passes += 1
+
+            if drained_registry == 0 and drained_completion == 0:
+                empty_passes += 1
+            else:
+                empty_passes = 0
+
+            if empty_passes >= stable_empty_passes:
+                break
+            now = time.monotonic()
+            remaining_seconds = deadline - now
+            # The shutdown safety boundary is stable-empty observation, not
+            # merely the original time budget.  A multiprocessing.Queue feeder
+            # can make the first late IPC event visible just after the budget,
+            # so still perform non-zero post-deadline waits until the queue has
+            # been observed empty for the configured consecutive passes.  Keep
+            # that post-deadline grace bounded so shutdown cannot hang forever
+            # if a buggy or hostile queue source never reaches stable-empty.
+            if remaining_seconds > 0:
+                sleep_seconds = min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds)
+            else:
+                remaining_grace_seconds = hard_deadline - now
+                if remaining_grace_seconds <= 0:
+                    break
+                sleep_seconds = min(
+                    _SHUTDOWN_DRAIN_SLEEP_SECONDS,
+                    remaining_grace_seconds,
+                )
+            await asyncio.sleep(sleep_seconds)
+
+        return total_registry_drained, total_completion_drained, total_passes
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         """
@@ -1208,8 +1336,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
         """
-        await asyncio.to_thread(self._ensure_workers_alive)
-        self._drain_registry_events()
+        if not getattr(self, "_is_shutdown", False):
+            await asyncio.to_thread(self._ensure_workers_alive)
+            self._drain_registry_events()
+
         completed_events: List[CompletionEvent] = []
         while (
             len(completed_events) < batch_limit and self._prefetched_completion_events
@@ -1217,10 +1347,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             completed_events.append(self._prefetched_completion_events.popleft())
             with self._in_flight_lock:
                 self._in_flight_count -= 1
+        if getattr(self, "_is_shutdown", False):
+            return completed_events
         while len(completed_events) < batch_limit:
             try:
                 raw_event = self._completion_queue.get_nowait()
                 event = self._decode_completion_queue_item(raw_event)
+                self._discard_registry_entry_for_completion(event)
                 completed_events.append(event)
                 with self._in_flight_lock:
                     self._in_flight_count -= 1
@@ -1236,6 +1369,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
+        if getattr(self, "_is_shutdown", False):
+            return bool(self._prefetched_completion_events)
+
         await asyncio.to_thread(self._ensure_workers_alive)
         self._drain_registry_events()
 
@@ -1248,7 +1384,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             raw_event = None
 
         if raw_event is not None:
-            self._prefetched_completion_events.append(
+            self._prefetch_completion_event(
                 self._decode_completion_queue_item(raw_event)
             )
             return True
@@ -1265,9 +1401,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         except queue.Empty:
             return False
 
-        self._prefetched_completion_events.append(
-            self._decode_completion_queue_item(raw_event)
-        )
+        self._prefetch_completion_event(self._decode_completion_queue_item(raw_event))
         return True
 
     def _initialize_runtime_timing_state(self) -> None:
@@ -1396,11 +1530,31 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 and not self._in_flight_registry
             ):
                 break
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(_SHUTDOWN_DRAIN_SLEEP_SECONDS)
         _logger.debug(
             "ProcessExecutionEngine shutdown pre-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
             total_registry_drained,
             total_completion_drained,
+            len(self._in_flight_registry),
+        )
+
+        # Wait for all workers to finish
+        for worker in self._workers:
+            self._join_worker_with_escalation(worker)
+
+        (
+            post_join_registry_drained,
+            post_join_completion_drained,
+            post_join_drain_passes,
+        ) = await self._drain_shutdown_ipc_until_stable_empty(
+            max_seconds=_POST_JOIN_SHUTDOWN_DRAIN_SECONDS,
+            stable_empty_passes=_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES,
+        )
+        _logger.debug(
+            "ProcessExecutionEngine shutdown post-join drain: registry_events=%d completion_events=%d passes=%d residual_in_flight_registry=%d",
+            post_join_registry_drained,
+            post_join_completion_drained,
+            post_join_drain_passes,
             len(self._in_flight_registry),
         )
         if self._in_flight_registry:
@@ -1410,13 +1564,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 key=lambda item: item[0],
             ):
                 registry_summary.append(
-                    "%d(pid=%s):%s-%d@%d timed_out=%s attempts=%s"
+                    "%d(pid=%s):%s-%d@%d id=%s epoch=%s timed_out=%s attempts=%s"
                     % (
                         worker_idx,
                         self._worker_pid_by_index.get(worker_idx),
                         topic,
                         partition,
                         offset,
+                        payload.get("id", ""),
+                        payload.get("epoch", 0),
                         payload.get("timed_out", False),
                         payload.get("requeue_attempts", 0),
                     )
@@ -1426,15 +1582,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 "; ".join(registry_summary),
             )
 
-        # Wait for all workers to finish
-        for worker in self._workers:
-            self._join_worker_with_escalation(worker)
-
-        self._prefetched_completion_events.clear()
         self._in_flight_registry.clear()
         self._transport.clear_pending_dispatches()
         with self._in_flight_lock:
-            self._in_flight_count = 0
+            self._in_flight_count = len(self._prefetched_completion_events)
 
         _logger.debug("ProcessExecutionEngine shutdown complete.")
         self._log_listener.stop()

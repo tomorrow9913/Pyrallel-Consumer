@@ -95,6 +95,12 @@ Generic engine diagnostics remain an additive internal direction for future runt
 observability, but the documented v1 `RuntimeSnapshot` field boundary above stays
 frozen until a future major-version contract change.
 
+Process-engine shutdown drain log lines are diagnostic-only reconciliation evidence.
+They may report pre-join/post-join `registry_events`, `completion_events`,
+post-join `passes`, and `residual_in_flight_registry`, but those values are not
+part of the frozen `RuntimeSnapshot` contract, are not a retry ledger, and must
+not be interpreted as commit-safety or DLQ-publish authority.
+
 ## 3) Contract Regression Tests
 
 The v1 frozen contract is guarded by the following regression tests.

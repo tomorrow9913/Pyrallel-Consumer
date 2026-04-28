@@ -4,7 +4,13 @@ import queue
 from collections.abc import Callable
 from typing import Any, Optional
 
-from pyrallel_consumer.dto import TopicPartition
+from pyrallel_consumer.dto import CompletionEvent, TopicPartition
+from pyrallel_consumer.execution_plane.process_transport import (
+    logical_work_identity_from_completion_event,
+    logical_work_identity_from_payload,
+    logical_work_identity_from_registry_entry,
+    registry_entry_matches_payload,
+)
 
 SerializedWorkItem = dict[str, Any]
 InFlightRegistryKey = tuple[int, str, int, int]
@@ -69,11 +75,26 @@ class ProcessRegistrySupport:
         key = event.get("key")
         if kind == "start" and key is not None:
             payload = dict(event.get("payload", {}))
+            registry_payload = in_flight_registry.get(key)
+            if (
+                registry_payload is not None
+                and not ProcessRegistrySupport._event_matches_registry_entry(
+                    event, key, registry_payload
+                )
+                and not ProcessRegistrySupport._start_event_supersedes_registry_entry(
+                    event, key, registry_payload
+                )
+            ):
+                return
             payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
             in_flight_registry[key] = payload
             return
 
         if kind == "timeout" and key in in_flight_registry:
+            if not ProcessRegistrySupport._event_matches_registry_entry(
+                event, key, in_flight_registry[key]
+            ):
+                return
             payload = dict(in_flight_registry.get(key, {}))
             payload["timed_out"] = True
             payload["timeout_error"] = event.get("timeout_error", "task_timeout")
@@ -82,6 +103,14 @@ class ProcessRegistrySupport:
             return
 
         if kind == "done" and key is not None:
+            registry_payload = in_flight_registry.get(key)
+            if (
+                registry_payload is not None
+                and not ProcessRegistrySupport._event_matches_registry_entry(
+                    event, key, registry_payload
+                )
+            ):
+                return
             in_flight_registry.pop(key, None)
             return
 
@@ -111,18 +140,70 @@ class ProcessRegistrySupport:
             apply_event(event)
 
     @staticmethod
+    def discard_completion_from_registry(
+        *,
+        in_flight_registry: InFlightRegistry,
+        event: CompletionEvent,
+    ) -> None:
+        expected_identity = logical_work_identity_from_completion_event(event)
+        for key, payload in list(in_flight_registry.items()):
+            if (
+                logical_work_identity_from_registry_entry(key, payload)
+                == expected_identity
+            ):
+                in_flight_registry.pop(key, None)
+
+    @staticmethod
     def get_min_inflight_offset(
         *,
         in_flight_registry: InFlightRegistry,
         tp: TopicPartition,
     ) -> Optional[int]:
         min_offset = None
-        for (_worker_index, topic, partition, _offset), payload in (
-            in_flight_registry.items()
-        ):
+        for (
+            _worker_index,
+            topic,
+            partition,
+            _offset,
+        ), payload in in_flight_registry.items():
             if topic == tp.topic and partition == tp.partition:
                 value = payload.get("offset")
                 if isinstance(value, int):
                     if min_offset is None or value < min_offset:
                         min_offset = value
         return min_offset
+
+    @staticmethod
+    def _event_matches_registry_entry(
+        event: dict[str, Any],
+        key: InFlightRegistryKey,
+        registry_payload: SerializedWorkItem,
+    ) -> bool:
+        event_payload = event.get("payload")
+        if not isinstance(event_payload, dict):
+            return True
+        try:
+            return registry_entry_matches_payload(key, registry_payload, event_payload)
+        except (KeyError, TypeError, ValueError):
+            return True
+
+    @staticmethod
+    def _start_event_supersedes_registry_entry(
+        event: dict[str, Any],
+        key: InFlightRegistryKey,
+        registry_payload: SerializedWorkItem,
+    ) -> bool:
+        event_payload = event.get("payload")
+        if not isinstance(event_payload, dict):
+            return True
+        try:
+            existing_identity = logical_work_identity_from_registry_entry(
+                key,
+                registry_payload,
+            )
+            incoming_identity = logical_work_identity_from_payload(event_payload)
+        except (KeyError, TypeError, ValueError):
+            return True
+        if incoming_identity[:3] != existing_identity[:3]:
+            return False
+        return incoming_identity.epoch > existing_identity.epoch

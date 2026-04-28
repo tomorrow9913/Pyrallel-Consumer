@@ -712,16 +712,15 @@ class BrokerPoller:
         pending_retry_partitions = {
             tp for tp, _ in self._pending_dlq_events.keys() if tp in managed_partitions
         }
-        processed_count = (
+        processing_result = (
             await self._make_completion_support().process_completed_events(
                 completed_events
             )
         )
+        processed_count = processing_result.processed_count
+        completed_partitions = set(processing_result.completed_partitions)
 
         if processed_count > 0:
-            completed_partitions = {
-                event.tp for event in completed_events if event.tp in managed_partitions
-            }
             dirty_partitions = completed_partitions | pending_retry_partitions
             self._dirty_commit_partitions.update(dirty_partitions)
             self._completions_since_last_commit += processed_count

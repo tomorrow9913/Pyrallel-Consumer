@@ -25,10 +25,17 @@ from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
     _completion_event_to_dict,
+    _serialize_batch_payload,
     _work_item_from_dict,
     _work_item_to_dict,
+    _worker_loop,
 )
-from pyrallel_consumer.execution_plane.process_transport import RouteIdentity
+from pyrallel_consumer.execution_plane.process_transport import (
+    PendingDispatchRecovery,
+    RouteIdentity,
+    WorkerExecutionIdentity,
+    logical_work_identity_from_payload,
+)
 from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
     SharedQueueProcessTransport,
 )
@@ -107,6 +114,33 @@ class _FakeProcess:
         self.started = True
 
 
+class _JoinedWorker:
+    pid = 9876
+    exitcode = 0
+
+    def __init__(self) -> None:
+        self.join_calls = 0
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+        self.join_calls += 1
+
+    def is_alive(self) -> bool:
+        return False
+
+
+class _Closable:
+    def __init__(self) -> None:
+        self.closed = False
+        self.stopped = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class _RequeueRecordingTransport:
     def __init__(self) -> None:
         self.requeued_payloads: list[list[dict[str, Any]]] = []
@@ -136,7 +170,7 @@ class _RequeueRecordingTransport:
     def handle_registry_event(self, event: dict[str, Any]) -> None:
         del event
 
-    def recover_pending_dispatches(self, idx: int) -> list[dict[str, Any]]:
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         del idx
         return []
 
@@ -631,7 +665,14 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
         pipe_sentinel=b"sentinel",
     )
     engine_any._transport = transport
-    cast(Any, transport._pending_dispatch)[(0, "topic", 1, 42)] = {"offset": 42}
+    pending_key = (0, "topic", 1, 42, "work-42", 1)
+    cast(Any, transport._pending_dispatch)[pending_key] = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 1,
+    }
 
     acquired = transport._worker_pipe_queue_slots.acquire(blocking=False)
     assert acquired is True
@@ -652,7 +693,180 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
         }
     )
 
-    assert (0, "topic", 1, 42) not in transport._pending_dispatch
+    assert pending_key not in transport._pending_dispatch
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_slot_wait_blocks_until_start_event_releases_capacity() -> None:
+    sender = _PipeSender()
+    liveness_checks = 0
+
+    def record_liveness_check() -> None:
+        nonlocal liveness_checks
+        liveness_checks += 1
+
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=record_liveness_check,
+        slot_wait_timeout_seconds=0.01,
+    )
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-1",
+        )
+    )
+    second_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-43",
+            tp=TopicPartition("topic", 1),
+            offset=43,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-2",
+        )
+    )
+
+    transport.dispatch_payload(
+        first_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    errors: list[BaseException] = []
+
+    def dispatch_second() -> None:
+        try:
+            transport.dispatch_payload(
+                second_payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch_second)
+    thread.start()
+
+    released_by_start_event = False
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if liveness_checks > 0:
+                break
+            time.sleep(0.01)
+
+        assert liveness_checks > 0
+        assert len(sender.payloads) == 1
+
+        transport.handle_registry_event(
+            {"kind": "start", "key": (0, "topic", 1, 42), "payload": first_payload}
+        )
+        released_by_start_event = True
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            if not released_by_start_event:
+                transport.handle_registry_event(
+                    {
+                        "kind": "start",
+                        "key": (0, "topic", 1, 42),
+                        "payload": first_payload,
+                    }
+                )
+            thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(sender.payloads) == 2
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 43, "work-43", 7): second_payload,
+    }
+
+
+def test_worker_pipe_start_event_requires_matching_identity_to_release_capacity() -> (
+    None
+):
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    original_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-original",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-original",
+        )
+    )
+    redelivered_payload = {
+        **original_payload,
+        "id": "work-redelivered",
+        "epoch": 8,
+    }
+
+    transport.dispatch_payload(
+        original_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": redelivered_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-original", 7): original_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 43),
+            "payload": original_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-original", 7): original_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": original_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {}
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
@@ -750,6 +964,376 @@ def test_prefetch_completion_keeps_in_flight_when_identity_differs() -> None:
     }
 
 
+def test_registry_done_event_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "done",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_worker_done_registry_event_uses_identity_payload_only() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    work_item = WorkItem(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"large-key",
+        payload=b"large-payload",
+    )
+    task_source.put([_work_item_to_dict(work_item)])
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events: list[dict[str, Any]] = []
+    while not registry_event_queue.empty():
+        registry_events.append(cast(dict[str, Any], registry_event_queue.get_nowait()))
+    done_events = [event for event in registry_events if event.get("kind") == "done"]
+
+    assert len(done_events) == 1
+    assert done_events[0]["payload"] == {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+    }
+    assert "key" not in done_events[0]["payload"]
+    assert "payload" not in done_events[0]["payload"]
+
+
+def test_registry_start_event_ignores_older_identity_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_registry_start_event_overwrites_stale_identity_when_epoch_advances() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    stale_payload = {
+        "id": "work-first",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): stale_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-redelivered",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 8,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {
+        (0, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+
+
+def test_registry_start_event_ignores_equal_epoch_identity_mismatch() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 8,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_dead_worker_recovery_uses_superseding_start_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-redelivered",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 8,
+            },
+        }
+    )
+
+    to_requeue = engine._recover_dead_worker_items(0)
+
+    assert len(to_requeue) == 1
+    assert to_requeue[0]["id"] == "work-redelivered"
+    assert to_requeue[0]["epoch"] == 8
+    assert to_requeue[0]["requeue_attempts"] == 1
+    assert engine_any._in_flight_registry == {}
+
+
+def test_registry_done_event_removes_only_matching_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    redelivered_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        },
+        (1, "topic", 1, 42): redelivered_payload,
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "done",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+        }
+    )
+
+    assert engine_any._in_flight_registry == {(1, "topic", 1, 42): redelivered_payload}
+
+
+def test_registry_timeout_event_keeps_in_flight_when_identity_differs() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "timeout",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+            "attempt": 2,
+            "timeout_error": "task_timeout",
+        }
+    )
+
+    assert "timed_out" not in engine_any._in_flight_registry[(0, "topic", 1, 42)]
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["id"] == (
+        "work-redelivered"
+    )
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["epoch"] == 8
+
+
+def test_registry_timeout_event_marks_only_matching_identity() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-first",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        },
+        (1, "topic", 1, 42): {
+            "id": "work-redelivered",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 8,
+            "requeue_attempts": 0,
+        },
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "timeout",
+            "key": (0, "topic", 1, 42),
+            "payload": {
+                "id": "work-first",
+                "topic": "topic",
+                "partition": 1,
+                "offset": 42,
+                "epoch": 7,
+            },
+            "attempt": 2,
+            "timeout_error": "task_timeout",
+        }
+    )
+
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["timed_out"] is True
+    assert engine_any._in_flight_registry[(0, "topic", 1, 42)]["attempt"] == 2
+    assert "timed_out" not in engine_any._in_flight_registry[(1, "topic", 1, 42)]
+
+
 def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() -> None:
     senders = [_PipeSender()]
     transport = WorkerPipesProcessTransport(
@@ -803,6 +1387,58 @@ def test_worker_pipe_pending_dispatch_key_preserves_redelivered_same_offset() ->
 
     assert list(transport._pending_dispatch.values()) == [redelivered_payload]
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_start_event_keeps_pending_dispatch_when_identity_differs() -> None:
+    senders = [_PipeSender()]
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-first",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    redelivered_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-redelivered",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=8,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    cast(Any, transport._pending_dispatch)[
+        (0, "topic", 1, 42, "work-redelivered", 8)
+    ] = redelivered_payload
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-redelivered", 8): redelivered_payload
+    }
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
 
 
 def test_worker_pipe_transport_blocks_for_slot_without_reentrant_recovery() -> None:
@@ -861,6 +1497,104 @@ def test_worker_pipe_transport_blocks_for_slot_without_reentrant_recovery() -> N
     }
 
 
+def test_worker_pipe_backpressure_waits_for_healthy_slot_without_recovery() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    worker = _CountingAliveWorker()
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._start_worker = Mock()  # type: ignore[method-assign]
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    errors: list[BaseException] = []
+
+    def dispatch() -> None:
+        try:
+            transport.dispatch_payload(
+                payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch)
+    thread.start()
+
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if worker.is_alive_calls > 0:
+                break
+            time.sleep(0.01)
+
+        assert thread.is_alive()
+        assert errors == []
+        assert senders[0].payloads == []
+        assert worker.is_alive_calls > 0
+        engine_any._start_worker.assert_not_called()
+        assert engine_any._in_flight_registry == {}
+        assert list(engine_any._prefetched_completion_events) == []
+        assert engine_any._completion_queue.empty()
+
+        transport._worker_pipe_queue_slots.release()
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            transport._worker_pipe_queue_slots.release()
+            thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert senders[0].payloads == [b"packed"]
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 42, "work-42", 7): payload,
+    }
+
+
 def test_worker_pipe_transport_releases_pending_slot_when_send_fails() -> None:
     transport = WorkerPipesProcessTransport(
         process_count=1,
@@ -896,6 +1630,62 @@ def test_worker_pipe_transport_releases_pending_slot_when_send_fails() -> None:
 
     assert transport._pending_dispatch == {}
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_recover_pending_dispatches_returns_identity_metadata() -> None:
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda _batch, _flush_enqueued_at: b"packed",
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [_PipeSender()],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload",
+        )
+    )
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-42", 7)] = payload
+    assert transport.capabilities.pending_dispatch_recovery is True
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+    recovered = transport.recover_pending_dispatches(0)
+
+    assert recovered == [
+        PendingDispatchRecovery(
+            identity=WorkerExecutionIdentity(
+                worker_index=0,
+                work=logical_work_identity_from_payload(payload),
+            ),
+            payload={**payload, "requeue_attempts": 1},
+        )
+    ]
+    assert transport._pending_dispatch == {}
+    assert transport.recover_pending_dispatches(0) == []
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
+
+
+def test_shared_queue_transport_declares_no_pending_dispatch_recovery() -> None:
+    transport = SharedQueueProcessTransport(
+        task_queue=cast(Any, queue.Queue()),
+        get_batch_accumulator=Mock(),
+        work_item_from_dict=_work_item_from_dict,
+        increment_in_flight=lambda: None,
+        sentinel=b"sentinel",
+    )
+
+    assert transport.capabilities.pending_dispatch_recovery is False
+    assert transport.recover_pending_dispatches(0) == []
 
 
 def test_ensure_workers_alive_stops_requeueing_after_max_retries(
@@ -1369,7 +2159,141 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
     }
 
 
-def test_worker_pipe_slot_wait_drains_events_for_reentrant_recovery_owner() -> None:
+def test_worker_pipe_slot_wait_blocks_healthy_worker_until_start_event() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    senders = [_PipeSender()]
+    worker = _CountingAliveWorker()
+
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=1,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine_any._transport_mode = "worker_pipes"
+    engine_any._in_flight_registry = {}
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._workers = [worker]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._last_worker_liveness_check = 0.0
+    engine_any._worker_liveness_check_interval_seconds = 0.0
+    engine_any._record_main_to_worker_ipc = lambda *_args, **_kwargs: None
+    engine_any._record_worker_exec = lambda *_args, **_kwargs: None
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=lambda batch, _flush_enqueued_at: (
+            f"packed:{batch[0].offset}".encode()
+        ),
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: senders,
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=engine._signal_worker_pipe_slot_wait,
+        slot_wait_timeout_seconds=0.01,
+    )
+    engine_any._transport = transport
+
+    first_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-42",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-1",
+        )
+    )
+    second_payload = _work_item_to_dict(
+        WorkItem(
+            id="work-43",
+            tp=TopicPartition("topic", 1),
+            offset=43,
+            epoch=7,
+            key=b"same-key",
+            payload=b"payload-2",
+        )
+    )
+    transport.dispatch_payload(
+        first_payload,
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    errors: list[BaseException] = []
+
+    def dispatch_second() -> None:
+        try:
+            transport.dispatch_payload(
+                second_payload,
+                route_identity=RouteIdentity("topic", 1, b"same-key"),
+                count_in_flight=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    thread = threading.Thread(target=dispatch_second)
+    thread.start()
+
+    start_event_enqueued = False
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if worker.is_alive_calls > 0:
+                break
+            time.sleep(0.01)
+
+        assert worker.is_alive_calls > 0
+        assert thread.is_alive()
+        assert errors == []
+        assert senders[0].payloads == [b"packed:42"]
+        assert transport._pending_dispatch == {
+            (0, "topic", 1, 42, "work-42", 7): first_payload,
+        }
+
+        engine_any._registry_event_queue.put(
+            {
+                "kind": "start",
+                "key": (0, "topic", 1, 42),
+                "payload": {**first_payload, "requeue_attempts": 0},
+            }
+        )
+        start_event_enqueued = True
+        thread.join(timeout=1.0)
+    finally:
+        if thread.is_alive():
+            if not start_event_enqueued:
+                engine_any._registry_event_queue.put(
+                    {
+                        "kind": "start",
+                        "key": (0, "topic", 1, 42),
+                        "payload": {**first_payload, "requeue_attempts": 0},
+                    }
+                )
+            thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert senders[0].payloads == [b"packed:42", b"packed:43"]
+    assert transport._pending_dispatch == {
+        (0, "topic", 1, 43, "work-43", 7): second_payload,
+    }
+    assert engine_any._registry_event_queue.empty()
+
+
+def test_worker_pipe_slot_wait_reentrant_owner_drains_events_and_releases_slot() -> (
+    None
+):
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     senders = [_PipeSender()]
@@ -1459,7 +2383,7 @@ def test_worker_pipe_slot_wait_drains_events_for_reentrant_recovery_owner() -> N
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
-def test_worker_pipe_slot_wait_is_side_effect_free_when_another_thread_owns_lock() -> (
+def test_worker_pipe_slot_wait_cross_thread_contention_noops_until_owner_releases() -> (
     None
 ):
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
@@ -1551,16 +2475,23 @@ def test_worker_pipe_slot_wait_is_side_effect_free_when_another_thread_owns_lock
     thread = threading.Thread(target=signal_from_other_thread)
     thread.start()
     thread.join(timeout=1.0)
-    liveness_lock.release()
 
     assert not thread.is_alive()
     assert errors == []
     assert not engine_any._registry_event_queue.empty()
-    assert engine_any._completion_queue.get_nowait() == packed_completion
     assert list(engine_any._prefetched_completion_events) == []
     assert engine_any._in_flight_registry == {}
     assert worker.is_alive_calls == 0
     assert transport._pending_dispatch != {}
+
+    liveness_lock.release()
+    engine._signal_worker_pipe_slot_wait()
+
+    assert engine_any._registry_event_queue.empty()
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert worker.is_alive_calls == 1
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
 def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
@@ -1866,6 +2797,104 @@ def test_drain_shutdown_ipc_once_reuses_registry_event_rules_and_prefetches_comp
     assert prefetched.offset == 42
 
 
+def _make_shutdown_engine() -> (
+    tuple[ProcessExecutionEngine, _RequeueRecordingTransport]
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(process_count=1, worker_join_timeout_ms=1),
+    )
+    engine_any._batch_accumulator = _Closable()
+    engine_any._task_queue = queue.Queue()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {0: 9876}
+    engine_any._workers = [_JoinedWorker()]
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._log_listener = _Closable()
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+    return engine, transport
+
+
+@pytest.mark.asyncio
+async def test_shutdown_residual_work_is_diagnostic_only(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    residual_payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): residual_payload,
+    }
+    engine_any._in_flight_count = 1
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    monotonic_values = iter([100.0, 100.0, 102.0])
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.time.monotonic",
+        lambda: next(monotonic_values, 102.0),
+    )
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
+
+    assert "Residual in-flight registry after shutdown drain" in caplog.text
+    assert "topic-1@42 id=work-42 epoch=7" in caplog.text
+    assert engine_any._completion_queue.empty()
+    assert list(engine_any._prefetched_completion_events) == []
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_preserves_visible_completion_drained_before_cleanup() -> None:
+    engine, _transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+    engine_any._in_flight_count = 1
+
+    await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert engine.get_in_flight_count() == 1
+    assert await engine.wait_for_completion(timeout_seconds=0) is True
+    assert await engine.poll_completed_events() == [completion]
+    assert engine.get_in_flight_count() == 0
+
+
 @pytest.mark.asyncio
 async def test_poll_completed_events_ignores_queue_empty_race(
     monkeypatch: pytest.MonkeyPatch,
@@ -2112,16 +3141,27 @@ def test_worker_pipe_dispatch_rejects_invalid_payload_before_send() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_delegates_signal_and_close_through_transport_seam() -> None:
+async def test_shutdown_delegates_signal_and_close_through_transport_seam(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     engine_any._is_shutdown = False
-    engine_any._prefetched_completion_events = [Mock()]
-    engine_any._in_flight_registry = {(0, "topic", 1, 42): {"offset": 42}}
+    prefetched_event = Mock()
+    engine_any._prefetched_completion_events = [prefetched_event]
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+        }
+    }
     engine_any._workers = [Mock(), Mock()]
     engine_any._task_queue = None
-    engine_any._completion_queue = None
-    engine_any._registry_event_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
     engine_any._batch_accumulator = Mock()
     engine_any._drain_registry_events = Mock()
     engine_any._drain_shutdown_ipc_once = Mock(return_value=(0, 0))
@@ -2130,14 +3170,546 @@ async def test_shutdown_delegates_signal_and_close_through_transport_seam() -> N
     engine_any._in_flight_lock = threading.Lock()
     engine_any._in_flight_count = 3
     engine_any._worker_pid_by_index = {}
+    engine_any._emit_worker_recovery_failure = Mock()
     transport = Mock()
     engine_any._transport = transport
 
-    await engine.shutdown()
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
 
     transport.signal_shutdown.assert_called_once_with(2)
     transport.close.assert_called_once_with()
     engine_any._batch_accumulator.close.assert_called_once_with()
-    assert engine_any._prefetched_completion_events == []
+    assert engine_any._prefetched_completion_events == [prefetched_event]
     assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+    engine_any._emit_worker_recovery_failure.assert_not_called()
+    assert engine_any._completion_queue.empty()
+    assert "Residual in-flight registry after shutdown drain" in caplog.text
+    assert "id=work-42 epoch=7" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_worker_pipes_clears_pending_dispatches_without_requeueing() -> (
+    None
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._join_worker_with_escalation = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    engine_any._ensure_workers_alive = Mock()
+    engine_any._recover_pending_pipe_dispatches = Mock()
+    engine_any._requeue_recovered_payloads = Mock()
+    engine_any._emit_worker_recovery_failure = Mock()
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    payload = _work_item_to_dict(
+        WorkItem(
+            id="work-pending",
+            tp=TopicPartition("topic", 1),
+            offset=42,
+            epoch=7,
+            key=b"key",
+            payload=b"payload",
+        )
+    )
+    transport._pending_dispatch[(0, "topic", 1, 42, "work-pending", 7)] = payload
+    engine_any._transport = transport
+
+    await engine.shutdown()
+
+    assert sender.payloads == [b"sentinel"]
+    assert transport._pending_dispatch == {}
+    engine_any._ensure_workers_alive.assert_not_called()
+    engine_any._recover_pending_pipe_dispatches.assert_not_called()
+    engine_any._requeue_recovered_payloads.assert_not_called()
+    engine_any._emit_worker_recovery_failure.assert_not_called()
     assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_worker_pipes_drains_completion_before_joining_workers() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    transport = Mock()
+    engine_any._transport = transport
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    engine_any._completion_queue.put(
+        msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+    )
+
+    def assert_drained_before_join(_worker: object) -> None:
+        assert engine_any._in_flight_registry == {}
+        assert engine_any._prefetched_completion_events == [completion]
+
+    engine_any._join_worker_with_escalation = Mock(
+        side_effect=assert_drained_before_join
+    )
+
+    await engine.shutdown()
+
+    transport.signal_shutdown.assert_called_once_with(1)
+    engine_any._join_worker_with_escalation.assert_called_once()
+    transport.clear_pending_dispatches.assert_called_once_with()
+    transport.close.assert_called_once_with()
+    assert engine_any._prefetched_completion_events == [completion]
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_runs_post_join_drain_before_local_cleanup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {}
+    order: list[str] = []
+
+    def drain_once() -> tuple[int, int]:
+        order.append("drain")
+        if order.count("drain") == 1:
+            return (0, 0)
+        if order.count("drain") == 2:
+            return (0, 1)
+        return (0, 0)
+
+    def join_worker(_worker: object) -> None:
+        order.append("join")
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = lambda: order.append("clear")
+    transport.close.side_effect = lambda: order.append("close")
+    engine_any._transport = transport
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+    engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+
+    with caplog.at_level(logging.DEBUG):
+        await engine.shutdown()
+
+    assert order == ["drain", "join", "drain", "drain", "drain", "clear", "close"]
+    assert engine_any._drain_shutdown_ipc_once.call_count == 4
+    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
+    assert "completion_events=1" in caplog.text
+    transport.signal_shutdown.assert_called_once_with(1)
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_waits_for_stable_empty_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {}
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 0
+    engine_any._worker_pid_by_index = {}
+    drain_results = [
+        (0, 0),  # pre-join bounded drain observes no visible IPC
+        (0, 0),  # first post-join pass is empty but not yet stable
+        (0, 1),  # late completion becomes visible after one empty pass
+        (0, 0),
+        (0, 0),  # stable-empty post-join exit
+    ]
+    drain_calls: list[tuple[int, int]] = []
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    def drain_once() -> tuple[int, int]:
+        result = drain_results.pop(0) if drain_results else (0, 0)
+        drain_calls.append(result)
+        return result
+
+    def assert_stable_empty_before_local_cleanup() -> None:
+        assert drain_calls == [(0, 0), (0, 0), (0, 1), (0, 0), (0, 0)]
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = (
+        assert_stable_empty_before_local_cleanup
+    )
+    engine_any._transport = transport
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+    engine_any._join_worker_with_escalation = Mock()
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    await engine.shutdown()
+
+    assert drain_calls == [(0, 0), (0, 0), (0, 1), (0, 0), (0, 0)]
+    transport.clear_pending_dispatches.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_observes_stable_empty_after_deadline_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    drain_results = [
+        (0, 1),
+        (0, 0),
+        (0, 0),
+    ]
+    drain_calls: list[tuple[int, int]] = []
+    sleep_calls: list[float] = []
+
+    def drain_once() -> tuple[int, int]:
+        result = drain_results.pop(0) if drain_results else (0, 0)
+        drain_calls.append(result)
+        return result
+
+    async def record_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monotonic_values = iter([0.0, 0.06, 0.07])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 1.0))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        record_sleep,
+    )
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+
+    result = await engine._drain_shutdown_ipc_until_stable_empty(
+        max_seconds=0.05,
+        stable_empty_passes=2,
+    )
+
+    assert result == (0, 1, 3)
+    assert drain_calls == [(0, 1), (0, 0), (0, 0)]
+    assert sleep_calls == [0.01, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_waits_for_first_late_event_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    drain_results = [
+        (0, 0),
+        (0, 1),
+        (0, 0),
+        (0, 0),
+    ]
+    drain_calls: list[tuple[int, int]] = []
+    sleep_calls: list[float] = []
+
+    def drain_once() -> tuple[int, int]:
+        result = drain_results.pop(0) if drain_results else (0, 0)
+        drain_calls.append(result)
+        return result
+
+    async def record_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monotonic_values = iter([0.0, 0.055, 0.065, 0.075])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 1.0))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        record_sleep,
+    )
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+
+    result = await engine._drain_shutdown_ipc_until_stable_empty(
+        max_seconds=0.05,
+        stable_empty_passes=2,
+    )
+
+    assert result == (0, 1, 4)
+    assert drain_calls == [(0, 0), (0, 1), (0, 0), (0, 0)]
+    assert sleep_calls == [0.01, 0.01, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_has_bounded_post_deadline_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    drain_calls: list[tuple[int, int]] = []
+    sleep_calls: list[float] = []
+
+    def drain_once() -> tuple[int, int]:
+        result = (0, 1)
+        drain_calls.append(result)
+        return result
+
+    async def record_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monotonic_values = iter([0.0, 0.055, 0.065, 0.075, 0.095])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 0.095))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        record_sleep,
+    )
+    engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
+
+    result = await engine._drain_shutdown_ipc_until_stable_empty(
+        max_seconds=0.05,
+        stable_empty_passes=2,
+    )
+
+    assert result == (0, 4, 4)
+    assert drain_calls == [(0, 1), (0, 1), (0, 1), (0, 1)]
+    assert sleep_calls == [0.01, 0.01, 0.01]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_stable_empty_prefetches_real_late_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    engine_any._in_flight_count = 1
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    sleep_calls = 0
+
+    async def enqueue_after_first_post_join_empty(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            engine_any._completion_queue.put(
+                msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+            )
+
+    def assert_prefetched_before_local_cleanup() -> None:
+        assert list(engine_any._prefetched_completion_events) == [completion]
+
+    monkeypatch.setattr(
+        transport,
+        "clear_pending_dispatches",
+        Mock(side_effect=assert_prefetched_before_local_cleanup),
+    )
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        enqueue_after_first_post_join_empty,
+    )
+
+    await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [completion]
+    assert await engine.wait_for_completion(timeout_seconds=0) is True
+    assert await engine.poll_completed_events() == [completion]
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_late_completion_keeps_different_identity_registry(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, transport = _make_shutdown_engine()
+    engine_any = cast(Any, engine)
+    current_payload = {
+        "id": "work-redelivered",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 8,
+        "requeue_attempts": 0,
+    }
+    engine_any._in_flight_registry = {(0, "topic", 1, 42): current_payload}
+    engine_any._in_flight_count = 1
+    stale_completion = CompletionEvent(
+        id="work-first",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    sleep_calls = 0
+
+    async def enqueue_after_first_post_join_empty(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            engine_any._completion_queue.put(
+                msgpack.packb(
+                    _completion_event_to_dict(stale_completion),
+                    use_bin_type=True,
+                )
+            )
+
+    monotonic_values = iter([0.0, 2.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 2.0))
+    clear_pending_dispatches = Mock()
+    monkeypatch.setattr(transport, "clear_pending_dispatches", clear_pending_dispatches)
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        enqueue_after_first_post_join_empty,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await engine.shutdown()
+
+    assert list(engine_any._prefetched_completion_events) == [stale_completion]
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+    assert "topic-1@42 id=work-redelivered epoch=8" in caplog.text
+    clear_pending_dispatches.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanup(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = False
+    engine_any._prefetched_completion_events = []
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 0,
+        }
+    }
+    engine_any._workers = [Mock()]
+    engine_any._task_queue = None
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._batch_accumulator = Mock()
+    engine_any._drain_registry_events = Mock()
+    engine_any._log_listener = Mock()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._worker_pid_by_index = {}
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+
+    engine_any._prefetched_completion_events = []
+
+    async def fast_sleep(_delay: float) -> None:
+        return None
+
+    monotonic_values = iter([0.0, 2.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 2.0))
+    monkeypatch.setattr(
+        "pyrallel_consumer.execution_plane.process_engine.asyncio.sleep",
+        fast_sleep,
+    )
+
+    def join_worker(_worker: object) -> None:
+        engine_any._completion_queue.put(
+            msgpack.packb(_completion_event_to_dict(completion), use_bin_type=True)
+        )
+
+    def assert_reconciled_before_local_cleanup() -> None:
+        assert engine_any._in_flight_registry == {}
+        assert engine_any._prefetched_completion_events == [completion]
+
+    transport = Mock()
+    transport.clear_pending_dispatches.side_effect = (
+        assert_reconciled_before_local_cleanup
+    )
+    engine_any._transport = transport
+    engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+
+    with caplog.at_level(logging.DEBUG):
+        await engine.shutdown()
+
+    engine_any._join_worker_with_escalation.assert_called_once()
+    transport.clear_pending_dispatches.assert_called_once_with()
+    transport.close.assert_called_once_with()
+    assert engine_any._prefetched_completion_events == [completion]
+    assert engine_any._in_flight_registry == {}
+    assert engine.get_in_flight_count() == 1
+    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
+    assert "completion_events=1" in caplog.text
+    assert "residual_in_flight_registry=0" in caplog.text

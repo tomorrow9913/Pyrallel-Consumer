@@ -56,6 +56,9 @@ def test_public_contract_doc_freezes_runtime_snapshot_field_boundary() -> None:
         "Commit clamping is computed from the control-plane `WorkManager` dispatch ledger",
         "`process_batch_metrics` remains the frozen v1 compatibility projection",
         "Generic engine diagnostics remain an additive internal direction",
+        "Process-engine shutdown drain log lines are diagnostic-only reconciliation evidence",
+        "not a retry ledger",
+        "not be interpreted as commit-safety or DLQ-publish authority",
     ]
 
     for expected_term in expected_terms:

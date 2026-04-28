@@ -9,6 +9,7 @@ import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.process_transport import (
+    PendingDispatchRecovery,
     ProcessTransport,
     RouteIdentity,
     SerializedWorkItem,
@@ -67,7 +68,7 @@ class SharedQueueProcessTransport(ProcessTransport):
     def handle_registry_event(self, event: dict[str, Any]) -> None:
         del event
 
-    def recover_pending_dispatches(self, idx: int) -> list[SerializedWorkItem]:
+    def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         del idx
         return []
 

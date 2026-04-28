@@ -71,6 +71,8 @@ class WorkManager:
         self._max_revoke_grace_ms = max_revoke_grace_ms
         self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
         self._partitions_in_flight: set[DtoTopicPartition] = set()
+        self._key_in_flight_counts: Dict[tuple[DtoTopicPartition, Any], int] = {}
+        self._partition_in_flight_counts: Dict[DtoTopicPartition, int] = {}
         self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
         self._blocking_cache_ttl = blocking_cache_ttl
         self._blocking_cache_counter = 0
@@ -180,14 +182,12 @@ class WorkManager:
         dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
         if completed_item is None:
             return False, dispatch_time
-        self._work_item_ids_by_tp_offset.pop(
-            (completed_item.tp, completed_item.offset), None
-        )
+        tp_offset_key = (completed_item.tp, completed_item.offset)
+        if self._work_item_ids_by_tp_offset.get(tp_offset_key) == work_item_id:
+            self._work_item_ids_by_tp_offset.pop(tp_offset_key, None)
 
-        if self._ordering_mode == OrderingMode.KEY_HASH:
-            self._keys_in_flight.discard((completed_item.tp, completed_item.key))
-        elif self._ordering_mode == OrderingMode.PARTITION:
-            self._partitions_in_flight.discard(completed_item.tp)
+        if dispatch_time is not None:
+            self._release_ordering_lock(completed_item)
 
         self._cleanup_empty_queue(completed_item.tp, completed_item.key)
         if dispatch_time is not None:
@@ -211,6 +211,34 @@ class WorkManager:
         if self._ordering_mode == OrderingMode.PARTITION:
             return tp not in self._partitions_in_flight
         return True
+
+    def _record_ordering_lock(self, item: WorkItem) -> None:
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            key = (item.tp, item.key)
+            self._key_in_flight_counts[key] = self._key_in_flight_counts.get(key, 0) + 1
+            self._keys_in_flight.add(key)
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            self._partition_in_flight_counts[item.tp] = (
+                self._partition_in_flight_counts.get(item.tp, 0) + 1
+            )
+            self._partitions_in_flight.add(item.tp)
+
+    def _release_ordering_lock(self, item: WorkItem) -> None:
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            key = (item.tp, item.key)
+            remaining = self._key_in_flight_counts.get(key, 1) - 1
+            if remaining > 0:
+                self._key_in_flight_counts[key] = remaining
+            else:
+                self._key_in_flight_counts.pop(key, None)
+                self._keys_in_flight.discard(key)
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            remaining = self._partition_in_flight_counts.get(item.tp, 1) - 1
+            if remaining > 0:
+                self._partition_in_flight_counts[item.tp] = remaining
+            else:
+                self._partition_in_flight_counts.pop(item.tp, None)
+                self._partitions_in_flight.discard(item.tp)
 
     def _pick_blocking_queue_key(
         self, blocking_offsets: Dict[DtoTopicPartition, Optional[OffsetRange]]
@@ -325,6 +353,16 @@ class WorkManager:
                 }
             elif self._ordering_mode == OrderingMode.PARTITION:
                 self._partitions_in_flight -= revoked_tp_set
+            self._key_in_flight_counts = {
+                key: count
+                for key, count in self._key_in_flight_counts.items()
+                if key[0] not in revoked_tp_set
+            }
+            self._partition_in_flight_counts = {
+                tp: count
+                for tp, count in self._partition_in_flight_counts.items()
+                if tp not in revoked_tp_set
+            }
         self._rebalancing = True  # Rebalancing starts when partitions are revoked
         self._invalidate_blocking_cache()
 
@@ -454,12 +492,7 @@ class WorkManager:
                     )
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
-                    if self._ordering_mode == OrderingMode.KEY_HASH:
-                        self._keys_in_flight.add(
-                            (item_to_submit.tp, item_to_submit.key)
-                        )
-                    elif self._ordering_mode == OrderingMode.PARTITION:
-                        self._partitions_in_flight.add(item_to_submit.tp)
+                    self._record_ordering_lock(item_to_submit)
                 except Exception:
                     self._logger.exception(
                         "Error submitting work item %s", item_to_submit.id

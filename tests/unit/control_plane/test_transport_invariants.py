@@ -81,3 +81,67 @@ def test_control_plane_only_uses_base_execution_engine_contract_methods() -> Non
         "wait_for_completion",
         "get_runtime_metrics",
     }
+
+
+def test_worker_pipe_blueprint_documents_shutdown_completion_boundary() -> None:
+    blueprint = (
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "03-execution"
+        / "02-process-execution-engine"
+        / "04-worker-pipe-transport-experiment.md"
+    ).read_text(encoding="utf-8")
+
+    required_phrases = [
+        "Shutdown completion-preservation contract",
+        "already-visible real completions",
+        "diagnostic-only",
+        "must not synthesize",
+        "DLQ",
+        "commit",
+        "rebalance",
+    ]
+
+    assert [phrase for phrase in required_phrases if phrase not in blueprint] == []
+
+
+def test_worker_pipe_blueprint_documents_shutdown_diagnostic_interpretation() -> None:
+    blueprint = (
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "03-execution"
+        / "02-process-execution-engine"
+        / "04-worker-pipe-transport-experiment.md"
+    ).read_text(encoding="utf-8")
+
+    required_phrases = [
+        "diagnostic evidence",
+        "Pre-join and post-join drain counts",
+        "stable-empty post-join",
+        "not a retry ledger",
+        "audit log for commit safety",
+    ]
+
+    assert [phrase for phrase in required_phrases if phrase not in blueprint] == []
+
+
+def test_worker_pipe_target_doc_defers_registry_key_and_timeout_migrations() -> None:
+    target_doc = (
+        REPO_ROOT
+        / "docs"
+        / "plans"
+        / "2026-04-27-process-worker-pipes-target-algorithm.md"
+    ).read_text(encoding="utf-8")
+
+    required_phrases = [
+        "V2.8: Registry key full identity migration review",
+        "do not widen the in-flight registry key yet",
+        "V2.9: Timeout policy convergence / e2e boundary",
+        "separate PR",
+    ]
+
+    assert [phrase for phrase in required_phrases if phrase not in target_doc] == []
