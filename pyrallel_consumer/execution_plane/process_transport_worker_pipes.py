@@ -109,8 +109,6 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         with self._pending_dispatch_lock:
             if pending_key in self._pending_dispatch:
                 self._pending_dispatch.pop(pending_key, None)
-            elif key in self._pending_dispatch:
-                self._pending_dispatch.pop(key, None)
             else:
                 return
         self._release_worker_pipe_queue_slot()

@@ -664,7 +664,14 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
         pipe_sentinel=b"sentinel",
     )
     engine_any._transport = transport
-    cast(Any, transport._pending_dispatch)[(0, "topic", 1, 42)] = {"offset": 42}
+    pending_key = (0, "topic", 1, 42, "work-42", 1)
+    cast(Any, transport._pending_dispatch)[pending_key] = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 1,
+    }
 
     acquired = transport._worker_pipe_queue_slots.acquire(blocking=False)
     assert acquired is True
@@ -685,7 +692,7 @@ def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
         }
     )
 
-    assert (0, "topic", 1, 42) not in transport._pending_dispatch
+    assert pending_key not in transport._pending_dispatch
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
