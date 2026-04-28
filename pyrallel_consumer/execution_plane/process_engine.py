@@ -87,6 +87,16 @@ def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
     )
 
 
+def _work_item_identity_payload(payload: SerializedWorkItem) -> SerializedWorkItem:
+    return {
+        "id": payload["id"],
+        "topic": payload["topic"],
+        "partition": payload["partition"],
+        "offset": payload["offset"],
+        "epoch": payload["epoch"],
+    }
+
+
 def _completion_event_to_dict(
     event: CompletionEvent,
     extra_fields: Optional[dict[str, Any]] = None,
@@ -640,7 +650,7 @@ def _worker_loop(
                         {
                             "kind": "done",
                             "key": in_flight_key,
-                            "payload": dict(payload),
+                            "payload": _work_item_identity_payload(payload),
                         }
                     )
 

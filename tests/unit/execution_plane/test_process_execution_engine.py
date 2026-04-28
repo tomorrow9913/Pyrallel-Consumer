@@ -28,6 +28,7 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _serialize_batch_payload,
     _work_item_from_dict,
     _work_item_to_dict,
+    _worker_loop,
 )
 from pyrallel_consumer.execution_plane.process_transport import (
     PendingDispatchRecovery,
@@ -995,6 +996,51 @@ def test_registry_done_event_keeps_in_flight_when_identity_differs() -> None:
     )
 
     assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_worker_done_registry_event_uses_identity_payload_only() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    work_item = WorkItem(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"large-key",
+        payload=b"large-payload",
+    )
+    task_source.put([_work_item_to_dict(work_item)])
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events: list[dict[str, Any]] = []
+    while not registry_event_queue.empty():
+        registry_events.append(cast(dict[str, Any], registry_event_queue.get_nowait()))
+    done_events = [event for event in registry_events if event.get("kind") == "done"]
+
+    assert len(done_events) == 1
+    assert done_events[0]["payload"] == {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+    }
+    assert "key" not in done_events[0]["payload"]
+    assert "payload" not in done_events[0]["payload"]
 
 
 def test_registry_start_event_ignores_older_identity_when_identity_differs() -> None:
