@@ -14,7 +14,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from multiprocessing import Process, Queue
-from typing import Any, Deque, List, Optional, cast
+from typing import Any, Deque, List, Optional
 
 import msgpack  # type: ignore[import-untyped]
 
@@ -52,6 +52,9 @@ SerializedBatchEnvelope = dict[str, Any]
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
+_SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
+_POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
+_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
 _logger = logging.getLogger(__name__)
 
 
@@ -1184,6 +1187,38 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         return drained_registry, drained_completion
 
+    async def _drain_shutdown_ipc_until_stable_empty(
+        self,
+        *,
+        max_seconds: float,
+        stable_empty_passes: int,
+    ) -> tuple[int, int, int]:
+        deadline = time.monotonic() + max(0.0, max_seconds)
+        total_registry_drained = 0
+        total_completion_drained = 0
+        total_passes = 0
+        empty_passes = 0
+
+        while True:
+            drained_registry, drained_completion = self._drain_shutdown_ipc_once()
+            total_registry_drained += drained_registry
+            total_completion_drained += drained_completion
+            total_passes += 1
+
+            if drained_registry == 0 and drained_completion == 0:
+                empty_passes += 1
+            else:
+                empty_passes = 0
+
+            if empty_passes >= stable_empty_passes:
+                break
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                break
+            await asyncio.sleep(min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds))
+
+        return total_registry_drained, total_completion_drained, total_passes
+
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         """
         Deprecated compatibility hook.
@@ -1466,7 +1501,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 and not self._in_flight_registry
             ):
                 break
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(_SHUTDOWN_DRAIN_SLEEP_SECONDS)
         _logger.debug(
             "ProcessExecutionEngine shutdown pre-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
             total_registry_drained,
@@ -1481,11 +1516,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         (
             post_join_registry_drained,
             post_join_completion_drained,
-        ) = self._drain_shutdown_ipc_once()
+            post_join_drain_passes,
+        ) = await self._drain_shutdown_ipc_until_stable_empty(
+            max_seconds=_POST_JOIN_SHUTDOWN_DRAIN_SECONDS,
+            stable_empty_passes=_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES,
+        )
         _logger.debug(
-            "ProcessExecutionEngine shutdown post-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
+            "ProcessExecutionEngine shutdown post-join drain: registry_events=%d completion_events=%d passes=%d residual_in_flight_registry=%d",
             post_join_registry_drained,
             post_join_completion_drained,
+            post_join_drain_passes,
             len(self._in_flight_registry),
         )
         if self._in_flight_registry:
@@ -1513,12 +1553,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 "; ".join(registry_summary),
             )
 
-        for _ in range(min(prefetched_count, len(self._prefetched_completion_events))):
-            popleft = getattr(self._prefetched_completion_events, "popleft", None)
-            if callable(popleft):
-                popleft()
-            else:
-                cast(Any, self._prefetched_completion_events).pop(0)
         self._in_flight_registry.clear()
         self._transport.clear_pending_dispatches()
         with self._in_flight_lock:
