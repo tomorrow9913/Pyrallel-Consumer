@@ -7,6 +7,7 @@ from typing import Any, Optional
 from pyrallel_consumer.dto import CompletionEvent, TopicPartition
 from pyrallel_consumer.execution_plane.process_transport import (
     logical_work_identity_from_completion_event,
+    logical_work_identity_from_payload,
     logical_work_identity_from_registry_entry,
     registry_entry_matches_payload,
 )
@@ -78,6 +79,9 @@ class ProcessRegistrySupport:
             if (
                 registry_payload is not None
                 and not ProcessRegistrySupport._event_matches_registry_entry(
+                    event, key, registry_payload
+                )
+                and not ProcessRegistrySupport._start_event_supersedes_registry_entry(
                     event, key, registry_payload
                 )
             ):
@@ -182,3 +186,24 @@ class ProcessRegistrySupport:
             return registry_entry_matches_payload(key, registry_payload, event_payload)
         except (KeyError, TypeError, ValueError):
             return True
+
+    @staticmethod
+    def _start_event_supersedes_registry_entry(
+        event: dict[str, Any],
+        key: InFlightRegistryKey,
+        registry_payload: SerializedWorkItem,
+    ) -> bool:
+        event_payload = event.get("payload")
+        if not isinstance(event_payload, dict):
+            return True
+        try:
+            existing_identity = logical_work_identity_from_registry_entry(
+                key,
+                registry_payload,
+            )
+            incoming_identity = logical_work_identity_from_payload(event_payload)
+        except (KeyError, TypeError, ValueError):
+            return True
+        if incoming_identity[:3] != existing_identity[:3]:
+            return False
+        return incoming_identity.epoch >= existing_identity.epoch
