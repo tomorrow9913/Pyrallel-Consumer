@@ -372,6 +372,31 @@ async def test_get_blocking_offsets_does_not_advance_shared_tracker_commit_state
 
 
 @pytest.mark.asyncio
+async def test_get_blocking_offsets_uses_first_gap_head_without_full_gap_scan(
+    work_manager, mock_dto_topic_partition
+):
+    work_manager.on_assign([mock_dto_topic_partition])
+
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=500,
+    )
+    tracker.update_last_fetched_offset(5)
+    tracker.mark_complete(0)
+    work_manager._offset_trackers[mock_dto_topic_partition] = tracker
+
+    with patch.object(
+        tracker,
+        "get_gaps",
+        side_effect=AssertionError("get_gaps should not be used"),
+    ):
+        blocking_offsets = work_manager.get_blocking_offsets()
+
+    assert blocking_offsets == {mock_dto_topic_partition: OffsetRange(start=1, end=1)}
+
+
+@pytest.mark.asyncio
 async def test_submit_message(
     work_manager, mock_dto_topic_partition, mock_execution_engine
 ):
@@ -916,6 +941,9 @@ async def test_poll_completed_events(
         )
         mock_execution_engine.poll_completed_events.return_value = [event1, event2]
 
+        original_schedule = work_manager.schedule
+        work_manager.schedule = AsyncMock()
+
         completed_events = await work_manager.poll_completed_events()
 
         assert len(completed_events) == 2
@@ -931,18 +959,14 @@ async def test_poll_completed_events(
         assert work_item_id_1 not in work_manager._in_flight_work_items
         assert work_item_id_2 not in work_manager._in_flight_work_items
 
-        # Verify _try_submit_to_execution_engine was called after each completion (2 completions)
-        # It's called once in on_assign, and twice for each completion, but it finds nothing to submit in the queue.
-        # However, due to the _try_submit_to_execution_engine recursion, the submit might be called multiple times during the initial message submission.
-        # So we check the call count more generally.
-        # Initially, WorkManager is initialized, and on_assign calls _try_submit once, then each of the 2 completions calls it again.
-        # This makes it 1 (on_assign) + 2 (poll_completed_events) = 3 calls.
         assert (
             work_manager._current_in_flight_count == 0
         )  # Ensure no messages left in flight
         assert (
             mock_execution_engine.submit.call_count == 0
         )  # No messages should be submitted if the queue is empty.
+        work_manager.schedule.assert_awaited_once()
+        work_manager.schedule = original_schedule
 
 
 @pytest.mark.asyncio

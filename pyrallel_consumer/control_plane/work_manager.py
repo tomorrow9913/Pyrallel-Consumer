@@ -518,6 +518,7 @@ class WorkManager:
             List[CompletionEvent]: 폴링된 완료 이벤트 목록
         """
         completed_events: List[CompletionEvent] = []
+        should_schedule = False
         # First, poll for completed events from the execution engine
         engine_completed_events = await self._execution_engine.poll_completed_events()
         for event in engine_completed_events:
@@ -604,14 +605,21 @@ class WorkManager:
         for tp, tracker in self._offset_trackers.items():
             if tp not in self._shared_offset_trackers:
                 tracker.advance_high_water_mark()  # Ensure HWM is up-to-date
-            gaps = tracker.get_gaps()
-            if gaps:
-                # The first gap's start is the lowest blocking offset
-                blocking_offsets[tp] = OffsetRange(
-                    gaps[0].start, gaps[0].start
-                )  # Return as a single-offset range for simplicity
+            first_gap_head_getter = getattr(tracker, "get_first_gap_head", None)
+            if callable(first_gap_head_getter):
+                first_gap_head = first_gap_head_getter()
+                if first_gap_head is not None and not isinstance(first_gap_head, int):
+                    gaps = tracker.get_gaps()
+                    first_gap_head = gaps[0].start if gaps else None
             else:
+                gaps = tracker.get_gaps()
+                first_gap_head = gaps[0].start if gaps else None
+            if first_gap_head is None:
                 blocking_offsets[tp] = None
+            else:
+                blocking_offsets[tp] = OffsetRange(
+                    first_gap_head, first_gap_head
+                )  # Return as a single-offset range for simplicity
         return blocking_offsets
 
     def get_total_in_flight_count(self) -> int:
