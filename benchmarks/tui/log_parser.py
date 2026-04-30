@@ -22,6 +22,7 @@ RunIdentity = tuple[str, str, str, str]
 
 
 def _empty_tps_table() -> dict[str, dict[str, str]]:
+    """Handle empty tps table within log parser."""
     return {
         workload: {phase: "--" for phase in _PHASE_NAMES}
         for workload in _WORKLOAD_NAMES
@@ -29,6 +30,7 @@ def _empty_tps_table() -> dict[str, dict[str, str]]:
 
 
 def _empty_ordering_tps_table() -> dict[str, dict[str, dict[str, str]]]:
+    """Handle empty ordering tps table within log parser."""
     return {
         workload: {
             ordering: {phase: "--" for phase in _PHASE_NAMES}
@@ -40,6 +42,8 @@ def _empty_ordering_tps_table() -> dict[str, dict[str, dict[str, str]]]:
 
 @dataclass(slots=True)
 class BenchmarkProgressSnapshot:
+    """Capture runtime state for log parser."""
+
     status_message: str = "Waiting to start"
     phase_statuses: dict[str, str] = field(
         default_factory=lambda: {phase: "pending" for phase in _PHASE_NAMES}
@@ -62,6 +66,8 @@ class BenchmarkProgressSnapshot:
 
 
 class BenchmarkLogParser:
+    """Represent benchmark log parser data used by log parser."""
+
     def __init__(
         self,
         workload_mode: str,
@@ -82,12 +88,13 @@ class BenchmarkLogParser:
             * len(self._active_orderings)
             * len(self._active_phases)
         )
-        self._strict_variants_by_base: dict[
-            tuple[str, str, str], set[str]
-        ] = defaultdict(set)
+        self._strict_variants_by_base: dict[tuple[str, str, str], set[str]] = (
+            defaultdict(set)
+        )
         self.snapshot = BenchmarkProgressSnapshot(total_runs=self._base_total_runs)
 
     def consume(self, line: str) -> BenchmarkProgressSnapshot:
+        """Handle consume within log parser."""
         stripped = line.strip()
         if not stripped:
             return self.snapshot
@@ -170,6 +177,7 @@ class BenchmarkLogParser:
         return self.snapshot
 
     def _consume_result_row(self, line: str) -> None:
+        """Handle consume result row within log parser."""
         columns = [part.strip() for part in line.split("|")]
         if len(columns) < 5:
             return
@@ -218,6 +226,7 @@ class BenchmarkLogParser:
             self.snapshot.workload_statuses[workload] = "completed"
 
     def _mark_workload_running(self, workload: str | None) -> None:
+        """Handle mark workload running within log parser."""
         if workload is None:
             return
         self.snapshot.current_workload = workload
@@ -225,12 +234,15 @@ class BenchmarkLogParser:
             self.snapshot.workload_statuses[workload] = "running"
 
     def _mark_phase_running(self, phase: str) -> None:
+        """Handle mark phase running within log parser."""
         self.snapshot.phase_statuses[phase] = "running"
 
     def _mark_phase_completed(self, phase: str) -> None:
+        """Handle mark phase completed within log parser."""
         self.snapshot.phase_statuses[phase] = "completed"
 
     def _mark_ordering_running(self, ordering: str | None) -> None:
+        """Handle mark ordering running within log parser."""
         if ordering is not None:
             self.snapshot.current_ordering = ordering
 
@@ -241,6 +253,7 @@ class BenchmarkLogParser:
         strict_mode: str,
         phase: str,
     ) -> None:
+        """Handle mark run started within log parser."""
         if workload is None or ordering is None or phase not in self._active_phases:
             return
         self.snapshot.current_ordering = ordering
@@ -257,6 +270,7 @@ class BenchmarkLogParser:
     def _mark_run_completed(
         self, workload: str, ordering: str, strict_mode: str, phase: str
     ) -> None:
+        """Handle mark run completed within log parser."""
         self._record_run_variant(workload, ordering, strict_mode, phase)
         key = (workload, ordering, strict_mode, phase)
         self._started_runs.add(key)
@@ -268,6 +282,7 @@ class BenchmarkLogParser:
     def _record_run_variant(
         self, workload: str, ordering: str, strict_mode: str, phase: str
     ) -> None:
+        """Record run variant for log parser."""
         if strict_mode:
             self._strict_variants_by_base[(workload, ordering, phase)].add(strict_mode)
 
@@ -278,6 +293,7 @@ class BenchmarkLogParser:
         self.snapshot.total_runs = self._base_total_runs + extra_variant_runs
 
     def _consume_final_tps(self, throughput: str) -> None:
+        """Handle consume final tps within log parser."""
         target_run = self._next_unfinished_run()
         if target_run is None:
             return
@@ -293,6 +309,7 @@ class BenchmarkLogParser:
         self._active_run = self._next_unfinished_run()
 
     def _refresh_progress(self) -> None:
+        """Refresh progress for log parser."""
         self.snapshot.completed_runs = len(self._completed_runs)
         active_runs = len(self._started_runs - self._completed_runs)
         self.snapshot.progress_value = min(
@@ -301,6 +318,7 @@ class BenchmarkLogParser:
         )
 
     def _next_unfinished_run(self) -> RunIdentity | None:
+        """Handle next unfinished run within log parser."""
         while self._started_run_order:
             candidate = self._started_run_order[0]
             if candidate in self._completed_runs:
@@ -310,6 +328,7 @@ class BenchmarkLogParser:
         return None
 
     def _extract_phase(self, value: str) -> str | None:
+        """Handle extract phase within log parser."""
         if re.search(r"(?:^|-)async(?:$|-strict-)", value):
             return "async"
         if re.search(r"(?:^|-)process(?:$|-strict-)", value):
@@ -319,12 +338,14 @@ class BenchmarkLogParser:
         return None
 
     def _extract_strict_mode(self, value: str) -> str:
+        """Handle extract strict mode within log parser."""
         strict_mode_match = _STRICT_SUFFIX_PATTERN.search(value)
         if strict_mode_match is None:
             return ""
         return strict_mode_match.group(1)
 
     def _extract_workload(self, value: str) -> str | None:
+        """Handle extract workload within log parser."""
         if self._workload_mode != "all":
             return self._workload_mode
         for workload in _WORKLOAD_NAMES:
@@ -333,6 +354,7 @@ class BenchmarkLogParser:
         return None
 
     def _extract_ordering(self, value: str) -> str | None:
+        """Handle extract ordering within log parser."""
         for ordering in self._active_orderings:
             if (
                 f"-{ordering}-" in value
@@ -346,6 +368,7 @@ class BenchmarkLogParser:
         return None
 
     def _resolve_active_workloads(self) -> tuple[str, ...]:
+        """Resolve active workloads for log parser."""
         if self._workload_mode == "all":
             return _WORKLOAD_NAMES
         return (self._workload_mode,)

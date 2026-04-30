@@ -36,13 +36,18 @@ _FAILED_STYLE = "bold bright_red"
 _CANCELLED_STYLE = "bold bright_yellow"
 _ACTIVE_ROW_STYLE = "bold bright_cyan"
 
+
 def _format_elapsed(seconds: float) -> str:
+    """Handle format elapsed within run."""
     total_seconds = max(0, int(seconds))
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return "%02d:%02d:%02d" % (hours, minutes, secs)
 
+
 class RunScreen(Screen[None]):
+    """Represent run screen data used by run."""
+
     BINDINGS = [
         ("c", "cancel", "Cancel"),
         ("s", "settings", "Settings"),
@@ -77,6 +82,7 @@ class RunScreen(Screen[None]):
         self._last_snapshot = BenchmarkProgressSnapshot(total_runs=self._total_runs)
 
     def compose(self) -> ComposeResult:
+        """Handle compose within run."""
         yield Header()
         with Container(id="run-layout"):
             with VerticalScroll(id="run-screen"):
@@ -123,6 +129,7 @@ class RunScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        """Handle on mount within run."""
         self._configure_run_summary_table()
         self._set_terminal_actions(show_report=False)
         self._render_snapshot(BenchmarkProgressSnapshot(total_runs=self._total_runs))
@@ -143,6 +150,7 @@ class RunScreen(Screen[None]):
         self._run_task = asyncio.create_task(self._controller.run())
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle on button pressed within run."""
         if event.button.id == "cancel-button":
             await self.action_cancel()
         elif event.button.id == "settings-button":
@@ -151,6 +159,7 @@ class RunScreen(Screen[None]):
             await self.action_exit()
 
     async def action_cancel(self) -> None:
+        """Handle action cancel within run."""
         if self._completed_successfully:
             self._open_results_report()
             return
@@ -163,24 +172,29 @@ class RunScreen(Screen[None]):
             await self._run_task
 
     async def action_settings(self) -> None:
+        """Handle action settings within run."""
         if self._run_task is not None and not self._run_task.done():
             return
         self.app.pop_screen()
 
     async def action_exit(self) -> None:
+        """Handle action exit within run."""
         if self._run_task is not None and not self._run_task.done():
             return
         self.app.exit()
 
     async def action_back(self) -> None:
+        """Handle action back within run."""
         await self.action_exit()
 
     def on_unmount(self) -> None:
+        """Handle on unmount within run."""
         self._closed = True
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
 
     def _append_log(self, line: str, is_error: bool) -> None:
+        """Handle append log within run."""
         if self._closed:
             return
         if is_error and line.strip():
@@ -190,6 +204,7 @@ class RunScreen(Screen[None]):
         log.write_line("%s%s" % (prefix, line))
 
     def _refresh_elapsed(self) -> None:
+        """Refresh elapsed for run."""
         if self._closed:
             return
         self.query_one("#current-run-elapsed", Static).update(
@@ -201,14 +216,17 @@ class RunScreen(Screen[None]):
         self._render_spotlight(self._last_snapshot)
 
     def _elapsed_seconds(self) -> float:
+        """Handle elapsed seconds within run."""
         end_time = self._finished_at if self._finished_at is not None else monotonic()
         return end_time - self._started_at
 
     def _current_run_elapsed_seconds(self) -> float:
+        """Handle current run elapsed seconds within run."""
         end_time = self._finished_at if self._finished_at is not None else monotonic()
         return max(0.0, end_time - self._current_run_started_at)
 
     def _render_snapshot(self, snapshot: BenchmarkProgressSnapshot) -> None:
+        """Handle render snapshot within run."""
         if self._closed:
             return
         self._last_snapshot = snapshot
@@ -249,6 +267,7 @@ class RunScreen(Screen[None]):
         self._update_run_summary_table(snapshot)
 
     def _on_complete(self, return_code: int) -> None:
+        """Handle on complete within run."""
         if self._closed:
             return
         self._finished_at = monotonic()
@@ -280,6 +299,7 @@ class RunScreen(Screen[None]):
         self._refresh_elapsed()
 
     def _open_results_report(self) -> None:
+        """Handle open results report within run."""
         self.app.push_screen(
             ResultsSummaryModalScreen(
                 self._build_results_summary(), self._latest_output_path
@@ -288,10 +308,12 @@ class RunScreen(Screen[None]):
         )
 
     def _handle_results_modal_result(self, result: str | None) -> None:
+        """Handle results modal result for run."""
         if result == "settings":
             self.app.pop_screen()
 
     def _set_terminal_actions(self, *, show_report: bool) -> None:
+        """Install or update terminal actions for run."""
         cancel_button = self.query_one("#cancel-button", Button)
         settings_button = self.query_one("#settings-button", Button)
         exit_button = self.query_one("#exit-button", Button)
@@ -313,6 +335,7 @@ class RunScreen(Screen[None]):
         exit_button.label = "Exit"
 
     def _configure_run_summary_table(self) -> None:
+        """Handle configure run summary table within run."""
         table = self.query_one("#run-summary", DataTable)
         table.cursor_type = "none"
         table.add_column("Workload", key="workload")
@@ -326,6 +349,7 @@ class RunScreen(Screen[None]):
                 table.add_row(*row_values, key=self._row_key(workload, ordering))
 
     def _update_run_summary_table(self, snapshot: BenchmarkProgressSnapshot) -> None:
+        """Update run summary table for run."""
         table = self.query_one("#run-summary", DataTable)
         active_row_key = self._active_row_key(snapshot)
         active_phase = self._current_phase(snapshot)
@@ -366,11 +390,13 @@ class RunScreen(Screen[None]):
                     table.update_cell(row_key, phase, value, update_width=True)
 
     def _build_results_summary(self) -> str:
+        """Build results summary for run."""
         if self._latest_output_path is None:
             return "No JSON summary was reported by the benchmark run."
         return render_results_summary(self._latest_output_path)
 
     def _mark_terminal_cell(self, status: str) -> None:
+        """Handle mark terminal cell within run."""
         workload = self._last_snapshot.current_workload
         ordering = self._last_snapshot.current_ordering
         phase = self._current_phase(self._last_snapshot)
@@ -384,15 +410,18 @@ class RunScreen(Screen[None]):
         self._update_run_summary_table(self._last_snapshot)
 
     def _last_running_phase(self) -> str | None:
+        """Handle last running phase within run."""
         for phase in self._active_phases:
             if self._last_snapshot.phase_statuses.get(phase) == "running":
                 return phase
         return None
 
     def _set_loading(self, is_running: bool) -> None:
+        """Install or update loading for run."""
         self.query_one("#run-loading", LoadingIndicator).display = is_running
 
     def _force_completion_progress(self) -> None:
+        """Force completion progress in run."""
         self._last_snapshot.completed_runs = self._total_runs
         overall_total = max(self._total_runs, 1)
         current_target = self._last_snapshot.current_run_target_messages or None
@@ -419,6 +448,7 @@ class RunScreen(Screen[None]):
         )
 
     def _render_spotlight(self, snapshot: BenchmarkProgressSnapshot) -> None:
+        """Handle render spotlight within run."""
         spotlight = self.query_one("#run-spotlight", Static)
         workload_chip = self.query_one("#run-chip-workload", Static)
         ordering_chip = self.query_one("#run-chip-ordering", Static)
@@ -451,6 +481,7 @@ class RunScreen(Screen[None]):
             terminal_reason.add_class("is-complete")
 
     def _render_output_path(self) -> None:
+        """Handle render output path within run."""
         output = self.query_one("#run-output-path", Static)
         if self._latest_output_path is None:
             output.update("")
@@ -458,6 +489,7 @@ class RunScreen(Screen[None]):
         output.update("Output: %s" % self._latest_output_path)
 
     def _status_line(self, snapshot: BenchmarkProgressSnapshot) -> str:
+        """Handle status line within run."""
         if self._cancelled:
             return "벤치마크가 취소되었습니다"
         if self._completed_successfully:
@@ -475,6 +507,7 @@ class RunScreen(Screen[None]):
         phase_chip: Static,
         phase: str | None,
     ) -> None:
+        """Update chip classes for run."""
         for chip in (workload_chip, ordering_chip, phase_chip):
             chip.remove_class("is-waiting", "is-running", "is-done", "is-failed")
         if self._finished_at is not None and not self._completed_successfully:
@@ -497,6 +530,7 @@ class RunScreen(Screen[None]):
         ordering_chip.add_class("is-running")
 
     def _current_phase(self, snapshot: BenchmarkProgressSnapshot) -> str | None:
+        """Handle current phase within run."""
         for phase in self._active_phases:
             if snapshot.phase_statuses.get(phase) == "running":
                 return phase
@@ -511,11 +545,13 @@ class RunScreen(Screen[None]):
         return None
 
     def _active_row_key(self, snapshot: BenchmarkProgressSnapshot) -> str | None:
+        """Handle active row key within run."""
         if snapshot.current_workload is None or snapshot.current_ordering is None:
             return None
         return self._row_key(snapshot.current_workload, snapshot.current_ordering)
 
     def _sync_current_run_timing(self, snapshot: BenchmarkProgressSnapshot) -> None:
+        """Handle sync current run timing within run."""
         phase = self._current_phase(snapshot)
         if (
             snapshot.current_workload is None
@@ -534,16 +570,19 @@ class RunScreen(Screen[None]):
 
     @staticmethod
     def _status_text(content: str, style: str) -> Text:
+        """Handle status text within run."""
         return Text(content, style=style)
 
     @staticmethod
     def _identity_cell_text(content: str, is_active: bool) -> str | Text:
+        """Handle identity cell text within run."""
         if not is_active:
             return content
         return Text("▶ %s" % content, style=_ACTIVE_ROW_STYLE)
 
     @staticmethod
     def _terminal_style(status: str) -> str:
+        """Handle terminal style within run."""
         if status == "FAILED":
             return _FAILED_STYLE
         if status == "CANCELLED":
@@ -551,6 +590,7 @@ class RunScreen(Screen[None]):
         return _WAITING_STYLE
 
     def _resolve_workloads(self) -> tuple[str, ...]:
+        """Resolve workloads for run."""
         return tuple(
             workload
             for workload in self._state.workloads
@@ -558,6 +598,7 @@ class RunScreen(Screen[None]):
         )
 
     def _resolve_orderings(self) -> tuple[str, ...]:
+        """Resolve orderings for run."""
         return tuple(
             ordering
             for ordering in self._state.ordering_modes
@@ -565,9 +606,11 @@ class RunScreen(Screen[None]):
         )
 
     def _row_key(self, workload: str, ordering: str) -> str:
+        """Handle row key within run."""
         return "%s-%s" % (workload, ordering)
 
     def _resolve_phases(self) -> tuple[str, ...]:
+        """Resolve phases for run."""
         phases: list[str] = []
         if not self._state.skip_baseline:
             phases.append("baseline")

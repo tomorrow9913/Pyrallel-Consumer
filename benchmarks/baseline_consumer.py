@@ -65,6 +65,7 @@ def consume_messages(
     stats: BenchmarkStats | None = None,
     worker_fn: Callable[[bytes], None] | None = None,
 ) -> BenchmarkResult | None:
+    """Handle consume messages within baseline consumer."""
     effective_topic = topic_name or topic
     consumer_conf = dict(conf)
     if bootstrap_servers:

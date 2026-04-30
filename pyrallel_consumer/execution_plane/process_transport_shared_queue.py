@@ -17,6 +17,8 @@ from pyrallel_consumer.execution_plane.process_transport import (
 
 
 class SharedQueueProcessTransport(ProcessTransport):
+    """Send process work through one shared multiprocessing queue."""
+
     def __init__(
         self,
         *,
@@ -39,6 +41,7 @@ class SharedQueueProcessTransport(ProcessTransport):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
+        """Submit work item for shared-queue process transport."""
         del route_identity
         batch_accumulator = self._get_batch_accumulator()
         if not batch_accumulator.add_nowait_fast_path(work_item):
@@ -53,6 +56,7 @@ class SharedQueueProcessTransport(ProcessTransport):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
+        """Dispatch payload for shared-queue process transport."""
         del route_identity
         batch_accumulator = self._get_batch_accumulator()
         work_item = self._work_item_from_dict(payload)
@@ -62,17 +66,21 @@ class SharedQueueProcessTransport(ProcessTransport):
             self._increment_in_flight()
 
     def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
+        """Start worker task source for shared-queue process transport."""
         del idx
         return self._task_queue, False
 
     def handle_registry_event(self, event: dict[str, Any]) -> None:
+        """Handle registry event for shared-queue process transport."""
         del event
 
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
+        """Recover pending dispatches for shared-queue process transport."""
         del idx
         return []
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
+        """Requeue payloads for shared-queue process transport."""
         if not payloads:
             return
         packed = msgpack.packb(payloads, use_bin_type=True)
@@ -84,11 +92,14 @@ class SharedQueueProcessTransport(ProcessTransport):
             ) from exc
 
     def clear_pending_dispatches(self) -> None:
+        """Clear pending dispatches for shared-queue process transport."""
         return None
 
     def signal_shutdown(self, worker_count: int) -> None:
+        """Handle signal shutdown within shared-queue process transport."""
         for _ in range(worker_count):
             self._task_queue.put(self._sentinel)
 
     def close(self) -> None:
+        """Release resources held by this component."""
         return None

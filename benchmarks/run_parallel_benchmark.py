@@ -41,6 +41,7 @@ from pyrallel_consumer.dto import WorkItem
 
 
 def _normalize_metrics_port(metrics_port: int | None) -> int | None:
+    """Normalize metrics port for benchmark orchestration."""
     if metrics_port is None or metrics_port <= 0:
         return None
     return metrics_port
@@ -60,6 +61,7 @@ def _run_baseline_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
+    """Run baseline round for benchmark orchestration."""
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -115,6 +117,7 @@ async def _run_pyrparallel_round(
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
+    """Run pyrparallel round for benchmark orchestration."""
     effective_process_transport_mode = (
         process_transport_mode if mode == ExecutionMode.PROCESS else None
     )
@@ -174,6 +177,7 @@ def _reset_run_targets(
     group_id: str,
     num_partitions: int,
 ) -> None:
+    """Handle reset run targets within benchmark orchestration."""
     print("Resetting benchmark topics/groups: %s | groups=%s" % (topic_name, group_id))
     reset_topics_and_groups(
         bootstrap_servers=bootstrap_servers,
@@ -183,12 +187,14 @@ def _reset_run_targets(
 
 
 def launch_tui() -> None:
+    """Launch tui for benchmark orchestration."""
     from benchmarks.tui.app import BenchmarkTuiApp
 
     BenchmarkTuiApp().run()
 
 
 def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
+    """Handle warn on tiny partition process defaults within benchmark orchestration."""
     if args.skip_process:
         return
     if "sleep" not in args.workloads:
@@ -218,6 +224,7 @@ def _resolve_effective_process_batching(
     *,
     strict_completion_monitor_enabled: bool | None = None,
 ) -> tuple[int | None, int | None]:
+    """Resolve effective process batching for benchmark orchestration."""
     process_batch_size = args.process_batch_size
     process_max_batch_wait_ms = args.process_max_batch_wait_ms
 
@@ -253,6 +260,7 @@ def _resolve_effective_process_batching(
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
+    """Run benchmark for benchmark orchestration."""
     args._raw_argv = list(raw_argv or [])
     metrics_port = _normalize_metrics_port(args.metrics_port)
 
@@ -335,6 +343,7 @@ def run_benchmark(
                     )
 
             async def run_async_rounds() -> List[BenchmarkResult]:
+                """Run async rounds for benchmark orchestration."""
                 async_results: List[BenchmarkResult] = []
                 for strict_monitor_mode in strict_monitor_modes:
                     strict_completion_monitor_enabled = strict_monitor_mode == "on"
@@ -521,6 +530,7 @@ def run_benchmark(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Run the command-line entrypoint."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if not raw_argv:
         launch_tui()

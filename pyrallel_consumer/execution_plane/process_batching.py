@@ -7,7 +7,9 @@ import time
 from typing import Any, Optional
 
 from pyrallel_consumer.dto import ProcessBatchMetrics, WorkItem
-from pyrallel_consumer.execution_plane.process_codec import serialize_batch_payload as _serialize_batch_payload
+from pyrallel_consumer.execution_plane.process_codec import (
+    serialize_batch_payload as _serialize_batch_payload,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ class BatchAccumulator:
             return True
 
     def add(self, work_item: WorkItem) -> None:
+        """Add one payload to the batching helper."""
         with self._lock:
             if self._closed:
                 return
@@ -88,6 +91,7 @@ class BatchAccumulator:
                 self._flush_locked(reason="size")
 
     def _should_flush_on_demand_locked(self) -> bool:
+        """Return whether flush on demand locked should run in process-mode batching."""
         if not self._buffer:
             return False
         if self._flush_policy == "demand":
@@ -100,6 +104,7 @@ class BatchAccumulator:
         return oldest_age >= self._demand_flush_min_residence_sec
 
     def _start_flush_timer(self) -> None:
+        """Start flush timer for process-mode batching."""
         if self._flush_timer is not None:
             self._flush_timer.cancel()
         self._flush_timer = threading.Timer(self._max_batch_wait_sec, self._timer_flush)
@@ -107,11 +112,13 @@ class BatchAccumulator:
         self._flush_timer.start()
 
     def _timer_flush(self) -> None:
+        """Handle timer flush within process-mode batching."""
         with self._lock:
             if self._buffer and not self._closed:
                 self._flush_locked(reason="timer")
 
     def _flush_locked(self, *, reason: str = "manual") -> None:
+        """Handle flush locked within process-mode batching."""
         if not self._buffer:
             return
         wait_seconds = (
@@ -143,6 +150,7 @@ class BatchAccumulator:
         self._task_queue.put(packed)
 
     def close(self) -> None:
+        """Release resources held by this component."""
         with self._lock:
             self._closed = True
             if self._flush_timer is not None:
@@ -152,6 +160,7 @@ class BatchAccumulator:
                 self._flush_locked(reason="close")
 
     def snapshot(self) -> ProcessBatchMetrics:
+        """Return the current runtime snapshot."""
         with self._lock:
             buffered_age_seconds = (
                 max(0.0, time.monotonic() - self._first_item_time)
@@ -175,17 +184,21 @@ class NoOpBatchAccumulator:
     """No-op accumulator used when transport bypasses shared-queue batching."""
 
     def add_nowait_fast_path(self, work_item: WorkItem) -> bool:
+        """Handle add nowait fast path within process-mode batching."""
         del work_item
         return False
 
     def add(self, work_item: WorkItem) -> None:
+        """Add one payload to the batching helper."""
         del work_item
         return None
 
     def close(self) -> None:
+        """Release resources held by this component."""
         return None
 
     def snapshot(self) -> ProcessBatchMetrics:
+        """Return the current runtime snapshot."""
         return ProcessBatchMetrics(
             size_flush_count=0,
             timer_flush_count=0,
@@ -197,6 +210,7 @@ class NoOpBatchAccumulator:
             buffered_age_seconds=0.0,
             demand_flush_count=0,
         )
+
 
 _BatchAccumulator = BatchAccumulator
 _NoOpBatchAccumulator = NoOpBatchAccumulator

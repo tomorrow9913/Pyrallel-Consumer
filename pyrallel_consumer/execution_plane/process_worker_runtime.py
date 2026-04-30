@@ -12,11 +12,24 @@ from typing import Any, Optional
 import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.config import ExecutionConfig
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, TopicPartition, WorkItem
-from pyrallel_consumer.execution_plane.process_codec import completion_event_to_dict as _completion_event_to_dict
-from pyrallel_consumer.execution_plane.process_codec import decode_incoming_payloads as _decode_incoming_payloads
-from pyrallel_consumer.execution_plane.process_codec import work_item_from_dict as _work_item_from_dict
-from pyrallel_consumer.execution_plane.process_codec import work_item_identity_payload as _work_item_identity_payload
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    TopicPartition,
+    WorkItem,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    completion_event_to_dict as _completion_event_to_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    decode_incoming_payloads as _decode_incoming_payloads,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    work_item_from_dict as _work_item_from_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    work_item_identity_payload as _work_item_identity_payload,
+)
 from pyrallel_consumer.logger import LogManager
 
 _SENTINEL = None
@@ -24,6 +37,7 @@ _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
 
 
 def _receive_task_payload(task_source: Any) -> Any:
+    """Handle receive task payload within process worker runtime."""
     recv_bytes = getattr(task_source, "recv_bytes", None)
     if callable(recv_bytes):
         return recv_bytes()
@@ -59,6 +73,7 @@ def _worker_loop(
     execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
 ):
+    """Handle worker loop within process worker runtime."""
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
 
@@ -166,11 +181,13 @@ def _worker_loop(
                         batch_run_started_at = time.monotonic()
 
                     def _run_with_timeout() -> None:
+                        """Run with timeout for process worker runtime."""
                         worker_fn(work_item)
 
                     if timeout_sec > 0:
 
                         def _handle_timeout(signum, frame):
+                            """Handle timeout for process worker runtime."""
                             raise TimeoutError(
                                 "Task offset=%d exceeded %.3fs"
                                 % (work_item.offset, timeout_sec)
@@ -338,6 +355,7 @@ def _worker_loop(
             break
 
     worker_logger.debug("ProcessWorker[%d] shutdown complete.", process_idx)
+
 
 receive_task_payload = _receive_task_payload
 calculate_backoff = _calculate_backoff

@@ -58,12 +58,14 @@ class OffsetTracker:
         self._first_gap_head: Optional[int] = self._calculate_first_gap_head()
 
     def _bump_version(self) -> None:
+        """Handle bump version within offset tracker."""
         self._state_version += 1
         self._gaps_cache.clear()
         self._gaps_cache_key = None
         self._first_gap_head = self._calculate_first_gap_head()
 
     def _calculate_first_gap_head(self) -> Optional[int]:
+        """Handle calculate first gap head within offset tracker."""
         current = self.last_committed_offset + 1
         while current <= self.last_fetched_offset and current in self.completed_offsets:
             current += 1

@@ -25,6 +25,8 @@ _SMALL_BATCH_AVG_SIZE = 2.5
 
 @dataclass(frozen=True)
 class ProcessBatchAdvice:
+    """Represent process batch advice data used by process batch advisor."""
+
     run_name: str
     recommendation: str
     next_run_flags: tuple[str, ...]
@@ -33,10 +35,12 @@ class ProcessBatchAdvice:
     runtime_mutation: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        """Handle to dict within process batch advisor."""
         return asdict(self)
 
 
 def load_benchmark_summary(path: Path) -> dict[str, Any]:
+    """Handle load benchmark summary within process batch advisor."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Expected benchmark summary JSON object")
@@ -44,6 +48,7 @@ def load_benchmark_summary(path: Path) -> dict[str, Any]:
 
 
 def build_process_batch_advice(summary: Mapping[str, Any]) -> list[ProcessBatchAdvice]:
+    """Build process batch advice for process batch advisor."""
     results = summary.get("results", [])
     if not isinstance(results, list):
         raise ValueError("Expected benchmark summary 'results' list")
@@ -59,6 +64,7 @@ def build_process_batch_advice(summary: Mapping[str, Any]) -> list[ProcessBatchA
 
 
 def format_advice_markdown(advice: Sequence[ProcessBatchAdvice]) -> str:
+    """Handle format advice markdown within process batch advisor."""
     if not advice:
         return "No process batch advisor recommendations generated."
 
@@ -81,6 +87,7 @@ def format_advice_markdown(advice: Sequence[ProcessBatchAdvice]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Run the command-line entrypoint."""
     parser = argparse.ArgumentParser(
         description="Generate advisor-only process batch follow-up recommendations."
     )
@@ -102,6 +109,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def _build_result_advice(result: Mapping[str, Any]) -> ProcessBatchAdvice | None:
+    """Build result advice for process batch advisor."""
     if result.get("run_type") != "process":
         return None
 
@@ -155,6 +163,7 @@ def _build_result_advice(result: Mapping[str, Any]) -> ProcessBatchAdvice | None
 
 
 def _total_flushes(metrics: Mapping[str, Any]) -> int:
+    """Handle total flushes within process batch advisor."""
     return (
         _coerce_int(metrics.get("size_flush_count"))
         + _coerce_int(metrics.get("timer_flush_count"))
@@ -164,6 +173,7 @@ def _total_flushes(metrics: Mapping[str, Any]) -> int:
 
 
 def _coerce_int(value: Any) -> int:
+    """Handle coerce int within process batch advisor."""
     if isinstance(value, bool):
         return 0
     if isinstance(value, int):
@@ -174,6 +184,7 @@ def _coerce_int(value: Any) -> int:
 
 
 def _coerce_float(value: Any) -> float:
+    """Handle coerce float within process batch advisor."""
     if isinstance(value, bool):
         return 0.0
     if isinstance(value, (int, float)):
@@ -182,6 +193,7 @@ def _coerce_float(value: Any) -> float:
 
 
 def _format_flag_command(flags: Sequence[str]) -> str:
+    """Handle format flag command within process batch advisor."""
     pairs: list[str] = []
     for index in range(0, len(flags), 2):
         flag = flags[index]

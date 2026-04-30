@@ -29,6 +29,7 @@ def _run_baseline_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
+    """Run baseline round for benchmark rounds."""
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -84,6 +85,7 @@ async def _run_pyrparallel_round(
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
+    """Run pyrparallel round for benchmark rounds."""
     effective_process_transport_mode = (
         process_transport_mode if mode == ExecutionMode.PROCESS else None
     )

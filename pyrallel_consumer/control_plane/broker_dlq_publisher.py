@@ -26,6 +26,7 @@ async def publish_to_dlq(
     attempt: int,
     logger: Any,
 ) -> bool:
+    """Convert publish to dlq."""
     source_topic = validate_topic_name(consume_topic)
     suffix = validate_topic_name(kafka_config.DLQ_TOPIC_SUFFIX)
     dlq_topic = source_topic + suffix

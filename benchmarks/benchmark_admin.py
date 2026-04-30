@@ -6,6 +6,7 @@ from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 
 
 def check_kafka_connection(bootstrap_servers: str) -> None:
+    """Handle check kafka connection within benchmark admin."""
     client = AdminClient({"bootstrap.servers": bootstrap_servers})
     try:
         client.list_topics(timeout=5)
@@ -22,6 +23,7 @@ def reset_run_targets(
     group_id: str,
     num_partitions: int,
 ) -> None:
+    """Handle reset run targets within benchmark admin."""
     print("Resetting benchmark topics/groups: %s | groups=%s" % (topic_name, group_id))
     reset_topics_and_groups(
         bootstrap_servers=bootstrap_servers,

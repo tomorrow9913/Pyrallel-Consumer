@@ -19,6 +19,8 @@ UNKNOWN_ERROR_CODE: int = getattr(KafkaError, "UNKNOWN")
 
 @dataclass(frozen=True)
 class TopicConfig:
+    """Hold settings for kafka admin."""
+
     num_partitions: int
     replication_factor: int = 1
     configs: Mapping[str, str] | None = None
@@ -33,6 +35,7 @@ def reset_topics_and_groups(
     backoff_sec: float = 0.5,
     operation_timeout: float = 10.0,
 ) -> None:
+    """Handle reset topics and groups within kafka admin."""
     if not topics:
         raise ValueError("At least one topic must be provided for reset")
 
@@ -67,6 +70,7 @@ def _delete_topics_with_retries(
     backoff_sec: float,
     operation_timeout: float,
 ) -> None:
+    """Handle delete topics with retries within kafka admin."""
     if not topics:
         return
     for attempt in range(1, retries + 1):
@@ -98,6 +102,7 @@ def _delete_groups_with_retries(
     retries: int,
     backoff_sec: float,
 ) -> None:
+    """Handle delete groups with retries within kafka admin."""
     if not groups:
         return
     for attempt in range(1, retries + 1):
@@ -130,6 +135,7 @@ def _create_topics_with_retries(
     backoff_sec: float,
     operation_timeout: float,
 ) -> None:
+    """Create topics with retries for kafka admin."""
     new_topics = [
         NewTopic(
             topic=name,
@@ -163,6 +169,7 @@ def _await_admin_results(
     ignored_codes: set[int],
     action: str,
 ) -> None:
+    """Handle await admin results within kafka admin."""
     for name, future in futures.items():
         try:
             future.result()
@@ -174,6 +181,7 @@ def _await_admin_results(
 
 
 def _should_ignore(exc: KafkaException, ignored_codes: set[int]) -> bool:
+    """Return whether ignore should run in kafka admin."""
     if not ignored_codes:
         return False
     err = exc.args[0] if exc.args else None

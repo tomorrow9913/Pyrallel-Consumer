@@ -19,6 +19,7 @@ SerializedBatchEnvelope = dict[str, Any]
 
 
 def work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
+    """Convert work item to dict."""
     payload: SerializedWorkItem = {
         "id": item.id,
         "topic": item.tp.topic,
@@ -35,6 +36,7 @@ def work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
 
 
 def work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
+    """Build work item from dict."""
     return WorkItem(
         id=payload["id"],
         tp=TopicPartition(payload["topic"], payload["partition"]),
@@ -48,6 +50,7 @@ def work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
 
 
 def work_item_identity_payload(payload: SerializedWorkItem) -> SerializedWorkItem:
+    """Handle work item identity payload within process payload serialization."""
     return {
         "id": payload["id"],
         "topic": payload["topic"],
@@ -61,6 +64,7 @@ def completion_event_to_dict(
     event: CompletionEvent,
     extra_fields: Optional[dict[str, Any]] = None,
 ) -> SerializedCompletionEvent:
+    """Convert completion event to dict."""
     payload: SerializedCompletionEvent = {
         "id": event.id,
         "topic": event.tp.topic,
@@ -79,6 +83,7 @@ def completion_event_to_dict(
 def completion_event_from_dict(
     payload: SerializedCompletionEvent,
 ) -> CompletionEvent:
+    """Build completion event from dict."""
     return CompletionEvent(
         id=payload["id"],
         tp=TopicPartition(payload["topic"], payload["partition"]),
@@ -91,6 +96,7 @@ def completion_event_from_dict(
 
 
 def serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> bytes:
+    """Serialize batch payload for process payload serialization."""
     envelope: SerializedBatchEnvelope = {
         "items": [work_item_to_dict(item) for item in batch],
         "timing": {"flush_enqueued_at": flush_enqueued_at},
@@ -101,6 +107,7 @@ def serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> 
 def normalize_decoded_payloads(
     decoded: Any,
 ) -> tuple[list[SerializedWorkItem], dict[str, float]]:
+    """Normalize decoded payloads for process payload serialization."""
     if isinstance(decoded, dict):
         if "items" in decoded:
             timing = decoded.get("timing", {})
@@ -136,6 +143,7 @@ def normalize_decoded_payloads(
 def decode_incoming_payloads(
     item: Any, max_bytes: int
 ) -> tuple[list[SerializedWorkItem], dict[str, float]]:
+    """Decode incoming payloads for process payload serialization."""
     if isinstance(item, (bytes, bytearray)):
         if len(item) > max_bytes:
             raise ValueError("payload_too_large")
@@ -151,6 +159,7 @@ def decode_incoming_payloads(
 
 
 def decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
+    """Decode incoming item for process payload serialization."""
     return [
         work_item_from_dict(payload)
         for payload in decode_incoming_payloads(item, max_bytes)[0]

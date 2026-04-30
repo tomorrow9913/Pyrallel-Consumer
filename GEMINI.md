@@ -1233,3 +1233,7 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 ### 5.56 PR #124 assignment gap-cache review follow-up (2026-04-30)
 
 - TDD(red/green): added a regression for `metadata_snapshot` assignment hydration where sparse completed offsets are restored beyond the committed HWM. The initial focused run reproduced the stale `OffsetTracker._first_gap_head` cache returning `None`; `BrokerRebalanceSupport` now rehydrates assignment offsets through `OffsetTracker.rehydrate_assignment_state(...)`, which refreshes derived gap/cache state after the committed/fetched offsets are restored.
+
+### 5.57 Runtime and benchmark docstring coverage (2026-04-30)
+
+- Documentation pass: added docstrings for non-dunder functions and classes under `pyrallel_consumer/` and `benchmarks/` so core runtime, control-plane, execution-plane, and benchmark helper flows are easier to follow for first-time readers. Added `tests/unit/test_docstring_coverage.py` to prevent future non-dunder function/class docstring regressions in those roots.

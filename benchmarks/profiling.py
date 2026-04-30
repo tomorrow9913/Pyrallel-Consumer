@@ -23,6 +23,7 @@ def profile_session(
     profile_greenlets: bool,
     top_n: int,
 ):
+    """Handle profile session within profiling."""
     if not enabled:
         yield
         return
@@ -51,6 +52,7 @@ def profile_session(
 
 
 def stop_yappi_worker(path: Path) -> None:
+    """Stop yappi worker for profiling."""
     try:
         import yappi
 
@@ -65,6 +67,7 @@ def stop_yappi_worker(path: Path) -> None:
 
 
 def format_stats_table(stats: Iterable[Any], *, limit: int) -> str:
+    """Handle format stats table within profiling."""
     rows: list[tuple[str, int, float, float]] = []
     for entry in list(stats)[:limit]:
         name = entry.full_name if hasattr(entry, "full_name") else str(entry)
@@ -102,6 +105,7 @@ def format_stats_table(stats: Iterable[Any], *, limit: int) -> str:
 def summarize_worker_profiles(
     run_name: str, profile_dir: Path, top_n: int, clock: str
 ) -> None:
+    """Handle summarize worker profiles within profiling."""
     del clock
     try:
         import yappi
@@ -140,6 +144,7 @@ def wrap_process_worker_for_profile(
     profile_threads: bool,
     profile_greenlets: bool,
 ) -> Callable[[WorkItem], None]:
+    """Handle wrap process worker for profile within profiling."""
     del output_dir, run_name, clock, profile_threads, profile_greenlets
     # Worker profiling disabled: yappi is unstable in worker processes and emits
     # internal errors.

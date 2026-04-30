@@ -10,6 +10,8 @@ from benchmarks.tui.state import BenchmarkTuiState
 
 
 class BenchmarkProcessController:
+    """Adjust runtime behavior for controller."""
+
     def __init__(
         self,
         *,
@@ -33,12 +35,14 @@ class BenchmarkProcessController:
 
     @staticmethod
     def _workload_mode(state: BenchmarkTuiState) -> str:
+        """Handle workload mode within controller."""
         if len(state.workloads) > 1:
             return "all"
         return state.workloads[0]
 
     @staticmethod
     def _active_workloads(state: BenchmarkTuiState) -> tuple[str, ...]:
+        """Handle active workloads within controller."""
         workloads = tuple(
             workload
             for workload in state.workloads
@@ -50,6 +54,7 @@ class BenchmarkProcessController:
 
     @staticmethod
     def _active_phases(state: BenchmarkTuiState) -> tuple[str, ...]:
+        """Handle active phases within controller."""
         phases: list[str] = []
         if not state.skip_baseline:
             phases.append("baseline")
@@ -62,6 +67,7 @@ class BenchmarkProcessController:
         return ("baseline", "async", "process")
 
     async def run(self) -> None:
+        """Handle run within controller."""
         argv = [
             sys.executable,
             "-m",
@@ -83,6 +89,7 @@ class BenchmarkProcessController:
         self._on_complete(return_code)
 
     async def cancel(self) -> None:
+        """Handle cancel within controller."""
         self._cancel_requested = True
         if self._process is None or self._process.returncode is not None:
             return
@@ -96,6 +103,7 @@ class BenchmarkProcessController:
     async def _read_stream(
         self, stream: asyncio.StreamReader | None, *, is_error: bool
     ) -> None:
+        """Handle read stream within controller."""
         if stream is None:
             return
         while True:

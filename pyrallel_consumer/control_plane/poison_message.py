@@ -17,11 +17,15 @@ CircuitKey = tuple[DtoTopicPartition, Any]
 
 @dataclass
 class _CircuitState:
+    """Represent circuit state data used by poison-message protection."""
+
     failure_count: int = 0
     open_until: Optional[float] = None
 
 
 class PoisonMessageCircuitBreaker:
+    """Represent poison message circuit breaker data used by poison-message protection."""
+
     def __init__(
         self,
         *,
@@ -44,6 +48,7 @@ class PoisonMessageCircuitBreaker:
         self._states: dict[CircuitKey, _CircuitState] = {}
 
     def record_completion(self, event: CompletionEvent, work_item: WorkItem) -> None:
+        """Record completion for poison-message protection."""
         if not self.enabled:
             return
 
@@ -61,6 +66,7 @@ class PoisonMessageCircuitBreaker:
             state.open_until = self._clock() + self._cooldown_seconds
 
     def should_force_fail(self, work_item: WorkItem) -> bool:
+        """Return whether force fail should run in poison-message protection."""
         if not self.enabled:
             return False
 
@@ -77,6 +83,7 @@ class PoisonMessageCircuitBreaker:
         return False
 
     def build_forced_failure_event(self, work_item: WorkItem) -> CompletionEvent:
+        """Build forced failure event for poison-message protection."""
         state = self._states.get(self._circuit_key(work_item))
         failure_count = state.failure_count if state is not None else 0
         error = "Poison message circuit open for %s@%d key after %d failure(s)" % (
@@ -95,18 +102,21 @@ class PoisonMessageCircuitBreaker:
         )
 
     def clear_partition(self, tp: DtoTopicPartition) -> None:
+        """Clear partition for poison-message protection."""
         for circuit_key in list(self._states):
             if circuit_key[0] == tp:
                 self._states.pop(circuit_key, None)
 
     @staticmethod
     def _circuit_key(work_item: WorkItem) -> CircuitKey:
+        """Handle circuit key within poison-message protection."""
         poison_key = work_item.poison_key
         if poison_key is WORK_ITEM_POISON_KEY_UNSET:
             poison_key = work_item.key
         return (work_item.tp, poison_key)
 
     def get_open_circuit_count(self) -> int:
+        """Return open circuit count for poison-message protection."""
         if not self.enabled:
             return 0
 

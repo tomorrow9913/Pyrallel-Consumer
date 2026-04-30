@@ -17,12 +17,16 @@ BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
 
 @dataclass(frozen=True)
 class ReleaseThreshold:
+    """Represent release threshold data used by release gate."""
+
     tps_floor: float
     p99_ceiling_ms: float
 
 
 @dataclass(frozen=True)
 class ArtifactProvenanceBinding:
+    """Represent artifact provenance binding data used by release gate."""
+
     repository: str
     git_ref: str
     git_sha: str
@@ -45,6 +49,7 @@ RELEASE_THRESHOLDS: dict[Combination, ReleaseThreshold] = {
 
 
 def _check(code: str, status: str, message: str, **details: Any) -> dict[str, Any]:
+    """Handle check within release gate."""
     check: dict[str, Any] = {"code": code, "status": status, "message": message}
     if details:
         check["details"] = details
@@ -52,6 +57,7 @@ def _check(code: str, status: str, message: str, **details: Any) -> dict[str, An
 
 
 def _load_summary(path: Path) -> Mapping[str, Any]:
+    """Handle load summary within release gate."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -62,18 +68,21 @@ def _load_summary(path: Path) -> Mapping[str, Any]:
 
 
 def _as_number(value: Any, field: str, *, path: Path) -> float:
+    """Handle as number within release gate."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("%s must be numeric in %s" % (field, path))
     return float(value)
 
 
 def _as_int(value: Any, field: str, *, path: Path) -> int:
+    """Handle as int within release gate."""
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("%s must be an integer in %s" % (field, path))
     return value
 
 
 def _result_combination(result: Mapping[str, Any], *, path: Path) -> Combination:
+    """Handle result combination within release gate."""
     run_type = result.get("run_type")
     workload = result.get("workload")
     ordering = result.get("ordering")
@@ -83,6 +92,7 @@ def _result_combination(result: Mapping[str, Any], *, path: Path) -> Combination
 
 
 def _final_lag(result: Mapping[str, Any]) -> int | None:
+    """Handle final lag within release gate."""
     for field in ("final_lag", "consumer_parallel_lag"):
         value = result.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
@@ -96,6 +106,7 @@ def _final_lag(result: Mapping[str, Any]) -> int | None:
 
 
 def _final_gap_count(result: Mapping[str, Any]) -> int | None:
+    """Handle final gap count within release gate."""
     for field in ("final_gap_count", "consumer_gap_count"):
         value = result.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
@@ -109,6 +120,7 @@ def _final_gap_count(result: Mapping[str, Any]) -> int | None:
 
 
 def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
+    """Handle process transport mode within release gate."""
     value = result.get("process_transport_mode")
     if isinstance(value, str) and value in REQUIRED_PROCESS_TRANSPORT_MODES:
         return value
@@ -116,6 +128,7 @@ def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
 
 
 def _evaluate_options(path: Path, options: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Handle evaluate options within release gate."""
     checks: list[dict[str, Any]] = []
     if options.get("num_messages") != RELEASE_GATE_MIN_MESSAGES:
         checks.append(
@@ -168,6 +181,7 @@ def _evaluate_options(path: Path, options: Mapping[str, Any]) -> list[dict[str, 
 def _evaluate_persistent_gap(
     path: Path, summary: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
+    """Handle evaluate persistent gap within release gate."""
     observations = summary.get("metrics_observations")
     if observations is None:
         return []
@@ -231,6 +245,7 @@ def _evaluate_persistent_gap(
 
 
 def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
+    """Handle expected messages within release gate."""
     value = options.get("num_messages")
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -240,6 +255,7 @@ def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
 def _group_results(
     summaries: Iterable[tuple[Path, Mapping[str, Any]]],
 ) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]], set[str]]:
+    """Handle group results within release gate."""
     grouped: dict[Combination, list[BenchmarkEntry]] = {
         combination: [] for combination in RELEASE_THRESHOLDS
     }
@@ -308,6 +324,7 @@ def _evaluate_matrix(
     grouped: Mapping[Combination, list[BenchmarkEntry]],
     required_repetitions: int,
 ) -> list[dict[str, Any]]:
+    """Handle evaluate matrix within release gate."""
     checks: list[dict[str, Any]] = []
     for combination, threshold in RELEASE_THRESHOLDS.items():
         entries = grouped[combination]
@@ -428,6 +445,7 @@ def _evaluate_matrix(
 def _artifact_provenance_binding(
     path: Path, summary: Mapping[str, Any]
 ) -> tuple[ArtifactProvenanceBinding | None, list[dict[str, Any]]]:
+    """Handle artifact provenance binding within release gate."""
     metadata = summary.get("artifact_metadata")
     values: dict[str, str] = {}
     if isinstance(metadata, Mapping):
@@ -495,6 +513,7 @@ def evaluate_release_gate(
     *,
     required_repetitions: int = DEFAULT_REQUIRED_REPETITIONS,
 ) -> dict[str, Any]:
+    """Handle evaluate release gate within release gate."""
     paths = [Path(path) for path in benchmark_json_paths]
     checks: list[dict[str, Any]] = []
     if required_repetitions < 1:
@@ -572,6 +591,7 @@ def evaluate_release_gate(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build parser for release gate."""
     parser = argparse.ArgumentParser(
         description="Evaluate benchmark JSON artifacts against release performance gates."
     )
@@ -591,6 +611,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line entrypoint."""
     args = _build_parser().parse_args(argv)
     try:
         report = evaluate_release_gate(

@@ -34,11 +34,16 @@ COMMIT_FAILURE_REASONS = ("kafka_exception",)
 
 
 class _Joinable(Protocol):
+    """Represent joinable data used by Prometheus metric export."""
+
     def join(self, timeout: float | None = None) -> None:
+        """Handle join within Prometheus metric export."""
         ...
 
 
 class PrometheusMetricsExporter:
+    """Project runtime metrics into Prometheus collectors."""
+
     def __init__(
         self,
         config: Optional[MetricsConfig] = None,
@@ -315,6 +320,7 @@ class PrometheusMetricsExporter:
                 self._http_server = server
 
     def update_from_system_metrics(self, metrics: SystemMetrics) -> None:
+        """Build update from system metrics."""
         self._in_flight_gauge.set(metrics.total_in_flight)
         self._backpressure_gauge.set(1 if metrics.is_paused else 0)
         for partition in metrics.partitions:
@@ -334,6 +340,7 @@ class PrometheusMetricsExporter:
     def observe_completion(
         self, tp: TopicPartition, status: CompletionStatus, duration_seconds: float
     ) -> None:
+        """Observe completion for Prometheus metric export."""
         self._processed_total.labels(
             topic=tp.topic, partition=str(tp.partition), status=status.value
         ).inc()
@@ -342,11 +349,13 @@ class PrometheusMetricsExporter:
         )
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
+        """Update metadata size for Prometheus metric export."""
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
 
     def record_commit_failure(
         self, tp: TopicPartition, reason: str = "kafka_exception"
     ) -> None:
+        """Record commit failure for Prometheus metric export."""
         if reason not in COMMIT_FAILURE_REASONS:
             allowed_reasons = ", ".join(COMMIT_FAILURE_REASONS)
             raise ValueError(
@@ -360,12 +369,14 @@ class PrometheusMetricsExporter:
         ).inc()
 
     def record_dlq_publish_failure(self, tp: TopicPartition) -> None:
+        """Record dlq publish failure for Prometheus metric export."""
         self._dlq_publish_failures_total.labels(
             topic=tp.topic,
             partition=str(tp.partition),
         ).inc()
 
     def close(self) -> None:
+        """Release resources held by this component."""
         if self._http_server is None:
             return
 
@@ -384,6 +395,7 @@ class PrometheusMetricsExporter:
         self._http_thread = None
 
     def _update_resource_signal(self, signal: Optional[ResourceSignalSnapshot]) -> None:
+        """Update resource signal for Prometheus metric export."""
         signal_status = (
             signal.status.value
             if signal is not None
@@ -409,6 +421,7 @@ class PrometheusMetricsExporter:
         adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot],
         adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot],
     ) -> None:
+        """Update adaptive snapshot metrics for Prometheus metric export."""
         if adaptive_backpressure is None:
             self._adaptive_backpressure_configured_max_in_flight_gauge.set(0)
             self._adaptive_backpressure_effective_max_in_flight_gauge.set(0)
@@ -489,6 +502,7 @@ class PrometheusMetricsExporter:
     def _update_process_batch_metrics(
         self, metrics: Optional[ProcessBatchMetrics]
     ) -> None:
+        """Update process batch metrics for Prometheus metric export."""
         if metrics is None:
             for reason in ("size", "timer", "close", "demand"):
                 self._process_batch_flush_count.labels(reason=reason).set(0)

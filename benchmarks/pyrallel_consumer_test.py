@@ -45,6 +45,7 @@ _PROMETHEUS_EXPORTERS: dict[int, PrometheusMetricsExporter] = {}
 
 
 def _get_or_create_prometheus_exporter(port: int) -> PrometheusMetricsExporter:
+    """Return or create prometheus exporter for pyrallel consumer test."""
     exporter = _PROMETHEUS_EXPORTERS.get(port)
     if exporter is None:
         exporter = PrometheusMetricsExporter(MetricsConfig(enabled=True, port=port))
@@ -55,6 +56,7 @@ def _get_or_create_prometheus_exporter(port: int) -> PrometheusMetricsExporter:
 def create_topic_if_not_exists(
     admin_conf: Dict[str, Any], topic_name: str, num_partitions: int = 1
 ) -> None:
+    """Create topic if not exists for pyrallel consumer test."""
     admin_client = AdminClient({"bootstrap.servers": admin_conf["bootstrap.servers"]})
     try:
         metadata = admin_client.list_topics(timeout=5)
@@ -80,6 +82,8 @@ def create_topic_if_not_exists(
 
 
 class ConsumptionStats:
+    """Represent consumption stats data used by pyrallel consumer test."""
+
     def __init__(self, target: Optional[int]) -> None:
         self._target = target
         self._start_time = time.time()
@@ -87,6 +91,7 @@ class ConsumptionStats:
         self._last_report_time = time.time()
 
     def record(self) -> None:
+        """Handle record within pyrallel consumer test."""
         self._processed += 1
         now = time.time()
         if self._processed == 1:
@@ -104,19 +109,23 @@ class ConsumptionStats:
             self._last_report_time = now
 
     def reached_target(self) -> bool:
+        """Handle reached target within pyrallel consumer test."""
         return self._target is not None and self._processed >= self._target
 
     @property
     def processed(self) -> int:
+        """Handle processed within pyrallel consumer test."""
         return self._processed
 
     def summary(self) -> tuple[int, float, float]:
+        """Handle summary within pyrallel consumer test."""
         runtime = time.time() - self._start_time
         tps = self._processed / runtime if runtime > 0 else 0
         return self._processed, runtime, tps
 
 
 def _decode_payload(payload_bytes: bytes) -> None:
+    """Decode payload for pyrallel consumer test."""
     if not payload_bytes:
         return
     try:
@@ -126,6 +135,8 @@ def _decode_payload(payload_bytes: bytes) -> None:
 
 
 class OrderingValidator:
+    """Represent ordering validator data used by pyrallel consumer test."""
+
     def __init__(self, *, ordering_mode: str, topic_name: str) -> None:
         self._ordering_mode = OrderingMode(ordering_mode)
         self._topic_name = topic_name
@@ -134,6 +145,7 @@ class OrderingValidator:
         self._last_offset_by_partition: dict[int, int] = {}
 
     def observe(self, item: WorkItem) -> None:
+        """Handle observe within pyrallel consumer test."""
         if self._ordering_mode == OrderingMode.UNORDERED:
             return
 
@@ -163,6 +175,7 @@ class OrderingValidator:
         self._checks += 1
 
     def summary(self) -> str:
+        """Handle summary within pyrallel consumer test."""
         if self._ordering_mode == OrderingMode.UNORDERED:
             return "Ordering validation SKIP: unordered"
         if self._ordering_mode == OrderingMode.KEY_HASH:
@@ -176,6 +189,7 @@ class OrderingValidator:
         )
 
     def _decode_ordering_payload(self, payload: Any) -> dict[str, Any]:
+        """Decode ordering payload for pyrallel consumer test."""
         if not isinstance(payload, (bytes, bytearray)):
             raise RuntimeError(
                 "Ordering validation failed for %s: payload must be bytes"
@@ -197,6 +211,7 @@ class OrderingValidator:
 
 
 def _process_mode_worker(item: WorkItem) -> None:
+    """Handle process mode worker within pyrallel consumer test."""
     payload_bytes = item.payload or b""
     _decode_payload(payload_bytes)
     time.sleep(0.005)
@@ -209,6 +224,7 @@ async def _wait_for_partition_assignment(
     timeout_sec: float,
     poll_interval_sec: float = 0.1,
 ) -> None:
+    """Wait for for partition assignment in pyrallel consumer test."""
     start = time.monotonic()
     while time.monotonic() - start < timeout_sec:
         metrics = broker_poller.get_metrics()
@@ -244,6 +260,7 @@ def build_kafka_config(
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> KafkaConfig:
+    """Build kafka config for pyrallel consumer test."""
     effective_conf = dict(conf)
     if bootstrap_servers:
         effective_conf["bootstrap.servers"] = bootstrap_servers
@@ -331,6 +348,7 @@ async def run_pyrallel_consumer_test(
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
+    """Run pyrallel consumer test for pyrallel consumer test."""
     effective_topic = topic_name or topic
     effective_bootstrap = bootstrap_servers or conf["bootstrap.servers"]
     effective_group = consumer_group or conf["group.id"]
@@ -377,6 +395,8 @@ async def run_pyrallel_consumer_test(
     )
 
     class BenchmarkMetricsObserver:
+        """Represent benchmark metrics observer data used by pyrallel consumer test."""
+
         def __init__(
             self,
             benchmark_stats: Optional[BenchmarkStats],
@@ -394,14 +414,17 @@ async def run_pyrallel_consumer_test(
 
         @property
         def failure_error(self) -> Optional[str]:
+            """Handle failure error within pyrallel consumer test."""
             return self._failure_error
 
         def report_worker_failure(self, error: str) -> None:
+            """Handle report worker failure within pyrallel consumer test."""
             if self._failure_error is None:
                 self._failure_error = error
             self._stop_event.set()
 
         def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            """Observe completion for pyrallel consumer test."""
             if status == CompletionStatus.FAILURE:
                 self.report_worker_failure(
                     "Benchmark worker failure on %s[%d]: completion failed"
@@ -426,6 +449,7 @@ async def run_pyrallel_consumer_test(
             work_item: WorkItem,
             duration_seconds: float,
         ) -> None:
+            """Observe work completion for pyrallel consumer test."""
             if event.status == CompletionStatus.SUCCESS:
                 if self._completion_ordering_validator is not None:
                     try:
@@ -462,6 +486,7 @@ async def run_pyrallel_consumer_test(
     )
 
     async def async_worker(item: WorkItem) -> None:
+        """Handle async worker within pyrallel consumer test."""
         payload_bytes = item.payload or b""
         _decode_payload(payload_bytes)
         await asyncio.sleep(0.005)
@@ -473,6 +498,7 @@ async def run_pyrallel_consumer_test(
     execution_config.mode = mode_value
 
     async def validated_async_worker(item: WorkItem) -> None:
+        """Handle validated async worker within pyrallel consumer test."""
         try:
             if ordering_validator is not None:
                 ordering_validator.observe(item)
@@ -521,6 +547,7 @@ async def run_pyrallel_consumer_test(
     metrics_start = time.perf_counter()
 
     def _record_release_gate_metrics_from_snapshot(metrics: SystemMetrics) -> None:
+        """Build record release gate metrics from snapshot."""
         if stats is None:
             return
         stats.record_release_gate_observation(
@@ -534,6 +561,7 @@ async def run_pyrallel_consumer_test(
         if prometheus_exporter is not None:
 
             async def _publish_metrics() -> None:
+                """Publish metrics for pyrallel consumer test."""
                 while not stop_event.is_set():
                     prometheus_exporter.update_from_system_metrics(
                         broker_poller.get_metrics()
@@ -549,6 +577,7 @@ async def run_pyrallel_consumer_test(
         )
 
         async def _print_diagnostics() -> None:
+            """Handle print diagnostics within pyrallel consumer test."""
             while not stop_event.is_set():
                 await asyncio.sleep(5)
                 if stop_event.is_set():

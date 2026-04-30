@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 
 def git_output(*args: str) -> str | None:
+    """Handle git output within benchmark artifacts."""
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -24,6 +25,7 @@ def build_artifact_metadata(
     output_path: str,
     environ: dict[str, str] | None = None,
 ) -> dict[str, str]:
+    """Build artifact metadata for benchmark artifacts."""
     env = os.environ if environ is None else environ
     metadata: dict[str, str] = {
         "artifact_path": output_path,

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class OptionHelp:
+    """Represent option help data used by option help."""
+
     label: str
     description: str
     browse: bool = False

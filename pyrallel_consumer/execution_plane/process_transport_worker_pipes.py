@@ -23,6 +23,8 @@ PendingDispatchKey = tuple[int, str, int, int, str, int]
 
 
 class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
+    """Route process work through worker-affine pipe queues."""
+
     def __init__(
         self,
         *,
@@ -59,6 +61,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
+        """Dispatch payload for worker-pipe process transport."""
         work_item = self._work_item_from_dict(payload)
         worker_idx = stable_worker_index_for_route(route_identity, self._process_count)
         self._acquire_worker_pipe_queue_slot(worker_idx=worker_idx, payload=payload)
@@ -83,6 +86,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             self._increment_in_flight()
 
     def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
+        """Start worker task source for worker-pipe process transport."""
         worker_receiver, parent_sender = Pipe(duplex=False)
         senders = self._get_worker_pipe_senders()
         if idx < len(senders):
@@ -97,9 +101,11 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
 
     @property
     def capabilities(self) -> ProcessTransportCapabilities:
+        """Return capabilities supported by this transport."""
         return ProcessTransportCapabilities(pending_dispatch_recovery=True)
 
     def handle_registry_event(self, event: dict[str, Any]) -> None:
+        """Handle registry event for worker-pipe process transport."""
         if event.get("kind") != "start":
             return
         key = event.get("key")
@@ -114,6 +120,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._release_worker_pipe_queue_slot()
 
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
+        """Recover pending dispatches for worker-pipe process transport."""
         recovered: list[PendingDispatchRecovery] = []
         with self._pending_dispatch_lock:
             for key, payload in list(self._pending_dispatch.items()):
@@ -134,6 +141,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         return recovered
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
+        """Requeue payloads for worker-pipe process transport."""
         for payload in payloads:
             work_item = self._work_item_from_dict(payload)
             self.dispatch_payload(
@@ -147,6 +155,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             )
 
     def signal_shutdown(self, worker_count: int) -> None:
+        """Handle signal shutdown within worker-pipe process transport."""
         del worker_count
         for sender in self._get_worker_pipe_senders():
             try:
@@ -155,10 +164,12 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                 continue
 
     def clear_pending_dispatches(self) -> None:
+        """Clear pending dispatches for worker-pipe process transport."""
         with self._pending_dispatch_lock:
             self._pending_dispatch.clear()
 
     def close(self) -> None:
+        """Release resources held by this component."""
         self.clear_pending_dispatches()
         for sender in self._get_worker_pipe_senders():
             close = getattr(sender, "close", None)
@@ -170,6 +181,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         worker_idx: int,
         payload: SerializedWorkItem,
     ) -> PendingDispatchKey:
+        """Handle pending dispatch key within worker-pipe process transport."""
         identity = worker_execution_identity_from_payload(worker_idx, payload)
         return (
             identity.worker_index,
@@ -185,6 +197,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         key: Any,
         payload: Any,
     ) -> PendingDispatchKey | None:
+        """Handle pending dispatch key for registry start within worker-pipe process transport."""
         if not isinstance(key, tuple) or len(key) < 4 or not isinstance(payload, dict):
             return None
         if (
@@ -196,12 +209,14 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         return WorkerPipesProcessTransport._pending_dispatch_key(key[0], payload)
 
     def _release_worker_pipe_queue_slot(self) -> None:
+        """Handle release worker pipe queue slot within worker-pipe process transport."""
         try:
             self._worker_pipe_queue_slots.release()
         except ValueError:
             return
 
     def _validate_packed_payload(self, payload: bytes) -> None:
+        """Validate packed payload for worker-pipe process transport."""
         if len(payload) > self._max_payload_bytes:
             raise ValueError("payload_too_large")
 
@@ -224,6 +239,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         worker_idx: int,
         payload: SerializedWorkItem,
     ) -> None:
+        """Handle acquire worker pipe queue slot within worker-pipe process transport."""
         del worker_idx, payload
         liveness_check = self._slot_wait_liveness_check
         timeout_seconds = self._slot_wait_timeout_seconds
@@ -243,6 +259,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         payload: SerializedWorkItem,
         packed_payload: bytes,
     ) -> None:
+        """Handle send packed payload within worker-pipe process transport."""
         senders = self._get_worker_pipe_senders()
         try:
             sender = senders[worker_idx]

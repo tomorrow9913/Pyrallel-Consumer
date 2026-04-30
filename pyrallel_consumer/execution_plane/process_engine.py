@@ -101,8 +101,6 @@ __all__ = [
 ]
 
 
-
-
 class ProcessExecutionEngine(BaseExecutionEngine):
     """
     프로세스 기반 실행 엔진의 구현입니다.
@@ -204,6 +202,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._start_workers()
 
     def _validate_transport_config(self) -> None:
+        """Validate transport config for multiprocessing execution."""
         process_config = self._config.process_config
         if self._transport_mode != "worker_pipes":
             return
@@ -234,6 +233,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _start_worker(self, idx: int) -> Process:
+        """Start worker for multiprocessing execution."""
         (
             task_source,
             close_parent_after_start,
@@ -268,6 +268,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._workers.append(worker)
 
     def _join_worker_with_escalation(self, worker: Process) -> None:
+        """Handle join worker with escalation within multiprocessing execution."""
         timeout_sec = self._config.process_config.worker_join_timeout_ms / 1000.0
         worker.join(timeout=timeout_sec)
         if not worker.is_alive():
@@ -293,6 +294,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker.join(timeout=timeout_sec)
 
     def _emit_completion_event(self, completion_event: CompletionEvent) -> None:
+        """Handle emit completion event within multiprocessing execution."""
         packed = msgpack.packb(
             _completion_event_to_dict(completion_event),
             use_bin_type=True,
@@ -308,6 +310,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         attempt: int,
         timeout_failure: bool = False,
     ) -> None:
+        """Handle emit worker recovery failure within multiprocessing execution."""
         try:
             completion_event = CompletionEvent(
                 id=payload.get("id", ""),
@@ -339,6 +342,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 )
 
     def _get_registry_state_lock(self) -> Any:
+        """Return registry state lock for multiprocessing execution."""
         lock = getattr(self, "_registry_state_lock", None)
         if lock is None:
             lock = threading.RLock()
@@ -346,6 +350,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return lock
 
     def _recover_dead_worker_items(self, idx: int) -> list[SerializedWorkItem]:
+        """Recover dead worker items for multiprocessing execution."""
         with self._get_registry_state_lock():
             return ProcessRegistrySupport.recover_dead_worker_items(
                 worker_index=idx,
@@ -360,6 +365,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         payloads: list[SerializedWorkItem],
         restart_exc: Exception,
     ) -> None:
+        """Handle emit worker restart failures within multiprocessing execution."""
         for payload in payloads:
             self._emit_worker_recovery_failure(
                 idx,
@@ -369,6 +375,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _drain_registry_event_queue(self) -> int:
+        """Drain registry event queue for multiprocessing execution."""
         with self._get_registry_state_lock():
             return ProcessRegistrySupport.drain_registry_event_queue(
                 registry_event_queue=getattr(self, "_registry_event_queue", None),
@@ -376,6 +383,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _ensure_workers_alive(self, *, force: bool = False) -> None:
+        """Handle ensure workers alive within multiprocessing execution."""
         self._drain_visible_worker_events()
         if not self._should_run_worker_liveness_scan(force=force):
             return
@@ -391,10 +399,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 self._publish_recovered_worker_payloads(idx, to_requeue)
 
     def _drain_visible_worker_events(self) -> None:
+        """Drain visible worker events for multiprocessing execution."""
         self._drain_registry_events()
         self._prefetch_completed_events_from_queue()
 
     def _should_run_worker_liveness_scan(self, *, force: bool) -> bool:
+        """Return whether run worker liveness scan should run in multiprocessing execution."""
         liveness_interval = getattr(
             self,
             "_worker_liveness_check_interval_seconds",
@@ -412,6 +422,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return True
 
     def _collect_dead_worker_recovery_candidates(self) -> list[tuple[int, Any]]:
+        """Handle collect dead worker recovery candidates within multiprocessing execution."""
         candidates: list[tuple[int, Any]] = []
         for idx, worker in enumerate(self._workers):
             if not worker.is_alive():
@@ -422,6 +433,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self,
         idx: int,
     ) -> list[SerializedWorkItem]:
+        """Handle collect recoverable worker payloads within multiprocessing execution."""
         to_requeue: list[SerializedWorkItem] = []
         try:
             to_requeue.extend(self._recover_dead_worker_items(idx))
@@ -447,6 +459,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         exitcode: Any,
         recovered_payloads: list[SerializedWorkItem],
     ) -> bool:
+        """Handle restart dead worker within multiprocessing execution."""
         try:
             new_worker = self._start_worker(idx)
         except Exception as restart_exc:
@@ -466,6 +479,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         idx: int,
         payloads: list[SerializedWorkItem],
     ) -> None:
+        """Publish recovered worker payloads for multiprocessing execution."""
         if not payloads:
             return
         requeued_offsets: list[Any] = []
@@ -497,6 +511,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
+        """Recover pending pipe dispatches for multiprocessing execution."""
         transport = getattr(self, "_transport", None)
         if transport is None:
             return []
@@ -516,6 +531,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def _signal_worker_pipe_slot_wait(self) -> None:
+        """Handle signal worker pipe slot wait within multiprocessing execution."""
         lock = getattr(self, "_worker_slot_wait_liveness_lock", None)
         if lock is None:
             lock = threading.RLock()
@@ -532,6 +548,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         idx: int,
         payloads: list[SerializedWorkItem],
     ) -> list[SerializedWorkItem]:
+        """Handle filter recoverable pending pipe dispatches within multiprocessing execution."""
         recoverable: list[SerializedWorkItem] = []
         max_retries = self._config.max_retries
         for payload in payloads:
@@ -550,11 +567,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return recoverable
 
     def _requeue_recovered_payloads(self, payloads: list[SerializedWorkItem]) -> None:
+        """Requeue recovered payloads for multiprocessing execution."""
         if not payloads:
             return
         self._transport.requeue_payloads(payloads)
 
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
+        """Handle apply registry event within multiprocessing execution."""
         self._initialize_runtime_timing_state()
         transport = getattr(self, "_transport", None)
         if transport is not None:
@@ -567,9 +586,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def _drain_registry_events(self) -> None:
+        """Drain registry events for multiprocessing execution."""
         self._drain_registry_event_queue()
 
     def _prefetch_completed_events_from_queue(self) -> int:
+        """Build prefetch completed events from queue."""
         with self._get_registry_state_lock():
             completion_queue = getattr(self, "_completion_queue", None)
             prefetched_events = getattr(self, "_prefetched_completion_events", None)
@@ -586,10 +607,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 prefetched += 1
 
     def _prefetch_completion_event(self, event: CompletionEvent) -> None:
+        """Handle prefetch completion event within multiprocessing execution."""
         self._prefetched_completion_events.append(event)
         self._discard_registry_entry_for_completion(event)
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
+        """Handle discard registry entry for completion within multiprocessing execution."""
         with self._get_registry_state_lock():
             in_flight_registry = getattr(self, "_in_flight_registry", None)
             if in_flight_registry is None:
@@ -600,6 +623,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _drain_shutdown_ipc_once(self) -> tuple[int, int]:
+        """Drain shutdown ipc once for multiprocessing execution."""
         drained_registry = self._drain_registry_event_queue()
         drained_completion = 0
 
@@ -621,6 +645,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         max_seconds: float,
         stable_empty_passes: int,
     ) -> tuple[int, int, int]:
+        """Drain shutdown ipc until stable empty for multiprocessing execution."""
         deadline = time.monotonic() + max(0.0, max_seconds)
         hard_deadline = deadline + (
             _SHUTDOWN_DRAIN_SLEEP_SECONDS * max(1, stable_empty_passes + 2)
@@ -681,6 +706,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def get_runtime_metrics(self) -> Optional[EngineRuntimeDiagnostics]:
+        """Return runtime metrics for multiprocessing execution."""
         self._drain_registry_events()
         base_metrics = self._batch_accumulator.snapshot()
         transport_mode = self._get_transport_mode()
@@ -787,6 +813,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
+        """Wait for for completion in multiprocessing execution."""
         if getattr(self, "_is_shutdown", False):
             return bool(self._prefetched_completion_events)
 
@@ -823,6 +850,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return True
 
     def _initialize_runtime_timing_state(self) -> None:
+        """Handle initialize runtime timing state within multiprocessing execution."""
         if hasattr(self, "_runtime_timing_lock"):
             return
         self._runtime_timing_lock = threading.Lock()
@@ -837,6 +865,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._last_worker_to_main_ipc_seconds = 0.0
 
     def _record_main_to_worker_ipc(self, duration_seconds: Any) -> None:
+        """Convert record main to worker ipc."""
         self._record_runtime_timing(
             duration_seconds,
             sample_attr="_main_to_worker_ipc_samples",
@@ -845,6 +874,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def _record_worker_exec(self, duration_seconds: Any) -> None:
+        """Record worker exec for multiprocessing execution."""
         self._record_runtime_timing(
             duration_seconds,
             sample_attr="_worker_exec_samples",
@@ -853,6 +883,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def _record_worker_to_main_ipc(self, duration_seconds: Any) -> None:
+        """Convert record worker to main ipc."""
         self._record_runtime_timing(
             duration_seconds,
             sample_attr="_worker_to_main_ipc_samples",
@@ -868,6 +899,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         sum_attr: str,
         last_attr: str,
     ) -> None:
+        """Record runtime timing for multiprocessing execution."""
         if not isinstance(duration_seconds, (int, float)):
             return
         self._initialize_runtime_timing_state()
@@ -878,6 +910,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             setattr(self, last_attr, duration)
 
     def _decode_completion_queue_item(self, raw_event: Any) -> CompletionEvent:
+        """Decode completion queue item for multiprocessing execution."""
         if isinstance(raw_event, (bytes, bytearray)):
             payload = msgpack.unpackb(raw_event, raw=False)
             completion_enqueued_at = payload.get("completion_enqueued_at")
@@ -900,6 +933,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         payload: SerializedWorkItem,
         count_in_flight: bool = False,
     ) -> None:
+        """Convert dispatch payload to transport."""
         work_item = _work_item_from_dict(payload)
         self._transport.dispatch_payload(
             payload,
@@ -908,6 +942,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
 
     def _get_transport_mode(self) -> str:
+        """Return transport mode for multiprocessing execution."""
         return getattr(self, "_transport_mode", "shared_queue")
 
     async def shutdown(self) -> None:
@@ -1020,5 +1055,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._transport.close()
 
     def _increment_in_flight_count(self) -> None:
+        """Increment in flight count for multiprocessing execution."""
         with self._in_flight_lock:
             self._in_flight_count += 1

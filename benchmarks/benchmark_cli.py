@@ -20,6 +20,7 @@ _PROCESS_TRANSPORT_CHOICES = ("shared_queue", "worker_pipes")
 def parse_csv_selection(
     value: str, *, argument_name: str, choices: Sequence[str]
 ) -> list[str]:
+    """Parse csv selection for benchmark cli."""
     items: list[str] = []
     seen: set[str] = set()
     for raw_item in value.split(","):
@@ -43,6 +44,7 @@ def parse_csv_selection(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build parser for benchmark cli."""
     parser = argparse.ArgumentParser(description="Run Pyrallel throughput benchmarks")
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument("--num-messages", type=int, default=100_000)

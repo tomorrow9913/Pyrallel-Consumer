@@ -12,17 +12,24 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class DlqFailureMetricsExporter(Protocol):
+    """Export observations for completion event processing."""
+
     def record_dlq_publish_failure(self, tp: DtoTopicPartition) -> None:
+        """Record dlq publish failure for completion event processing."""
         ...
 
 
 @dataclass(frozen=True)
 class CompletionProcessingResult:
+    """Represent completion processing result data used by completion event processing."""
+
     processed_count: int
     completed_partitions: frozenset[DtoTopicPartition]
 
 
 class BrokerCompletionSupport:
+    """Group helper operations for completion event processing."""
+
     def __init__(
         self,
         *,
@@ -59,6 +66,7 @@ class BrokerCompletionSupport:
         *,
         max_blocking_duration_ms: int,
     ) -> list[CompletionEvent]:
+        """Handle blocking timeouts for completion event processing."""
         if max_blocking_duration_ms <= 0:
             return []
 
@@ -95,6 +103,7 @@ class BrokerCompletionSupport:
         self,
         completed_events: list[CompletionEvent],
     ) -> CompletionProcessingResult:
+        """Handle process completed events within completion event processing."""
         pending_events = [(event, True) for event in self._pending_dlq_events.values()]
         fresh_events = [(event, False) for event in completed_events]
         events_to_process = pending_events + fresh_events

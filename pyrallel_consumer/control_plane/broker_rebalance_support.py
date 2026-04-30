@@ -13,6 +13,8 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class BrokerRebalanceSupport:
+    """Hydrate and revoke offset trackers during Kafka rebalances."""
+
     def __init__(
         self,
         metadata_encoder: MetadataEncoder,
@@ -31,6 +33,7 @@ class BrokerRebalanceSupport:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
+        """Decode assignment completed offsets for rebalance state handoff."""
         if strategy != "metadata_snapshot":
             return set()
 
@@ -50,6 +53,7 @@ class BrokerRebalanceSupport:
         tracker: OffsetTracker,
         base_offset: int,
     ) -> str:
+        """Encode revoke metadata for rebalance state handoff."""
         if strategy != "metadata_snapshot":
             return ""
 
@@ -72,6 +76,7 @@ class BrokerRebalanceSupport:
         max_revoke_grace_ms: int,
         logger=None,
     ) -> dict[DtoTopicPartition, OffsetTracker]:
+        """Build assignments for rebalance state handoff."""
         if logger is None:
             logger = logging.getLogger(__name__)
         committed_offsets: dict[tuple[str, int], KafkaTopicPartition] = {}
@@ -153,6 +158,7 @@ class BrokerRebalanceSupport:
             Callable[[DtoTopicPartition, str], None]
         ] = None,
     ) -> None:
+        """Handle revoke for rebalance state handoff."""
         tp_dtos = [
             DtoTopicPartition(topic=tp.topic, partition=tp.partition)
             for tp in partitions

@@ -30,11 +30,15 @@ class OrderingMode(Enum):
 
 
 class ExecutionMode(Enum):
+    """Enumerate modes used by runtime data transfer."""
+
     ASYNC = "async"
     PROCESS = "process"
 
 
 class DLQPayloadMode(str, Enum):
+    """Enumerate modes used by runtime data transfer."""
+
     FULL = "full"
     METADATA_ONLY = "metadata_only"
 
@@ -225,6 +229,8 @@ class EngineRuntimeDiagnostics:
 
 
 class ResourceSignalStatus(str, Enum):
+    """Represent resource signal status data used by runtime data transfer."""
+
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
     STALE = "stale"
@@ -248,6 +254,7 @@ class ResourceSignalSnapshot:
 
     @property
     def is_actionable_for_tuning(self) -> bool:
+        """Return whether actionable for tuning holds for runtime data transfer."""
         return self.status == ResourceSignalStatus.AVAILABLE
 
 
@@ -301,6 +308,8 @@ class SystemMetrics:
 
 @dataclass(frozen=True)
 class QueueRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     total_in_flight: int
     total_queued: int
     max_in_flight: int
@@ -312,6 +321,8 @@ class QueueRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class AdaptiveConcurrencyRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     configured_max_in_flight: int
     effective_max_in_flight: int
     min_in_flight: int
@@ -322,6 +333,8 @@ class AdaptiveConcurrencyRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class AdaptiveBackpressureSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     configured_max_in_flight: int
     effective_max_in_flight: int
     min_in_flight: int
@@ -337,6 +350,8 @@ class AdaptiveBackpressureSnapshot:
 
 @dataclass(frozen=True)
 class RetryPolicySnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     max_retries: int
     retry_backoff_ms: int
     exponential_backoff: bool
@@ -346,6 +361,8 @@ class RetryPolicySnapshot:
 
 @dataclass(frozen=True)
 class DlqRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     enabled: bool
     topic: str
     payload_mode: DLQPayloadMode
@@ -355,6 +372,8 @@ class DlqRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class PoisonMessageRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     enabled: bool
     failure_threshold: int
     cooldown_ms: int
@@ -363,6 +382,8 @@ class PoisonMessageRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class PartitionRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     tp: TopicPartition
     current_epoch: int
     last_committed_offset: int
@@ -378,6 +399,8 @@ class PartitionRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class RuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     queue: QueueRuntimeSnapshot
     retry: RetryPolicySnapshot
     dlq: DlqRuntimeSnapshot

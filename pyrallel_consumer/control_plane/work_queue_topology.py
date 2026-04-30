@@ -12,27 +12,35 @@ QueueKey = tuple[DtoTopicPartition, Any]
 
 
 class RunnableQueueKeys:
+    """Maintain runnable queue keys in stable FIFO order."""
+
     def __init__(self) -> None:
         self._ordered: OrderedDict[QueueKey, None] = OrderedDict()
 
     def append(self, queue_key: QueueKey) -> None:
+        """Append a queue key while preserving runnable order."""
         self._ordered[queue_key] = None
 
     def discard(self, queue_key: QueueKey) -> None:
+        """Discard a queue key if it is currently tracked."""
         self._ordered.pop(queue_key, None)
 
     def popleft(self) -> QueueKey:
+        """Remove and return the oldest runnable queue key."""
         queue_key, _ = self._ordered.popitem(last=False)
         return queue_key
 
     def clear(self) -> None:
+        """Clear all tracked queue keys."""
         self._ordered.clear()
 
     def extend(self, queue_keys: list[QueueKey]) -> None:
+        """Append multiple queue keys while preserving order."""
         for queue_key in queue_keys:
             self._ordered[queue_key] = None
 
     def count(self, queue_key: QueueKey) -> int:
+        """Return 1 when the queue key is tracked, otherwise 0."""
         return 1 if queue_key in self._ordered else 0
 
     def __contains__(self, queue_key: object) -> bool:
@@ -46,6 +54,8 @@ class RunnableQueueKeys:
 
 
 class WorkQueueTopology:
+    """Own the virtual queues used by ordered work scheduling."""
+
     def __init__(self) -> None:
         self.virtual_partition_queues: dict[
             DtoTopicPartition, dict[Any, asyncio.Queue[WorkItem]]
@@ -59,6 +69,7 @@ class WorkQueueTopology:
 
     @staticmethod
     def peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
+        """Peek at queue in virtual queue scheduling."""
         internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
         return internal[0]
 
@@ -67,6 +78,7 @@ class WorkQueueTopology:
         queue: asyncio.Queue[WorkItem],
         work_items: list[WorkItem],
     ) -> None:
+        """Handle enqueue work items within virtual queue scheduling."""
         if not work_items:
             return
         if len(work_items) == 1:
@@ -94,9 +106,11 @@ class WorkQueueTopology:
         wakeup_next(getters)
 
     def assign(self, tp: DtoTopicPartition) -> None:
+        """Create tracking state for an assigned topic partition."""
         self.virtual_partition_queues[tp] = {}
 
     def revoke(self, tp: DtoTopicPartition) -> int:
+        """Remove tracking state for a revoked topic partition."""
         removed_count = 0
         for queue in self.virtual_partition_queues.get(tp, {}).values():
             removed_count += queue.qsize()
@@ -110,6 +124,7 @@ class WorkQueueTopology:
         tp: DtoTopicPartition,
         key: Any,
     ) -> Optional[asyncio.Queue[WorkItem]]:
+        """Return queue for virtual queue scheduling."""
         return self.virtual_partition_queues.get(tp, {}).get(key)
 
     def ensure_queue(
@@ -117,6 +132,7 @@ class WorkQueueTopology:
         tp: DtoTopicPartition,
         key: Any,
     ) -> asyncio.Queue[WorkItem]:
+        """Handle ensure queue within virtual queue scheduling."""
         queue = self.get_queue(tp, key)
         if queue is None:
             queue = asyncio.Queue()
@@ -124,6 +140,7 @@ class WorkQueueTopology:
         return queue
 
     def cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
+        """Clean up empty queue for virtual queue scheduling."""
         queues = self.virtual_partition_queues.get(tp)
         if not queues:
             return
@@ -134,6 +151,7 @@ class WorkQueueTopology:
             queues.pop(key, None)
 
     def deactivate_queue_key(self, queue_key: QueueKey) -> None:
+        """Handle deactivate queue key within virtual queue scheduling."""
         self.active_runnable_queue_keys.discard(queue_key)
         head_offset = self.head_offsets.pop(queue_key, None)
         if head_offset is not None:
@@ -142,6 +160,7 @@ class WorkQueueTopology:
         self.runnable_queue_keys.discard(queue_key)
 
     def activate_queue_key(self, queue_key: QueueKey) -> None:
+        """Handle activate queue key within virtual queue scheduling."""
         if queue_key not in self.active_runnable_queue_keys:
             self.runnable_queue_keys.append(queue_key)
             self.active_runnable_queue_keys.add(queue_key)
@@ -152,6 +171,7 @@ class WorkQueueTopology:
         key: Any,
         queue: asyncio.Queue[WorkItem],
     ) -> None:
+        """Refresh queue head for virtual queue scheduling."""
         queue_key = (tp, key)
         self.deactivate_queue_key(queue_key)
         if queue.empty():
@@ -168,6 +188,7 @@ class WorkQueueTopology:
         key: Any,
         work_items: list[WorkItem],
     ) -> None:
+        """Handle enqueue batch within virtual queue scheduling."""
         queue = self.ensure_queue(tp, key)
         was_empty = queue.empty()
         self.enqueue_work_items(queue, work_items)
@@ -179,6 +200,7 @@ class WorkQueueTopology:
         blocking_offsets: dict[DtoTopicPartition, Optional[OffsetRange]],
         is_queue_eligible: Callable[[QueueKey], bool],
     ) -> Optional[QueueKey]:
+        """Pick blocking queue key for virtual queue scheduling."""
         best_queue_key: Optional[QueueKey] = None
         best_offset: Optional[int] = None
 
@@ -205,6 +227,7 @@ class WorkQueueTopology:
         self,
         is_queue_eligible: Callable[[QueueKey], bool],
     ) -> Optional[QueueKey]:
+        """Pick next runnable queue key for virtual queue scheduling."""
         attempts = len(self.runnable_queue_keys)
         for _ in range(attempts):
             queue_key = self.runnable_queue_keys.popleft()
@@ -232,6 +255,7 @@ class WorkQueueTopology:
         blocking_offsets: dict[DtoTopicPartition, Optional[OffsetRange]],
         is_queue_eligible: Callable[[QueueKey], bool],
     ) -> Optional[QueueKey]:
+        """Pop next queue key from virtual queue scheduling."""
         queue_key = self.pick_blocking_queue_key(blocking_offsets, is_queue_eligible)
         if queue_key is not None:
             return queue_key
@@ -242,6 +266,7 @@ class WorkQueueTopology:
         tp: DtoTopicPartition,
         key: Any,
     ) -> Optional[WorkItem]:
+        """Handle dequeue submitted item within virtual queue scheduling."""
         queue = self.get_queue(tp, key)
         if queue is None or queue.empty():
             self.deactivate_queue_key((tp, key))
@@ -255,6 +280,7 @@ class WorkQueueTopology:
         return work_item
 
     def get_virtual_queue_sizes(self) -> dict[DtoTopicPartition, dict[Any, int]]:
+        """Return virtual queue sizes for virtual queue scheduling."""
         queue_sizes: dict[DtoTopicPartition, dict[Any, int]] = {}
         for tp, queue_map in self.virtual_partition_queues.items():
             queue_sizes[tp] = {key: queue.qsize() for key, queue in queue_map.items()}

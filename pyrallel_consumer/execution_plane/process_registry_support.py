@@ -28,6 +28,7 @@ class ProcessRegistrySupport:
         max_retries: int,
         emit_worker_recovery_failure: Callable[..., None],
     ) -> list[SerializedWorkItem]:
+        """Recover dead worker items for process in-flight registry management."""
         items = [
             (key, payload)
             for key, payload in in_flight_registry.items()
@@ -71,6 +72,7 @@ class ProcessRegistrySupport:
         record_main_to_worker_ipc: Callable[[Any], None],
         record_worker_exec: Callable[[Any], None],
     ) -> None:
+        """Handle apply registry event within process in-flight registry management."""
         kind = event.get("kind")
         key = event.get("key")
         if kind == "start" and key is not None:
@@ -127,6 +129,7 @@ class ProcessRegistrySupport:
         registry_event_queue: Any,
         apply_event: Callable[[dict[str, Any]], None],
     ) -> int:
+        """Drain registry event queue for process in-flight registry management."""
         if registry_event_queue is None:
             return 0
 
@@ -145,6 +148,7 @@ class ProcessRegistrySupport:
         in_flight_registry: InFlightRegistry,
         event: CompletionEvent,
     ) -> None:
+        """Build discard completion from registry."""
         expected_identity = logical_work_identity_from_completion_event(event)
         for key, payload in list(in_flight_registry.items()):
             if (
@@ -159,6 +163,7 @@ class ProcessRegistrySupport:
         in_flight_registry: InFlightRegistry,
         tp: TopicPartition,
     ) -> Optional[int]:
+        """Return min inflight offset for process in-flight registry management."""
         min_offset = None
         for (
             _worker_index,
@@ -179,6 +184,7 @@ class ProcessRegistrySupport:
         key: InFlightRegistryKey,
         registry_payload: SerializedWorkItem,
     ) -> bool:
+        """Handle event matches registry entry within process in-flight registry management."""
         event_payload = event.get("payload")
         if not isinstance(event_payload, dict):
             return True
@@ -193,6 +199,7 @@ class ProcessRegistrySupport:
         key: InFlightRegistryKey,
         registry_payload: SerializedWorkItem,
     ) -> bool:
+        """Start event supersedes registry entry for process in-flight registry management."""
         event_payload = event.get("payload")
         if not isinstance(event_payload, dict):
             return True

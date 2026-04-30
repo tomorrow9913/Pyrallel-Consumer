@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class BenchmarkTuiState:
+    """Represent benchmark tui state data used by state."""
+
     workloads: tuple[str, ...] = ("sleep",)
     ordering_modes: tuple[str, ...] = ("key_hash",)
     bootstrap_servers: str = "localhost:9092"
@@ -43,6 +45,7 @@ class BenchmarkTuiState:
     py_spy_top: bool = False
 
     def to_argv(self) -> list[str]:
+        """Handle to argv within state."""
         argv = [
             "--bootstrap-servers",
             self.bootstrap_servers,

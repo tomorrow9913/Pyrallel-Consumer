@@ -110,6 +110,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         await self._completion_queue.put(completion_event)
 
     async def _apply_backoff(self, attempt: int) -> None:
+        """Handle apply backoff within async execution."""
         base_delay_ms = self._config.retry_backoff_ms
 
         if self._config.exponential_backoff:
@@ -164,6 +165,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
+        """Wait for for completion in async execution."""
         if self._prefetched_completion_events or not self._completion_queue.empty():
             return True
 
@@ -188,6 +190,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         return len(self._in_flight_tasks)
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
+        """Return min inflight offset for async execution."""
         del tp
         return None
 

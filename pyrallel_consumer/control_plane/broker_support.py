@@ -15,8 +15,11 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class DlqCacheSupport:
+    """Group helper operations for broker commit and DLQ support."""
+
     @staticmethod
     def estimate_cached_payload_bytes(payload: Any) -> int:
+        """Handle estimate cached payload bytes within broker commit and DLQ support."""
         if payload is None:
             return 0
         if isinstance(payload, memoryview):
@@ -28,6 +31,7 @@ class DlqCacheSupport:
         return 0
 
     def get_cached_message_size(self, key: Any, value: Any) -> int:
+        """Return cached message size for broker commit and DLQ support."""
         return self.estimate_cached_payload_bytes(
             key
         ) + self.estimate_cached_payload_bytes(value)
@@ -38,6 +42,7 @@ class DlqCacheSupport:
         size_bytes: int,
         cache_key: Tuple[DtoTopicPartition, int],
     ) -> tuple[Optional[Tuple[Any, Any]], int]:
+        """Pop cached message from broker commit and DLQ support."""
         cached_message = message_cache.pop(cache_key, None)
         if cached_message is None:
             return None, size_bytes
@@ -58,6 +63,7 @@ class DlqCacheSupport:
         value: Any,
         logger: logging.Logger,
     ) -> int:
+        """Handle cache message for dlq within broker commit and DLQ support."""
         cache_key = (tp, offset)
         if not should_cache:
             _, size_bytes = self.pop_cached_message(
@@ -101,6 +107,7 @@ class DlqCacheSupport:
         size_bytes: int,
         tp: DtoTopicPartition,
     ) -> int:
+        """Drop partition messages from broker commit and DLQ support."""
         cache_keys_to_remove = [
             cache_key for cache_key in message_cache if cache_key[0] == tp
         ]
@@ -112,6 +119,8 @@ class DlqCacheSupport:
 
 
 class BrokerCommitPlanner:
+    """Represent broker commit planner data used by broker commit and DLQ support."""
+
     def __init__(
         self,
         metadata_encoder: MetadataEncoder,
@@ -128,6 +137,7 @@ class BrokerCommitPlanner:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
+        """Decode assignment completed offsets for broker commit and DLQ support."""
         if strategy != "metadata_snapshot":
             return set()
 
@@ -143,6 +153,7 @@ class BrokerCommitPlanner:
     def get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
     ) -> set[int]:
+        """Return commit metadata offsets for broker commit and DLQ support."""
         if hasattr(tracker.completed_offsets, "irange"):
             return set(
                 islice(
@@ -160,6 +171,7 @@ class BrokerCommitPlanner:
         tracker: OffsetTracker,
         base_offset: int,
     ) -> str:
+        """Encode revoke metadata for broker commit and DLQ support."""
         if strategy != "metadata_snapshot":
             return ""
         metadata_offsets = self.get_commit_metadata_offsets(tracker, base_offset)
@@ -177,6 +189,7 @@ class BrokerCommitPlanner:
         trackers: dict[DtoTopicPartition, OffsetTracker],
         strategy: str,
     ) -> list[KafkaTopicPartition]:
+        """Convert build offsets to commit."""
         offsets_to_commit: list[KafkaTopicPartition] = []
         for tp, safe_offset in commits_to_make:
             tracker = trackers[tp]
@@ -209,6 +222,8 @@ class BrokerCommitPlanner:
 
 
 class BrokerCommitSupport:
+    """Group helper operations for broker commit and DLQ support."""
+
     def __init__(
         self,
         *,
@@ -224,8 +239,11 @@ class BrokerCommitSupport:
         commit_lock: asyncio.Lock,
         control_lock: asyncio.Lock,
         build_commit_candidates: Callable[[], list[tuple[DtoTopicPartition, int]]],
-        commit_offsets: Callable[[list[tuple[DtoTopicPartition, int]]], Awaitable[None]],
+        commit_offsets: Callable[
+            [list[tuple[DtoTopicPartition, int]]], Awaitable[None]
+        ],
     ) -> None:
+        """Commit ready offsets for broker commit and DLQ support."""
         async with commit_lock:
             async with control_lock:
                 commits_to_make = build_commit_candidates()
@@ -242,6 +260,7 @@ class BrokerCommitSupport:
         strategy: str,
         to_thread: Callable[..., Awaitable[Any]],
     ) -> None:
+        """Commit offsets for broker commit and DLQ support."""
         async with control_lock:
             tracked_commits: list[tuple[DtoTopicPartition, int]] = []
             tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
@@ -296,6 +315,8 @@ class BrokerCommitSupport:
 
 
 class BrokerDrainSupport:
+    """Group helper operations for broker commit and DLQ support."""
+
     async def drain_completion_events_once(
         self,
         *,
@@ -304,6 +325,7 @@ class BrokerDrainSupport:
         process_completed_events: Callable[[list[Any]], Awaitable[None]],
         schedule: Callable[[], Awaitable[None]],
     ) -> bool:
+        """Drain completion events once for broker commit and DLQ support."""
         completed_events = await poll_completed_events()
         timeout_events = await handle_blocking_timeouts()
         if timeout_events:

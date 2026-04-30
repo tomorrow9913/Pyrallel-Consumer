@@ -6,6 +6,7 @@ from benchmarks.stats import BenchmarkResult
 
 
 def print_table(results: List[BenchmarkResult]) -> None:
+    """Handle print table within benchmark output."""
     headers = ["Run", "Type", "Order", "Topic", "Messages", "TPS", "Avg ms", "P99 ms"]
     rows = [
         [

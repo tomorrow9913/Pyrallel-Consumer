@@ -9,6 +9,8 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class BrokerDispatchSupport:
+    """Group helper operations for broker dispatch planning."""
+
     def __init__(
         self,
         *,
@@ -32,6 +34,7 @@ class BrokerDispatchSupport:
         self._logger = logger
 
     async def dispatch_messages(self, messages: list[Message]) -> None:
+        """Dispatch messages for broker dispatch planning."""
         grouped_messages: dict[
             tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]
         ] = {}
@@ -92,6 +95,7 @@ class BrokerDispatchSupport:
             await self._submit_grouped_messages(grouped_messages)
 
     def build_commit_candidates(self) -> list[tuple[DtoTopicPartition, int]]:
+        """Build commit candidates for broker dispatch planning."""
         commits_to_make: list[tuple[DtoTopicPartition, int]] = []
 
         for tp, tracker in self._offset_trackers.items():

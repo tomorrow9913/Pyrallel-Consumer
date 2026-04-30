@@ -29,6 +29,7 @@ _METRICS_POLL_INTERVAL_SECONDS = 0.5
 def _acquire_prometheus_exporter(
     metrics_config: MetricsConfig,
 ) -> Optional[PrometheusMetricsExporter]:
+    """Handle acquire prometheus exporter within consumer runtime orchestration."""
     if not metrics_config.enabled:
         return None
 
@@ -46,6 +47,7 @@ def _release_prometheus_exporter(
     metrics_config: MetricsConfig,
     exporter: Optional[PrometheusMetricsExporter],
 ) -> None:
+    """Handle release prometheus exporter within consumer runtime orchestration."""
     if exporter is None or not metrics_config.enabled:
         return
 
@@ -150,6 +152,7 @@ class PyrallelConsumer:
         )
 
     def _publish_metrics_snapshot(self) -> None:
+        """Publish metrics snapshot for consumer runtime orchestration."""
         if self._metrics_exporter is None:
             return
         metrics = self._poller.get_metrics()
@@ -169,6 +172,7 @@ class PyrallelConsumer:
     def _set_poller_metrics_exporter(
         self, metrics_exporter: Optional[PrometheusMetricsExporter]
     ) -> None:
+        """Install or update poller metrics exporter for consumer runtime orchestration."""
         set_metrics_exporter = getattr(self._poller, "set_metrics_exporter", None)
         if callable(set_metrics_exporter):
             set_metrics_exporter(metrics_exporter)
@@ -194,6 +198,7 @@ class PyrallelConsumer:
             raise
 
     async def _publish_metrics_loop(self) -> None:
+        """Publish metrics loop for consumer runtime orchestration."""
         try:
             while True:
                 await asyncio.sleep(_METRICS_POLL_INTERVAL_SECONDS)
@@ -204,6 +209,7 @@ class PyrallelConsumer:
             self._logger.exception("Metrics publisher task failed")
 
     async def _stop_metrics_loop(self) -> None:
+        """Stop metrics loop for consumer runtime orchestration."""
         if self._metrics_task is None:
             return
         metrics_task = self._metrics_task
@@ -215,12 +221,14 @@ class PyrallelConsumer:
             pass
 
     def _release_metrics_exporter(self) -> None:
+        """Handle release metrics exporter within consumer runtime orchestration."""
         self._work_manager.set_metrics_exporter(None)
         self._set_poller_metrics_exporter(None)
         _release_prometheus_exporter(self._metrics_config, self._metrics_exporter)
         self._metrics_exporter = None
 
     async def _cleanup_failed_start(self) -> None:
+        """Clean up failed start for consumer runtime orchestration."""
         await self._stop_metrics_loop()
         try:
             await self._poller.stop()

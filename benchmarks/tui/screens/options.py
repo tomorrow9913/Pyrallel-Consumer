@@ -27,11 +27,15 @@ from benchmarks.tui.state import BenchmarkTuiState
 
 @dataclass(slots=True)
 class _ValidationResult:
+    """Represent validation result data used by options."""
+
     state: BenchmarkTuiState | None
     errors: dict[str, str]
 
 
 class OptionsScreen(Screen[None]):
+    """Represent options screen data used by options."""
+
     BINDINGS = [("q", "app.quit", "Quit")]
     _POSITIVE_INT_FIELDS = {
         "num-messages": 1,
@@ -56,30 +60,37 @@ class OptionsScreen(Screen[None]):
 
     @staticmethod
     def _field_label(text: str) -> Label:
+        """Handle field label within options."""
         return Label(text, classes="field-label")
 
     @staticmethod
     def _option_help(option_id: str) -> Static:
+        """Handle option help within options."""
         return Static(OPTION_HELP[option_id].description, classes="option-help")
 
     @staticmethod
     def _option_block_id(option_id: str) -> str:
+        """Handle option block id within options."""
         return "option-block-%s" % option_id
 
     @staticmethod
     def _section_id(section_slug: str) -> str:
+        """Handle section id within options."""
         return "option-section-%s" % section_slug
 
     @staticmethod
     def _section_title(text: str) -> Label:
+        """Handle section title within options."""
         return Label(text, classes="option-section-title")
 
     @staticmethod
     def _section_description(text: str) -> Static:
+        """Handle section description within options."""
         return Static(text, classes="option-section-description")
 
     @staticmethod
     def _error_id(widget_id: str) -> str:
+        """Handle error id within options."""
         return "error-%s" % widget_id
 
     @classmethod
@@ -91,6 +102,7 @@ class OptionsScreen(Screen[None]):
         widget_id: str,
         placeholder: str | None = None,
     ) -> ComposeResult:
+        """Handle labeled input within options."""
         option = OPTION_HELP[option_id]
         with Container(id=cls._option_block_id(option_id), classes="option-block"):
             yield cls._field_label(option.label)
@@ -124,6 +136,7 @@ class OptionsScreen(Screen[None]):
         value: str,
         widget_id: str,
     ) -> ComposeResult:
+        """Handle labeled select within options."""
         option = OPTION_HELP[option_id]
         with Container(id=cls._option_block_id(option_id), classes="option-block"):
             yield cls._field_label(option.label)
@@ -144,6 +157,7 @@ class OptionsScreen(Screen[None]):
         selections: list[tuple[str, str, bool]],
         widget_id: str,
     ) -> ComposeResult:
+        """Handle labeled selection list within options."""
         option = OPTION_HELP[option_id]
         with Container(id=cls._option_block_id(option_id), classes="option-block"):
             yield cls._field_label(option.label)
@@ -155,6 +169,7 @@ class OptionsScreen(Screen[None]):
     def _switch_field(
         cls, *, option_id: str, value: bool, widget_id: str
     ) -> ComposeResult:
+        """Handle switch field within options."""
         option = OPTION_HELP[option_id]
         with Container(id=cls._option_block_id(option_id), classes="option-block"):
             yield cls._field_label(option.label)
@@ -163,6 +178,7 @@ class OptionsScreen(Screen[None]):
             yield Static("", id=cls._error_id(widget_id), classes="field-error")
 
     def compose(self) -> ComposeResult:
+        """Handle compose within options."""
         state = self._initial_state
         yield Header()
         with Container(id="options-layout"):
@@ -401,26 +417,32 @@ class OptionsScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        """Handle on mount within options."""
         self._sync_profiling_controls()
         self._refresh_form_state()
 
     def on_input_changed(self, _event: Input.Changed) -> None:
+        """Handle on input changed within options."""
         self._refresh_form_state()
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
+        """Handle on switch changed within options."""
         if event.switch.id == "profiling-enabled":
             self._sync_profiling_controls()
         self._refresh_form_state()
 
     def on_select_changed(self, _event: Select.Changed) -> None:
+        """Handle on select changed within options."""
         self._refresh_form_state()
 
     def on_selection_list_selected_changed(
         self, _event: SelectionList.SelectedChanged
     ) -> None:
+        """Handle on selection list selected changed within options."""
         self._refresh_form_state()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle on button pressed within options."""
         if event.button.id == "run-button" and not event.button.disabled:
             self.app.push_screen(RunScreen(self._last_valid_state))
         elif event.button.id == "quit-button":
@@ -429,6 +451,7 @@ class OptionsScreen(Screen[None]):
             self._open_directory_picker(event.button.id.removeprefix("browse-"))
 
     def _refresh_form_state(self) -> None:
+        """Refresh form state for options."""
         validation = self._validate_form()
         self._render_errors(validation.errors)
         summary = self.query_one("#form-error-summary", Static)
@@ -448,6 +471,7 @@ class OptionsScreen(Screen[None]):
             )
 
     def _render_errors(self, errors: dict[str, str]) -> None:
+        """Handle render errors within options."""
         for widget in self.query(Static):
             if "field-error" not in widget.classes:
                 continue
@@ -456,6 +480,7 @@ class OptionsScreen(Screen[None]):
             self.query_one("#%s" % self._error_id(widget_id), Static).update(message)
 
     def _validate_form(self) -> _ValidationResult:
+        """Validate form for options."""
         errors: dict[str, str] = {}
         parsed_ints: dict[str, int] = {}
         parsed_floats: dict[str, float] = {}
@@ -530,6 +555,7 @@ class OptionsScreen(Screen[None]):
         parsed_values: dict[str, int],
         errors: dict[str, str],
     ) -> None:
+        """Validate int for options."""
         raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
         try:
             value = int(raw_value)
@@ -549,6 +575,7 @@ class OptionsScreen(Screen[None]):
         parsed_values: dict[str, float],
         errors: dict[str, str],
     ) -> None:
+        """Validate float for options."""
         raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
         try:
             value = float(raw_value)
@@ -561,11 +588,13 @@ class OptionsScreen(Screen[None]):
         parsed_values[widget_id] = value
 
     def _sync_profiling_controls(self) -> None:
+        """Handle sync profiling controls within options."""
         profiling_enabled = self.query_one("#profiling-enabled", Switch).value
         for widget_id in PROFILING_CONTROL_IDS:
             self.query_one("#%s" % widget_id).disabled = not profiling_enabled
 
     def _open_directory_picker(self, field_id: str) -> None:
+        """Handle open directory picker within options."""
         self.app.push_screen(
             DirectoryPickerScreen(self._picker_start_path(field_id)),
             callback=lambda selected_path: self.apply_selected_path(
@@ -574,6 +603,7 @@ class OptionsScreen(Screen[None]):
         )
 
     def _picker_start_path(self, field_id: str) -> Path:
+        """Handle picker start path within options."""
         current_value = self.query_one("#%s" % field_id, Input).value.strip()
         if not current_value:
             return Path.cwd()
@@ -587,6 +617,7 @@ class OptionsScreen(Screen[None]):
     def apply_selected_path(
         self, field_id: str, selected_path: str | Path | None
     ) -> None:
+        """Handle apply selected path within options."""
         if selected_path is None:
             return
         input_widget = self.query_one("#%s" % field_id, Input)

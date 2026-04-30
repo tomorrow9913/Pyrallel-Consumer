@@ -15,6 +15,8 @@ _WORKLOAD_NAMES = ("sleep", "cpu", "io")
 
 
 class ResultsSummaryModalScreen(ModalScreen[str | None]):
+    """Represent results summary modal screen data used by results modal."""
+
     BINDINGS = [("escape", "close", "Close"), ("s", "settings", "Settings")]
     DEFAULT_CSS = """
     ResultsSummaryModalScreen {
@@ -45,6 +47,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         )
 
     def compose(self) -> ComposeResult:
+        """Handle compose within results modal."""
         with Container(id="results-modal"):
             with VerticalScroll(id="results-modal-scroll"):
                 with Container(id="results-modal-header"):
@@ -76,6 +79,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
                 yield Button("Close", id="results-modal-close", variant="primary")
 
     def on_mount(self) -> None:
+        """Handle on mount within results modal."""
         table = self.query_one("#results-table", DataTable)
         table.cursor_type = "row"
         if self._table_data is None:
@@ -89,6 +93,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         self._refresh_ordering_summary()
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        """Handle on tabs tab activated within results modal."""
         if event.tabs.id == "results-ordering-tabs":
             tab_id = event.tab.id
             if tab_id is None:
@@ -97,6 +102,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
             self._refresh_ordering_summary()
 
     def _refresh_ordering_summary(self) -> None:
+        """Refresh ordering summary for results modal."""
         summary = self.query_one("#results-ordering-summary", Static)
         if self._selected_ordering is None:
             summary.update(self._summary_text)
@@ -104,6 +110,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         summary.update(self._winner_section_text(self._selected_ordering))
 
     def _winner_section_text(self, ordering: str) -> str:
+        """Handle winner section text within results modal."""
         winners = self._winners.get(ordering, {})
         lines = ["정렬: %s" % ordering]
         for workload in _WORKLOAD_NAMES:
@@ -123,11 +130,13 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         return "\n".join(lines)
 
     def _output_path_text(self) -> str:
+        """Handle output path text within results modal."""
         if self._overview is None:
             return "결과 파일을 찾을 수 없습니다."
         return "결과 파일: %s" % self._overview.output_path
 
     def _overview_text(self) -> str:
+        """Handle overview text within results modal."""
         if self._overview is None:
             return "요약을 만들 수 없습니다."
         return "실행 %d건 | workload: %s | 최고 TPS: %s (%s TPS)" % (
@@ -138,13 +147,16 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle on button pressed within results modal."""
         if event.button.id == "results-modal-settings":
             self.dismiss("settings")
         elif event.button.id == "results-modal-close":
             self.dismiss(None)
 
     def action_close(self) -> None:
+        """Handle action close within results modal."""
         self.dismiss(None)
 
     def action_settings(self) -> None:
+        """Handle action settings within results modal."""
         self.dismiss("settings")

@@ -19,6 +19,8 @@ __all__ = [
 
 
 class BenchmarkTuiApp(App[None]):
+    """Represent benchmark tui app data used by benchmark TUI."""
+
     TITLE = "Pyrallel Benchmark TUI"
     CSS = """
     #options-layout, #run-layout {
@@ -299,4 +301,5 @@ class BenchmarkTuiApp(App[None]):
     """
 
     def on_mount(self) -> None:
+        """Handle on mount within benchmark TUI."""
         self.push_screen(OptionsScreen())
