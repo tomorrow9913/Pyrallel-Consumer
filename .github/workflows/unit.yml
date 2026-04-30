@@ -1,0 +1,92 @@
+name: unit
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - ".github/**"
+      - "docs/operations/**"
+      - "scripts/**"
+      - "tests/unit/**"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "README.ko.md"
+      - ".github/**"
+      - "docs/operations/**"
+      - "scripts/**"
+      - "tests/unit/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Run full unit suite
+        run: |
+          uv run pytest tests/unit -q
+
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: |
+          python -m pip install --upgrade pip uv
+      - name: Sync locked dependencies
+        run: |
+          uv sync --frozen --group dev
+      - name: Export locked requirements for SCA
+        run: |
+          mkdir -p .artifacts
+          uv export --frozen --format requirements.txt --all-groups --no-hashes --no-emit-project \
+            --output-file .artifacts/locked-requirements.txt
+      - name: Run lockfile SCA audit
+        run: |
+          uv run pip-audit --no-deps --disable-pip -r .artifacts/locked-requirements.txt
+      - name: Run Bandit
+        run: |
+          uv run bandit -q -lll -r pyrallel_consumer
+      - name: Run Ruff
+        run: |
+          uv run ruff check .
+      - name: Run mypy
+        run: |
+          uv run mypy pyrallel_consumer
+      - name: Build package
+        run: |
+          uv build
+      - name: Check distribution metadata
+        run: |
+          uv run twine check dist/pyrallel_consumer-*

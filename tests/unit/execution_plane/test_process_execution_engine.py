@@ -21,6 +21,7 @@ from pyrallel_consumer.dto import (
     TopicPartition,
     WorkItem,
 )
+from pyrallel_consumer.execution_plane import process_engine as process_engine_module
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
@@ -3386,7 +3387,7 @@ async def test_shutdown_worker_pipes_drains_completion_before_joining_workers() 
 
 @pytest.mark.asyncio
 async def test_shutdown_runs_post_join_drain_before_local_cleanup(
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
@@ -3422,14 +3423,22 @@ async def test_shutdown_runs_post_join_drain_before_local_cleanup(
     engine_any._transport = transport
     engine_any._drain_shutdown_ipc_once = Mock(side_effect=drain_once)
     engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+    debug_log = Mock()
+    monkeypatch.setattr(process_engine_module._logger, "debug", debug_log)
 
-    with caplog.at_level(logging.DEBUG):
-        await engine.shutdown()
+    await engine.shutdown()
 
     assert order == ["drain", "join", "drain", "drain", "drain", "clear", "close"]
     assert engine_any._drain_shutdown_ipc_once.call_count == 4
-    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
-    assert "completion_events=1" in caplog.text
+    post_join_log = next(
+        call
+        for call in debug_log.call_args_list
+        if call.args
+        and str(call.args[0]).startswith(
+            "ProcessExecutionEngine shutdown post-join drain"
+        )
+    )
+    assert post_join_log.args[2] == 1
     transport.signal_shutdown.assert_called_once_with(1)
     assert engine.get_in_flight_count() == 0
 
@@ -3713,7 +3722,6 @@ async def test_shutdown_post_join_late_completion_keeps_different_identity_regis
 
 @pytest.mark.asyncio
 async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanup(
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
@@ -3777,9 +3785,10 @@ async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanu
     )
     engine_any._transport = transport
     engine_any._join_worker_with_escalation = Mock(side_effect=join_worker)
+    debug_log = Mock()
+    monkeypatch.setattr(process_engine_module._logger, "debug", debug_log)
 
-    with caplog.at_level(logging.DEBUG):
-        await engine.shutdown()
+    await engine.shutdown()
 
     engine_any._join_worker_with_escalation.assert_called_once()
     transport.clear_pending_dispatches.assert_called_once_with()
@@ -3787,6 +3796,13 @@ async def test_shutdown_post_join_drain_reconciles_late_completion_before_cleanu
     assert engine_any._prefetched_completion_events == [completion]
     assert engine_any._in_flight_registry == {}
     assert engine.get_in_flight_count() == 1
-    assert "ProcessExecutionEngine shutdown post-join drain" in caplog.text
-    assert "completion_events=1" in caplog.text
-    assert "residual_in_flight_registry=0" in caplog.text
+    post_join_log = next(
+        call
+        for call in debug_log.call_args_list
+        if call.args
+        and str(call.args[0]).startswith(
+            "ProcessExecutionEngine shutdown post-join drain"
+        )
+    )
+    assert post_join_log.args[2] == 1
+    assert post_join_log.args[4] == 0

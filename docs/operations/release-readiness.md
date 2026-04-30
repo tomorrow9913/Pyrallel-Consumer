@@ -53,8 +53,8 @@ For each item, review all three dimensions below.
 - [x] **Strengthen CI quality gates**
   - What: at minimum, lint/type/security/build/artifact checks should run
     automatically on PR and push.
-  - Evidence: `.github/workflows/ci.yml` runs `ruff`, `mypy`, `bandit`, `uv build`, and `twine check` on push/PR for `main`/`develop` (path-filtered), and `.github/workflows/release-verify.yml` enforces the same artifact quality checks for release-facing refs.
-  - Owner hint: `.github/workflows/ci.yml`, `.github/workflows/release-verify.yml`, `pyproject.toml`
+  - Evidence: `.github/workflows/unit.yml` runs `ruff`, `mypy`, `bandit`, `uv build`, and `twine check` on push/PR for `main`/`develop` (path-filtered), and `.github/workflows/release-verify.yml` enforces the same artifact quality checks for release-facing refs.
+  - Owner hint: `.github/workflows/unit.yml`, `.github/workflows/release-verify.yml`, `pyproject.toml`
 
 - [x] **Standardize release artifact validation**
   - What: clearly define which artifacts are validated so stale artifacts cannot

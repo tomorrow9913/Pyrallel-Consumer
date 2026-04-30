@@ -6,10 +6,11 @@ from typing import Any, cast
 import yaml  # type: ignore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+UNIT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "unit.yml"
 RELEASE_VERIFY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-verify.yml"
 PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
 DEPENDABOT_CONFIG = REPO_ROOT / ".github" / "dependabot.yml"
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -49,9 +50,9 @@ def _normalized_subject_lines(subject_text: str) -> list[str]:
     return [line.strip() for line in subject_text.splitlines() if line.strip()]
 
 
-def test_ci_release_verify_and_publish_quality_jobs_run_lockfile_sca_gate() -> None:
-    ci = _load_yaml(CI_WORKFLOW)
-    _assert_sca_gate_steps(ci["jobs"], "quality")
+def test_unit_release_verify_and_publish_quality_jobs_run_lockfile_sca_gate() -> None:
+    unit = _load_yaml(UNIT_WORKFLOW)
+    _assert_sca_gate_steps(unit["jobs"], "quality")
 
     release = _load_yaml(RELEASE_VERIFY_WORKFLOW)
     _assert_sca_gate_steps(release["jobs"], "verify")
@@ -142,17 +143,26 @@ def test_release_verify_triggers_on_supply_chain_controls() -> None:
         assert expected in paths
 
 
-def test_ci_triggers_on_supply_chain_controls() -> None:
-    text = _load_yaml(CI_WORKFLOW)
+def test_unit_triggers_on_supply_chain_controls() -> None:
+    text = _load_yaml(UNIT_WORKFLOW)
     triggers = _workflow_triggers(text)
     paths = triggers["push"]["paths"] + triggers["pull_request"]["paths"]
     for expected in (
-        ".github/workflows/publish-pypi.yml",
-        ".github/workflows/release-verify.yml",
-        ".github/dependabot.yml",
-        "tests/unit/test_supply_chain_assets.py",
+        ".github/**",
+        "tests/unit/**",
     ):
         assert expected in paths
+
+
+def test_pr_facing_validation_workflows_are_unit_integration_and_e2e() -> None:
+    pr_workflows = set()
+    for workflow_path in WORKFLOW_DIR.glob("*.yml"):
+        text = _load_yaml(workflow_path)
+        triggers = _workflow_triggers(text)
+        if "pull_request" in triggers:
+            pr_workflows.add(workflow_path.name)
+
+    assert pr_workflows == {"unit.yml", "integration.yml", "e2e.yml"}
 
 
 def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:

@@ -14,19 +14,6 @@ on:
       - ".github/compatibility-matrix.json"
       - "scripts/compatibility_matrix.py"
       - ".github/workflows/compatibility-matrix.yml"
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - "**/*.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "README.md"
-      - "README.ko.md"
-      - "docs/operations/**"
-      - ".github/e2e.compose.yml"
-      - ".github/compatibility-matrix.json"
-      - "scripts/compatibility_matrix.py"
-      - ".github/workflows/compatibility-matrix.yml"
   workflow_dispatch:
 
 permissions:

@@ -1,16 +1,6 @@
 name: benchmarks
 
 on:
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - "benchmarks/**"
-      - "pyrallel_consumer/**/*.py"
-      - "tests/unit/benchmarks/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/benchmarks.yml"
-      - "benchmarks/release_gate.py"
   workflow_dispatch:
     inputs:
       release_gate_artifacts:

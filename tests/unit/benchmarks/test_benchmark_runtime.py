@@ -22,11 +22,11 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 
-BENCHMARK_WORKFLOW = (
+E2E_WORKFLOW = (
     run_parallel_benchmark.Path(__file__).resolve().parents[3]
     / ".github"
     / "workflows"
-    / "ci_monitoring.yml"
+    / "e2e.yml"
 )
 
 
@@ -444,21 +444,13 @@ def test_run_benchmark_writes_artifact_metadata(
     }
 
 
-def test_ci_monitoring_workflow_uploads_benchmark_artifact_with_bound_name() -> None:
-    text = BENCHMARK_WORKFLOW.read_text(encoding="utf-8")
+def test_e2e_workflow_runs_monitoring_smoke_as_test_code() -> None:
+    text = E2E_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "PYRALLEL_BENCHMARK_ARTIFACT_NAME" in text
-    assert (
-        "ci-monitoring-benchmark-${{ github.event.pull_request.number || github.ref_name }}-${{ github.run_id }}"
-        in text
-    )
-    assert (
-        "ci-monitoring-benchmark-${{ github.ref_name }}-${{ github.run_id }}"
-        not in text
-    )
+    assert "kafka-1 kafka-exporter prometheus grafana" in text
+    assert "uv run pytest tests/e2e -q" in text
     assert "actions/upload-artifact@v7" in text
-    assert "name: ${{ env.PYRALLEL_BENCHMARK_ARTIFACT_NAME }}" in text
-    assert "path: benchmarks/results/ci-monitoring.json" in text
+    assert "path: .artifacts/e2e-junit*.xml" in text
 
 
 def test_produce_messages_skips_topic_creation_when_disabled(
