@@ -120,9 +120,6 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                 if key[0] != idx:
                     continue
                 recovered_payload = dict(payload)
-                recovered_payload["requeue_attempts"] = (
-                    recovered_payload.get("requeue_attempts", 0) + 1
-                )
                 recovered.append(
                     PendingDispatchRecovery(
                         identity=worker_execution_identity_from_payload(

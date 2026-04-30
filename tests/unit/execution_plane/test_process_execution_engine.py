@@ -1666,7 +1666,7 @@ def test_worker_pipe_recover_pending_dispatches_returns_identity_metadata() -> N
                 worker_index=0,
                 work=logical_work_identity_from_payload(payload),
             ),
-            payload={**payload, "requeue_attempts": 1},
+            payload=payload,
         )
     ]
     assert transport._pending_dispatch == {}
@@ -2584,6 +2584,31 @@ def test_pending_worker_pipe_filter_caps_retry_boundary() -> None:
     assert event.status == CompletionStatus.FAILURE
     assert event.error == "worker_died_max_retries"
     assert event.attempt == 3
+
+
+def test_pending_worker_pipe_filter_allows_final_retry() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 2,
+    }
+
+    recoverable = engine._filter_recoverable_pending_pipe_dispatches(0, [payload])
+
+    assert recoverable == [{**payload, "requeue_attempts": 3}]
+    assert engine_any._completion_queue.empty()
 
 
 def test_ensure_workers_alive_throttles_liveness_scan_but_drains_registry(

@@ -704,9 +704,7 @@ class BrokerPoller:
             "empty_candidate_scans_by_source": dict(
                 self._commit_ready_empty_candidate_scans_by_source
             ),
-            "commit_calls_by_source": dict(
-                self._commit_ready_commit_calls_by_source
-            ),
+            "commit_calls_by_source": dict(self._commit_ready_commit_calls_by_source),
             "partitions_advanced_by_source": dict(
                 self._commit_ready_partitions_advanced_by_source
             ),

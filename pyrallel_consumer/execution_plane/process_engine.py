@@ -1125,10 +1125,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     idx,
                     payload,
                     error="worker_died_max_retries",
-                    attempt=max_retries,
+                    attempt=attempts,
                 )
                 continue
-            recoverable.append(payload)
+            recovered_payload = dict(payload)
+            recovered_payload["requeue_attempts"] = attempts + 1
+            recoverable.append(recovered_payload)
         return recoverable
 
     def _requeue_recovered_payloads(self, payloads: list[SerializedWorkItem]) -> None:
