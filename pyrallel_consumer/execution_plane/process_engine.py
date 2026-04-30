@@ -1120,7 +1120,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         max_retries = self._config.max_retries
         for payload in payloads:
             attempts = payload.get("requeue_attempts", 0)
-            if attempts > max_retries:
+            if attempts >= max_retries:
                 self._emit_worker_recovery_failure(
                     idx,
                     payload,
