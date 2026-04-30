@@ -165,6 +165,15 @@ def test_pr_facing_validation_workflows_are_unit_integration_and_e2e() -> None:
     assert pr_workflows == {"unit.yml", "integration.yml", "e2e.yml"}
 
 
+def test_validation_workflows_avoid_duplicate_develop_push_checks() -> None:
+    for workflow_name in ("unit.yml", "integration.yml", "e2e.yml"):
+        text = _load_yaml(WORKFLOW_DIR / workflow_name)
+        triggers = _workflow_triggers(text)
+
+        assert triggers["push"]["branches"] == ["main"]
+        assert triggers["pull_request"]["branches"] == ["main", "develop"]
+
+
 def test_dependabot_tracks_uv_and_github_actions_ecosystems() -> None:
     text = _load_yaml(DEPENDABOT_CONFIG)
     updates = text["updates"]

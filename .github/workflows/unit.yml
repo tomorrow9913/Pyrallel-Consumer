@@ -2,7 +2,7 @@ name: unit
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths:
       - "**/*.py"
       - "pyproject.toml"

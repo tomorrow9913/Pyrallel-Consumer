@@ -2,7 +2,7 @@ name: e2e
 
 on:
   push:
-    branches: [main, develop, 'release/**', 'hotfix/**']
+    branches: [main]
     paths:
       - "**/*.py"
       - "pyproject.toml"
