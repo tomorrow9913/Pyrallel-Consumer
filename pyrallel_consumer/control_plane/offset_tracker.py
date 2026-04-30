@@ -95,6 +95,23 @@ class OffsetTracker:
         """Return the current lowest missing offset after the committed HWM."""
         return self._first_gap_head
 
+    def rehydrate_assignment_state(
+        self,
+        *,
+        last_committed_offset: int,
+        last_fetched_offset: int,
+    ) -> None:
+        """Restore assignment offsets and refresh derived gap/cache state."""
+        if last_fetched_offset < last_committed_offset:
+            raise ValueError(
+                "last_fetched_offset must be greater than or equal to "
+                "last_committed_offset"
+            )
+
+        self.last_committed_offset = last_committed_offset
+        self.last_fetched_offset = last_fetched_offset
+        self._bump_version()
+
     def mark_complete(self, offset: int) -> None:
         """
         marks the given offset as complete.

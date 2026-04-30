@@ -83,9 +83,9 @@ class BrokerRebalanceSupport:
             for committed_tp in committed_partitions:
                 if committed_tp.offset is None:
                     continue
-                committed_offsets[
-                    (committed_tp.topic, committed_tp.partition)
-                ] = committed_tp
+                committed_offsets[(committed_tp.topic, committed_tp.partition)] = (
+                    committed_tp
+                )
         except KafkaException as exc:
             logger.warning(
                 "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
@@ -127,11 +127,13 @@ class BrokerRebalanceSupport:
                 max_revoke_grace_ms=max_revoke_grace_ms,
                 initial_completed_offsets=initial_completed_offsets,
             )
-            tracker.last_committed_offset = last_committed
-            tracker.last_fetched_offset = max(
-                [last_committed, *initial_completed_offsets]
-                if initial_completed_offsets
-                else [last_committed]
+            tracker.rehydrate_assignment_state(
+                last_committed_offset=last_committed,
+                last_fetched_offset=max(
+                    [last_committed, *initial_completed_offsets]
+                    if initial_completed_offsets
+                    else [last_committed]
+                ),
             )
             tracker.increment_epoch()
             assignments[tp_dto] = tracker

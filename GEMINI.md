@@ -1229,3 +1229,7 @@ GIL 회피를 위한 고난이도 실행 모델입니다. `ProcessExecutionEngin
 - Verification refresh: full unit suite now passes (`739 passed`), integration passes (`6 passed`), and local e2e without a broker skips as expected. The new monitoring e2e keeps the long readiness timeout only under strict CI broker mode and uses a short local skip probe otherwise.
 - Added an asset regression that asserts only `unit.yml`, `integration.yml`, and `e2e.yml` expose PR-facing validation triggers; benchmark release-gate and compatibility matrix workflows remain manual-only instead of adding extra PR check lanes.
 - PR signal cleanup: validation workflows now push-run on `main` only and PR-run for `main`/`develop`, preventing duplicate push + PR checks when `develop` is the PR head branch. Compatibility matrix is manual-only; release verification remains separate for release-facing refs.
+
+### 5.56 PR #124 assignment gap-cache review follow-up (2026-04-30)
+
+- TDD(red/green): added a regression for `metadata_snapshot` assignment hydration where sparse completed offsets are restored beyond the committed HWM. The initial focused run reproduced the stale `OffsetTracker._first_gap_head` cache returning `None`; `BrokerRebalanceSupport` now rehydrates assignment offsets through `OffsetTracker.rehydrate_assignment_state(...)`, which refreshes derived gap/cache state after the committed/fetched offsets are restored.
