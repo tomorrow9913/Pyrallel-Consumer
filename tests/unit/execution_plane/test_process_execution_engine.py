@@ -1995,6 +1995,48 @@ def test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails(
     assert event.attempt == 2
 
 
+def test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_full() -> (
+    None
+):
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    task_queue.put(b"occupied")
+    engine_any._transport = SharedQueueProcessTransport(
+        task_queue=task_queue,
+        get_batch_accumulator=lambda: Mock(),
+        work_item_from_dict=_work_item_from_dict,
+        increment_in_flight=lambda: None,
+        sentinel=None,
+    )
+    payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 2,
+    }
+
+    engine._publish_recovered_worker_payloads(0, [payload])
+
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == (
+        "worker_requeue_failed: shared_queue transport queue is full during requeue"
+    )
+    assert event.offset == 42
+    assert event.attempt == 2
+
+
 def test_publish_recovered_worker_payloads_emits_only_failed_partial_requeues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
