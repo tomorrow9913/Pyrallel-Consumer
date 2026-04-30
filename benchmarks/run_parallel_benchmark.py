@@ -3,12 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, List, Literal, Sequence, cast
+from typing import Awaitable, Callable, List, Sequence, cast
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -16,9 +14,14 @@ if __package__ in {None, ""}:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
 
-from confluent_kafka.admin import AdminClient
-
 from benchmarks.baseline_consumer import consume_messages
+from benchmarks.benchmark_admin import check_kafka_connection as _check_kafka_connection
+from benchmarks.benchmark_artifacts import (
+    build_artifact_metadata as _build_artifact_metadata,
+)
+from benchmarks.benchmark_cli import build_parser
+from benchmarks.benchmark_output import print_table as _print_table
+from benchmarks.benchmark_rounds import ProcessTransportMode
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
 from benchmarks.profiling import profile_session as _profile_session
@@ -34,143 +37,13 @@ from benchmarks.pyrallel_consumer_test import (
 )
 from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
 from benchmarks.workloads import select_workers as _select_workers
-from pyrallel_consumer.dto import OrderingMode, WorkItem
-
-_YAPPI_WORKER_STARTED = False
-_WORKLOAD_CHOICES = ("sleep", "cpu", "io")
-_ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
-_STRICT_COMPLETION_MONITOR_CHOICES = ("on", "off")
-_ADAPTIVE_CONCURRENCY_CHOICES = ("off", "on")
-_PROCESS_FLUSH_POLICY_CHOICES = (
-    "size_or_timer",
-    "demand",
-    "demand_min_residence",
-)
-_PROCESS_TRANSPORT_CHOICES = ("shared_queue", "worker_pipes")
-ProcessTransportMode = Literal["shared_queue", "worker_pipes"]
-
-
-def _parse_csv_selection(
-    value: str, *, argument_name: str, choices: Sequence[str]
-) -> list[str]:
-    items: list[str] = []
-    seen: set[str] = set()
-    for raw_item in value.split(","):
-        item = raw_item.strip()
-        if not item:
-            continue
-        if item not in choices:
-            choices_str = ", ".join(choices)
-            raise argparse.ArgumentTypeError(
-                "%s must contain only %s (got %r)" % (argument_name, choices_str, item)
-            )
-        if item in seen:
-            continue
-        seen.add(item)
-        items.append(item)
-    if not items:
-        raise argparse.ArgumentTypeError(
-            "%s must contain at least one value" % argument_name
-        )
-    return items
-
-
-def _check_kafka_connection(bootstrap_servers: str) -> None:
-    client = AdminClient({"bootstrap.servers": bootstrap_servers})
-    try:
-        client.list_topics(timeout=5)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"Failed to connect to Kafka at {bootstrap_servers}: {exc}"
-        ) from exc
+from pyrallel_consumer.dto import WorkItem
 
 
 def _normalize_metrics_port(metrics_port: int | None) -> int | None:
     if metrics_port is None or metrics_port <= 0:
         return None
     return metrics_port
-
-
-def _git_output(*args: str) -> str | None:
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    value = completed.stdout.strip()
-    return value or None
-
-
-def _build_artifact_metadata(
-    *,
-    output_path: str,
-    environ: dict[str, str] | None = None,
-) -> dict[str, str]:
-    env = os.environ if environ is None else environ
-    metadata: dict[str, str] = {
-        "artifact_path": output_path,
-        "execution_context": (
-            "github_actions" if env.get("GITHUB_ACTIONS") == "true" else "local"
-        ),
-        "generated_at_utc": datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z"),
-    }
-
-    field_map = {
-        "PYRALLEL_BENCHMARK_ARTIFACT_NAME": "artifact_name",
-        "GITHUB_EVENT_NAME": "github_event_name",
-        "GITHUB_JOB": "github_job",
-        "GITHUB_REPOSITORY": "github_repository",
-        "GITHUB_RUN_ATTEMPT": "github_run_attempt",
-        "GITHUB_RUN_ID": "github_run_id",
-        "GITHUB_SHA": "git_commit_sha",
-        "GITHUB_REF": "git_ref",
-        "GITHUB_REF_NAME": "git_ref_name",
-        "GITHUB_REF_TYPE": "git_ref_type",
-        "GITHUB_WORKFLOW": "github_workflow",
-        "GITHUB_WORKFLOW_REF": "github_workflow_ref",
-    }
-    for env_name, metadata_key in field_map.items():
-        value = env.get(env_name)
-        if value:
-            metadata[metadata_key] = value
-
-    if "git_commit_sha" not in metadata:
-        git_commit_sha = _git_output("rev-parse", "HEAD")
-        if git_commit_sha is not None:
-            metadata["git_commit_sha"] = git_commit_sha
-
-    git_ref_name = metadata.get("git_ref_name")
-    git_ref_type = metadata.get("git_ref_type")
-    if git_ref_name is None or git_ref_type is None:
-        git_tag = _git_output("describe", "--tags", "--exact-match")
-        git_branch = _git_output("symbolic-ref", "--quiet", "--short", "HEAD")
-        if git_ref_name is None:
-            if git_tag is not None:
-                metadata["git_ref_name"] = git_tag
-            elif git_branch is not None:
-                metadata["git_ref_name"] = git_branch
-        if git_ref_type is None:
-            if git_tag is not None:
-                metadata["git_ref_type"] = "tag"
-            elif git_branch is not None:
-                metadata["git_ref_type"] = "branch"
-
-    if "git_ref" not in metadata:
-        git_ref_name = metadata.get("git_ref_name")
-        git_ref_type = metadata.get("git_ref_type")
-        if git_ref_name is not None and git_ref_type == "branch":
-            metadata["git_ref"] = "refs/heads/%s" % git_ref_name
-        elif git_ref_name is not None and git_ref_type == "tag":
-            metadata["git_ref"] = "refs/tags/%s" % git_ref_name
-
-    return metadata
 
 
 def _run_baseline_round(
@@ -292,253 +165,6 @@ async def _run_pyrparallel_round(
     if summary is None:
         summary = stats.summary()
     return summary
-
-
-def _print_table(results: List[BenchmarkResult]) -> None:
-    headers = ["Run", "Type", "Order", "Topic", "Messages", "TPS", "Avg ms", "P99 ms"]
-    rows = [
-        [
-            result.run_name,
-            result.run_type,
-            result.ordering,
-            result.topic,
-            f"{result.messages_processed:,}",
-            f"{result.throughput_tps:,.2f}",
-            f"{result.avg_processing_ms:.3f}",
-            f"{result.p99_processing_ms:.3f}",
-        ]
-        for result in results
-    ]
-    widths = [
-        max(len(headers[i]), max(len(row[i]) for row in rows))
-        for i in range(len(headers))
-    ]
-    header_line = " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers)))
-    divider = "-+-".join("-" * widths[i] for i in range(len(headers)))
-    print(header_line)
-    print(divider)
-    for row in rows:
-        print(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Pyrallel throughput benchmarks")
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--num-messages", type=int, default=100_000)
-    parser.add_argument("--num-keys", type=int, default=100)
-    parser.add_argument("--num-partitions", type=int, default=8)
-    parser.add_argument("--topic-prefix", default="pyrallel-benchmark")
-    parser.add_argument("--baseline-group", default="baseline-benchmark-group")
-    parser.add_argument("--async-group", default="async-benchmark-group")
-    parser.add_argument("--process-group", default="process-benchmark-group")
-    parser.add_argument(
-        "--json-output",
-        default=None,
-        help="Path to write JSON summary (default benchmarks/results/<timestamp>.json)",
-    )
-    parser.add_argument("--skip-baseline", action="store_true")
-    parser.add_argument("--skip-async", action="store_true")
-    parser.add_argument("--skip-process", action="store_true")
-    parser.add_argument(
-        "--skip-reset",
-        action="store_true",
-        help="Skip deleting/recreating topics and consumer groups before benchmarks",
-    )
-    parser.add_argument(
-        "--timeout-sec",
-        type=int,
-        default=60,
-        help="Timeout in seconds for each Pyrallel consumer run",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="WARNING",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level for benchmark run (use WARNING for cleaner TPS measurements)",
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable yappi profiling for each run",
-    )
-    parser.add_argument(
-        "--profile-dir",
-        default="benchmarks/results/profiles",
-        help="Directory to write .prof files when profiling",
-    )
-    parser.add_argument(
-        "--profile-clock",
-        choices=["wall", "cpu"],
-        default="wall",
-        help="yappi clock type",
-    )
-    parser.add_argument(
-        "--profile-top-n",
-        type=int,
-        default=0,
-        help="Print top N functions by total time after each profiled run (0 to skip)",
-    )
-    parser.add_argument(
-        "--profile-threads",
-        action="store_true",
-        help="Profile threads when profiling is enabled",
-    )
-    parser.add_argument(
-        "--profile-greenlets",
-        action="store_true",
-        help="Profile greenlets/async tasks when profiling is enabled",
-    )
-    parser.add_argument(
-        "--profile-process-workers",
-        action="store_true",
-        help="Also profile process workers (off by default; can emit yappi internal errors).",
-    )
-    parser.add_argument(
-        "--workloads",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--workloads",
-            choices=_WORKLOAD_CHOICES,
-        ),
-        default=["sleep"],
-        help="Comma-separated workloads to run (choices: sleep,cpu,io)",
-    )
-    parser.add_argument(
-        "--order",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--order",
-            choices=_ORDER_CHOICES,
-        ),
-        default=["key_hash"],
-        help="Comma-separated ordering modes to run (choices: key_hash,partition,unordered)",
-    )
-    parser.add_argument(
-        "--strict-completion-monitor",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--strict-completion-monitor",
-            choices=_STRICT_COMPLETION_MONITOR_CHOICES,
-        ),
-        default=["on"],
-        help="Comma-separated strict completion monitor modes to run (choices: on,off)",
-    )
-    parser.add_argument(
-        "--adaptive-concurrency",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--adaptive-concurrency",
-            choices=_ADAPTIVE_CONCURRENCY_CHOICES,
-        ),
-        default=["off"],
-        help="Comma-separated adaptive concurrency modes for Pyrallel runs (choices: off,on)",
-    )
-    parser.add_argument(
-        "--worker-sleep-ms",
-        type=float,
-        default=0.5,
-        help="Sleep per message for sleep workload",
-    )
-    parser.add_argument(
-        "--worker-cpu-iterations",
-        type=int,
-        default=1000,
-        help="Iterations for CPU workload",
-    )
-    parser.add_argument(
-        "--worker-io-sleep-ms",
-        type=float,
-        default=0.5,
-        help="Sleep per message for IO workload (simulated IO wait)",
-    )
-    parser.add_argument(
-        "--process-count",
-        type=int,
-        default=None,
-        help="Override process-mode worker count for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-batch-size",
-        type=int,
-        default=None,
-        help="Override process-mode micro-batch size for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-max-batch-wait-ms",
-        type=int,
-        default=None,
-        help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-flush-policy",
-        choices=_PROCESS_FLUSH_POLICY_CHOICES,
-        default=None,
-        help="Override process-mode flush policy for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-demand-flush-min-residence-ms",
-        type=int,
-        default=None,
-        help="Override minimum residence time before demand flush is allowed",
-    )
-    parser.add_argument(
-        "--process-transport",
-        choices=_PROCESS_TRANSPORT_CHOICES,
-        default="shared_queue",
-        help="Select process-mode input transport for benchmark runs",
-    )
-    parser.add_argument(
-        "--metrics-port",
-        type=int,
-        default=9091,
-        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs (default: 9091, use 0 to disable)",
-    )
-    # -- py-spy profiling options (process mode) --
-    parser.add_argument(
-        "--py-spy",
-        action="store_true",
-        help="Enable py-spy profiling for process mode (wraps the benchmark via self-relaunch)",
-    )
-    parser.add_argument(
-        "--py-spy-format",
-        choices=["flamegraph", "speedscope", "raw", "chrometrace"],
-        default="flamegraph",
-        help="py-spy output format (default: flamegraph)",
-    )
-    parser.add_argument(
-        "--py-spy-output",
-        default="benchmarks/results/pyspy",
-        help="Directory to write py-spy output files (default: benchmarks/results/pyspy)",
-    )
-    parser.add_argument(
-        "--py-spy-rate",
-        type=int,
-        default=100,
-        help="py-spy sampling rate in Hz (default: 100)",
-    )
-    parser.add_argument(
-        "--py-spy-native",
-        action="store_true",
-        help="Include native C extension frames in py-spy output",
-    )
-    parser.add_argument(
-        "--py-spy-idle",
-        action="store_true",
-        help="Include idle thread stacks in py-spy output",
-    )
-    parser.add_argument(
-        "--py-spy-top",
-        action="store_true",
-        help="Use py-spy top (live view) instead of record",
-    )
-    parser.add_argument(
-        "--_pyspy-child",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,  # internal: marks this as the child process under py-spy
-    )
-    return parser
 
 
 def _reset_run_targets(
