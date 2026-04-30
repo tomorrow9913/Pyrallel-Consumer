@@ -4,11 +4,8 @@ import asyncio
 import inspect
 import logging
 import logging.handlers
-import os
 import pickle
 import queue
-import random
-import signal
 import threading
 import time
 from collections import deque
@@ -29,6 +26,19 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_batching import (
+    BatchAccumulator as _BatchAccumulator,
+)
+from pyrallel_consumer.execution_plane.process_batching import (
+    NoOpBatchAccumulator as _NoOpBatchAccumulator,
+)
+from pyrallel_consumer.execution_plane.process_worker_runtime import (
+    _PIPE_SENTINEL,
+    _SENTINEL,
+    _calculate_backoff,
+    _receive_task_payload,
+    _worker_loop,
+)
 from pyrallel_consumer.execution_plane.process_codec import SerializedWorkItem
 from pyrallel_consumer.execution_plane.process_codec import (
     completion_event_from_dict as _completion_event_from_dict,
@@ -52,9 +62,6 @@ from pyrallel_consumer.execution_plane.process_codec import (
     work_item_from_dict as _work_item_from_dict,
 )
 from pyrallel_consumer.execution_plane.process_codec import (
-    work_item_identity_payload as _work_item_identity_payload,
-)
-from pyrallel_consumer.execution_plane.process_codec import (
     work_item_to_dict as _work_item_to_dict,
 )
 from pyrallel_consumer.execution_plane.process_registry_support import (
@@ -72,8 +79,6 @@ from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
 )
 from pyrallel_consumer.logger import LogManager
 
-_SENTINEL = None
-_PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
 _SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
 _POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
 _POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
@@ -85,516 +90,17 @@ __all__ = [
     "_completion_event_from_dict",
     "_completion_event_to_dict",
     "_decode_incoming_item",
+    "_decode_incoming_payloads",
     "_normalize_decoded_payloads",
     "_serialize_batch_payload",
+    "_calculate_backoff",
+    "_receive_task_payload",
     "_worker_loop",
     "_work_item_from_dict",
     "_work_item_to_dict",
 ]
 
 
-class _BatchAccumulator:
-    """Buffers WorkItems and flushes as batches to reduce IPC overhead.
-
-    Flush triggers:
-    - ``batch_size`` items accumulated (eager flush)
-    - ``max_batch_wait_ms`` elapsed since first buffered item (timer flush)
-    """
-
-    def __init__(
-        self,
-        task_queue: Any,
-        batch_size: int,
-        max_batch_wait_ms: int,
-        flush_policy: str = "size_or_timer",
-        demand_flush_min_residence_ms: int = 0,
-    ):
-        self._task_queue = task_queue
-        self._batch_size = batch_size
-        self._max_batch_wait_sec = max_batch_wait_ms / 1000.0
-        self._flush_policy = flush_policy
-        self._demand_flush_min_residence_sec = demand_flush_min_residence_ms / 1000.0
-        self._buffer: list[WorkItem] = []
-        self._first_item_time: Optional[float] = None
-        self._lock = threading.Lock()
-        self._flush_timer: Optional[threading.Timer] = None
-        self._closed = False
-        self._size_flush_count = 0
-        self._timer_flush_count = 0
-        self._close_flush_count = 0
-        self._demand_flush_count = 0
-        self._total_flushed_items = 0
-        self._last_flush_size = 0
-        self._last_flush_wait_seconds = 0.0
-
-    def add_nowait_fast_path(self, work_item: WorkItem) -> bool:
-        """Flush single-item batches inline when the process queue has capacity."""
-        if self._batch_size != 1:
-            return False
-
-        with self._lock:
-            if self._closed or self._buffer:
-                return False
-
-            flush_enqueued_at = time.monotonic()
-            packed = _serialize_batch_payload([work_item], flush_enqueued_at)
-            put_nowait = getattr(self._task_queue, "put_nowait", None)
-            try:
-                if callable(put_nowait):
-                    put_nowait(packed)
-                else:
-                    self._task_queue.put(packed, block=False)
-            except queue.Full:
-                return False
-
-            self._size_flush_count += 1
-            self._total_flushed_items += 1
-            self._last_flush_size = 1
-            self._last_flush_wait_seconds = 0.0
-            if _logger.isEnabledFor(logging.DEBUG):
-                _logger.debug("Batch flush (%s): size=%d", "size", 1)
-            return True
-
-    def add(self, work_item: WorkItem) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            if self._should_flush_on_demand_locked():
-                self._flush_locked(reason="demand")
-            self._buffer.append(work_item)
-            if self._first_item_time is None:
-                self._first_item_time = time.monotonic()
-                self._start_flush_timer()
-            if len(self._buffer) >= self._batch_size:
-                self._flush_locked(reason="size")
-
-    def _should_flush_on_demand_locked(self) -> bool:
-        if not self._buffer:
-            return False
-        if self._flush_policy == "demand":
-            return True
-        if self._flush_policy != "demand_min_residence":
-            return False
-        if self._first_item_time is None:
-            return False
-        oldest_age = max(0.0, time.monotonic() - self._first_item_time)
-        return oldest_age >= self._demand_flush_min_residence_sec
-
-    def _start_flush_timer(self) -> None:
-        if self._flush_timer is not None:
-            self._flush_timer.cancel()
-        self._flush_timer = threading.Timer(self._max_batch_wait_sec, self._timer_flush)
-        self._flush_timer.daemon = True
-        self._flush_timer.start()
-
-    def _timer_flush(self) -> None:
-        with self._lock:
-            if self._buffer and not self._closed:
-                self._flush_locked(reason="timer")
-
-    def _flush_locked(self, *, reason: str = "manual") -> None:
-        if not self._buffer:
-            return
-        wait_seconds = (
-            max(0.0, time.monotonic() - self._first_item_time)
-            if self._first_item_time is not None
-            else 0.0
-        )
-        batch = list(self._buffer)
-        self._buffer.clear()
-        self._first_item_time = None
-        if self._flush_timer is not None:
-            self._flush_timer.cancel()
-            self._flush_timer = None
-        if reason == "size":
-            self._size_flush_count += 1
-        elif reason == "timer":
-            self._timer_flush_count += 1
-        elif reason == "close":
-            self._close_flush_count += 1
-        elif reason == "demand":
-            self._demand_flush_count += 1
-        self._total_flushed_items += len(batch)
-        self._last_flush_size = len(batch)
-        self._last_flush_wait_seconds = wait_seconds
-        if _logger.isEnabledFor(logging.DEBUG):
-            _logger.debug("Batch flush (%s): size=%d", reason, len(batch))
-        flush_enqueued_at = time.monotonic()
-        packed = _serialize_batch_payload(batch, flush_enqueued_at)
-        self._task_queue.put(packed)
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            if self._flush_timer is not None:
-                self._flush_timer.cancel()
-                self._flush_timer = None
-            if self._buffer:
-                self._flush_locked(reason="close")
-
-    def snapshot(self) -> ProcessBatchMetrics:
-        with self._lock:
-            buffered_age_seconds = (
-                max(0.0, time.monotonic() - self._first_item_time)
-                if self._first_item_time is not None
-                else 0.0
-            )
-            return ProcessBatchMetrics(
-                size_flush_count=self._size_flush_count,
-                timer_flush_count=self._timer_flush_count,
-                close_flush_count=self._close_flush_count,
-                total_flushed_items=self._total_flushed_items,
-                last_flush_size=self._last_flush_size,
-                last_flush_wait_seconds=self._last_flush_wait_seconds,
-                buffered_items=len(self._buffer),
-                buffered_age_seconds=buffered_age_seconds,
-                demand_flush_count=self._demand_flush_count,
-            )
-
-
-class _NoOpBatchAccumulator:
-    """No-op accumulator used when transport bypasses shared-queue batching."""
-
-    def add_nowait_fast_path(self, work_item: WorkItem) -> bool:
-        del work_item
-        return False
-
-    def add(self, work_item: WorkItem) -> None:
-        del work_item
-        return None
-
-    def close(self) -> None:
-        return None
-
-    def snapshot(self) -> ProcessBatchMetrics:
-        return ProcessBatchMetrics(
-            size_flush_count=0,
-            timer_flush_count=0,
-            close_flush_count=0,
-            total_flushed_items=0,
-            last_flush_size=0,
-            last_flush_wait_seconds=0.0,
-            buffered_items=0,
-            buffered_age_seconds=0.0,
-            demand_flush_count=0,
-        )
-
-
-def _receive_task_payload(task_source: Any) -> Any:
-    recv_bytes = getattr(task_source, "recv_bytes", None)
-    if callable(recv_bytes):
-        return recv_bytes()
-    return task_source.get()
-
-
-def _calculate_backoff(
-    attempt: int,
-    retry_backoff_ms: int,
-    exponential_backoff: bool,
-    max_retry_backoff_ms: int,
-    retry_jitter_ms: int,
-) -> float:
-    """Calculate backoff delay in seconds with optional exponential scaling and jitter."""
-
-    if exponential_backoff:
-        backoff_ms = retry_backoff_ms * (2 ** (attempt - 1))
-    else:
-        backoff_ms = retry_backoff_ms
-
-    backoff_ms = min(backoff_ms, max_retry_backoff_ms)
-    jitter_ms = random.randint(0, retry_jitter_ms) if retry_jitter_ms > 0 else 0
-    total_delay_ms = backoff_ms + jitter_ms
-    return total_delay_ms / 1000.0
-
-
-def _worker_loop(
-    task_source: Any,
-    completion_queue: Queue,
-    registry_event_queue: Queue,
-    worker_fn: Callable[[WorkItem], Any],
-    process_idx: int,
-    execution_config: ExecutionConfig,
-    log_queue: Optional[Queue] = None,
-):
-    if log_queue is not None:
-        LogManager.setup_worker_logging(log_queue)
-
-    worker_logger = logging.getLogger(__name__)
-    worker_logger.debug("ProcessWorker[%d] started.", process_idx)
-
-    tasks_processed = 0
-    max_tasks_per_child = execution_config.process_config.max_tasks_per_child
-    recycle_jitter_ms = execution_config.process_config.recycle_jitter_ms
-    should_exit_after_batch = False
-
-    # Sample jitter once at worker start (constant for this worker's lifetime)
-    sampled_jitter = (
-        random.randint(0, recycle_jitter_ms) if recycle_jitter_ms > 0 else 0
-    )
-    recycle_limit = (
-        max_tasks_per_child + sampled_jitter if max_tasks_per_child > 0 else None
-    )
-    while True:
-        try:
-            item = _receive_task_payload(task_source)
-        except EOFError:
-            worker_logger.debug(
-                "ProcessWorker[%d] input channel closed, shutting down.",
-                process_idx,
-            )
-            break
-        worker_received_at = time.monotonic()
-        if item is _SENTINEL or item == _PIPE_SENTINEL:
-            worker_logger.debug(
-                "ProcessWorker[%d] received sentinel, shutting down.",
-                process_idx,
-            )
-            break
-
-        try:
-            payloads, timing_metadata = _decode_incoming_payloads(
-                item, execution_config.process_config.msgpack_max_bytes
-            )
-        except Exception as decode_exc:
-            completion_event = CompletionEvent(
-                id="",
-                tp=TopicPartition("", 0),
-                offset=-1,
-                epoch=0,
-                status=CompletionStatus.FAILURE,
-                error=str(decode_exc),
-                attempt=1,
-            )
-            try:
-                completion_queue.put(  # type: ignore[arg-type]
-                    msgpack.packb(
-                        _completion_event_to_dict(completion_event), use_bin_type=True
-                    )
-                )
-            except Exception as put_exc:
-                worker_logger.error(
-                    "Failed to enqueue decode failure in ProcessWorker[%d]: %s",
-                    process_idx,
-                    put_exc,
-                )
-            continue
-
-        flush_enqueued_at = timing_metadata.get("flush_enqueued_at")
-        if flush_enqueued_at is not None:
-            registry_event_queue.put(
-                {
-                    "kind": "batch_received",
-                    "main_to_worker_ipc_seconds": max(
-                        0.0, worker_received_at - flush_enqueued_at
-                    ),
-                }
-            )
-
-        batch_run_started_at: Optional[float] = None
-        batch_completed_sent = False
-
-        for idx, payload in enumerate(payloads):
-            work_item = _work_item_from_dict(payload)
-            in_flight_key = (
-                process_idx,
-                work_item.tp.topic,
-                work_item.tp.partition,
-                work_item.offset,
-            )
-            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-            registry_event_queue.put(
-                {
-                    "kind": "start",
-                    "key": in_flight_key,
-                    "payload": payload,
-                }
-            )
-            status = CompletionStatus.FAILURE
-            error: Optional[str] = None
-            attempt = 0
-            fatal_timeout = False
-
-            timeout_ms = getattr(execution_config.process_config, "task_timeout_ms", 0)
-            timeout_sec = timeout_ms / 1000.0
-
-            for attempt in range(1, execution_config.max_retries + 1):
-                try:
-                    if batch_run_started_at is None:
-                        batch_run_started_at = time.monotonic()
-
-                    def _run_with_timeout() -> None:
-                        worker_fn(work_item)
-
-                    if timeout_sec > 0:
-
-                        def _handle_timeout(signum, frame):
-                            raise TimeoutError(
-                                "Task offset=%d exceeded %.3fs"
-                                % (work_item.offset, timeout_sec)
-                            )
-
-                        signal.signal(signal.SIGALRM, _handle_timeout)
-                        signal.setitimer(signal.ITIMER_REAL, timeout_sec)
-                        try:
-                            _run_with_timeout()
-                        finally:
-                            signal.setitimer(signal.ITIMER_REAL, 0)
-                    else:
-                        _run_with_timeout()
-
-                    status = CompletionStatus.SUCCESS
-                    error = None
-                    worker_logger.debug(
-                        "Task offset=%d succeeded on attempt %d in ProcessWorker[%d].",
-                        work_item.offset,
-                        attempt,
-                        process_idx,
-                    )
-                    break
-                except TimeoutError as e:
-                    fatal_timeout = True
-                    status = CompletionStatus.FAILURE
-                    error = str(e)
-                    registry_event_queue.put(
-                        {
-                            "kind": "timeout",
-                            "key": in_flight_key,
-                            "payload": dict(payload),
-                            "attempt": attempt,
-                            "timeout_error": error,
-                        }
-                    )
-                    worker_logger.error(
-                        "Task offset=%d timed out after %.3fs in ProcessWorker[%d]: %s",
-                        work_item.offset,
-                        timeout_sec,
-                        process_idx,
-                        error,
-                    )
-                    break
-                except Exception as e:
-                    status = CompletionStatus.FAILURE
-                    error = str(e)
-                    if attempt < execution_config.max_retries:
-                        backoff_sec = _calculate_backoff(
-                            attempt,
-                            execution_config.retry_backoff_ms,
-                            execution_config.exponential_backoff,
-                            execution_config.max_retry_backoff_ms,
-                            execution_config.retry_jitter_ms,
-                        )
-                        worker_logger.warning(
-                            "Task offset=%d failed on attempt %d in ProcessWorker[%d], retrying after %.3fs: %s",
-                            work_item.offset,
-                            attempt,
-                            process_idx,
-                            backoff_sec,
-                            error,
-                        )
-                        time.sleep(backoff_sec)
-                    else:
-                        worker_logger.error(
-                            "Task offset=%d failed after %d attempts in ProcessWorker[%d]: %s",
-                            work_item.offset,
-                            attempt,
-                            process_idx,
-                            error,
-                        )
-
-            if not fatal_timeout:
-                completion_event = CompletionEvent(
-                    id=work_item.id,
-                    tp=work_item.tp,
-                    offset=work_item.offset,
-                    epoch=work_item.epoch,
-                    status=status,
-                    error=error,
-                    attempt=attempt,
-                )
-                if (
-                    not batch_completed_sent
-                    and batch_run_started_at is not None
-                    and idx == len(payloads) - 1
-                ):
-                    registry_event_queue.put(
-                        {
-                            "kind": "batch_completed",
-                            "worker_exec_seconds": max(
-                                0.0, time.monotonic() - batch_run_started_at
-                            ),
-                        }
-                    )
-                    batch_completed_sent = True
-                packed_completion = msgpack.packb(
-                    _completion_event_to_dict(
-                        completion_event,
-                        extra_fields={"completion_enqueued_at": time.monotonic()},
-                    ),
-                    use_bin_type=True,
-                )
-                try:
-                    completion_queue.put(packed_completion)
-                except Exception as put_exc:
-                    worker_logger.error(
-                        "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
-                        work_item.offset,
-                        process_idx,
-                        put_exc,
-                    )
-                finally:
-                    registry_event_queue.put(
-                        {
-                            "kind": "done",
-                            "key": in_flight_key,
-                            "payload": _work_item_identity_payload(payload),
-                        }
-                    )
-
-            # Check worker recycling after task completion
-            if recycle_limit is not None:
-                tasks_processed += 1
-                if tasks_processed >= recycle_limit:
-                    worker_logger.debug(
-                        "ProcessWorker[%d] recycling after %d tasks (limit=%d, jitter=%d)",
-                        process_idx,
-                        tasks_processed,
-                        max_tasks_per_child,
-                        sampled_jitter,
-                    )
-                    remaining = payloads[idx + 1 :]
-                    if remaining:
-                        packed_remaining = msgpack.packb(remaining, use_bin_type=True)
-                        send_bytes = getattr(task_source, "send_bytes", None)
-                        if callable(send_bytes):
-                            send_bytes(packed_remaining)
-                        else:
-                            task_source.put(packed_remaining)
-                    should_exit_after_batch = True
-
-            if fatal_timeout:
-                worker_logger.error(
-                    "ProcessWorker[%d] exiting due to task timeout; parent will respawn",
-                    process_idx,
-                )
-                os._exit(1)
-
-            if should_exit_after_batch:
-                break
-
-        if batch_run_started_at is not None and not batch_completed_sent:
-            registry_event_queue.put(
-                {
-                    "kind": "batch_completed",
-                    "worker_exec_seconds": max(
-                        0.0, time.monotonic() - batch_run_started_at
-                    ),
-                }
-            )
-
-        if should_exit_after_batch:
-            break
-
-    worker_logger.debug("ProcessWorker[%d] shutdown complete.", process_idx)
 
 
 class ProcessExecutionEngine(BaseExecutionEngine):
