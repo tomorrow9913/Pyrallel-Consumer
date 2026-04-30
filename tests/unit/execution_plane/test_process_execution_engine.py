@@ -1688,6 +1688,29 @@ def test_shared_queue_transport_declares_no_pending_dispatch_recovery() -> None:
     assert transport.recover_pending_dispatches(0) == []
 
 
+def test_shared_queue_requeue_payloads_fails_fast_when_queue_is_full() -> None:
+    task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    task_queue.put_nowait(b"busy")
+    transport = SharedQueueProcessTransport(
+        task_queue=cast(Any, task_queue),
+        get_batch_accumulator=Mock(),
+        work_item_from_dict=_work_item_from_dict,
+        increment_in_flight=lambda: None,
+        sentinel=b"sentinel",
+    )
+    payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 0,
+    }
+
+    with pytest.raises(RuntimeError, match="shared_queue transport queue is full"):
+        transport.requeue_payloads([payload])
+
+
 def test_ensure_workers_alive_stops_requeueing_after_max_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

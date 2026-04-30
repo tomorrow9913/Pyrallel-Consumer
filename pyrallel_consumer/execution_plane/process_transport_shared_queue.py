@@ -77,7 +77,7 @@ class SharedQueueProcessTransport(ProcessTransport):
             return
         packed = msgpack.packb(payloads, use_bin_type=True)
         try:
-            self._task_queue.put(packed)
+            self._task_queue.put_nowait(packed)
         except queue.Full as exc:
             raise RuntimeError(
                 "shared_queue transport queue is full during requeue"
