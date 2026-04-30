@@ -448,6 +448,14 @@ def test_ci_monitoring_workflow_uploads_benchmark_artifact_with_bound_name() -> 
     text = BENCHMARK_WORKFLOW.read_text(encoding="utf-8")
 
     assert "PYRALLEL_BENCHMARK_ARTIFACT_NAME" in text
+    assert (
+        "ci-monitoring-benchmark-${{ github.event.pull_request.number || github.ref_name }}-${{ github.run_id }}"
+        in text
+    )
+    assert (
+        "ci-monitoring-benchmark-${{ github.ref_name }}-${{ github.run_id }}"
+        not in text
+    )
     assert "actions/upload-artifact@v7" in text
     assert "name: ${{ env.PYRALLEL_BENCHMARK_ARTIFACT_NAME }}" in text
     assert "path: benchmarks/results/ci-monitoring.json" in text
