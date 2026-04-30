@@ -3,11 +3,10 @@
 
 import asyncio
 import inspect
-import random
 import time
 from collections import OrderedDict
 from dataclasses import replace
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
@@ -25,7 +24,7 @@ from ..dto import (
 )
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
-from ..utils.validation import validate_topic_name
+from .broker_dlq_publisher import publish_to_dlq
 from .adaptive_backpressure import AdaptiveBackpressureController
 from .adaptive_concurrency import (
     AdaptiveConcurrencyController,
@@ -430,87 +429,19 @@ class BrokerPoller:
         if self.producer is None:
             raise RuntimeError("Producer must be initialized for DLQ publishing")
 
-        source_topic = validate_topic_name(self._consume_topic)
-        suffix = validate_topic_name(self._kafka_config.DLQ_TOPIC_SUFFIX)
-        dlq_topic = source_topic + suffix
-        headers_raw = [
-            ("x-error-reason", error.encode("utf-8")),
-            ("x-retry-attempt", str(attempt).encode("utf-8")),
-            ("source-topic", tp.topic.encode("utf-8")),
-            ("partition", str(tp.partition).encode("utf-8")),
-            ("offset", str(offset).encode("utf-8")),
-            ("epoch", str(epoch).encode("utf-8")),
-        ]
-        headers: List[Tuple[str, Union[str, bytes, None]]] = cast(
-            List[Tuple[str, Union[str, bytes, None]]], headers_raw
+        return await publish_to_dlq(
+            producer=self.producer,
+            consume_topic=self._consume_topic,
+            kafka_config=self._kafka_config,
+            tp=tp,
+            offset=offset,
+            epoch=epoch,
+            key=key,
+            value=value,
+            error=error,
+            attempt=attempt,
+            logger=logger,
         )
-
-        exec_config = self._kafka_config.parallel_consumer.execution
-        max_retries = exec_config.max_retries
-        base_backoff_ms = exec_config.retry_backoff_ms
-        max_backoff_ms = exec_config.max_retry_backoff_ms
-        jitter_ms = exec_config.retry_jitter_ms
-        use_exponential = exec_config.exponential_backoff
-
-        payload_mode = getattr(
-            self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
-        )
-
-        for retry_attempt in range(max_retries):
-            try:
-                send_key = None
-                send_value = None
-                if payload_mode == DLQPayloadMode.FULL:
-                    send_key = key
-                    send_value = value
-                await asyncio.to_thread(
-                    self.producer.produce,
-                    topic=dlq_topic,
-                    key=send_key,
-                    value=send_value,
-                    headers=headers,  # type: ignore[arg-type]
-                )
-                await asyncio.to_thread(
-                    self.producer.flush,
-                    timeout=self._kafka_config.DLQ_FLUSH_TIMEOUT_MS / 1000.0,
-                )
-                logger.debug(
-                    "Published to DLQ: %s@%d -> %s",
-                    tp,
-                    offset,
-                    dlq_topic,
-                )
-                return True
-            except Exception as exc:
-                if retry_attempt < max_retries - 1:
-                    if use_exponential:
-                        backoff = min(
-                            base_backoff_ms * (2**retry_attempt), max_backoff_ms
-                        )
-                    else:
-                        backoff = base_backoff_ms
-
-                    jitter = random.uniform(0, jitter_ms)
-                    sleep_time_ms = backoff + jitter
-                    logger.warning(
-                        "DLQ publish failed (attempt %d/%d), retrying in %d ms: %s",
-                        retry_attempt + 1,
-                        max_retries,
-                        int(sleep_time_ms),
-                        exc,
-                    )
-                    await asyncio.sleep(sleep_time_ms / 1000.0)
-                else:
-                    logger.error(
-                        "DLQ publish failed after %d attempts for %s@%d: %s",
-                        max_retries,
-                        tp,
-                        offset,
-                        exc,
-                        exc_info=True,
-                    )
-                    return False
-        return False
 
     # ------------------------------------------------------------------
     async def _run_consumer(self) -> None:
