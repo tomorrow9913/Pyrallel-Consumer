@@ -468,18 +468,32 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     ) -> None:
         if not payloads:
             return
-        try:
-            self._requeue_recovered_payloads(payloads)
-            offsets = [entry.get("offset") for entry in payloads]
+        requeued_offsets: list[Any] = []
+        for payload in payloads:
+            try:
+                self._requeue_recovered_payloads([payload])
+                requeued_offsets.append(payload.get("offset"))
+            except Exception as requeue_exc:
+                self._logger.error(
+                    "Failed to requeue recovered work from worker %d offset=%s: %s",
+                    idx,
+                    payload.get("offset"),
+                    requeue_exc,
+                )
+                self._emit_worker_recovery_failure(
+                    idx,
+                    payload,
+                    error="worker_requeue_failed: %s" % requeue_exc,
+                    attempt=int(
+                        payload.get("requeue_attempts", self._config.max_retries)
+                    ),
+                )
+        if requeued_offsets:
             self._logger.warning(
                 "Requeued %d lost work item(s) offsets=%s from dead worker %d",
-                len(payloads),
-                offsets,
+                len(requeued_offsets),
+                requeued_offsets,
                 idx,
-            )
-        except Exception as requeue_exc:
-            self._logger.error(
-                "Failed to requeue work from worker %d: %s", idx, requeue_exc
             )
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:

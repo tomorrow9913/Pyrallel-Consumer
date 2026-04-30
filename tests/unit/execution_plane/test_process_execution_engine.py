@@ -1959,6 +1959,93 @@ def test_ensure_workers_alive_emits_failures_when_restart_fails_after_recovery(
     assert event.attempt == 3
 
 
+def test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "requeue_attempts": 2,
+    }
+
+    def fail_requeue(_payloads: list[dict[str, Any]]) -> None:
+        raise RuntimeError("queue full")
+
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", fail_requeue)
+
+    engine._publish_recovered_worker_payloads(0, [payload])
+
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "worker_requeue_failed: queue full"
+    assert event.offset == 42
+    assert event.attempt == 2
+
+
+def test_publish_recovered_worker_payloads_emits_only_failed_partial_requeues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._logger = logging.getLogger(__name__)
+    payloads = [
+        {
+            "id": "work-41",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 41,
+            "epoch": 7,
+            "requeue_attempts": 1,
+        },
+        {
+            "id": "work-42",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 42,
+            "epoch": 7,
+            "requeue_attempts": 1,
+        },
+    ]
+    requeued: list[list[dict[str, Any]]] = []
+
+    def maybe_requeue(batch: list[dict[str, Any]]) -> None:
+        requeued.append(batch)
+        if batch[0]["offset"] == 42:
+            raise RuntimeError("pipe closed")
+
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", maybe_requeue)
+
+    engine._publish_recovered_worker_payloads(0, payloads)
+
+    assert requeued == [[payloads[0]], [payloads[1]]]
+    raw_event = engine_any._completion_queue.get_nowait()
+    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
+    assert event.status == CompletionStatus.FAILURE
+    assert event.error == "worker_requeue_failed: pipe closed"
+    assert event.offset == 42
+    with pytest.raises(queue.Empty):
+        engine_any._completion_queue.get_nowait()
+
+
 def test_ensure_workers_alive_emits_failures_for_in_flight_work_when_restart_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
