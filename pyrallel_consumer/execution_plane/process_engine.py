@@ -20,7 +20,6 @@ import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
-    WORK_ITEM_POISON_KEY_UNSET,
     CompletionEvent,
     CompletionStatus,
     EngineRuntimeDiagnostics,
@@ -30,6 +29,34 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.process_codec import SerializedWorkItem
+from pyrallel_consumer.execution_plane.process_codec import (
+    completion_event_from_dict as _completion_event_from_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    completion_event_to_dict as _completion_event_to_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    decode_incoming_item as _decode_incoming_item,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    decode_incoming_payloads as _decode_incoming_payloads,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    normalize_decoded_payloads as _normalize_decoded_payloads,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    serialize_batch_payload as _serialize_batch_payload,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    work_item_from_dict as _work_item_from_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    work_item_identity_payload as _work_item_identity_payload,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    work_item_to_dict as _work_item_to_dict,
+)
 from pyrallel_consumer.execution_plane.process_registry_support import (
     ProcessRegistrySupport,
 )
@@ -45,11 +72,6 @@ from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
 )
 from pyrallel_consumer.logger import LogManager
 
-SerializedWorkItem = dict[str, Any]
-SerializedCompletionEvent = dict[str, Any]
-SerializedRegistryEvent = dict[str, Any]
-SerializedBatchEnvelope = dict[str, Any]
-
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
 _SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
@@ -57,144 +79,18 @@ _POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
 _POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
 _logger = logging.getLogger(__name__)
 
-
-def _work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
-    payload: SerializedWorkItem = {
-        "id": item.id,
-        "topic": item.tp.topic,
-        "partition": item.tp.partition,
-        "offset": item.offset,
-        "epoch": item.epoch,
-        "key": item.key,
-        "payload": item.payload,
-        "requeue_attempts": item.requeue_attempts,
-    }
-    if item.poison_key is not WORK_ITEM_POISON_KEY_UNSET:
-        payload["poison_key"] = item.poison_key
-    return payload
-
-
-def _work_item_from_dict(payload: SerializedWorkItem) -> WorkItem:
-    return WorkItem(
-        id=payload["id"],
-        tp=TopicPartition(payload["topic"], payload["partition"]),
-        offset=payload["offset"],
-        epoch=payload["epoch"],
-        key=payload.get("key"),
-        payload=payload.get("payload"),
-        requeue_attempts=payload.get("requeue_attempts", 0),
-        poison_key=payload.get("poison_key", WORK_ITEM_POISON_KEY_UNSET),
-    )
-
-
-def _work_item_identity_payload(payload: SerializedWorkItem) -> SerializedWorkItem:
-    return {
-        "id": payload["id"],
-        "topic": payload["topic"],
-        "partition": payload["partition"],
-        "offset": payload["offset"],
-        "epoch": payload["epoch"],
-    }
-
-
-def _completion_event_to_dict(
-    event: CompletionEvent,
-    extra_fields: Optional[dict[str, Any]] = None,
-) -> SerializedCompletionEvent:
-    payload: SerializedCompletionEvent = {
-        "id": event.id,
-        "topic": event.tp.topic,
-        "partition": event.tp.partition,
-        "offset": event.offset,
-        "epoch": event.epoch,
-        "status": event.status.value,
-        "error": event.error,
-        "attempt": event.attempt,
-    }
-    if extra_fields:
-        payload.update(extra_fields)
-    return payload
-
-
-def _completion_event_from_dict(
-    payload: SerializedCompletionEvent,
-) -> CompletionEvent:
-    return CompletionEvent(
-        id=payload["id"],
-        tp=TopicPartition(payload["topic"], payload["partition"]),
-        offset=payload["offset"],
-        epoch=payload["epoch"],
-        status=CompletionStatus(payload["status"]),
-        error=payload.get("error"),
-        attempt=payload["attempt"],
-    )
-
-
-def _serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> bytes:
-    envelope: SerializedBatchEnvelope = {
-        "items": [_work_item_to_dict(item) for item in batch],
-        "timing": {"flush_enqueued_at": flush_enqueued_at},
-    }
-    return msgpack.packb(envelope, use_bin_type=True)
-
-
-def _normalize_decoded_payloads(
-    decoded: Any,
-) -> tuple[list[SerializedWorkItem], dict[str, float]]:
-    if isinstance(decoded, dict):
-        if "items" in decoded:
-            timing = decoded.get("timing", {})
-            timing_values = {
-                key: float(value)
-                for key, value in dict(timing).items()
-                if isinstance(value, (int, float))
-            }
-            return [dict(entry) for entry in decoded.get("items", [])], timing_values
-        payload = dict(decoded)
-        payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-        return [payload], {}
-
-    if isinstance(decoded, list):
-        payloads: list[SerializedWorkItem] = []
-        for entry in decoded:
-            if isinstance(entry, WorkItem):
-                payload = _work_item_to_dict(entry)
-            else:
-                payload = dict(entry)
-            payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-            payloads.append(payload)
-        return payloads, {}
-
-    if isinstance(decoded, WorkItem):
-        payload = _work_item_to_dict(decoded)
-    else:
-        payload = dict(decoded)
-    payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-    return [payload], {}
-
-
-def _decode_incoming_payloads(
-    item: Any, max_bytes: int
-) -> tuple[list[SerializedWorkItem], dict[str, float]]:
-    if isinstance(item, (bytes, bytearray)):
-        if len(item) > max_bytes:
-            raise ValueError("payload_too_large")
-        unpacker = msgpack.Unpacker(raw=False, max_buffer_size=max_bytes)
-        unpacker.feed(item)
-        decoded_items = list(unpacker)
-        if len(decoded_items) == 1:
-            decoded = decoded_items[0]
-        else:
-            decoded = decoded_items
-        return _normalize_decoded_payloads(decoded)
-    return _normalize_decoded_payloads(item)
-
-
-def _decode_incoming_item(item: Any, max_bytes: int) -> list[WorkItem]:
-    return [
-        _work_item_from_dict(payload)
-        for payload in _decode_incoming_payloads(item, max_bytes)[0]
-    ]
+__all__ = [
+    "ProcessExecutionEngine",
+    "_BatchAccumulator",
+    "_completion_event_from_dict",
+    "_completion_event_to_dict",
+    "_decode_incoming_item",
+    "_normalize_decoded_payloads",
+    "_serialize_batch_payload",
+    "_worker_loop",
+    "_work_item_from_dict",
+    "_work_item_to_dict",
+]
 
 
 class _BatchAccumulator:
