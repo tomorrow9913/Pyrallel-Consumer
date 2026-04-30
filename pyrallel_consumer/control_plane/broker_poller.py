@@ -208,6 +208,14 @@ class BrokerPoller:
             self._resolve_commit_debounce_interval_seconds(pc_conf)
         )
         self._last_commit_attempt_monotonic = time.monotonic()
+        self._commit_ready_invocations_total = 0
+        self._commit_ready_empty_candidate_scans_total = 0
+        self._commit_ready_commit_calls_total = 0
+        self._commit_ready_partitions_advanced_total = 0
+        self._commit_ready_invocations_by_source: Dict[str, int] = {}
+        self._commit_ready_empty_candidate_scans_by_source: Dict[str, int] = {}
+        self._commit_ready_commit_calls_by_source: Dict[str, int] = {}
+        self._commit_ready_partitions_advanced_by_source: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     def set_metrics_exporter(self, metrics_exporter: Optional[Any]) -> None:
@@ -551,7 +559,7 @@ class BrokerPoller:
 
                     await self._drain_completion_events_once()
 
-                await self._maybe_commit_ready_offsets()
+                await self._maybe_commit_ready_offsets(source="consumer_loop")
 
                 if not messages and consume_timeout > 0:
                     await asyncio.sleep(consume_timeout)
@@ -614,26 +622,50 @@ class BrokerPoller:
                     has_completion = await self._drain_completion_events_once()
                 if has_completion:
                     await self._maybe_commit_ready_offsets(
-                        had_pending_dlq_events=had_pending_dlq_events
+                        had_pending_dlq_events=had_pending_dlq_events,
+                        source="completion_monitor",
                     )
                     if self._pending_dlq_events:
                         await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            self._fatal_error = exc
+            self._running = False
+            logger.error("Completion monitor error: %s", exc, exc_info=True)
+            raise
 
     async def _maybe_commit_ready_offsets(
-        self, *, had_pending_dlq_events: bool = False
+        self, *, had_pending_dlq_events: bool = False, source: str = "unknown"
     ) -> None:
         force = await self._should_force_idle_commit()
         if had_pending_dlq_events or force or self._should_attempt_ready_commit():
-            await self._commit_ready_offsets(force=force or had_pending_dlq_events)
+            await self._commit_ready_offsets(
+                force=force or had_pending_dlq_events,
+                source=source,
+            )
 
-    async def _commit_ready_offsets(self, *, force: bool = False) -> None:
+    async def _commit_ready_offsets(
+        self, *, force: bool = False, source: str = "unknown"
+    ) -> None:
+        self._commit_ready_invocations_total += 1
+        self._commit_ready_invocations_by_source[source] = (
+            self._commit_ready_invocations_by_source.get(source, 0) + 1
+        )
         if not force and not self._should_attempt_ready_commit():
+            self._commit_ready_empty_candidate_scans_total += 1
+            self._commit_ready_empty_candidate_scans_by_source[source] = (
+                self._commit_ready_empty_candidate_scans_by_source.get(source, 0) + 1
+            )
             return
 
         async with self._commit_lock:
             if not force and not self._should_attempt_ready_commit():
+                self._commit_ready_empty_candidate_scans_total += 1
+                self._commit_ready_empty_candidate_scans_by_source[source] = (
+                    self._commit_ready_empty_candidate_scans_by_source.get(source, 0)
+                    + 1
+                )
                 return
 
             async with self._control_lock:
@@ -649,9 +681,36 @@ class BrokerPoller:
             if commits_to_make:
                 committed = await self._commit_offsets(commits_to_make)
                 if committed is not False:
+                    self._commit_ready_commit_calls_total += 1
+                    self._commit_ready_commit_calls_by_source[source] = (
+                        self._commit_ready_commit_calls_by_source.get(source, 0) + 1
+                    )
+                    self._commit_ready_partitions_advanced_total += len(commits_to_make)
+                    self._commit_ready_partitions_advanced_by_source[source] = (
+                        self._commit_ready_partitions_advanced_by_source.get(source, 0)
+                        + len(commits_to_make)
+                    )
                     self._clear_committed_dirty_partitions(commits_to_make)
             self._completions_since_last_commit = 0
             self._last_commit_attempt_monotonic = time.monotonic()
+
+    def get_commit_cadence_stats(self) -> Dict[str, Any]:
+        return {
+            "invocations_total": self._commit_ready_invocations_total,
+            "empty_candidate_scans_total": self._commit_ready_empty_candidate_scans_total,
+            "commit_calls_total": self._commit_ready_commit_calls_total,
+            "partitions_advanced_total": self._commit_ready_partitions_advanced_total,
+            "invocations_by_source": dict(self._commit_ready_invocations_by_source),
+            "empty_candidate_scans_by_source": dict(
+                self._commit_ready_empty_candidate_scans_by_source
+            ),
+            "commit_calls_by_source": dict(
+                self._commit_ready_commit_calls_by_source
+            ),
+            "partitions_advanced_by_source": dict(
+                self._commit_ready_partitions_advanced_by_source
+            ),
+        }
 
     def _should_attempt_ready_commit(self) -> bool:
         if not self._dirty_commit_partitions:
@@ -1141,13 +1200,13 @@ class BrokerPoller:
                 drained_completion = await self._drain_completion_events_once()
 
             if drained_completion:
-                await self._commit_ready_offsets(force=True)
+                await self._commit_ready_offsets(force=True, source="stop_drain")
 
             total_in_flight = self._work_manager.get_total_in_flight_count()
             total_queued = await self._get_total_queued_messages()
             pending_dlq_count = len(self._pending_dlq_events)
             if total_in_flight <= 0 and total_queued <= 0 and pending_dlq_count <= 0:
-                await self._commit_ready_offsets(force=True)
+                await self._commit_ready_offsets(force=True, source="stop_drain")
                 logger.debug(
                     "Graceful shutdown drain completed with in_flight=%d queued=%d pending_dlq=%d",
                     total_in_flight,

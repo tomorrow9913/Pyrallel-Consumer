@@ -261,7 +261,35 @@ async def test_completion_monitor_reschedules_without_waiting_for_consumer_loop(
     broker_poller._execution_engine.wait_for_completion.assert_awaited_once()
     broker_poller._process_completed_events.assert_awaited_once_with([completion_event])
     broker_poller._work_manager.schedule.assert_awaited_once_with()
-    broker_poller._commit_ready_offsets.assert_awaited_once_with(force=True)
+    broker_poller._commit_ready_offsets.assert_awaited_once_with(
+        force=True,
+        source="completion_monitor",
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_monitor_sets_fatal_error_and_stops_on_exception(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 1
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    broker_poller._pending_dlq_events.clear()
+    broker_poller._execution_engine = AsyncMock()
+
+    async def boom(timeout_seconds=None):
+        del timeout_seconds
+        raise RuntimeError("monitor failed")
+
+    broker_poller._execution_engine.wait_for_completion.side_effect = boom
+    broker_poller._running = True
+
+    with pytest.raises(RuntimeError, match="monitor failed"):
+        await broker_poller._run_completion_monitor()
+
+    assert isinstance(broker_poller._fatal_error, RuntimeError)
+    assert broker_poller._running is False
 
 
 @pytest.mark.asyncio
@@ -408,6 +436,52 @@ async def test_commit_ready_offsets_waits_for_completion_cadence_before_commit(
     await broker_poller._commit_ready_offsets()
 
     broker_poller._commit_offsets.assert_awaited_once_with([(topic_partition, 2)])
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_tracks_empty_candidate_scans_by_source(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    dispatch_support = MagicMock()
+    dispatch_support.build_commit_candidates.return_value = []
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+    broker_poller._commit_offsets = AsyncMock()
+
+    await broker_poller._commit_ready_offsets(source="completion_monitor")
+
+    stats = broker_poller.get_commit_cadence_stats()
+    assert stats["invocations_total"] == 1
+    assert stats["empty_candidate_scans_total"] == 1
+    assert stats["commit_calls_total"] == 0
+    assert stats["partitions_advanced_total"] == 0
+    assert stats["invocations_by_source"]["completion_monitor"] == 1
+    assert stats["empty_candidate_scans_by_source"]["completion_monitor"] == 1
+    assert "completion_monitor" not in stats["commit_calls_by_source"]
+    assert "completion_monitor" not in stats["partitions_advanced_by_source"]
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_tracks_commit_calls_by_source(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    dispatch_support = MagicMock()
+    dispatch_support.build_commit_candidates.return_value = [(topic_partition, 0)]
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+    broker_poller._commit_offsets = AsyncMock(return_value=1)
+    broker_poller._dirty_commit_partitions = {topic_partition}
+
+    await broker_poller._commit_ready_offsets(force=True, source="consumer_loop")
+
+    stats = broker_poller.get_commit_cadence_stats()
+    assert stats["invocations_total"] == 1
+    assert stats["empty_candidate_scans_total"] == 0
+    assert stats["commit_calls_total"] == 1
+    assert stats["partitions_advanced_total"] == 1
+    assert stats["invocations_by_source"]["consumer_loop"] == 1
+    assert stats["commit_calls_by_source"]["consumer_loop"] == 1
+    assert stats["partitions_advanced_by_source"]["consumer_loop"] == 1
 
 
 @pytest.mark.asyncio
@@ -563,7 +637,9 @@ async def test_maybe_commit_ready_offsets_forces_commit_after_pending_dlq_activi
 
     await broker_poller._maybe_commit_ready_offsets(had_pending_dlq_events=True)
 
-    broker_poller._commit_ready_offsets.assert_awaited_once_with(force=True)
+    broker_poller._commit_ready_offsets.assert_awaited_once_with(
+        force=True, source="unknown"
+    )
 
 
 @pytest.mark.asyncio
