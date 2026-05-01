@@ -3,7 +3,7 @@ from __future__ import annotations
 from benchmarks.tui.state import BenchmarkTuiState
 
 
-def test_tui_state_to_argv_uses_cli_defaults() -> None:
+def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
     state = BenchmarkTuiState()
 
     argv = state.to_argv()
