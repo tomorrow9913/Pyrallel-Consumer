@@ -74,7 +74,7 @@ def _ensure_metrics_port_available(metrics_port: int | None) -> None:
         return
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
-            sock.bind(("", metrics_port))
+            sock.bind(("127.0.0.1", metrics_port))
         except OSError as exc:
             pids = _list_listening_pids(metrics_port)
             pid_suffix = "(PID %s)" % ",".join(pids) if pids else ""
