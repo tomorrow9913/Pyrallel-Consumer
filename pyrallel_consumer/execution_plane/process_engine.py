@@ -98,6 +98,7 @@ from pyrallel_consumer.logger import LogManager
 _SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
 _POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
 _POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
+_DEFAULT_MSGPACK_MAX_BYTES = 1_000_000
 _logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -1330,12 +1331,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
     ) -> list[CompletionEvent]:
         """Decode one completion queue item into item-level completion events."""
         if isinstance(raw_event, (bytes, bytearray)):
-            config = getattr(self, "_config", ExecutionConfig(mode="process"))
-            if not isinstance(config, ExecutionConfig):
-                config = ExecutionConfig(mode="process")
+            msgpack_max_bytes = self._completion_msgpack_max_bytes()
             payload = _decode_msgpack_payload(
                 raw_event,
-                config.process_config.msgpack_max_bytes,
+                msgpack_max_bytes,
             )
             if (
                 isinstance(payload, dict)
@@ -1343,7 +1342,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             ):
                 decoded_payload = _decode_batch_completion_payload(
                     payload,
-                    max_bytes=self._config.process_config.msgpack_max_bytes,
+                    max_bytes=msgpack_max_bytes,
                 )
                 timing = decoded_payload.get("timing", {})
                 completion_enqueued_at = timing.get("completion_enqueued_at")
@@ -1364,6 +1363,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._record_completion_ipc(1, batch_payload=False)
             return [_completion_event_from_dict(payload)]
         return [raw_event]
+
+    def _completion_msgpack_max_bytes(self) -> int:
+        """Return completion decode msgpack byte limit without config construction."""
+        config = getattr(self, "_config", None)
+        process_config = getattr(config, "process_config", None)
+        msgpack_max_bytes = getattr(process_config, "msgpack_max_bytes", None)
+        if isinstance(msgpack_max_bytes, int) and msgpack_max_bytes > 0:
+            return msgpack_max_bytes
+        return _DEFAULT_MSGPACK_MAX_BYTES
 
     def get_in_flight_count(self) -> int:
         """현재 처리 중인 작업 항목의 수를 반환합니다.

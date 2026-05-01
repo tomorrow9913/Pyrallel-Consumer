@@ -331,6 +331,44 @@ def test_batch_completion_envelope_roundtrip_preserves_prefix_result_order() -> 
     ]
 
 
+def test_decode_completion_queue_item_events_uses_existing_config_without_instantiating_execution_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = _make_completion_event(7)
+    raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
+    engine = _make_decode_only_process_engine(max_bytes=len(raw_event) + 1)
+
+    def fail_execution_config(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("ExecutionConfig must not be constructed on decode path")
+
+    monkeypatch.setattr(process_engine, "ExecutionConfig", fail_execution_config)
+
+    decoded = engine._decode_completion_queue_item_events(raw_event)
+
+    assert [item.id for item in decoded] == ["wi-7"]
+
+
+def test_decode_completion_queue_item_events_uses_constant_fallback_without_instantiating_execution_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = _make_completion_event(8)
+    raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
+    engine = cast(
+        ProcessExecutionEngine,
+        ProcessExecutionEngine.__new__(ProcessExecutionEngine),
+    )
+    cast(Any, engine)._config = object()
+
+    def fail_execution_config(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("ExecutionConfig must not be constructed on decode path")
+
+    monkeypatch.setattr(process_engine, "ExecutionConfig", fail_execution_config)
+
+    decoded = engine._decode_completion_queue_item_events(raw_event)
+
+    assert [item.id for item in decoded] == ["wi-8"]
+
+
 def test_decode_completion_queue_item_events_rejects_oversized_raw_bytes_before_unpack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
