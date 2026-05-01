@@ -93,6 +93,128 @@ def test_benchmark_stats_summary_includes_release_gate_lag_gap_evidence() -> Non
     ]
 
 
+def test_benchmark_stats_summary_carries_route_batch_size_separately() -> None:
+    stats = BenchmarkStats(
+        run_name="demo-process",
+        run_type="process",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        process_transport_mode="worker_pipes",
+        route_batch_size=64,
+    )
+    stats.start()
+    stats.record(0.001, completed_at=1.0)
+    stats.stop()
+
+    summary = stats.summary()
+
+    assert summary.process_transport_mode == "worker_pipes"
+    assert summary.route_batch_size == 64
+
+
+def test_write_results_json_includes_route_batch_size_field(tmp_path) -> None:
+    output_path = tmp_path / "summary.json"
+
+    write_results_json(
+        [
+            BenchmarkResult(
+                run_name="sleep-key_hash-pyrallel-process",
+                run_type="process",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-process",
+                process_transport_mode="worker_pipes",
+                route_batch_size=64,
+                messages_processed=100,
+                total_time_sec=1.0,
+                throughput_tps=100.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            )
+        ],
+        output_path,
+        options={"process_batch_size": 1, "route_batch_size": 64},
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert payload["options"]["process_batch_size"] == 1
+    assert payload["options"]["route_batch_size"] == 64
+    assert payload["results"][0]["process_transport_mode"] == "worker_pipes"
+    assert payload["results"][0]["route_batch_size"] == 64
+
+
+def test_write_results_json_includes_nullable_route_batch_runtime_metrics(
+    tmp_path
+) -> None:
+    output_path = tmp_path / "summary.json"
+
+    write_results_json(
+        [
+            BenchmarkResult(
+                run_name="sleep-key_hash-baseline",
+                run_type="baseline",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-baseline",
+                messages_processed=100,
+                total_time_sec=2.0,
+                throughput_tps=50.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            ),
+            BenchmarkResult(
+                run_name="sleep-key_hash-pyrallel-process",
+                run_type="process",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-process",
+                process_transport_mode="worker_pipes",
+                route_batch_size=64,
+                process_batch_size=1,
+                items_per_input_ipc=2.0,
+                items_per_completion_ipc=2.0,
+                route_batch_count=1,
+                route_batch_item_count=2,
+                route_batch_size_avg=2.0,
+                route_batch_size_max=2,
+                completion_item_payload_count=0,
+                completion_batch_payload_count=1,
+                messages_processed=100,
+                total_time_sec=1.0,
+                throughput_tps=100.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            ),
+        ],
+        output_path,
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    baseline = payload["results"][0]
+    process = payload["results"][1]
+
+    assert baseline["items_per_input_ipc"] is None
+    assert baseline["items_per_completion_ipc"] is None
+    assert baseline["route_batch_count"] is None
+    assert baseline["route_batch_item_count"] is None
+    assert baseline["route_batch_size_avg"] is None
+    assert baseline["route_batch_size_max"] is None
+    assert baseline["completion_item_payload_count"] is None
+    assert baseline["completion_batch_payload_count"] is None
+    assert process["process_batch_size"] == 1
+    assert process["route_batch_size"] == 64
+    assert process["items_per_input_ipc"] == 2.0
+    assert process["items_per_completion_ipc"] == 2.0
+    assert process["route_batch_count"] == 1
+    assert process["route_batch_item_count"] == 2
+    assert process["route_batch_size_avg"] == 2.0
+    assert process["route_batch_size_max"] == 2
+    assert process["completion_item_payload_count"] == 0
+    assert process["completion_batch_payload_count"] == 1
+
+
 def test_write_results_json_includes_performance_improvement_analysis(tmp_path) -> None:
     output_path = tmp_path / "summary.json"
 

@@ -111,6 +111,22 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
     assert args.process_max_batch_wait_ms == 0
 
 
+def test_build_parser_accepts_route_batch_size_override() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--route-batch-size", "64"])
+
+    assert args.route_batch_size == 64
+
+
+def test_build_parser_defaults_route_batch_size_to_one() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args([])
+
+    assert args.route_batch_size == 1
+
+
 def test_build_parser_accepts_process_flush_policy_overrides() -> None:
     parser = run_parallel_benchmark.build_parser()
 

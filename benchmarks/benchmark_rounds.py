@@ -82,6 +82,7 @@ async def _run_pyrparallel_round(
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
     process_transport_mode: ProcessTransportMode | None = None,
+    route_batch_size: int = 1,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
@@ -104,6 +105,10 @@ async def _run_pyrparallel_round(
         ordering=ordering,
         topic=topic_name,
         process_transport_mode=effective_process_transport_mode,
+        route_batch_size=route_batch_size,
+        process_batch_size=process_batch_size
+        if mode == ExecutionMode.PROCESS
+        else None,
         target_messages=num_messages,
     )
     timed_out, _, summary = await run_pyrallel_consumer_test(
@@ -126,6 +131,7 @@ async def _run_pyrparallel_round(
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         process_transport_mode=effective_process_transport_mode,
+        route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
