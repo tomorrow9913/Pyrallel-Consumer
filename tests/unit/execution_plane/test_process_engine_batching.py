@@ -24,8 +24,12 @@ from pyrallel_consumer.execution_plane import process_engine
 from pyrallel_consumer.execution_plane.process_codec import (
     batch_completion_from_dict,
     batch_completion_to_dict,
+    decode_batch_completion_payload,
+    decode_worker_pipe_payload,
     route_batch_from_dict,
     route_batch_to_dict,
+    serialize_batch_completion_payload,
+    serialize_worker_pipe_payload,
 )
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
@@ -60,6 +64,74 @@ def _make_work_item(offset: int, partition: int = 0, topic: str = "test") -> Wor
     )
 
 
+def _make_completion_event(
+    offset: int,
+    *,
+    status: CompletionStatus = CompletionStatus.SUCCESS,
+    error: str | None = None,
+    attempt: int = 1,
+    partition: int = 0,
+    topic: str = "test",
+) -> CompletionEvent:
+    return CompletionEvent(
+        id=f"wi-{offset}",
+        tp=TopicPartition(topic, partition),
+        offset=offset,
+        epoch=1,
+        status=status,
+        error=error,
+        attempt=attempt,
+    )
+
+
+def _make_unstarted_process_engine(raw_events: list[bytes]) -> ProcessExecutionEngine:
+    engine = cast(
+        ProcessExecutionEngine,
+        ProcessExecutionEngine.__new__(ProcessExecutionEngine),
+    )
+    completion_queue: queue.Queue[bytes] = queue.Queue()
+    for raw_event in raw_events:
+        completion_queue.put_nowait(raw_event)
+    engine._workers = []
+    engine._prefetched_completion_events = deque()
+    engine._completion_queue = cast(Any, completion_queue)
+    engine._registry_event_queue = cast(Any, None)
+    engine._in_flight_lock = threading.Lock()
+    engine._in_flight_count = 0
+    engine._in_flight_registry = {}
+    engine._config = ExecutionConfig(
+        mode="process",
+        process_config=ProcessConfig(process_count=1, queue_size=16),
+    )
+    engine._is_shutdown = False
+
+    def _noop_ensure_workers_alive(force: bool = False) -> None:
+        del force
+
+    def _noop_drain_registry_events() -> None:
+        return None
+
+    engine._ensure_workers_alive = _noop_ensure_workers_alive  # type: ignore[method-assign]
+    engine._drain_registry_events = _noop_drain_registry_events  # type: ignore[method-assign]
+    return engine
+
+
+def _make_decode_only_process_engine(max_bytes: int) -> ProcessExecutionEngine:
+    engine = cast(
+        ProcessExecutionEngine,
+        ProcessExecutionEngine.__new__(ProcessExecutionEngine),
+    )
+    engine._config = ExecutionConfig(
+        mode="process",
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=16,
+            msgpack_max_bytes=max_bytes,
+        ),
+    )
+    return engine
+
+
 def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
     route_batch = RouteBatch(
         batch_id="batch-1",
@@ -80,6 +152,54 @@ def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
         ("test", 0, 0),
         ("test", 0, 1),
     ]
+
+
+@pytest.mark.parametrize("missing_field", ["batch_id", "route_identity", "items"])
+def test_route_batch_from_dict_rejects_missing_required_fields(
+    missing_field: str,
+) -> None:
+    payload = route_batch_to_dict(
+        RouteBatch(
+            batch_id="batch-required",
+            route_identity=("test", 0, b"key-a"),
+            worker_index=1,
+            items=[_make_work_item(0)],
+        )
+    )
+    payload.pop(missing_field)
+
+    with pytest.raises(ValueError, match="invalid_route_batch"):
+        route_batch_from_dict(payload)
+
+
+def test_route_batch_from_dict_rejects_non_list_items() -> None:
+    payload = route_batch_to_dict(
+        RouteBatch(
+            batch_id="batch-items",
+            route_identity=("test", 0, b"key-a"),
+            worker_index=1,
+            items=[_make_work_item(0)],
+        )
+    )
+    payload["items"] = {"offset": 0}
+
+    with pytest.raises(ValueError, match="invalid_route_batch"):
+        route_batch_from_dict(payload)
+
+
+def test_route_batch_from_dict_rejects_empty_items() -> None:
+    payload = route_batch_to_dict(
+        RouteBatch(
+            batch_id="batch-empty",
+            route_identity=("test", 0, b"key-a"),
+            worker_index=1,
+            items=[_make_work_item(0)],
+        )
+    )
+    payload["items"] = []
+
+    with pytest.raises(ValueError, match="invalid_route_batch"):
+        route_batch_from_dict(payload)
 
 
 def test_batch_completion_wire_contract_preserves_item_results() -> None:
@@ -119,6 +239,349 @@ def test_batch_completion_wire_contract_preserves_item_results() -> None:
     ]
     assert decoded.results[1].error == "boom"
     assert decoded.results[1].attempt == 3
+
+
+@pytest.mark.parametrize("missing_field", ["batch_id", "route_identity", "results"])
+def test_batch_completion_from_dict_rejects_missing_required_fields(
+    missing_field: str,
+) -> None:
+    payload = batch_completion_to_dict(
+        BatchCompletion(
+            batch_id="batch-required",
+            route_identity=("test", 0, b"key-a"),
+            results=[_make_completion_event(0)],
+        )
+    )
+    payload.pop(missing_field)
+
+    with pytest.raises(ValueError, match="invalid_batch_completion"):
+        batch_completion_from_dict(payload)
+
+
+def test_batch_completion_from_dict_rejects_non_list_results() -> None:
+    payload = batch_completion_to_dict(
+        BatchCompletion(
+            batch_id="batch-results",
+            route_identity=("test", 0, b"key-a"),
+            results=[_make_completion_event(0)],
+        )
+    )
+    payload["results"] = {"offset": 0}
+
+    with pytest.raises(ValueError, match="invalid_batch_completion"):
+        batch_completion_from_dict(payload)
+
+
+def test_batch_completion_from_dict_rejects_empty_results() -> None:
+    payload = batch_completion_to_dict(
+        BatchCompletion(
+            batch_id="batch-empty",
+            route_identity=("test", 0, b"key-a"),
+            results=[_make_completion_event(0)],
+        )
+    )
+    payload["results"] = []
+
+    with pytest.raises(ValueError, match="invalid_batch_completion"):
+        batch_completion_from_dict(payload)
+
+
+def test_batch_completion_envelope_roundtrip_preserves_prefix_result_order() -> None:
+    completion = BatchCompletion(
+        batch_id="batch-envelope",
+        route_identity=("topic", 0, b"key-a"),
+        results=[
+            CompletionEvent(
+                id="wi-0",
+                tp=TopicPartition("test", 0),
+                offset=0,
+                epoch=1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+            CompletionEvent(
+                id="wi-1",
+                tp=TopicPartition("test", 0),
+                offset=1,
+                epoch=1,
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=2,
+            ),
+        ],
+    )
+
+    decoded_payload = decode_batch_completion_payload(
+        serialize_batch_completion_payload(completion, completion_enqueued_at=4.5),
+        max_bytes=4096,
+    )
+    decoded = batch_completion_from_dict(decoded_payload["completion"])
+
+    assert decoded_payload["kind"] == "batch_completion"
+    assert decoded_payload["timing"] == {"completion_enqueued_at": 4.5}
+    assert decoded.batch_id == "batch-envelope"
+    assert decoded.route_identity == ("topic", 0, b"key-a")
+    assert [
+        (event.id, event.offset, event.status, event.error, event.attempt)
+        for event in decoded.results
+    ] == [
+        ("wi-0", 0, CompletionStatus.SUCCESS, None, 1),
+        ("wi-1", 1, CompletionStatus.FAILURE, "boom", 2),
+    ]
+
+
+def test_decode_completion_queue_item_events_rejects_oversized_raw_bytes_before_unpack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _make_decode_only_process_engine(max_bytes=2)
+
+    def fail_unpack(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("msgpack.unpackb should not run for oversized bytes")
+
+    monkeypatch.setattr(process_engine.msgpack, "unpackb", fail_unpack)
+
+    with pytest.raises(ValueError, match="payload_too_large"):
+        engine._decode_completion_queue_item_events(b"012345")
+
+
+def test_decode_completion_queue_item_events_rejects_oversized_item_completion_bytes() -> (
+    None
+):
+    event = _make_completion_event(7)
+    raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
+    engine = _make_decode_only_process_engine(max_bytes=len(raw_event) - 1)
+
+    with pytest.raises(ValueError, match="payload_too_large"):
+        engine._decode_completion_queue_item_events(raw_event)
+
+
+def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_bytes() -> (
+    None
+):
+    completion = BatchCompletion(
+        batch_id="batch-too-large",
+        route_identity=("test", 0, b"key-a"),
+        results=[_make_completion_event(0)],
+    )
+    raw_event = serialize_batch_completion_payload(
+        completion,
+        completion_enqueued_at=1.0,
+    )
+    engine = _make_decode_only_process_engine(max_bytes=len(raw_event) - 1)
+
+    with pytest.raises(ValueError, match="payload_too_large"):
+        engine._decode_completion_queue_item_events(raw_event)
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_expands_batch_completion_to_item_events() -> None:
+    batch_completion = BatchCompletion(
+        batch_id="batch-parent",
+        route_identity=("test", 0, b"key-a"),
+        results=[_make_completion_event(0), _make_completion_event(1)],
+    )
+    engine = _make_unstarted_process_engine(
+        [
+            serialize_batch_completion_payload(
+                batch_completion, completion_enqueued_at=1.0
+            )
+        ]
+    )
+    engine._in_flight_count = 2
+
+    events = await engine.poll_completed_events()
+
+    assert [(event.id, event.offset, event.status) for event in events] == [
+        ("wi-0", 0, CompletionStatus.SUCCESS),
+        ("wi-1", 1, CompletionStatus.SUCCESS),
+    ]
+    assert engine.get_in_flight_count() == 0
+    runtime_metrics = engine.get_runtime_metrics()
+    assert runtime_metrics is not None
+    assert runtime_metrics.process is not None
+    process_metrics = runtime_metrics.process.batch_metrics
+    assert process_metrics.completion_batch_payload_count == 1
+    assert process_metrics.completion_item_payload_count == 0
+    assert process_metrics.items_per_completion_ipc == 2.0
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_preserves_batch_completion_failure_result_fields() -> None:
+    batch_completion = BatchCompletion(
+        batch_id="batch-parent-failure",
+        route_identity=("test", 0, b"key-a"),
+        results=[
+            _make_completion_event(0),
+            _make_completion_event(
+                1,
+                status=CompletionStatus.FAILURE,
+                error="qa-fail",
+                attempt=3,
+            ),
+        ],
+    )
+    engine = _make_unstarted_process_engine(
+        [
+            serialize_batch_completion_payload(
+                batch_completion, completion_enqueued_at=1.0
+            )
+        ]
+    )
+    engine._in_flight_count = 2
+
+    events = await engine.poll_completed_events()
+
+    assert [
+        (event.offset, event.status, event.error, event.attempt) for event in events
+    ] == [
+        (0, CompletionStatus.SUCCESS, None, 1),
+        (1, CompletionStatus.FAILURE, "qa-fail", 3),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_batch_limit_counts_expanded_item_events() -> None:
+    batch_completion = BatchCompletion(
+        batch_id="batch-parent-limit",
+        route_identity=("test", 0, b"key-a"),
+        results=[_make_completion_event(0), _make_completion_event(1)],
+    )
+    engine = _make_unstarted_process_engine(
+        [
+            serialize_batch_completion_payload(
+                batch_completion, completion_enqueued_at=1.0
+            )
+        ]
+    )
+    engine._in_flight_count = 2
+
+    first_poll = await engine.poll_completed_events(batch_limit=1)
+    second_poll = await engine.poll_completed_events(batch_limit=1)
+
+    assert [event.offset for event in first_poll] == [0]
+    assert [event.offset for event in second_poll] == [1]
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_suppresses_duplicate_item_completion_after_batch_envelope() -> (
+    None
+):
+    duplicate_event = _make_completion_event(0)
+    batch_completion = BatchCompletion(
+        batch_id="batch-parent-dedupe",
+        route_identity=("test", 0, b"key-a"),
+        results=[duplicate_event],
+    )
+    engine = _make_unstarted_process_engine(
+        [
+            serialize_batch_completion_payload(
+                batch_completion, completion_enqueued_at=1.0
+            ),
+            msgpack.packb(
+                _completion_event_to_dict(duplicate_event), use_bin_type=True
+            ),
+        ]
+    )
+    engine._in_flight_count = 1
+
+    events = await engine.poll_completed_events()
+
+    assert [(event.id, event.offset) for event in events] == [("wi-0", 0)]
+    assert engine.get_in_flight_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_does_not_invent_completion_for_skipped_batch_tail() -> None:
+    batch_completion = BatchCompletion(
+        batch_id="batch-parent-prefix",
+        route_identity=("test", 0, b"key-a"),
+        results=[_make_completion_event(0), _make_completion_event(1)],
+    )
+    engine = _make_unstarted_process_engine(
+        [
+            serialize_batch_completion_payload(
+                batch_completion, completion_enqueued_at=1.0
+            )
+        ]
+    )
+    engine._in_flight_count = 2
+
+    events = await engine.poll_completed_events()
+
+    assert [event.offset for event in events] == [0, 1]
+    assert 2 not in [event.offset for event in events]
+
+
+@pytest.mark.asyncio
+async def test_parent_poll_keeps_existing_item_level_completion_path() -> None:
+    event = _make_completion_event(7)
+    engine = _make_unstarted_process_engine(
+        [msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)]
+    )
+    engine._in_flight_count = 1
+
+    events = await engine.poll_completed_events()
+
+    assert events == [event]
+    assert engine.get_in_flight_count() == 0
+    runtime_metrics = engine.get_runtime_metrics()
+    assert runtime_metrics is not None
+    assert runtime_metrics.process is not None
+    process_metrics = runtime_metrics.process.batch_metrics
+    assert process_metrics.completion_item_payload_count == 1
+    assert process_metrics.completion_batch_payload_count == 0
+    assert process_metrics.items_per_completion_ipc == 1.0
+
+
+def test_worker_pipe_payload_codec_distinguishes_single_item_and_route_batch() -> None:
+    single_payload = serialize_worker_pipe_payload([_make_work_item(0)], 1.5)
+    batch_payload = serialize_worker_pipe_payload(
+        RouteBatch(
+            batch_id="batch-1",
+            route_identity=("test", 0, b"key-a"),
+            worker_index=1,
+            items=[_make_work_item(0), _make_work_item(1)],
+        ),
+        2.5,
+    )
+
+    decoded_single = decode_worker_pipe_payload(single_payload, max_bytes=4096)
+    decoded_batch = decode_worker_pipe_payload(batch_payload, max_bytes=4096)
+
+    assert decoded_single["kind"] == "work_items"
+    assert decoded_batch["kind"] == "route_batch"
+    assert [item["offset"] for item in decoded_single["items"]] == [0]
+    assert [item["offset"] for item in decoded_batch["batch"]["items"]] == [0, 1]
+
+
+def test_worker_pipe_route_batch_payload_roundtrip_preserves_identity_and_order() -> (
+    None
+):
+    route_batch = RouteBatch(
+        batch_id="batch-ordered",
+        route_identity=("test", 0, b"key-a"),
+        worker_index=3,
+        items=[_make_work_item(2), _make_work_item(3)],
+    )
+
+    packed = serialize_worker_pipe_payload(route_batch, 3.5)
+    decoded_payload = decode_worker_pipe_payload(packed, max_bytes=4096)
+    decoded_batch = route_batch_from_dict(decoded_payload["batch"])
+
+    assert decoded_payload["kind"] == "route_batch"
+    assert decoded_batch.batch_id == "batch-ordered"
+    assert decoded_batch.route_identity == ("test", 0, b"key-a")
+    assert decoded_batch.worker_index == 3
+    assert [item.offset for item in decoded_batch.items] == [2, 3]
+
+
+def test_worker_pipe_payload_codec_rejects_unknown_payload_kind() -> None:
+    packed = msgpack.packb({"kind": "mystery", "items": []}, use_bin_type=True)
+
+    with pytest.raises(ValueError, match="unknown_worker_pipe_payload_kind:mystery"):
+        decode_worker_pipe_payload(packed, max_bytes=4096)
 
 
 def _sync_worker(item: WorkItem) -> None:
