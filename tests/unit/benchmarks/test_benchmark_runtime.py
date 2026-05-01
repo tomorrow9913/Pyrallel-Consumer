@@ -1020,7 +1020,7 @@ def test_ensure_metrics_port_available_reports_listening_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("", 0))
+        listener.bind(("127.0.0.1", 0))
         listener.listen()
         port = listener.getsockname()[1]
 
