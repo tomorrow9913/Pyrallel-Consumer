@@ -97,8 +97,7 @@ confirm stale paths are gone.
 Use this order for normal code work:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run pytest tests/unit -q --ignore=tests/unit/benchmarks
-UV_CACHE_DIR=.uv-cache uv run pytest tests/unit/benchmarks -q
+UV_CACHE_DIR=.uv-cache uv run pytest tests/unit -q
 UV_CACHE_DIR=.uv-cache uv run pytest tests/integration -q
 UV_CACHE_DIR=.uv-cache uv run ruff check .
 UV_CACHE_DIR=.uv-cache uv run ruff format --check .
@@ -136,6 +135,8 @@ PATH, for example inside an activated environment. In this worktree, use the
 - `tests/e2e`: requires a local Kafka broker. Use the Docker Compose broker
   setup from the README and set `PYRALLEL_E2E_REQUIRE_BROKER=1` when the run
   should fail instead of skip on missing broker.
+- `tests/e2e/test_monitoring_smoke.py`: also requires the monitoring services
+  from `.github/e2e.compose.yml` (`kafka-exporter`, Prometheus, and Grafana).
 - Benchmarks: use `UV_CACHE_DIR=.uv-cache uv run python -m
   benchmarks.run_parallel_benchmark --help` to inspect options. Full process
   strict-on soak runs can exceed the fast inner-loop budget.

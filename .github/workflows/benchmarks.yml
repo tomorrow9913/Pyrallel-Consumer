@@ -1,16 +1,6 @@
 name: benchmarks
 
 on:
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - "benchmarks/**"
-      - "pyrallel_consumer/**/*.py"
-      - "tests/unit/benchmarks/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/benchmarks.yml"
-      - "benchmarks/release_gate.py"
   workflow_dispatch:
     inputs:
       release_gate_artifacts:
@@ -36,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
@@ -55,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
@@ -67,7 +57,7 @@ jobs:
           uv sync --frozen --group dev
       - name: Download release benchmark artifacts
         if: ${{ inputs.release_gate_artifact_run_id != '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           run-id: ${{ inputs.release_gate_artifact_run_id }}
           pattern: ${{ inputs.release_gate_artifact_pattern }}
@@ -101,7 +91,7 @@ jobs:
           PY
       - name: Upload release performance gate verdict
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-performance-gate-${{ github.run_id }}
           path: .artifacts/release-performance-gate.json

@@ -125,8 +125,12 @@ The Control Plane manages Kafka communication and offsets independently from exe
 The Execution Plane runs user workers via `asyncio` tasks or multiprocessing.
 
 The control plane talks to execution engines through the shared `BaseExecutionEngine`
-contract. Process-specific commit clamping is exposed as an engine capability, so
-`BrokerPoller` does not need concrete `ProcessExecutionEngine` type checks to stay safe.
+contract. The commit clamping rule is computed from the control-plane `WorkManager`
+dispatch ledger, while engine-private registries remain recovery/diagnostics
+state rather than the canonical source of commit safety.
+
+For runtime observability, `process_batch_metrics` remains the v1 compatibility projection
+while generic engine diagnostics evolve behind the same stable public snapshot boundary.
 
 ```mermaid
 graph TD
@@ -349,6 +353,14 @@ When adaptive concurrency is enabled, `execution.max_in_flight` stays the hard
 ceiling. The control plane only adjusts the effective live limit reported by
 `get_runtime_snapshot().queue.max_in_flight`; it does not reconfigure async
 semaphores, process counts, or other engine-specific internals at runtime.
+
+Commit cadence controls:
+- `commit_debounce_completion_threshold`: dirty-partition commit attempt after this many processed completions. Default: `100`.
+- `commit_debounce_interval_ms`: dirty-partition commit attempt after this much elapsed time. Default: `100`. Set to `0` to make dirty completions eligible immediately.
+
+Completion release and refill remain immediate; these settings only debounce
+Kafka commit transmission. Revoke and graceful shutdown still force an immediate
+commit flush.
 
 Shutdown policy controls:
 - `shutdown_policy`: `graceful` (default) stops new fetches, waits for bounded drain, then escalates to cancellation / worker termination if the timeout expires. `abort` skips the drain window and goes straight to the forced-abort path.

@@ -106,6 +106,26 @@ def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
         assert "`total_in_flight` suggests" not in text
 
 
+def test_runtime_boundary_docs_describe_control_plane_commit_clamp_contract() -> None:
+    docs = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+    ]
+
+    expected_terms = [
+        "WorkManager",
+        "commit clamping",
+        "process_batch_metrics",
+        "compatibility projection",
+    ]
+
+    for path in docs:
+        text = path.read_text()
+        for term in expected_terms:
+            assert term in text, f"{term} missing from {path.relative_to(REPO_ROOT)}"
+
+
 def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> None:
     docs = [
         REPO_ROOT / "README.md",

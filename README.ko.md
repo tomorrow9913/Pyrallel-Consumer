@@ -380,6 +380,14 @@ Adaptive concurrency를 켜도 `execution.max_in_flight`는 여전히 hard ceili
 control plane은 `get_runtime_snapshot().queue.max_in_flight`에 보이는 effective live
 limit만 바꾸며, async semaphore나 process count 같은 engine 내부는 런타임에 재구성하지 않습니다.
 
+Commit cadence 제어:
+- `commit_debounce_completion_threshold`: 처리된 completion이 이 개수에 도달하면 dirty partition commit을 시도합니다. 기본값은 `100`입니다.
+- `commit_debounce_interval_ms`: 이 시간이 지나면 dirty partition commit을 시도합니다. 기본값은 `100`입니다. `0`으로 두면 dirty completion이 즉시 commit eligible 상태가 됩니다.
+
+completion release와 refill은 즉시 유지됩니다. 위 설정은 Kafka commit 전송만
+debounce합니다. revoke와 graceful shutdown에서는 여전히 즉시 commit flush를
+수행합니다.
+
 종료 정책 제어:
 - `shutdown_policy`: 기본값 `graceful`. 새 fetch를 멈춘 뒤 bounded drain을 시도하고, 제한 시간을 넘기면 cancel / worker terminate 경로로 escalate합니다. `abort`는 drain window를 건너뛰고 즉시 forced-abort 경로로 이동합니다.
 - `consumer_task_stop_timeout_ms`: fetch 중단 후 `BrokerPoller.stop()`이 consumer loop 종료를 기다리는 최대 시간입니다.

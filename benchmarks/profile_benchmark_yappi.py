@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Awaitable, Callable, List, Sequence
 
-import yappi
+import yappi  # type: ignore[import-untyped]
 
 from benchmarks.baseline_consumer import consume_messages
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
@@ -38,17 +38,20 @@ from pyrallel_consumer.dto import WorkItem
 
 
 def _sleep_work_payload(payload: bytes, sleep_ms: float) -> None:
+    """Handle sleep work payload within profile benchmark yappi."""
     payload.decode("utf-8")
     time.sleep(sleep_ms / 1000.0)
 
 
 async def _sleep_work_async_item(item: WorkItem, sleep_ms: float) -> None:
+    """Handle sleep work async item within profile benchmark yappi."""
     payload_bytes = item.payload or b""
     payload_bytes.decode("utf-8")
     await asyncio.sleep(sleep_ms / 1000.0)
 
 
 def _sleep_work_process_item(item: WorkItem, sleep_ms: float) -> None:
+    """Handle sleep work process item within profile benchmark yappi."""
     payload_bytes = item.payload or b""
     payload_bytes.decode("utf-8")
     time.sleep(sleep_ms / 1000.0)
@@ -61,6 +64,7 @@ VALID_MODES = ("baseline", "async", "process")
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse args for profile benchmark yappi."""
     parser = argparse.ArgumentParser(
         description="Profile Pyrallel-Consumer benchmarks with yappi"
     )
@@ -105,6 +109,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _ensure_output_dir(output_dir: str | None) -> pathlib.Path:
+    """Handle ensure output dir within profile benchmark yappi."""
     if output_dir:
         out = pathlib.Path(output_dir)
     else:
@@ -120,6 +125,7 @@ def _reset_topics(
     num_partitions: int,
     consumer_groups: List[str],
 ) -> None:
+    """Handle reset topics within profile benchmark yappi."""
     topic_configs = {
         name: TopicConfig(num_partitions=num_partitions) for name in topic_names
     }
@@ -140,6 +146,7 @@ def _profile_baseline(
     num_partitions: int,
     worker_fn: Callable[[bytes], None],
 ) -> None:
+    """Handle profile baseline within profile benchmark yappi."""
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -178,6 +185,7 @@ async def _profile_pyrallel(
     async_worker_fn: Callable[[WorkItem], Awaitable[None]],
     process_worker_fn: Callable[[WorkItem], None],
 ) -> None:
+    """Handle profile pyrallel within profile benchmark yappi."""
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -213,6 +221,7 @@ async def _profile_pyrallel(
 
 
 def _save_and_print(mode_label: str, output_dir: pathlib.Path, top_n: int) -> None:
+    """Handle save and print within profile benchmark yappi."""
     prof_path = output_dir / ("%s_profile.prof" % mode_label)
 
     func_stats = yappi.get_func_stats()
@@ -237,6 +246,7 @@ def _save_and_print(mode_label: str, output_dir: pathlib.Path, top_n: int) -> No
 
 
 def run_profile(argv: Sequence[str] | None = None) -> None:
+    """Run profile for profile benchmark yappi."""
     args = _parse_args(argv)
 
     logging.basicConfig(

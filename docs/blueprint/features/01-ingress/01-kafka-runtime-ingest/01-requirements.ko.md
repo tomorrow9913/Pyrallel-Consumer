@@ -9,7 +9,7 @@
 
 - `PyrallelConsumer` facade가 config, worker, topic을 받아 core 컴포넌트를 조립해야 한다.
 - `BrokerPoller`는 Kafka consumer loop의 단일 진입점이어야 한다.
-- ingest runtime은 topic validation, consumer/producer/admin 초기화, main consume loop, completion monitor lifecycle을 관리해야 한다.
+- ingest runtime은 topic validation, consumer/producer/admin 초기화, main consume loop, strict completion monitor lifecycle, facade가 노출하는 read-only runtime snapshot handoff를 관리해야 한다.
 - DLQ `full` payload mode를 지원하기 위해 bounded raw payload cache를 유지해야 한다.
 
 ## 3. 기능 요구사항
@@ -19,12 +19,14 @@
 - poll loop는 idle일 때와 backlog가 있을 때 다른 cadence로 동작해야 한다.
 - backpressure가 발생하면 `pause`, 회복되면 `resume` 할 수 있어야 한다.
 - topic 이름 검증 실패는 worker 실행 전에 즉시 surface 되어야 한다.
+- `PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED=false`여도 completion drain, commit safety, shutdown drain correctness는 유지돼야 한다.
 - facade `stop()`은 poller 정지와 execution engine shutdown을 함께 처리해야 한다.
 
 ## 4. 비기능 요구사항
 
 - ingest runtime은 execution mode별 concrete implementation detail을 직접 품지 않아야 한다.
 - Kafka client lifecycle은 예외 발생 시에도 leak 없이 종료 경로를 가져야 한다.
+- secure Kafka 설정은 `KafkaConfig` helper builder로 전달될 수 있지만, ingress/runtime 문서 예시나 runtime snapshot/log artifact에는 TLS/SASL secret 값, username, certificate/key path가 노출되면 안 된다.
 - payload cache는 bounded memory 정책을 가져야 하며, 예산 초과 시 오래된 항목부터 축출되어야 한다.
 
 ## 5. 입력/출력 경계
@@ -42,6 +44,7 @@
 - `WorkManager`로 전달되는 ingest workload
 - DLQ publish를 위한 raw payload cache entry
 - `SystemMetrics` projection에 필요한 fetch state
+- `PyrallelConsumer.get_runtime_snapshot()`이 반환하는 read-only diagnostics
 
 ## 6. MVP 경계
 
@@ -62,4 +65,5 @@
 
 - `PyrallelConsumer`가 `ExecutionEngine`, `WorkManager`, `BrokerPoller`를 조립하는 책임만 가진다는 점이 문서에 명확해야 한다.
 - `BrokerPoller`가 Kafka entrypoint이자 commit coordinator라는 점이 드러나야 한다.
+- strict completion monitor가 optional wake-up task일 뿐, 별도의 runtime truth source가 아니라는 점이 드러나야 한다.
 - raw payload cache가 DLQ `full` mode 보조 수단이지 무한 보존 계층이 아니라는 점이 명시돼야 한다.

@@ -11,9 +11,6 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class DummyExecutionEngine:
-    def get_min_inflight_offset(self, tp: DtoTopicPartition):
-        return 5 if tp.topic == "test-topic" and tp.partition == 0 else None
-
     async def poll_completed_events(self, _batch_limit: int = 1000):
         return []
 
@@ -54,6 +51,9 @@ async def test_commit_clamped_by_inflight_registry():
     work_manager.get_gaps.return_value = {}
     work_manager.get_blocking_offsets.return_value = {}
     work_manager.get_total_in_flight_count.return_value = 0
+    work_manager.get_min_in_flight_offset.side_effect = (
+        lambda tp: 5 if tp.topic == "test-topic" and tp.partition == 0 else None
+    )
 
     poller = BrokerPoller(
         consume_topic="test-topic",

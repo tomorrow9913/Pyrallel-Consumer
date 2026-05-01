@@ -34,10 +34,16 @@ COMMIT_FAILURE_REASONS = ("kafka_exception",)
 
 
 class _Joinable(Protocol):
-    def join(self, timeout: float | None = None) -> None: ...
+    """Represent joinable data used by Prometheus metric export."""
+
+    def join(self, timeout: float | None = None) -> None:
+        """Handle join within Prometheus metric export."""
+        ...
 
 
 class PrometheusMetricsExporter:
+    """Project runtime metrics into Prometheus collectors."""
+
     def __init__(
         self,
         config: Optional[MetricsConfig] = None,
@@ -275,6 +281,33 @@ class PrometheusMetricsExporter:
             "Average observed worker-to-main IPC time for process completions",
             registry=self._registry,
         )
+        self._process_batch_transport_mode_gauge = Gauge(
+            "consumer_process_batch_transport_mode",
+            "Active process transport mode for batch metrics",
+            labelnames=("mode",),
+            registry=self._registry,
+        )
+        self._process_batch_support_state_gauge = Gauge(
+            "consumer_process_batch_support_state",
+            "Support boundary state for the active process transport",
+            labelnames=("state",),
+            registry=self._registry,
+        )
+        self._process_batch_timer_flush_supported_gauge = Gauge(
+            "consumer_process_batch_timer_flush_supported",
+            "Whether timer-based process batch flushing is supported for the active transport",
+            registry=self._registry,
+        )
+        self._process_batch_demand_flush_supported_gauge = Gauge(
+            "consumer_process_batch_demand_flush_supported",
+            "Whether demand-based process batch flushing is supported for the active transport",
+            registry=self._registry,
+        )
+        self._process_batch_recycle_supported_gauge = Gauge(
+            "consumer_process_batch_recycle_supported",
+            "Whether recycle settings are supported for the active process transport",
+            registry=self._registry,
+        )
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -287,6 +320,7 @@ class PrometheusMetricsExporter:
                 self._http_server = server
 
     def update_from_system_metrics(self, metrics: SystemMetrics) -> None:
+        """Build update from system metrics."""
         self._in_flight_gauge.set(metrics.total_in_flight)
         self._backpressure_gauge.set(1 if metrics.is_paused else 0)
         for partition in metrics.partitions:
@@ -306,6 +340,7 @@ class PrometheusMetricsExporter:
     def observe_completion(
         self, tp: TopicPartition, status: CompletionStatus, duration_seconds: float
     ) -> None:
+        """Observe completion for Prometheus metric export."""
         self._processed_total.labels(
             topic=tp.topic, partition=str(tp.partition), status=status.value
         ).inc()
@@ -314,11 +349,13 @@ class PrometheusMetricsExporter:
         )
 
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
+        """Update metadata size for Prometheus metric export."""
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
 
     def record_commit_failure(
         self, tp: TopicPartition, reason: str = "kafka_exception"
     ) -> None:
+        """Record commit failure for Prometheus metric export."""
         if reason not in COMMIT_FAILURE_REASONS:
             allowed_reasons = ", ".join(COMMIT_FAILURE_REASONS)
             raise ValueError(
@@ -332,12 +369,14 @@ class PrometheusMetricsExporter:
         ).inc()
 
     def record_dlq_publish_failure(self, tp: TopicPartition) -> None:
+        """Record dlq publish failure for Prometheus metric export."""
         self._dlq_publish_failures_total.labels(
             topic=tp.topic,
             partition=str(tp.partition),
         ).inc()
 
     def close(self) -> None:
+        """Release resources held by this component."""
         if self._http_server is None:
             return
 
@@ -356,6 +395,7 @@ class PrometheusMetricsExporter:
         self._http_thread = None
 
     def _update_resource_signal(self, signal: Optional[ResourceSignalSnapshot]) -> None:
+        """Update resource signal for Prometheus metric export."""
         signal_status = (
             signal.status.value
             if signal is not None
@@ -381,6 +421,7 @@ class PrometheusMetricsExporter:
         adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot],
         adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot],
     ) -> None:
+        """Update adaptive snapshot metrics for Prometheus metric export."""
         if adaptive_backpressure is None:
             self._adaptive_backpressure_configured_max_in_flight_gauge.set(0)
             self._adaptive_backpressure_effective_max_in_flight_gauge.set(0)
@@ -461,9 +502,14 @@ class PrometheusMetricsExporter:
     def _update_process_batch_metrics(
         self, metrics: Optional[ProcessBatchMetrics]
     ) -> None:
+        """Update process batch metrics for Prometheus metric export."""
         if metrics is None:
             for reason in ("size", "timer", "close", "demand"):
                 self._process_batch_flush_count.labels(reason=reason).set(0)
+            for mode in ("shared_queue", "worker_pipes"):
+                self._process_batch_transport_mode_gauge.labels(mode=mode).set(0)
+            for state in ("full", "bounded"):
+                self._process_batch_support_state_gauge.labels(state=state).set(0)
             self._process_batch_avg_size_gauge.set(0)
             self._process_batch_last_size_gauge.set(0)
             self._process_batch_last_wait_seconds_gauge.set(0)
@@ -475,6 +521,9 @@ class PrometheusMetricsExporter:
             self._process_batch_avg_worker_exec_seconds_gauge.set(0)
             self._process_batch_last_worker_to_main_ipc_seconds_gauge.set(0)
             self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(0)
+            self._process_batch_timer_flush_supported_gauge.set(0)
+            self._process_batch_demand_flush_supported_gauge.set(0)
+            self._process_batch_recycle_supported_gauge.set(0)
             return
 
         self._process_batch_flush_count.labels(reason="size").set(
@@ -520,4 +569,21 @@ class PrometheusMetricsExporter:
         )
         self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(
             metrics.avg_worker_to_main_ipc_seconds
+        )
+        for mode in ("shared_queue", "worker_pipes"):
+            self._process_batch_transport_mode_gauge.labels(mode=mode).set(
+                1 if metrics.transport_mode == mode else 0
+            )
+        for state in ("full", "bounded"):
+            self._process_batch_support_state_gauge.labels(state=state).set(
+                1 if metrics.support_state == state else 0
+            )
+        self._process_batch_timer_flush_supported_gauge.set(
+            1 if metrics.timer_flush_supported else 0
+        )
+        self._process_batch_demand_flush_supported_gauge.set(
+            1 if metrics.demand_flush_supported else 0
+        )
+        self._process_batch_recycle_supported_gauge.set(
+            1 if metrics.recycle_supported else 0
         )

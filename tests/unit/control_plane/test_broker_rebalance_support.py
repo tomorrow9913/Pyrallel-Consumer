@@ -6,6 +6,7 @@ from confluent_kafka import OFFSET_INVALID
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.dto import OffsetRange
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
@@ -36,6 +37,37 @@ def test_build_assignments_hydrates_metadata_snapshot() -> None:
     assert tracker.last_committed_offset == 99
     assert tracker.last_fetched_offset == 105
     assert tracker.max_revoke_grace_ms == 321
+
+
+def test_build_assignments_refreshes_gap_cache_after_metadata_snapshot_hydration() -> (
+    None
+):
+    from pyrallel_consumer.control_plane.broker_rebalance_support import (
+        BrokerRebalanceSupport,
+    )
+    from pyrallel_consumer.control_plane.metadata_encoder import MetadataEncoder
+
+    consumer = MagicMock()
+    metadata_encoder = MetadataEncoder()
+    metadata = metadata_encoder.encode_metadata({101, 102, 105}, 100)
+    consumer.committed.return_value = [
+        KafkaTopicPartition("test-topic", 0, 100, metadata=metadata)
+    ]
+
+    support = BrokerRebalanceSupport(metadata_encoder=metadata_encoder)
+    assignments = support.build_assignments(
+        consumer=consumer,
+        partitions=[KafkaTopicPartition("test-topic", 0, 100)],
+        strategy="metadata_snapshot",
+        max_revoke_grace_ms=321,
+    )
+
+    tracker = assignments[DtoTopicPartition(topic="test-topic", partition=0)]
+    assert tracker.get_first_gap_head() == 100
+    assert tracker.get_gaps() == [
+        OffsetRange(start=100, end=100),
+        OffsetRange(start=103, end=104),
+    ]
 
 
 def test_handle_revoke_commits_metadata_and_removes_trackers() -> None:

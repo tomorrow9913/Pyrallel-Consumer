@@ -89,10 +89,18 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 
 ### 1.9. Engine Capability Boundary (엔진 capability 경계)
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
-- **의미**: 최소 in-flight offset 같은 Process 전용 안전 정보는 `BrokerPoller` 내부의 구체 클래스 분기 대신, 선택적 엔진 capability로 노출되어야 합니다.
-- **운영 팁**: 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
+- **의미**: commit clamping / commit clamp용 최소 in-flight offset은 control-plane `WorkManager` dispatch ledger에서 계산한다. 따라서 process 전용 registry는 canonical commit safety 규칙이 아니라 recovery/diagnostics 상태로 남아야 합니다.
+- **운영 팁**: `process_batch_metrics`는 v1 compatibility projection으로 계속 문서화하고, generic engine diagnostics는 내부 진화 방향으로 취급하십시오. 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
 
-### 1.10. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
+### 1.10. Shutdown Drain Diagnostics (종료 drain 진단)
+- **로그 라인**:
+    - `ProcessExecutionEngine shutdown pre-join drain: registry_events=... completion_events=... residual_in_flight_registry=...`
+    - `ProcessExecutionEngine shutdown post-join drain: registry_events=... completion_events=... passes=... residual_in_flight_registry=...`
+    - `Residual in-flight registry after shutdown drain: ...`
+- **의미**: 이 로그는 shutdown 중 main process에서 보이는 IPC를 얼마나 reconcile했는지와 남은 process-private 진단 상태를 설명합니다. Prometheus counter, retry ledger, DLQ trigger, commit-safety 근거가 아닙니다.
+- **운영 팁**: `completion_events`가 0보다 크면 이미 보이던 real completion이 일반 prefetched completion 경로로 이동했다는 증거로만 해석하십시오. `passes`는 bounded stable-empty 관찰 횟수이며, shutdown 경계 밖의 숨은 worker outcome이 절대 없다는 증명이 아닙니다. Commit advancement, DLQ publish, epoch fencing은 계속 control-plane의 normal completion handling에서만 결정됩니다.
+
+### 1.11. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
 - **Prometheus 쿼리**:
     - `consumer_adaptive_backpressure_configured_max_in_flight`
     - `consumer_adaptive_backpressure_effective_max_in_flight`

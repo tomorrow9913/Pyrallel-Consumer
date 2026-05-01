@@ -281,3 +281,38 @@ def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
             "improvement_ratio": 1.5,
         }
     ]
+
+
+def test_write_results_json_preserves_artifact_metadata(tmp_path) -> None:
+    output_path = tmp_path / "summary.json"
+    artifact_metadata = {
+        "generated_at_utc": "2026-04-25T05:00:00Z",
+        "git_commit_sha": "abc123",
+        "git_ref_name": "develop",
+        "git_ref_type": "branch",
+        "github_run_id": "12345",
+        "artifact_name": "release-gate-develop-12345",
+    }
+
+    write_results_json(
+        [
+            BenchmarkResult(
+                run_name="sleep-key_hash-baseline",
+                run_type="baseline",
+                workload="sleep",
+                ordering="key_hash",
+                topic="demo-sleep-key_hash-baseline",
+                messages_processed=100,
+                total_time_sec=2.0,
+                throughput_tps=50.0,
+                avg_processing_ms=1.0,
+                p99_processing_ms=2.0,
+            )
+        ],
+        output_path,
+        artifact_metadata=artifact_metadata,
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert payload["artifact_metadata"] == artifact_metadata

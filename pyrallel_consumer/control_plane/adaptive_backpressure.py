@@ -8,6 +8,8 @@ from pyrallel_consumer.dto import AdaptiveBackpressureSnapshot
 
 
 class AdaptiveBackpressureController:
+    """Adjust runtime behavior for adaptive backpressure control."""
+
     def __init__(
         self,
         *,
@@ -27,10 +29,12 @@ class AdaptiveBackpressureController:
 
     @property
     def enabled(self) -> bool:
+        """Return whether this controller is active."""
         return bool(self._config.enabled)
 
     @property
     def effective_max_in_flight(self) -> int:
+        """Handle effective max in flight within adaptive backpressure control."""
         return self._effective_max_in_flight
 
     def evaluate(
@@ -42,6 +46,7 @@ class AdaptiveBackpressureController:
         is_paused: bool,
         now_monotonic: Optional[float] = None,
     ) -> int:
+        """Evaluate the latest sample and return any control adjustment."""
         if not self.enabled:
             self.last_decision = "disabled"
             return self._effective_max_in_flight
@@ -103,6 +108,7 @@ class AdaptiveBackpressureController:
     def build_runtime_snapshot(
         self, *, avg_completion_latency_seconds: Optional[float]
     ) -> AdaptiveBackpressureSnapshot:
+        """Build runtime snapshot for adaptive backpressure control."""
         return AdaptiveBackpressureSnapshot(
             configured_max_in_flight=self._configured_max_in_flight,
             effective_max_in_flight=self._effective_max_in_flight,

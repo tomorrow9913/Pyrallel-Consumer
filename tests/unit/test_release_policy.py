@@ -433,7 +433,7 @@ def test_publish_workflow_handoff_uses_only_uploaded_artifacts() -> None:
     publish_job = text.split("\n  publish:", maxsplit=1)[1]
 
     assert "needs: build" in publish_job
-    assert "actions/download-artifact@v4" in publish_job
+    assert "actions/download-artifact@v8" in publish_job
     assert "name: python-package-distributions" in publish_job
     assert "path: dist/" in publish_job
     assert "pypa/gh-action-pypi-publish@release/v1" in publish_job

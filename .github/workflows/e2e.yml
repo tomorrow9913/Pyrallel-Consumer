@@ -2,7 +2,7 @@ name: e2e
 
 on:
   push:
-    branches: [main, develop, 'release/**', 'hotfix/**']
+    branches: [main]
     paths:
       - "**/*.py"
       - "pyproject.toml"
@@ -10,6 +10,8 @@ on:
       - "docker-compose.yml"
       - ".github/e2e.compose.yml"
       - ".github/workflows/e2e.yml"
+      - "benchmarks/**"
+      - "monitoring/**"
   pull_request:
     branches: [main, develop]
     types: [opened, reopened, ready_for_review, synchronize]
@@ -20,6 +22,8 @@ on:
       - "docker-compose.yml"
       - ".github/e2e.compose.yml"
       - ".github/workflows/e2e.yml"
+      - "benchmarks/**"
+      - "monitoring/**"
   workflow_dispatch:
 
 permissions:
@@ -31,37 +35,22 @@ concurrency:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.suite.name }})
+    name: e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        suite:
-          - name: ordering-kafka-backed
-            pytest_args: >-
-              tests/e2e/test_ordering.py
-          - name: recovery-rebalance-restart
-            pytest_args: >-
-              tests/e2e/test_process_recovery.py::test_process_rebalance_keeps_commit_safe_while_work_is_inflight
-              tests/e2e/test_process_recovery.py::test_process_restart_preserves_offset_continuity
-          - name: recovery-retry-dlq
-            pytest_args: >-
-              tests/e2e/test_process_recovery.py::test_process_retry_path_commits_only_after_success
-              tests/e2e/test_process_recovery.py::test_process_dlq_path_commits_after_retry_exhaustion
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
         run: |
           python -m pip install --upgrade pip uv
-      - name: Start Kafka
+      - name: Start broker and monitoring stack
         env:
           GF_SECURITY_ADMIN_PASSWORD: local-e2e
         run: |
-          docker compose -f .github/e2e.compose.yml up -d kafka-1
+          docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana
       - name: Sync locked dependencies
         run: |
           uv sync --frozen --group dev
@@ -85,19 +74,19 @@ jobs:
               "Kafka did not become metadata-ready on localhost:9092 within 60 seconds"
           )
           PY
-      - name: Run Kafka-backed gate
+      - name: Run full E2E suite
         env:
           PYRALLEL_E2E_REQUIRE_BROKER: "1"
         run: |
           mkdir -p .artifacts
-          uv run pytest ${{ matrix.suite.pytest_args }} -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit.xml
-      - name: Upload broker-backed E2E report
+          uv run pytest tests/e2e -q --maxfail=1 -ra --junitxml=.artifacts/e2e-junit.xml
+      - name: Upload E2E report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: e2e-junit-${{ matrix.suite.name }}-${{ github.run_id }}
-          path: .artifacts/e2e-junit.xml
-      - name: Stop Kafka
+          name: e2e-junit-${{ github.run_id }}
+          path: .artifacts/e2e-junit*.xml
+      - name: Stop broker and monitoring stack
         if: always()
         env:
           GF_SECURITY_ADMIN_PASSWORD: local-e2e

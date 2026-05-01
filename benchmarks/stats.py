@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 @dataclass
 class BenchmarkResult:
+    """Represent benchmark result data used by stats."""
+
     run_name: str
     run_type: str
     workload: str
@@ -21,6 +23,7 @@ class BenchmarkResult:
     throughput_tps: float
     avg_processing_ms: float
     p99_processing_ms: float
+    process_transport_mode: str | None = None
     window_size_messages: int | None = None
     tps_p50_window: float | None = None
     tps_p10_window: float | None = None
@@ -30,10 +33,13 @@ class BenchmarkResult:
     metrics_observations: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Handle to dict within stats."""
         return asdict(self)
 
 
 class BenchmarkStats:
+    """Represent benchmark stats data used by stats."""
+
     def __init__(
         self,
         run_name: str,
@@ -41,6 +47,7 @@ class BenchmarkStats:
         workload: str,
         ordering: str,
         topic: str,
+        process_transport_mode: str | None = None,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
@@ -48,6 +55,7 @@ class BenchmarkStats:
         self.workload = workload
         self.ordering = ordering
         self.topic = topic
+        self.process_transport_mode = process_transport_mode
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
         self._end_time: Optional[float] = None
@@ -58,10 +66,12 @@ class BenchmarkStats:
         self._release_gate_observations: list[dict[str, Any]] = []
 
     def start(self) -> None:
+        """Handle start within stats."""
         if self._start_time is None:
             self._start_time = perf_counter()
 
     def record(self, duration_sec: float, *, completed_at: float | None = None) -> None:
+        """Handle record within stats."""
         if self._start_time is None:
             self.start()
         self._durations.append(duration_sec)
@@ -72,6 +82,7 @@ class BenchmarkStats:
         self._completion_times.append(completion_time)
 
     def stop(self) -> None:
+        """Handle stop within stats."""
         if self._start_time is None:
             self.start()
         self._end_time = perf_counter()
@@ -83,6 +94,7 @@ class BenchmarkStats:
         consumer_parallel_lag: int,
         consumer_gap_count: int,
     ) -> None:
+        """Record release gate observation for stats."""
         self._release_gate_observations.append(
             {
                 "elapsed_sec": elapsed_sec,
@@ -93,14 +105,17 @@ class BenchmarkStats:
 
     @property
     def processed(self) -> int:
+        """Handle processed within stats."""
         return self._processed
 
     def completed_target(self) -> bool:
+        """Handle completed target within stats."""
         return (
             self.target_messages is not None and self._processed >= self.target_messages
         )
 
     def summary(self) -> BenchmarkResult:
+        """Handle summary within stats."""
         if self._start_time is None:
             raise RuntimeError("BenchmarkStats.summary() called before start()")
         end_time = self._end_time or perf_counter()
@@ -120,6 +135,7 @@ class BenchmarkStats:
             workload=self.workload,
             ordering=self.ordering,
             topic=self.topic,
+            process_transport_mode=self.process_transport_mode,
             messages_processed=self._processed,
             total_time_sec=total_time,
             throughput_tps=throughput,
@@ -139,6 +155,7 @@ class BenchmarkStats:
         )
 
     def _windowed_tps_samples(self) -> list[float]:
+        """Handle windowed tps samples within stats."""
         if len(self._completion_times) < self._window_size_messages:
             return []
         if self._start_time is None:
@@ -162,12 +179,14 @@ class BenchmarkStats:
 
 
 def _safe_mean(values: list[float]) -> float:
+    """Handle safe mean within stats."""
     if not values:
         return 0.0
     return mean(values)
 
 
 def _percentile(values: list[float], percentile: float) -> float:
+    """Handle percentile within stats."""
     if not values:
         return 0.0
     if len(values) == 1:
@@ -185,6 +204,7 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 def _optional_percentile(values: list[float], percentile: float) -> float | None:
+    """Handle optional percentile within stats."""
     if not values:
         return None
     return _percentile(values, percentile)
@@ -194,10 +214,13 @@ def write_results_json(
     results: list[BenchmarkResult],
     output_path: Path,
     options: dict[str, Any] | None = None,
+    artifact_metadata: dict[str, Any] | None = None,
 ) -> None:
+    """Handle write results json within stats."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "options": options or {},
+        "artifact_metadata": artifact_metadata or {},
         "performance_improvements": _build_performance_improvements(results),
         "metrics_observations": _merge_metrics_observations(results),
         "results": [result.to_dict() for result in results],
@@ -208,6 +231,7 @@ def write_results_json(
 def _merge_metrics_observations(
     results: list[BenchmarkResult],
 ) -> list[dict[str, Any]]:
+    """Handle merge metrics observations within stats."""
     observations: list[dict[str, Any]] = []
     for result in results:
         if not result.metrics_observations:
@@ -228,6 +252,7 @@ def _merge_metrics_observations(
 def _build_performance_improvements(
     results: list[BenchmarkResult],
 ) -> list[dict[str, Any]]:
+    """Build performance improvements for stats."""
     adaptive_off: dict[str, BenchmarkResult] = {}
     adaptive_on: list[BenchmarkResult] = []
     baselines: dict[tuple[str, str], BenchmarkResult] = {}
@@ -283,6 +308,7 @@ def _build_performance_improvements(
 
 
 def _adaptive_comparison_key(result: BenchmarkResult) -> str:
+    """Handle adaptive comparison key within stats."""
     return result.run_name.replace("-adaptive-on", "-adaptive").replace(
         "-adaptive-off", "-adaptive"
     )
@@ -294,6 +320,7 @@ def _build_improvement_row(
     candidate: BenchmarkResult,
     reference: BenchmarkResult,
 ) -> dict[str, Any]:
+    """Build improvement row for stats."""
     candidate_tps = float(candidate.throughput_tps)
     reference_tps = float(reference.throughput_tps)
     tps_delta = candidate_tps - reference_tps
@@ -320,10 +347,12 @@ def _build_improvement_row(
 
 
 def _round_metric(value: float) -> float:
+    """Handle round metric within stats."""
     return round(value, 6)
 
 
 def _round_optional_metric(value: float | None) -> float | None:
+    """Handle round optional metric within stats."""
     if value is None:
         return None
     return _round_metric(value)

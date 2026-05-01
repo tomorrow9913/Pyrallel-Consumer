@@ -55,11 +55,23 @@ class OffsetTracker:
         self._gaps_cache_key: Optional[tuple[int, int, int]] = None
         self._last_gap_key: Optional[tuple[int, int, int]] = None
         self._repeat_gap_count: int = 0
+        self._first_gap_head: Optional[int] = self._calculate_first_gap_head()
 
     def _bump_version(self) -> None:
+        """Handle bump version within offset tracker."""
         self._state_version += 1
         self._gaps_cache.clear()
         self._gaps_cache_key = None
+        self._first_gap_head = self._calculate_first_gap_head()
+
+    def _calculate_first_gap_head(self) -> Optional[int]:
+        """Handle calculate first gap head within offset tracker."""
+        current = self.last_committed_offset + 1
+        while current <= self.last_fetched_offset and current in self.completed_offsets:
+            current += 1
+        if current > self.last_fetched_offset:
+            return None
+        return current
 
     @property
     def in_flight_offsets(self) -> Set[int]:
@@ -80,6 +92,27 @@ class OffsetTracker:
     def get_current_epoch(self) -> int:
         """현재 epoch을 반환합니다."""
         return self.epoch
+
+    def get_first_gap_head(self) -> Optional[int]:
+        """Return the current lowest missing offset after the committed HWM."""
+        return self._first_gap_head
+
+    def rehydrate_assignment_state(
+        self,
+        *,
+        last_committed_offset: int,
+        last_fetched_offset: int,
+    ) -> None:
+        """Restore assignment offsets and refresh derived gap/cache state."""
+        if last_fetched_offset < last_committed_offset:
+            raise ValueError(
+                "last_fetched_offset must be greater than or equal to "
+                "last_committed_offset"
+            )
+
+        self.last_committed_offset = last_committed_offset
+        self.last_fetched_offset = last_fetched_offset
+        self._bump_version()
 
     def mark_complete(self, offset: int) -> None:
         """
@@ -184,10 +217,10 @@ class OffsetTracker:
 
         gaps: list[OffsetRange] = []
 
-        start_check_offset = self.last_committed_offset + 1
+        start_check_offset = self._first_gap_head
         end_check_offset = self.last_fetched_offset
 
-        if start_check_offset > end_check_offset:
+        if start_check_offset is None or start_check_offset > end_check_offset:
             self._blocking_offset_timestamps.clear()
             return []
 

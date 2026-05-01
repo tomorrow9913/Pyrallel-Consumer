@@ -81,6 +81,8 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
 
     args = parser.parse_args(
         [
+            "--process-count",
+            "2",
             "--process-batch-size",
             "1",
             "--process-max-batch-wait-ms",
@@ -88,6 +90,7 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
         ]
     )
 
+    assert args.process_count == 2
     assert args.process_batch_size == 1
     assert args.process_max_batch_wait_ms == 0
 
@@ -106,6 +109,14 @@ def test_build_parser_accepts_process_flush_policy_overrides() -> None:
 
     assert args.process_flush_policy == "demand_min_residence"
     assert args.process_demand_flush_min_residence_ms == 2
+
+
+def test_build_parser_accepts_process_transport_override() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--process-transport", "worker_pipes"])
+
+    assert args.process_transport == "worker_pipes"
 
 
 def test_build_parser_accepts_metrics_port() -> None:

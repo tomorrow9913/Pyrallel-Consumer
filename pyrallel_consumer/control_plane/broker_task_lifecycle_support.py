@@ -6,6 +6,8 @@ from typing import Any, Awaitable
 
 
 class BrokerTaskLifecycleSupport:
+    """Group helper operations for broker task lifecycle management."""
+
     def __init__(
         self,
         *,
@@ -32,6 +34,7 @@ class BrokerTaskLifecycleSupport:
         completion_monitor_coro_factory: Callable[[], Awaitable[Any]],
         strict_completion_monitor_enabled: bool,
     ) -> tuple[Any, Any, Any, Any, Any | None]:
+        """Start runtime for broker task lifecycle management."""
         producer = self._producer_factory(producer_conf)
         admin = self._admin_factory(admin_conf)
         consumer = self._consumer_factory(consumer_conf)
@@ -60,6 +63,7 @@ class BrokerTaskLifecycleSupport:
         wait_for: Callable[[Any, float], Awaitable[Any]] | None = None,
         gather: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
+        """Stop runtime for broker task lifecycle management."""
         if wait_for is None:
             wait_for = asyncio.wait_for
         if gather is None:
@@ -77,5 +81,6 @@ class BrokerTaskLifecycleSupport:
         shutdown_event: asyncio.Event,
         raise_if_failed: Callable[[], None],
     ) -> None:
+        """Wait for closed in broker task lifecycle management."""
         await shutdown_event.wait()
         raise_if_failed()

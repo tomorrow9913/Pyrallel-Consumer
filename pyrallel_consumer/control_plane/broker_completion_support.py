@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from pyrallel_consumer.config import KafkaConfig
@@ -11,11 +12,24 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class DlqFailureMetricsExporter(Protocol):
+    """Export observations for completion event processing."""
+
     def record_dlq_publish_failure(self, tp: DtoTopicPartition) -> None:
+        """Record dlq publish failure for completion event processing."""
         ...
 
 
+@dataclass(frozen=True)
+class CompletionProcessingResult:
+    """Represent completion processing result data used by completion event processing."""
+
+    processed_count: int
+    completed_partitions: frozenset[DtoTopicPartition]
+
+
 class BrokerCompletionSupport:
+    """Group helper operations for completion event processing."""
+
     def __init__(
         self,
         *,
@@ -52,6 +66,7 @@ class BrokerCompletionSupport:
         *,
         max_blocking_duration_ms: int,
     ) -> list[CompletionEvent]:
+        """Handle blocking timeouts for completion event processing."""
         if max_blocking_duration_ms <= 0:
             return []
 
@@ -87,11 +102,14 @@ class BrokerCompletionSupport:
     async def process_completed_events(
         self,
         completed_events: list[CompletionEvent],
-    ) -> int:
+    ) -> CompletionProcessingResult:
+        """Handle process completed events within completion event processing."""
         pending_events = [(event, True) for event in self._pending_dlq_events.values()]
         fresh_events = [(event, False) for event in completed_events]
         events_to_process = pending_events + fresh_events
         resolved_pending_keys: set[tuple[DtoTopicPartition, int]] = set()
+        completed_count = 0
+        completed_partitions: set[DtoTopicPartition] = set()
 
         for event, from_pending_ledger in events_to_process:
             pending_key = (event.tp, event.offset)
@@ -182,9 +200,14 @@ class BrokerCompletionSupport:
                     continue
 
             tracker.mark_complete(event.offset)
+            completed_count += 1
+            completed_partitions.add(event.tp)
             if from_pending_ledger:
                 resolved_pending_keys.add(pending_key)
             self._pending_dlq_events.pop(pending_key, None)
             self._pop_cached_message((event.tp, event.offset))
 
-        return len(events_to_process)
+        return CompletionProcessingResult(
+            processed_count=completed_count,
+            completed_partitions=frozenset(completed_partitions),
+        )

@@ -20,6 +20,8 @@ def test_parallel_consumer_config_defaults():
     assert config.max_blocking_duration_ms == 0
     assert config.ordering_mode == OrderingMode.KEY_HASH
     assert config.strict_completion_monitor_enabled is True
+    assert config.commit_debounce_completion_threshold == 100
+    assert config.commit_debounce_interval_ms == 100
     assert config.adaptive_concurrency.enabled is False
     assert config.adaptive_concurrency.min_in_flight == 0
     assert config.poison_message.enabled is False
@@ -106,6 +108,24 @@ def test_execution_config_shutdown_policy_env_override(
     monkeypatch.delenv("EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS", raising=False)
 
 
+def test_process_config_transport_mode_defaults_to_shared_queue() -> None:
+    config = ProcessConfig()
+
+    assert config.transport_mode == "shared_queue"
+
+
+def test_process_config_transport_mode_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "worker_pipes")
+
+    config = ProcessConfig()
+
+    assert config.transport_mode == "worker_pipes"
+
+    monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
+
+
 def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS", "2500")
 
@@ -169,6 +189,24 @@ def test_parallel_consumer_config_can_disable_strict_completion_monitor(
     )
 
 
+def test_parallel_consumer_config_commit_debounce_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD", "32")
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS", "25")
+
+    config = ParallelConsumerConfig()
+
+    assert config.commit_debounce_completion_threshold == 32
+    assert config.commit_debounce_interval_ms == 25
+
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD",
+        raising=False,
+    )
+    monkeypatch.delenv("PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS", raising=False)
+
+
 def test_parallel_consumer_config_rejects_zero_batch_and_worker_pool_size() -> None:
     with pytest.raises(ValidationError) as excinfo:
         _ = ParallelConsumerConfig(poll_batch_size=0)
@@ -222,6 +260,13 @@ def test_execution_config_accepts_zero_consumer_stop_timeout() -> None:
     config = ExecutionConfig(consumer_task_stop_timeout_ms=0)
 
     assert config.consumer_task_stop_timeout_ms == 0
+
+
+def test_process_config_rejects_invalid_transport_mode() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _ = ProcessConfig(transport_mode="invalid")
+
+    assert "transport_mode" in str(excinfo.value)
 
 
 def test_kafka_config_exposes_canonical_snake_case_fields(

@@ -24,12 +24,15 @@ GroupedMessages = Mapping[tuple[DtoTopicPartition, Any], list[GroupedMessage]]
 
 
 class MetricsExporter(Protocol):
+    """Export observations for work scheduling and completion accounting."""
+
     def observe_completion(
         self,
         tp: DtoTopicPartition,
         status: CompletionStatus,
         duration_seconds: float,
     ) -> None:
+        """Observe completion for work scheduling and completion accounting."""
         ...
 
 
@@ -71,6 +74,8 @@ class WorkManager:
         self._max_revoke_grace_ms = max_revoke_grace_ms
         self._keys_in_flight: set[tuple[DtoTopicPartition, Any]] = set()
         self._partitions_in_flight: set[DtoTopicPartition] = set()
+        self._key_in_flight_counts: Dict[tuple[DtoTopicPartition, Any], int] = {}
+        self._partition_in_flight_counts: Dict[DtoTopicPartition, int] = {}
         self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
         self._blocking_cache_ttl = blocking_cache_ttl
         self._blocking_cache_counter = 0
@@ -84,17 +89,21 @@ class WorkManager:
         self._poison_message_circuit = poison_message_circuit
 
     def get_ordering_mode(self) -> OrderingMode:
+        """Return ordering mode for work scheduling and completion accounting."""
         return self._ordering_mode
 
     def set_metrics_exporter(self, metrics_exporter: Optional[MetricsExporter]) -> None:
+        """Install or update metrics exporter for work scheduling and completion accounting."""
         self._metrics_exporter = metrics_exporter
 
     def get_average_completion_latency_seconds(self) -> Optional[float]:
+        """Return average completion latency seconds for work scheduling and completion accounting."""
         return self._completion_latency_ema_seconds
 
     def get_recent_completion_rate_per_second(
         self, *, now_monotonic: Optional[float] = None
     ) -> float:
+        """Return recent completion rate per second for work scheduling and completion accounting."""
         now = time.perf_counter() if now_monotonic is None else float(now_monotonic)
         self._prune_completion_timestamps(now)
         if self._completion_rate_window_seconds <= 0:
@@ -104,6 +113,7 @@ class WorkManager:
     def _record_completion_latency(
         self, *, duration_seconds: float, now: float
     ) -> None:
+        """Record completion latency for work scheduling and completion accounting."""
         if self._completion_latency_ema_seconds is None:
             self._completion_latency_ema_seconds = duration_seconds
         else:
@@ -114,6 +124,7 @@ class WorkManager:
         self._prune_completion_timestamps(now)
 
     def _prune_completion_timestamps(self, now: float) -> None:
+        """Handle prune completion timestamps within work scheduling and completion accounting."""
         cutoff = now - self._completion_rate_window_seconds
         while self._completion_timestamps and self._completion_timestamps[0] < cutoff:
             self._completion_timestamps.popleft()
@@ -126,6 +137,7 @@ class WorkManager:
         error: str,
         attempt: int,
     ) -> bool:
+        """Force fail in work scheduling and completion accounting."""
         work_id = self._work_item_ids_by_tp_offset.get((tp, offset))
         if work_id is None:
             for candidate_id, work_item in self._in_flight_work_items.items():
@@ -151,16 +163,20 @@ class WorkManager:
 
     @staticmethod
     def _peek_queue(queue: asyncio.Queue[WorkItem]) -> WorkItem:
+        """Peek at queue in work scheduling and completion accounting."""
         return WorkQueueTopology.peek_queue(queue)
 
     def _cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
+        """Clean up empty queue for work scheduling and completion accounting."""
         self._queue_topology.cleanup_empty_queue(tp, key)
 
     def _deactivate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
+        """Handle deactivate queue key within work scheduling and completion accounting."""
         self._queue_topology.deactivate_queue_key(queue_key)
         self._runnable_queue_keys = self._queue_topology.runnable_queue_keys
 
     def _activate_queue_key(self, queue_key: tuple[DtoTopicPartition, Any]) -> None:
+        """Handle activate queue key within work scheduling and completion accounting."""
         self._queue_topology.activate_queue_key(queue_key)
 
     @staticmethod
@@ -168,6 +184,7 @@ class WorkManager:
         queue: asyncio.Queue[WorkItem],
         work_items: list[WorkItem],
     ) -> None:
+        """Handle enqueue work items within work scheduling and completion accounting."""
         WorkQueueTopology.enqueue_work_items(queue, work_items)
 
     def _release_in_flight_item(
@@ -176,18 +193,17 @@ class WorkManager:
         *,
         reschedule: bool = False,
     ) -> tuple[bool, Optional[float]]:
+        """Handle release in flight item within work scheduling and completion accounting."""
         completed_item = self._in_flight_work_items.pop(work_item_id, None)
         dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
         if completed_item is None:
             return False, dispatch_time
-        self._work_item_ids_by_tp_offset.pop(
-            (completed_item.tp, completed_item.offset), None
-        )
+        tp_offset_key = (completed_item.tp, completed_item.offset)
+        if self._work_item_ids_by_tp_offset.get(tp_offset_key) == work_item_id:
+            self._work_item_ids_by_tp_offset.pop(tp_offset_key, None)
 
-        if self._ordering_mode == OrderingMode.KEY_HASH:
-            self._keys_in_flight.discard((completed_item.tp, completed_item.key))
-        elif self._ordering_mode == OrderingMode.PARTITION:
-            self._partitions_in_flight.discard(completed_item.tp)
+        if dispatch_time is not None:
+            self._release_ordering_lock(completed_item)
 
         self._cleanup_empty_queue(completed_item.tp, completed_item.key)
         if dispatch_time is not None:
@@ -202,9 +218,11 @@ class WorkManager:
         key: Any,
         queue: asyncio.Queue[WorkItem],
     ) -> None:
+        """Refresh queue head for work scheduling and completion accounting."""
         self._queue_topology.refresh_queue_head(tp, key, queue)
 
     def _is_queue_eligible(self, queue_key: tuple[DtoTopicPartition, Any]) -> bool:
+        """Return whether queue eligible holds for work scheduling and completion accounting."""
         tp, key = queue_key
         if self._ordering_mode == OrderingMode.KEY_HASH:
             return (tp, key) not in self._keys_in_flight
@@ -212,9 +230,40 @@ class WorkManager:
             return tp not in self._partitions_in_flight
         return True
 
+    def _record_ordering_lock(self, item: WorkItem) -> None:
+        """Record ordering lock for work scheduling and completion accounting."""
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            key = (item.tp, item.key)
+            self._key_in_flight_counts[key] = self._key_in_flight_counts.get(key, 0) + 1
+            self._keys_in_flight.add(key)
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            self._partition_in_flight_counts[item.tp] = (
+                self._partition_in_flight_counts.get(item.tp, 0) + 1
+            )
+            self._partitions_in_flight.add(item.tp)
+
+    def _release_ordering_lock(self, item: WorkItem) -> None:
+        """Handle release ordering lock within work scheduling and completion accounting."""
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            key = (item.tp, item.key)
+            remaining = self._key_in_flight_counts.get(key, 1) - 1
+            if remaining > 0:
+                self._key_in_flight_counts[key] = remaining
+            else:
+                self._key_in_flight_counts.pop(key, None)
+                self._keys_in_flight.discard(key)
+        elif self._ordering_mode == OrderingMode.PARTITION:
+            remaining = self._partition_in_flight_counts.get(item.tp, 1) - 1
+            if remaining > 0:
+                self._partition_in_flight_counts[item.tp] = remaining
+            else:
+                self._partition_in_flight_counts.pop(item.tp, None)
+                self._partitions_in_flight.discard(item.tp)
+
     def _pick_blocking_queue_key(
         self, blocking_offsets: Dict[DtoTopicPartition, Optional[OffsetRange]]
     ) -> Optional[tuple[DtoTopicPartition, Any]]:
+        """Pick blocking queue key for work scheduling and completion accounting."""
         return self._queue_topology.pick_blocking_queue_key(
             blocking_offsets, self._is_queue_eligible
         )
@@ -222,6 +271,7 @@ class WorkManager:
     def _pick_next_runnable_queue_key(
         self,
     ) -> Optional[tuple[DtoTopicPartition, Any]]:
+        """Pick next runnable queue key for work scheduling and completion accounting."""
         return self._queue_topology.pick_next_runnable_queue_key(
             self._is_queue_eligible
         )
@@ -233,6 +283,7 @@ class WorkManager:
         selected_tp: DtoTopicPartition,
         selected_key: Any,
     ) -> bool:
+        """Force fail queued item in work scheduling and completion accounting."""
         if self._poison_message_circuit is None:
             return False
         if not self._poison_message_circuit.should_force_fail(item_to_submit):
@@ -325,6 +376,16 @@ class WorkManager:
                 }
             elif self._ordering_mode == OrderingMode.PARTITION:
                 self._partitions_in_flight -= revoked_tp_set
+            self._key_in_flight_counts = {
+                key: count
+                for key, count in self._key_in_flight_counts.items()
+                if key[0] not in revoked_tp_set
+            }
+            self._partition_in_flight_counts = {
+                tp: count
+                for tp, count in self._partition_in_flight_counts.items()
+                if tp not in revoked_tp_set
+            }
         self._rebalancing = True  # Rebalancing starts when partitions are revoked
         self._invalidate_blocking_cache()
 
@@ -348,6 +409,7 @@ class WorkManager:
         await self.submit_message_batch({(tp, key): [(offset, epoch, payload)]})
 
     async def submit_message_batch(self, grouped_messages: GroupedMessages) -> None:
+        """Submit message batch for work scheduling and completion accounting."""
         max_offsets_by_tp: Dict[DtoTopicPartition, int] = {}
 
         for (tp, key), messages in grouped_messages.items():
@@ -454,12 +516,7 @@ class WorkManager:
                     )
                     self._current_in_flight_count += 1
                     self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
-                    if self._ordering_mode == OrderingMode.KEY_HASH:
-                        self._keys_in_flight.add(
-                            (item_to_submit.tp, item_to_submit.key)
-                        )
-                    elif self._ordering_mode == OrderingMode.PARTITION:
-                        self._partitions_in_flight.add(item_to_submit.tp)
+                    self._record_ordering_lock(item_to_submit)
                 except Exception:
                     self._logger.exception(
                         "Error submitting work item %s", item_to_submit.id
@@ -474,7 +531,9 @@ class WorkManager:
             else:
                 return
 
-    async def poll_completed_events(self) -> List[CompletionEvent]:
+    async def poll_completed_events(
+        self, *, schedule_after_release: bool = True
+    ) -> List[CompletionEvent]:
         """
         Updates the WorkManager by polling completed events from the ExecutionEngine.
         ExecutionEngine으로부터 완료 이벤트를 폴링하고 OffsetTracker를 업데이트합니다.
@@ -483,65 +542,79 @@ class WorkManager:
             List[CompletionEvent]: 폴링된 완료 이벤트 목록
         """
         completed_events: List[CompletionEvent] = []
+        should_schedule = False
         # First, poll for completed events from the execution engine
         engine_completed_events = await self._execution_engine.poll_completed_events()
         for event in engine_completed_events:
             await self._completion_queue.put(event)
 
-        while not self._completion_queue.empty():
-            event = await self._completion_queue.get()
-            completed_events.append(event)
-
-            # Update OffsetTracker based on the completion event
-            if event.tp in self._offset_trackers:
-                offset_tracker = self._offset_trackers[event.tp]
-                current_epoch = offset_tracker.get_current_epoch()
-                if event.epoch != current_epoch:
-                    completed_item = self._in_flight_work_items.get(event.id)
-                    if completed_item is not None and completed_item.tp == event.tp:
-                        self._release_in_flight_item(event.id, reschedule=True)
-                    continue
-                if event.tp not in self._shared_offset_trackers:
-                    offset_tracker.mark_complete(event.offset)
-                    self._invalidate_blocking_cache()
-
-                # Decrement in-flight count if the work item was tracked
-                if (
-                    event.id in self._in_flight_work_items
-                ):  # Now CompletionEvent has 'id'
-                    completed_item = self._in_flight_work_items[event.id]
-                    if self._poison_message_circuit is not None:
-                        self._poison_message_circuit.record_completion(
-                            event, completed_item
-                        )
-                    _, dispatch_time = self._release_in_flight_item(event.id)
-                    if dispatch_time is not None:
-                        duration = max(0.0, time.perf_counter() - dispatch_time)
-                        self._record_completion_latency(
-                            duration_seconds=duration,
-                            now=time.perf_counter(),
-                        )
-                    if dispatch_time is not None and self._metrics_exporter is not None:
-                        completion_observer = getattr(
-                            self._metrics_exporter, "observe_work_completion", None
-                        )
-                        if callable(completion_observer):
-                            completion_observer(event, completed_item, duration)
-                        else:
-                            self._metrics_exporter.observe_completion(
-                                event.tp, event.status, duration
-                            )
-                    # After processing a completion, try to submit more tasks
-                    await self.schedule()
-            else:
-                # Log a warning if the topic-partition is not managed
-                # This could happen if a revoke happened between submission and completion
-                self._logger.warning(
-                    "Completion event for unmanaged TopicPartition %s", event.tp
+        while True:
+            should_schedule = False
+            while not self._completion_queue.empty():
+                event = await self._completion_queue.get()
+                completed_events.append(event)
+                should_schedule = (
+                    self._process_completion_event(event) or should_schedule
                 )
-            if event.id in self._dispatch_timestamps:
-                self._dispatch_timestamps.pop(event.id, None)
+
+            if not schedule_after_release or not should_schedule:
+                break
+
+            await self.schedule()
+            if self._completion_queue.empty():
+                break
         return completed_events
+
+    def _process_completion_event(self, event: CompletionEvent) -> bool:
+        """Handle process completion event within work scheduling and completion accounting."""
+        if event.tp not in self._offset_trackers:
+            # Log a warning if the topic-partition is not managed.
+            # This could happen if a revoke happened between submission and completion.
+            self._logger.warning(
+                "Completion event for unmanaged TopicPartition %s", event.tp
+            )
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        offset_tracker = self._offset_trackers[event.tp]
+        current_epoch = offset_tracker.get_current_epoch()
+        if event.epoch != current_epoch:
+            completed_item = self._in_flight_work_items.get(event.id)
+            if completed_item is not None and completed_item.tp == event.tp:
+                self._release_in_flight_item(event.id, reschedule=True)
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        if event.tp not in self._shared_offset_trackers:
+            offset_tracker.mark_complete(event.offset)
+            self._invalidate_blocking_cache()
+
+        if event.id not in self._in_flight_work_items:
+            self._dispatch_timestamps.pop(event.id, None)
+            return False
+
+        completed_item = self._in_flight_work_items[event.id]
+        if self._poison_message_circuit is not None:
+            self._poison_message_circuit.record_completion(event, completed_item)
+        _, dispatch_time = self._release_in_flight_item(event.id)
+        if dispatch_time is not None:
+            duration = max(0.0, time.perf_counter() - dispatch_time)
+            self._record_completion_latency(
+                duration_seconds=duration,
+                now=time.perf_counter(),
+            )
+        if dispatch_time is not None and self._metrics_exporter is not None:
+            completion_observer = getattr(
+                self._metrics_exporter, "observe_work_completion", None
+            )
+            if callable(completion_observer):
+                completion_observer(event, completed_item, duration)
+            else:
+                self._metrics_exporter.observe_completion(
+                    event.tp, event.status, duration
+                )
+        self._dispatch_timestamps.pop(event.id, None)
+        return True
 
     def get_blocking_offsets(self) -> Dict[DtoTopicPartition, Optional[OffsetRange]]:
         """
@@ -557,14 +630,21 @@ class WorkManager:
         for tp, tracker in self._offset_trackers.items():
             if tp not in self._shared_offset_trackers:
                 tracker.advance_high_water_mark()  # Ensure HWM is up-to-date
-            gaps = tracker.get_gaps()
-            if gaps:
-                # The first gap's start is the lowest blocking offset
-                blocking_offsets[tp] = OffsetRange(
-                    gaps[0].start, gaps[0].start
-                )  # Return as a single-offset range for simplicity
+            first_gap_head_getter = getattr(tracker, "get_first_gap_head", None)
+            if callable(first_gap_head_getter):
+                first_gap_head = first_gap_head_getter()
+                if first_gap_head is not None and not isinstance(first_gap_head, int):
+                    gaps = tracker.get_gaps()
+                    first_gap_head = gaps[0].start if gaps else None
             else:
+                gaps = tracker.get_gaps()
+                first_gap_head = gaps[0].start if gaps else None
+            if first_gap_head is None:
                 blocking_offsets[tp] = None
+            else:
+                blocking_offsets[tp] = OffsetRange(
+                    first_gap_head, first_gap_head
+                )  # Return as a single-offset range for simplicity
         return blocking_offsets
 
     def get_total_in_flight_count(self) -> int:
@@ -578,25 +658,31 @@ class WorkManager:
         return self._current_in_flight_count  # Updated to use WorkManager's count
 
     def get_total_queued_messages(self) -> int:
+        """Return total queued messages for work scheduling and completion accounting."""
         return self._total_queued_messages
 
     def get_max_in_flight_messages(self) -> int:
+        """Return max in flight messages for work scheduling and completion accounting."""
         return self._max_in_flight_messages
 
     def get_poison_message_open_circuit_count(self) -> int:
+        """Return poison message open circuit count for work scheduling and completion accounting."""
         if self._poison_message_circuit is None:
             return 0
         return self._poison_message_circuit.get_open_circuit_count()
 
     def set_max_in_flight_messages(self, value: int) -> None:
+        """Install or update max in flight messages for work scheduling and completion accounting."""
         if value < 1:
             raise ValueError("max_in_flight_messages must be >= 1")
         self._max_in_flight_messages = value
 
     def is_rebalancing(self) -> bool:
+        """Return whether rebalancing holds for work scheduling and completion accounting."""
         return self._rebalancing
 
     def get_in_flight_counts(self) -> Dict[DtoTopicPartition, int]:
+        """Return in flight counts for work scheduling and completion accounting."""
         counts: Dict[DtoTopicPartition, int] = {}
         for work_item_id in self._dispatch_timestamps:
             work_item = self._in_flight_work_items.get(work_item_id)
@@ -605,7 +691,19 @@ class WorkManager:
             counts[work_item.tp] = counts.get(work_item.tp, 0) + 1
         return counts
 
+    def get_min_in_flight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
+        """Return min in flight offset for work scheduling and completion accounting."""
+        min_offset: Optional[int] = None
+        for work_item_id in self._dispatch_timestamps:
+            work_item = self._in_flight_work_items.get(work_item_id)
+            if work_item is None or work_item.tp != tp:
+                continue
+            if min_offset is None or work_item.offset < min_offset:
+                min_offset = work_item.offset
+        return min_offset
+
     def _invalidate_blocking_cache(self) -> None:
+        """Handle invalidate blocking cache within work scheduling and completion accounting."""
         self._blocking_cache_counter = 0
 
     def get_gaps(self) -> Dict[DtoTopicPartition, List[OffsetRange]]:

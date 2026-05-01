@@ -30,11 +30,15 @@ class OrderingMode(Enum):
 
 
 class ExecutionMode(Enum):
+    """Enumerate modes used by runtime data transfer."""
+
     ASYNC = "async"
     PROCESS = "process"
 
 
 class DLQPayloadMode(str, Enum):
+    """Enumerate modes used by runtime data transfer."""
+
     FULL = "full"
     METADATA_ONLY = "metadata_only"
 
@@ -176,6 +180,11 @@ class ProcessBatchMetrics:
         avg_worker_exec_seconds (float): Average worker execution time
         last_worker_to_main_ipc_seconds (float): Most recent worker-to-main IPC time
         avg_worker_to_main_ipc_seconds (float): Average worker-to-main IPC time
+        transport_mode (str): Active process transport mode
+        support_state (str): Support boundary classification for the active transport
+        timer_flush_supported (bool): Whether timer-based flushing is supported
+        demand_flush_supported (bool): Whether demand-based flushing is supported
+        recycle_supported (bool): Whether recycle settings are supported
     """
 
     size_flush_count: int
@@ -193,9 +202,35 @@ class ProcessBatchMetrics:
     avg_worker_exec_seconds: float = 0.0
     last_worker_to_main_ipc_seconds: float = 0.0
     avg_worker_to_main_ipc_seconds: float = 0.0
+    transport_mode: str = "shared_queue"
+    support_state: str = "full"
+    timer_flush_supported: bool = True
+    demand_flush_supported: bool = True
+    recycle_supported: bool = True
+
+
+@dataclass(frozen=True)
+class ProcessRuntimeDiagnostics:
+    """
+    Process-engine-specific runtime diagnostics envelope.
+    """
+
+    batch_metrics: ProcessBatchMetrics
+
+
+@dataclass(frozen=True)
+class EngineRuntimeDiagnostics:
+    """
+    Engine-agnostic runtime diagnostics envelope.
+    """
+
+    engine_type: str
+    process: Optional[ProcessRuntimeDiagnostics] = None
 
 
 class ResourceSignalStatus(str, Enum):
+    """Represent resource signal status data used by runtime data transfer."""
+
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
     STALE = "stale"
@@ -219,6 +254,7 @@ class ResourceSignalSnapshot:
 
     @property
     def is_actionable_for_tuning(self) -> bool:
+        """Return whether actionable for tuning holds for runtime data transfer."""
         return self.status == ResourceSignalStatus.AVAILABLE
 
 
@@ -272,6 +308,8 @@ class SystemMetrics:
 
 @dataclass(frozen=True)
 class QueueRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     total_in_flight: int
     total_queued: int
     max_in_flight: int
@@ -283,6 +321,8 @@ class QueueRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class AdaptiveConcurrencyRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     configured_max_in_flight: int
     effective_max_in_flight: int
     min_in_flight: int
@@ -293,6 +333,8 @@ class AdaptiveConcurrencyRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class AdaptiveBackpressureSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     configured_max_in_flight: int
     effective_max_in_flight: int
     min_in_flight: int
@@ -308,6 +350,8 @@ class AdaptiveBackpressureSnapshot:
 
 @dataclass(frozen=True)
 class RetryPolicySnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     max_retries: int
     retry_backoff_ms: int
     exponential_backoff: bool
@@ -317,6 +361,8 @@ class RetryPolicySnapshot:
 
 @dataclass(frozen=True)
 class DlqRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     enabled: bool
     topic: str
     payload_mode: DLQPayloadMode
@@ -326,6 +372,8 @@ class DlqRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class PoisonMessageRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     enabled: bool
     failure_threshold: int
     cooldown_ms: int
@@ -334,6 +382,8 @@ class PoisonMessageRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class PartitionRuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     tp: TopicPartition
     current_epoch: int
     last_committed_offset: int
@@ -349,6 +399,8 @@ class PartitionRuntimeSnapshot:
 
 @dataclass(frozen=True)
 class RuntimeSnapshot:
+    """Capture runtime state for runtime data transfer."""
+
     queue: QueueRuntimeSnapshot
     retry: RetryPolicySnapshot
     dlq: DlqRuntimeSnapshot

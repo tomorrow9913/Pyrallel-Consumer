@@ -11,6 +11,7 @@ from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEng
 
 
 def _is_async_worker(worker_fn: Callable[[WorkItem], Any]) -> bool:
+    """Return whether async worker holds for engine factory."""
     if inspect.iscoroutinefunction(worker_fn):
         return True
 
@@ -22,6 +23,7 @@ def _ensure_worker_matches_mode(
     config: ExecutionConfig,
     worker_fn: Callable[[WorkItem], Any],
 ) -> None:
+    """Handle ensure worker matches mode within engine factory."""
     mode = config.mode
     if isinstance(mode, str):
         mode = ExecutionMode(mode)

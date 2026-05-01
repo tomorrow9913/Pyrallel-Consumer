@@ -22,6 +22,8 @@ _HEADERS = (
 
 @dataclass(frozen=True, slots=True)
 class ResultsOverview:
+    """Represent results overview data used by results report."""
+
     total_runs: int
     workloads: tuple[str, ...]
     best_run_name: str
@@ -31,12 +33,16 @@ class ResultsOverview:
 
 @dataclass(frozen=True, slots=True)
 class ResultsTableData:
+    """Represent results table data data used by results report."""
+
     headers: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
 class WorkloadWinner:
+    """Represent workload winner data used by results report."""
+
     workload: str
     ordering: str
     run_type: str
@@ -46,6 +52,7 @@ class WorkloadWinner:
 
 
 def summarize_results_overview(output_path: str | Path) -> ResultsOverview | None:
+    """Handle summarize results overview within results report."""
     path = Path(output_path).expanduser()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -82,6 +89,7 @@ def summarize_results_overview(output_path: str | Path) -> ResultsOverview | Non
 
 
 def load_results_table_data(output_path: str | Path) -> ResultsTableData | None:
+    """Handle load results table data within results report."""
     path = Path(output_path).expanduser()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -107,6 +115,7 @@ def load_results_table_data(output_path: str | Path) -> ResultsTableData | None:
 def summarize_workload_winners(
     output_path: str | Path,
 ) -> dict[str, dict[str, WorkloadWinner]]:
+    """Handle summarize workload winners within results report."""
     payload = _load_results_payload(output_path)
     if payload is None:
         return {}
@@ -148,6 +157,7 @@ def summarize_workload_winners(
 
 
 def render_results_summary(output_path: str | Path) -> str:
+    """Handle render results summary within results report."""
     path = Path(output_path).expanduser()
     table_data = load_results_table_data(path)
     if table_data is None:
@@ -179,6 +189,7 @@ def render_results_summary(output_path: str | Path) -> str:
 
 
 def _format_row(result: dict[str, Any]) -> list[str]:
+    """Handle format row within results report."""
     return [
         str(result.get("run_name", "")),
         str(result.get("run_type", "")),
@@ -194,6 +205,7 @@ def _format_row(result: dict[str, Any]) -> list[str]:
 
 
 def _format_integer(value: Any) -> str:
+    """Handle format integer within results report."""
     try:
         return f"{int(value):,}"
     except (TypeError, ValueError):
@@ -201,6 +213,7 @@ def _format_integer(value: Any) -> str:
 
 
 def _format_float(value: Any, precision: int) -> str:
+    """Handle format float within results report."""
     try:
         return f"{float(value):,.{precision}f}"
     except (TypeError, ValueError):
@@ -208,6 +221,7 @@ def _format_float(value: Any, precision: int) -> str:
 
 
 def _format_optional_float(value: Any, precision: int) -> str:
+    """Handle format optional float within results report."""
     if value is None:
         return "—"
     try:
@@ -217,6 +231,7 @@ def _format_optional_float(value: Any, precision: int) -> str:
 
 
 def _float_value(value: Any) -> float:
+    """Handle float value within results report."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -224,6 +239,7 @@ def _float_value(value: Any) -> float:
 
 
 def _display_run_type(run_type: str, run_name: str) -> str:
+    """Handle display run type within results report."""
     if run_type == "pyrallel":
         lowered = run_name.lower()
         if "async" in lowered:
@@ -234,6 +250,7 @@ def _display_run_type(run_type: str, run_name: str) -> str:
 
 
 def _load_results_payload(output_path: str | Path) -> dict[str, Any] | None:
+    """Handle load results payload within results report."""
     path = Path(output_path).expanduser()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -245,6 +262,7 @@ def _load_results_payload(output_path: str | Path) -> dict[str, Any] | None:
 
 
 def _format_performance_improvements(output_path: str | Path) -> str:
+    """Handle format performance improvements within results report."""
     payload = _load_results_payload(output_path)
     if payload is None:
         return ""
@@ -296,6 +314,7 @@ def _format_signed_optional_float(
     precision: int,
     suffix: str,
 ) -> str:
+    """Handle format signed optional float within results report."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -305,6 +324,7 @@ def _format_signed_optional_float(
 
 
 def _format_ratio(value: Any) -> str:
+    """Handle format ratio within results report."""
     try:
         return "%.2fx" % float(value)
     except (TypeError, ValueError):
@@ -312,6 +332,7 @@ def _format_ratio(value: Any) -> str:
 
 
 def _resolve_ordering(result: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """Resolve ordering for results report."""
     explicit = str(result.get("ordering", "")).strip()
     if explicit in _ORDERING_NAMES:
         return explicit

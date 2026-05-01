@@ -2,17 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import logging
-import shutil
-import subprocess
 import sys
-import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, List, Sequence
+from typing import Awaitable, Callable, List, Sequence, cast
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -20,67 +14,34 @@ if __package__ in {None, ""}:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
 
-from confluent_kafka.admin import AdminClient
-
 from benchmarks.baseline_consumer import consume_messages
+from benchmarks.benchmark_admin import check_kafka_connection as _check_kafka_connection
+from benchmarks.benchmark_artifacts import (
+    build_artifact_metadata as _build_artifact_metadata,
+)
+from benchmarks.benchmark_cli import build_parser
+from benchmarks.benchmark_output import print_table as _print_table
+from benchmarks.benchmark_rounds import ProcessTransportMode
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
+from benchmarks.profiling import profile_session as _profile_session
+from benchmarks.profiling import relaunch_with_pyspy as _relaunch_with_pyspy
+from benchmarks.profiling import summarize_worker_profiles as _summarize_worker_profiles
+from benchmarks.profiling import (
+    wrap_process_worker_for_profile as _wrap_process_worker_for_profile,
+)
 from benchmarks.pyrallel_consumer_test import (
     ExecutionMode,
     ProcessFlushPolicy,
     run_pyrallel_consumer_test,
 )
 from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
-from pyrallel_consumer.dto import OrderingMode, WorkItem
-
-_YAPPI_WORKER_STARTED = False
-_WORKLOAD_CHOICES = ("sleep", "cpu", "io")
-_ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
-_STRICT_COMPLETION_MONITOR_CHOICES = ("on", "off")
-_ADAPTIVE_CONCURRENCY_CHOICES = ("off", "on")
-_PROCESS_FLUSH_POLICY_CHOICES = (
-    "size_or_timer",
-    "demand",
-    "demand_min_residence",
-)
-
-
-def _parse_csv_selection(
-    value: str, *, argument_name: str, choices: Sequence[str]
-) -> list[str]:
-    items: list[str] = []
-    seen: set[str] = set()
-    for raw_item in value.split(","):
-        item = raw_item.strip()
-        if not item:
-            continue
-        if item not in choices:
-            choices_str = ", ".join(choices)
-            raise argparse.ArgumentTypeError(
-                "%s must contain only %s (got %r)" % (argument_name, choices_str, item)
-            )
-        if item in seen:
-            continue
-        seen.add(item)
-        items.append(item)
-    if not items:
-        raise argparse.ArgumentTypeError(
-            "%s must contain at least one value" % argument_name
-        )
-    return items
-
-
-def _check_kafka_connection(bootstrap_servers: str) -> None:
-    client = AdminClient({"bootstrap.servers": bootstrap_servers})
-    try:
-        client.list_topics(timeout=5)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"Failed to connect to Kafka at {bootstrap_servers}: {exc}"
-        ) from exc
+from benchmarks.workloads import select_workers as _select_workers
+from pyrallel_consumer.dto import WorkItem
 
 
 def _normalize_metrics_port(metrics_port: int | None) -> int | None:
+    """Normalize metrics port for benchmark orchestration."""
     if metrics_port is None or metrics_port <= 0:
         return None
     return metrics_port
@@ -100,6 +61,7 @@ def _run_baseline_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
 ) -> BenchmarkResult:
+    """Run baseline round for benchmark orchestration."""
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -129,227 +91,6 @@ def _run_baseline_round(
     return result
 
 
-def _sleep_worker(payload: bytes, sleep_ms: float) -> None:
-    payload.decode("utf-8")
-    time.sleep(sleep_ms / 1000.0)
-
-
-async def _sleep_worker_async(item: WorkItem, sleep_ms: float) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    await asyncio.sleep(sleep_ms / 1000.0)
-
-
-def _sleep_worker_process(item: WorkItem, sleep_ms: float) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    time.sleep(sleep_ms / 1000.0)
-
-
-def _cpu_worker(payload: bytes, iterations: int) -> None:
-    payload.decode("utf-8")
-    digest = b""
-    for _ in range(iterations):
-        digest = hashlib.sha256(digest + payload).digest()
-
-
-async def _cpu_worker_async(item: WorkItem, iterations: int) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    digest = b""
-    for _ in range(iterations):
-        digest = hashlib.sha256(digest + payload_bytes).digest()
-    await asyncio.sleep(0)
-
-
-def _cpu_worker_process(item: WorkItem, iterations: int) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    digest = b""
-    for _ in range(iterations):
-        digest = hashlib.sha256(digest + payload_bytes).digest()
-
-
-def _io_worker(payload: bytes, sleep_ms: float) -> None:
-    payload.decode("utf-8")
-    time.sleep(sleep_ms / 1000.0)
-
-
-async def _io_worker_async(item: WorkItem, sleep_ms: float) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    await asyncio.sleep(sleep_ms / 1000.0)
-
-
-def _io_worker_process(item: WorkItem, sleep_ms: float) -> None:
-    payload_bytes = item.payload or b""
-    payload_bytes.decode("utf-8")
-    time.sleep(sleep_ms / 1000.0)
-
-
-def _select_workers(
-    *,
-    workload: str,
-    sleep_ms: float,
-    cpu_iterations: int,
-    io_sleep_ms: float,
-) -> tuple[
-    Callable[[bytes], None],
-    Callable[[WorkItem], Awaitable[None]],
-    Callable[[WorkItem], None],
-]:
-    if workload == "sleep":
-        return (
-            partial(_sleep_worker, sleep_ms=sleep_ms),
-            partial(_sleep_worker_async, sleep_ms=sleep_ms),
-            partial(_sleep_worker_process, sleep_ms=sleep_ms),
-        )
-    if workload == "cpu":
-        return (
-            partial(_cpu_worker, iterations=cpu_iterations),
-            partial(_cpu_worker_async, iterations=cpu_iterations),
-            partial(_cpu_worker_process, iterations=cpu_iterations),
-        )
-    if workload == "io":
-        return (
-            partial(_io_worker, sleep_ms=io_sleep_ms),
-            partial(_io_worker_async, sleep_ms=io_sleep_ms),
-            partial(_io_worker_process, sleep_ms=io_sleep_ms),
-        )
-    raise ValueError(f"Unknown workload: {workload}")
-
-
-@contextmanager
-def _profile_session(
-    *,
-    enabled: bool,
-    run_name: str,
-    output_dir: Path,
-    clock: str,
-    profile_threads: bool,
-    profile_greenlets: bool,
-    top_n: int,
-):
-    if not enabled:
-        yield
-        return
-    try:
-        import yappi
-    except ImportError as exc:  # noqa: BLE001
-        raise RuntimeError("yappi is required for profiling; install dev deps") from exc
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    yappi.set_clock_type(clock)
-    yappi.start(profile_threads=profile_threads, profile_greenlets=profile_greenlets)
-    try:
-        yield
-    finally:
-        yappi.stop()
-        stats = yappi.get_func_stats()
-        prof_path = output_dir / f"{run_name}.prof"
-        stats.save(str(prof_path), type="pstat")
-        print(f"\n[profile] saved to {prof_path}")
-        if top_n > 0:
-            print(f"\nTop {top_n} functions by total time [{run_name}]\n")
-            stats.sort("ttot")
-            top_stats: Any = stats[:top_n]
-            print(_format_stats_table(top_stats, limit=top_n))
-        yappi.clear_stats()
-
-
-def _stop_yappi_worker(path: Path) -> None:
-    try:
-        import yappi
-
-        yappi.stop()
-        stats = yappi.get_func_stats()
-        stats.save(str(path), type="pstat")
-        yappi.clear_stats()
-        print(f"[profile worker] saved to {path}")
-    except Exception:  # noqa: BLE001
-        # Worker teardown should not crash the process if profiling fails
-        return
-
-
-def _format_stats_table(stats: Iterable[Any], *, limit: int) -> str:
-    rows: list[tuple[str, int, float, float]] = []
-    for entry in list(stats)[:limit]:
-        name = entry.full_name if hasattr(entry, "full_name") else str(entry)
-        ncall = getattr(entry, "ncall", 0)
-        ttot = getattr(entry, "ttot", 0.0)
-        tavg = getattr(entry, "tavg", 0.0)
-        rows.append((name, ncall, ttot, tavg))
-    if not rows:
-        return "(no stats)"
-    col_widths = [
-        max(len("Function"), max(len(r[0]) for r in rows)),
-        max(len("Calls"), max(len(str(r[1])) for r in rows)),
-        len("Total(s)"),
-        len("Avg(s)"),
-    ]
-    header = ["Function", "Calls", "Total(s)", "Avg(s)"]
-    lines = [
-        " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(header)),
-        "-+-".join("-" * col_widths[i] for i in range(len(header))),
-    ]
-    for name, calls, ttot, tavg in rows:
-        lines.append(
-            " | ".join(
-                [
-                    name.ljust(col_widths[0]),
-                    str(calls).rjust(col_widths[1]),
-                    f"{ttot:.6f}".rjust(col_widths[2]),
-                    f"{tavg:.6f}".rjust(col_widths[3]),
-                ]
-            )
-        )
-    return "\n".join(lines)
-
-
-def _summarize_worker_profiles(
-    run_name: str, profile_dir: Path, top_n: int, clock: str
-) -> None:
-    try:
-        import yappi
-    except Exception:  # noqa: BLE001
-        return
-
-    paths = list(profile_dir.glob(f"{run_name}-worker-*.prof"))
-    if not paths:
-        return
-
-    merged = yappi.YFuncStats()
-    for path in paths:
-        try:
-            merged.add(str(path))
-        except Exception:  # noqa: BLE001
-            continue
-
-    merged_path = profile_dir / f"{run_name}-workers-merged.prof"
-    merged.save(str(merged_path), type="pstat")
-    print(
-        f"[profile workers] merged stats saved to {merged_path} ({len(paths)} workers)"
-    )
-
-    if top_n > 0:
-        merged.sort("ttot")
-        print(f"\nTop {top_n} functions by total time [{run_name} workers]\n")
-        print(_format_stats_table(merged, limit=top_n))
-
-
-def _wrap_process_worker_for_profile(
-    worker_fn: Callable[[WorkItem], None],
-    *,
-    output_dir: Path,
-    run_name: str,
-    clock: str,
-    profile_threads: bool,
-    profile_greenlets: bool,
-) -> Callable[[WorkItem], None]:
-    # Worker profiling disabled: yappi is unstable in worker processes and emits internal errors.
-    return worker_fn
-
-
 async def _run_pyrparallel_round(
     *,
     topic_name: str,
@@ -367,13 +108,19 @@ async def _run_pyrparallel_round(
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
     strict_completion_monitor_enabled: bool = True,
+    process_count: int | None = None,
     process_batch_size: int | None = None,
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
+    process_transport_mode: ProcessTransportMode | None = None,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
+    """Run pyrparallel round for benchmark orchestration."""
+    effective_process_transport_mode = (
+        process_transport_mode if mode == ExecutionMode.PROCESS else None
+    )
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -388,6 +135,7 @@ async def _run_pyrparallel_round(
         workload=workload,
         ordering=ordering,
         topic=topic_name,
+        process_transport_mode=effective_process_transport_mode,
         target_messages=num_messages,
     )
     timed_out, _, summary = await run_pyrallel_consumer_test(
@@ -404,10 +152,12 @@ async def _run_pyrparallel_round(
         ordering_mode=ordering,
         ensure_topic_exists=ensure_topic_exists,
         strict_completion_monitor_enabled=strict_completion_monitor_enabled,
+        process_count=process_count if mode == ExecutionMode.PROCESS else None,
         process_batch_size=process_batch_size,
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
+        process_transport_mode=effective_process_transport_mode,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
@@ -420,345 +170,6 @@ async def _run_pyrparallel_round(
     return summary
 
 
-def _print_table(results: List[BenchmarkResult]) -> None:
-    headers = ["Run", "Type", "Order", "Topic", "Messages", "TPS", "Avg ms", "P99 ms"]
-    rows = [
-        [
-            result.run_name,
-            result.run_type,
-            result.ordering,
-            result.topic,
-            f"{result.messages_processed:,}",
-            f"{result.throughput_tps:,.2f}",
-            f"{result.avg_processing_ms:.3f}",
-            f"{result.p99_processing_ms:.3f}",
-        ]
-        for result in results
-    ]
-    widths = [
-        max(len(headers[i]), max(len(row[i]) for row in rows))
-        for i in range(len(headers))
-    ]
-    header_line = " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers)))
-    divider = "-+-".join("-" * widths[i] for i in range(len(headers)))
-    print(header_line)
-    print(divider)
-    for row in rows:
-        print(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
-
-
-_PYSPY_FORMAT_EXTENSIONS: dict[str, str] = {
-    "flamegraph": ".svg",
-    "speedscope": ".json",
-    "chrometrace": ".json",
-    "raw": ".txt",
-}
-
-
-def _relaunch_with_pyspy(args: argparse.Namespace) -> int:
-    """Re-execute the benchmark script under py-spy.
-
-    Builds a ``py-spy record`` (or ``py-spy top``) command that wraps the
-    current interpreter re-running this module with ``--_pyspy-child`` so the
-    child process skips the relaunch and runs the actual benchmark.  py-spy's
-    ``--subprocesses`` flag captures worker processes spawned by the
-    ``ProcessExecutionEngine``.
-    """
-    py_spy_bin = shutil.which("py-spy")
-    if py_spy_bin is None:
-        raise RuntimeError(
-            "py-spy not found on PATH. Install it via: uv add --dev py-spy"
-        )
-
-    output_dir = Path(args.py_spy_output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # -- build the child command (strip py-spy flags, add sentinel) --
-    child_argv: list[str] = [sys.executable, "-m", "benchmarks.run_parallel_benchmark"]
-    skip_next = False
-    for arg in args._raw_argv:
-        if skip_next:
-            skip_next = False
-            continue
-        # strip all --py-spy* flags
-        if (
-            arg == "--py-spy"
-            or arg == "--py-spy-native"
-            or arg == "--py-spy-idle"
-            or arg == "--py-spy-top"
-        ):
-            continue
-        if arg.startswith("--py-spy-format"):
-            if "=" not in arg:
-                skip_next = True
-            continue
-        if arg.startswith("--py-spy-output"):
-            if "=" not in arg:
-                skip_next = True
-            continue
-        if arg.startswith("--py-spy-rate"):
-            if "=" not in arg:
-                skip_next = True
-            continue
-        child_argv.append(arg)
-    child_argv.append("--_pyspy-child")
-
-    # -- build the py-spy command --
-    if args.py_spy_top:
-        # top mode: interactive live view
-        cmd: list[str] = [py_spy_bin, "top", "--subprocesses"]
-        cmd.extend(["--rate", str(args.py_spy_rate)])
-        if args.py_spy_native:
-            cmd.append("--native")
-        if args.py_spy_idle:
-            cmd.append("--idle")
-        cmd.append("--")
-        cmd.extend(child_argv)
-        print(f"[py-spy top] {' '.join(cmd)}")
-        result = subprocess.run(cmd)
-        return result.returncode
-
-    # record mode: write profile to file
-    fmt = args.py_spy_format
-    ext = _PYSPY_FORMAT_EXTENSIONS.get(fmt, ".svg")
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_file = output_dir / f"pyspy-{fmt}-{timestamp}{ext}"
-
-    cmd = [
-        py_spy_bin,
-        "record",
-        "--subprocesses",
-        "--format",
-        fmt,
-        "--output",
-        str(output_file),
-        "--rate",
-        str(args.py_spy_rate),
-    ]
-    if args.py_spy_native:
-        cmd.append("--native")
-    if args.py_spy_idle:
-        cmd.append("--idle")
-    cmd.append("--")
-    cmd.extend(child_argv)
-
-    print(f"[py-spy record] {' '.join(cmd)}")
-    result = subprocess.run(cmd)
-    if result.returncode == 0:
-        print(f"\n[py-spy] profile saved to {output_file}")
-    else:
-        print(f"\n[py-spy] py-spy exited with code {result.returncode}")
-    return result.returncode
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Pyrallel throughput benchmarks")
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--num-messages", type=int, default=100_000)
-    parser.add_argument("--num-keys", type=int, default=100)
-    parser.add_argument("--num-partitions", type=int, default=8)
-    parser.add_argument("--topic-prefix", default="pyrallel-benchmark")
-    parser.add_argument("--baseline-group", default="baseline-benchmark-group")
-    parser.add_argument("--async-group", default="async-benchmark-group")
-    parser.add_argument("--process-group", default="process-benchmark-group")
-    parser.add_argument(
-        "--json-output",
-        default=None,
-        help="Path to write JSON summary (default benchmarks/results/<timestamp>.json)",
-    )
-    parser.add_argument("--skip-baseline", action="store_true")
-    parser.add_argument("--skip-async", action="store_true")
-    parser.add_argument("--skip-process", action="store_true")
-    parser.add_argument(
-        "--skip-reset",
-        action="store_true",
-        help="Skip deleting/recreating topics and consumer groups before benchmarks",
-    )
-    parser.add_argument(
-        "--timeout-sec",
-        type=int,
-        default=60,
-        help="Timeout in seconds for each Pyrallel consumer run",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="WARNING",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level for benchmark run (use WARNING for cleaner TPS measurements)",
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Enable yappi profiling for each run",
-    )
-    parser.add_argument(
-        "--profile-dir",
-        default="benchmarks/results/profiles",
-        help="Directory to write .prof files when profiling",
-    )
-    parser.add_argument(
-        "--profile-clock",
-        choices=["wall", "cpu"],
-        default="wall",
-        help="yappi clock type",
-    )
-    parser.add_argument(
-        "--profile-top-n",
-        type=int,
-        default=0,
-        help="Print top N functions by total time after each profiled run (0 to skip)",
-    )
-    parser.add_argument(
-        "--profile-threads",
-        action="store_true",
-        help="Profile threads when profiling is enabled",
-    )
-    parser.add_argument(
-        "--profile-greenlets",
-        action="store_true",
-        help="Profile greenlets/async tasks when profiling is enabled",
-    )
-    parser.add_argument(
-        "--profile-process-workers",
-        action="store_true",
-        help="Also profile process workers (off by default; can emit yappi internal errors).",
-    )
-    parser.add_argument(
-        "--workloads",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--workloads",
-            choices=_WORKLOAD_CHOICES,
-        ),
-        default=["sleep"],
-        help="Comma-separated workloads to run (choices: sleep,cpu,io)",
-    )
-    parser.add_argument(
-        "--order",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--order",
-            choices=_ORDER_CHOICES,
-        ),
-        default=["key_hash"],
-        help="Comma-separated ordering modes to run (choices: key_hash,partition,unordered)",
-    )
-    parser.add_argument(
-        "--strict-completion-monitor",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--strict-completion-monitor",
-            choices=_STRICT_COMPLETION_MONITOR_CHOICES,
-        ),
-        default=["on"],
-        help="Comma-separated strict completion monitor modes to run (choices: on,off)",
-    )
-    parser.add_argument(
-        "--adaptive-concurrency",
-        type=lambda value: _parse_csv_selection(
-            value,
-            argument_name="--adaptive-concurrency",
-            choices=_ADAPTIVE_CONCURRENCY_CHOICES,
-        ),
-        default=["off"],
-        help="Comma-separated adaptive concurrency modes for Pyrallel runs (choices: off,on)",
-    )
-    parser.add_argument(
-        "--worker-sleep-ms",
-        type=float,
-        default=0.5,
-        help="Sleep per message for sleep workload",
-    )
-    parser.add_argument(
-        "--worker-cpu-iterations",
-        type=int,
-        default=1000,
-        help="Iterations for CPU workload",
-    )
-    parser.add_argument(
-        "--worker-io-sleep-ms",
-        type=float,
-        default=0.5,
-        help="Sleep per message for IO workload (simulated IO wait)",
-    )
-    parser.add_argument(
-        "--process-batch-size",
-        type=int,
-        default=None,
-        help="Override process-mode micro-batch size for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-max-batch-wait-ms",
-        type=int,
-        default=None,
-        help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-flush-policy",
-        choices=_PROCESS_FLUSH_POLICY_CHOICES,
-        default=None,
-        help="Override process-mode flush policy for benchmark runs",
-    )
-    parser.add_argument(
-        "--process-demand-flush-min-residence-ms",
-        type=int,
-        default=None,
-        help="Override minimum residence time before demand flush is allowed",
-    )
-    parser.add_argument(
-        "--metrics-port",
-        type=int,
-        default=9091,
-        help="Expose Prometheus metrics on the host at this port during Pyrallel benchmark runs (default: 9091, use 0 to disable)",
-    )
-    # -- py-spy profiling options (process mode) --
-    parser.add_argument(
-        "--py-spy",
-        action="store_true",
-        help="Enable py-spy profiling for process mode (wraps the benchmark via self-relaunch)",
-    )
-    parser.add_argument(
-        "--py-spy-format",
-        choices=["flamegraph", "speedscope", "raw", "chrometrace"],
-        default="flamegraph",
-        help="py-spy output format (default: flamegraph)",
-    )
-    parser.add_argument(
-        "--py-spy-output",
-        default="benchmarks/results/pyspy",
-        help="Directory to write py-spy output files (default: benchmarks/results/pyspy)",
-    )
-    parser.add_argument(
-        "--py-spy-rate",
-        type=int,
-        default=100,
-        help="py-spy sampling rate in Hz (default: 100)",
-    )
-    parser.add_argument(
-        "--py-spy-native",
-        action="store_true",
-        help="Include native C extension frames in py-spy output",
-    )
-    parser.add_argument(
-        "--py-spy-idle",
-        action="store_true",
-        help="Include idle thread stacks in py-spy output",
-    )
-    parser.add_argument(
-        "--py-spy-top",
-        action="store_true",
-        help="Use py-spy top (live view) instead of record",
-    )
-    parser.add_argument(
-        "--_pyspy-child",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,  # internal: marks this as the child process under py-spy
-    )
-    return parser
-
-
 def _reset_run_targets(
     *,
     bootstrap_servers: str,
@@ -766,6 +177,7 @@ def _reset_run_targets(
     group_id: str,
     num_partitions: int,
 ) -> None:
+    """Handle reset run targets within benchmark orchestration."""
     print("Resetting benchmark topics/groups: %s | groups=%s" % (topic_name, group_id))
     reset_topics_and_groups(
         bootstrap_servers=bootstrap_servers,
@@ -775,12 +187,14 @@ def _reset_run_targets(
 
 
 def launch_tui() -> None:
+    """Launch tui for benchmark orchestration."""
     from benchmarks.tui.app import BenchmarkTuiApp
 
     BenchmarkTuiApp().run()
 
 
 def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
+    """Handle warn on tiny partition process defaults within benchmark orchestration."""
     if args.skip_process:
         return
     if "sleep" not in args.workloads:
@@ -810,6 +224,7 @@ def _resolve_effective_process_batching(
     *,
     strict_completion_monitor_enabled: bool | None = None,
 ) -> tuple[int | None, int | None]:
+    """Resolve effective process batching for benchmark orchestration."""
     process_batch_size = args.process_batch_size
     process_max_batch_wait_ms = args.process_max_batch_wait_ms
 
@@ -845,6 +260,7 @@ def _resolve_effective_process_batching(
 def run_benchmark(
     args: argparse.Namespace, raw_argv: Sequence[str] | None = None
 ) -> None:
+    """Run benchmark for benchmark orchestration."""
     args._raw_argv = list(raw_argv or [])
     metrics_port = _normalize_metrics_port(args.metrics_port)
 
@@ -927,6 +343,7 @@ def run_benchmark(
                     )
 
             async def run_async_rounds() -> List[BenchmarkResult]:
+                """Run async rounds for benchmark orchestration."""
                 async_results: List[BenchmarkResult] = []
                 for strict_monitor_mode in strict_monitor_modes:
                     strict_completion_monitor_enabled = strict_monitor_mode == "on"
@@ -1000,6 +417,7 @@ def run_benchmark(
                                         strict_completion_monitor_enabled=(
                                             strict_completion_monitor_enabled
                                         ),
+                                        process_count=None,
                                         process_batch_size=(
                                             effective_process_batch_size
                                         ),
@@ -1010,6 +428,7 @@ def run_benchmark(
                                         process_demand_flush_min_residence_ms=(
                                             args.process_demand_flush_min_residence_ms
                                         ),
+                                        process_transport_mode=None,
                                         metrics_port=metrics_port,
                                         adaptive_concurrency_enabled=(
                                             adaptive_concurrency_enabled
@@ -1065,6 +484,7 @@ def run_benchmark(
                                     strict_completion_monitor_enabled=(
                                         strict_completion_monitor_enabled
                                     ),
+                                    process_count=args.process_count,
                                     process_batch_size=effective_process_batch_size,
                                     process_max_batch_wait_ms=(
                                         effective_process_max_batch_wait_ms
@@ -1072,6 +492,9 @@ def run_benchmark(
                                     process_flush_policy=args.process_flush_policy,
                                     process_demand_flush_min_residence_ms=(
                                         args.process_demand_flush_min_residence_ms
+                                    ),
+                                    process_transport_mode=cast(
+                                        ProcessTransportMode, args.process_transport
                                     ),
                                     metrics_port=metrics_port,
                                     adaptive_concurrency_enabled=(
@@ -1096,11 +519,18 @@ def run_benchmark(
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_path = f"benchmarks/results/{timestamp}.json"
     options = {k: v for k, v in vars(args).items()}
-    write_results_json(results, Path(output_path), options=options)
+    artifact_metadata = _build_artifact_metadata(output_path=output_path)
+    write_results_json(
+        results,
+        Path(output_path),
+        options=options,
+        artifact_metadata=artifact_metadata,
+    )
     print(f"\nJSON summary written to {output_path}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Run the command-line entrypoint."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if not raw_argv:
         launch_tui()

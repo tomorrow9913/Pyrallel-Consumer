@@ -25,17 +25,27 @@ Actions workflows with `act`.
 act -l
 ```
 
-### 3.2 CI workflow dry-run
+### 3.2 Unit workflow dry-run
 
 ```bash
 act pull_request \
-  -W .github/workflows/ci.yml \
+  -W .github/workflows/unit.yml \
   --dryrun \
   -P ubuntu-latest=catthehacker/ubuntu:act-latest \
   --container-architecture linux/amd64
 ```
 
-### 3.3 E2E workflow dry-run
+### 3.3 Integration workflow dry-run
+
+```bash
+act pull_request \
+  -W .github/workflows/integration.yml \
+  --dryrun \
+  -P ubuntu-latest=catthehacker/ubuntu:act-latest \
+  --container-architecture linux/amd64
+```
+
+### 3.4 E2E workflow dry-run
 
 ```bash
 act pull_request \
@@ -47,9 +57,9 @@ act pull_request \
 
 ## 4. When You Need an Explicit Event Payload
 
-Some jobs (for example `release_policy` in `ci.yml`) read
-`pull_request.base.ref` / `pull_request.head.ref` directly. In that case,
-`act`'s default event payload may be insufficient. Inject a test event file.
+Some future jobs may read `pull_request.base.ref` / `pull_request.head.ref`
+directly. In that case, `act`'s default event payload may be insufficient.
+Inject a test event file.
 
 ```bash
 cat > .tmp/act-pr-event.json <<'JSON'
@@ -62,8 +72,8 @@ cat > .tmp/act-pr-event.json <<'JSON'
 JSON
 
 act pull_request \
-  -W .github/workflows/ci.yml \
-  -j release_policy \
+  -W .github/workflows/unit.yml \
+  -j unit \
   -e .tmp/act-pr-event.json \
   -P ubuntu-latest=catthehacker/ubuntu:act-latest \
   --container-architecture linux/amd64

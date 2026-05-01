@@ -7,10 +7,13 @@ from pyrallel_consumer.dto import (
     AdaptiveConcurrencyRuntimeSnapshot,
     DLQPayloadMode,
     DlqRuntimeSnapshot,
+    EngineRuntimeDiagnostics,
     OrderingMode,
     PartitionMetrics,
     PartitionRuntimeSnapshot,
     PoisonMessageRuntimeSnapshot,
+    ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
     QueueRuntimeSnapshot,
     RetryPolicySnapshot,
     RuntimeSnapshot,
@@ -19,6 +22,8 @@ from pyrallel_consumer.dto import (
 
 
 class BrokerRuntimeSupport:
+    """Group helper operations for runtime metric projection."""
+
     def __init__(
         self,
         *,
@@ -72,7 +77,23 @@ class BrokerRuntimeSupport:
         self._poison_message_config = poison_message_config
         self._poison_message_open_circuit_count = poison_message_open_circuit_count
 
+    @staticmethod
+    def _project_process_batch_metrics(
+        metrics: EngineRuntimeDiagnostics | ProcessBatchMetrics | None,
+    ) -> ProcessBatchMetrics | None:
+        """Handle project process batch metrics within runtime metric projection."""
+        if metrics is None:
+            return None
+        if isinstance(metrics, ProcessBatchMetrics):
+            return metrics
+        if isinstance(metrics, EngineRuntimeDiagnostics) and isinstance(
+            metrics.process, ProcessRuntimeDiagnostics
+        ):
+            return metrics.process.batch_metrics
+        return None
+
     def log_partition_diagnostics(self) -> None:
+        """Handle log partition diagnostics within runtime metric projection."""
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
         gaps = self._work_manager.get_gaps()
         blocking = self._work_manager.get_blocking_offsets()
@@ -117,6 +138,7 @@ class BrokerRuntimeSupport:
         self._logger.debug("Partition diag: %s", "; ".join(parts))
 
     def check_backpressure(self, *, total_queued: int) -> bool:
+        """Handle check backpressure within runtime metric projection."""
         if self._consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
@@ -159,6 +181,7 @@ class BrokerRuntimeSupport:
         return self._is_paused
 
     def build_system_metrics(self) -> SystemMetrics:
+        """Build system metrics for runtime metric projection."""
         partition_metrics_list: list[PartitionMetrics] = []
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
         for tp, tracker in self._offset_trackers.items():
@@ -193,6 +216,7 @@ class BrokerRuntimeSupport:
         )
 
     def build_runtime_snapshot(self) -> RuntimeSnapshot:
+        """Build runtime snapshot for runtime metric projection."""
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
         in_flight_counts = self._work_manager.get_in_flight_counts()
         partition_snapshots: list[PartitionRuntimeSnapshot] = []
@@ -223,15 +247,13 @@ class BrokerRuntimeSupport:
                     ),
                     queued_count=sum(queue_sizes.get(tp, {}).values()),
                     in_flight_count=in_flight_counts.get(tp, 0),
-                    min_in_flight_offset=(
-                        self._execution_engine.get_min_inflight_offset(tp)
-                        if self._execution_engine is not None
-                        else None
+                    min_in_flight_offset=self._work_manager.get_min_in_flight_offset(
+                        tp
                     ),
                 )
             )
 
-        runtime_metrics = (
+        runtime_diagnostics = (
             self._execution_engine.get_runtime_metrics()
             if self._execution_engine is not None
             else None
@@ -277,6 +299,8 @@ class BrokerRuntimeSupport:
             partitions=partition_snapshots,
             adaptive_backpressure=self._adaptive_backpressure,
             adaptive_concurrency=self._adaptive_concurrency,
-            process_batch_metrics=runtime_metrics,
+            process_batch_metrics=self._project_process_batch_metrics(
+                runtime_diagnostics
+            ),
             poison_message=poison_message_snapshot,
         )

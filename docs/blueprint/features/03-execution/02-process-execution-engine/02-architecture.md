@@ -1,21 +1,46 @@
 # Process Execution Engine Architecture
 
-This document explains the component boundaries and flow for the subfeature.
-For the preserved Korean source text, see [02-architecture.ko.md](./02-architecture.ko.md).
+This document is the canonical English architecture summary for the
+process-execution-engine subfeature. For the preserved Korean source text, see
+[02-architecture.ko.md](./02-architecture.ko.md).
 
-## Subfeature summary
+## Architectural comparison
 
-`process-execution-engine` covers picklable worker contracts, msgpack micro-batching, process lifecycle, and crash or timeout isolation. It belongs to the same blueprint family as the companion documents listed below.
+The current compatibility path is:
 
-## Focus areas
+```text
+WorkManager virtual queues
+  -> submit()
+  -> shared multiprocessing.Queue
+  -> workers compete on get()
+  -> single completion queue
+```
 
-- Task and completion IPC boundaries between the control plane and worker processes.
-- Micro-batching, serialization, and worker recycle policy.
-- Crash handling, timeout recovery, and shutdown choreography.
+The target direction is:
 
-## Companion documents
+```text
+WorkManager virtual queues
+  -> submit()
+  -> route identity resolution
+  -> worker-affine execution channel
+  -> owner worker process
+  -> single completion queue
+```
 
-- [00-index.md](./00-index.md)
-- [01-requirements.md](./01-requirements.md)
-- [02-architecture.md](./02-architecture.md)
-- [03-design.md](./03-design.md)
+## Architectural implications
+
+- `WorkManager` stays responsible for ordering and eligibility.
+- The process engine stays responsible for transport selection and dispatch.
+- `shared_queue` remains the compatibility/default topology.
+- `worker_pipes` is the worker-affine topology used to validate and evolve the
+  long-term direction.
+- Completion aggregation remains single-queue in the first step.
+- Ordered modes prefer affinity preservation, not stealing.
+
+## Evidence-backed rationale
+
+Current benchmark and py-spy evidence suggest that ordered partition workloads
+spend more time in shared-input receive paths such as
+`_receive_task_payload -> multiprocessing.Queue.get -> synchronize.__enter__ -> connection.recv_bytes`
+than in the actual worker function. That is why input dispatch topology is the
+first architectural improvement target.

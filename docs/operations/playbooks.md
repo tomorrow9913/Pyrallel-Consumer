@@ -196,13 +196,14 @@ use the one-page summary in
 ### Standard Measurement Conditions
 
 - Command:
-  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --json-output benchmarks/results/release-gate-<UTC>.json`
+  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --process-transport shared_queue --json-output benchmarks/results/release-gate-shared-queue-<UTC>.json`
+  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --process-transport worker_pipes --json-output benchmarks/results/release-gate-worker-pipes-<UTC>.json`
 - Compare only with profiling disabled (`--profile`/`--py-spy` not used).
-- Run at least twice under identical conditions and judge by worst-case values
-  per combination (`TPS` minimum, `p99` maximum).
+- Run at least twice per process transport under identical conditions and judge
+  by worst-case values per combination (`TPS` minimum, `p99` maximum).
 - Evaluate the repeated JSON artifacts with the machine gate before approving a
   release-candidate performance verdict:
-  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-<UTC-2>.json`.
+  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-shared-queue-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-shared-queue-<UTC-2>.json --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-2>.json`.
   The evaluator emits JSON with `verdict: PASS|NO-GO`; any `NO-GO` is
   release-blocking.
 

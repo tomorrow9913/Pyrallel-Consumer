@@ -10,6 +10,8 @@ from pyrallel_consumer.dto import AdaptiveConcurrencyRuntimeSnapshot
 
 @dataclass(frozen=True)
 class AdaptiveConcurrencySample:
+    """Represent adaptive concurrency sample data used by adaptive concurrency control."""
+
     current_limit: int
     total_in_flight: int
     total_queued: int
@@ -19,6 +21,8 @@ class AdaptiveConcurrencySample:
 
 
 class AdaptiveConcurrencyController:
+    """Adjust runtime behavior for adaptive concurrency control."""
+
     def __init__(
         self,
         config: AdaptiveConcurrencyConfig,
@@ -33,9 +37,11 @@ class AdaptiveConcurrencyController:
 
     @property
     def enabled(self) -> bool:
+        """Return whether this controller is active."""
         return bool(self._config.enabled)
 
     def _resolve_min_in_flight(self, raw_min_in_flight: int) -> int:
+        """Resolve min in flight for adaptive concurrency control."""
         if int(raw_min_in_flight) <= 0:
             return max(1, self._configured_max_in_flight // 4)
         return min(self._configured_max_in_flight, max(1, int(raw_min_in_flight)))
@@ -46,6 +52,7 @@ class AdaptiveConcurrencyController:
         *,
         now_seconds: Optional[float] = None,
     ) -> Optional[int]:
+        """Evaluate the latest sample and return any control adjustment."""
         if not self._config.enabled:
             return None
 
@@ -87,6 +94,7 @@ class AdaptiveConcurrencyController:
         *,
         effective_max_in_flight: int,
     ) -> AdaptiveConcurrencyRuntimeSnapshot:
+        """Build runtime snapshot for adaptive concurrency control."""
         return AdaptiveConcurrencyRuntimeSnapshot(
             configured_max_in_flight=self._configured_max_in_flight,
             effective_max_in_flight=max(

@@ -160,22 +160,43 @@ def test_failure_counter_metric_names_are_documented() -> None:
         assert "consumer_dlq_publish_failures_total" in doc_text
 
 
-def test_monitoring_ci_workflow_runs_prometheus_and_grafana_smoke_checks() -> None:
-    workflow_text = (
-        REPO_ROOT / ".github" / "workflows" / "ci_monitoring.yml"
-    ).read_text()
+def test_operations_guides_document_control_plane_commit_clamp_boundary() -> None:
+    guide_en = (REPO_ROOT / "docs" / "operations" / "guide.en.md").read_text(
+        encoding="utf-8", errors="strict"
+    )
+    guide_ko = (REPO_ROOT / "docs" / "operations" / "guide.ko.md").read_text(
+        encoding="utf-8", errors="strict"
+    )
+
+    assert (
+        "Commit clamping is computed from the control-plane `WorkManager` "
+        "dispatch ledger"
+    ) in guide_en
+    assert "optional engine capability" not in guide_en
+
+    assert (
+        "commit clamp용 최소 in-flight offset은 control-plane `WorkManager` "
+        "dispatch ledger에서 계산한다."
+    ) in guide_ko
+    assert "선택적 엔진 capability" not in guide_ko
+
+
+def test_e2e_workflow_and_test_cover_prometheus_and_grafana_smoke_checks() -> None:
+    workflow_text = (REPO_ROOT / ".github" / "workflows" / "e2e.yml").read_text()
+    test_text = (REPO_ROOT / "tests" / "e2e" / "test_monitoring_smoke.py").read_text()
 
     assert (
         "docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana"
         in workflow_text
     )
-    assert "http://127.0.0.1:9090/-/ready" in workflow_text
-    assert "http://127.0.0.1:3000/api/health" in workflow_text
-    assert "http://127.0.0.1:9091/metrics" in workflow_text
-    assert "http://127.0.0.1:9090/api/v1/targets" in workflow_text
-    assert "http://127.0.0.1:3000/api/datasources/uid/prometheus" in workflow_text
-    assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in workflow_text
-    assert "from confluent_kafka.admin import AdminClient" in workflow_text
-    assert "client.list_topics(timeout=5)" in workflow_text
-    assert "--num-messages 4000" in workflow_text
-    assert "--timeout-sec 180" in workflow_text
+    assert "uv run pytest tests/e2e -q" in workflow_text
+    assert "http://127.0.0.1:9090/-/ready" in test_text
+    assert "http://127.0.0.1:3000/api/health" in test_text
+    assert "http://127.0.0.1:9091/metrics" in test_text
+    assert "http://127.0.0.1:9090/api/v1/targets" in test_text
+    assert "http://127.0.0.1:3000/api/datasources/uid/prometheus" in test_text
+    assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in test_text
+    assert "from confluent_kafka.admin import AdminClient" in test_text
+    assert "client.list_topics(timeout=5)" in test_text
+    assert '"4000"' in test_text
+    assert '"180"' in test_text

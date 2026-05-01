@@ -5,8 +5,11 @@ from pyrallel_consumer.dto import (
     AdaptiveBackpressureSnapshot,
     AdaptiveConcurrencyRuntimeSnapshot,
     DlqRuntimeSnapshot,
+    EngineRuntimeDiagnostics,
     PartitionRuntimeSnapshot,
     PoisonMessageRuntimeSnapshot,
+    ProcessBatchMetrics,
+    ProcessRuntimeDiagnostics,
     QueueRuntimeSnapshot,
     RetryPolicySnapshot,
     RuntimeSnapshot,
@@ -50,6 +53,12 @@ def test_public_contract_doc_freezes_runtime_snapshot_field_boundary() -> None:
         "adaptive_concurrency.configured_max_in_flight",
         "adaptive_concurrency.effective_max_in_flight",
         "adaptive_backpressure.last_decision",
+        "Commit clamping is computed from the control-plane `WorkManager` dispatch ledger",
+        "`process_batch_metrics` remains the frozen v1 compatibility projection",
+        "Generic engine diagnostics remain an additive internal direction",
+        "Process-engine shutdown drain log lines are diagnostic-only reconciliation evidence",
+        "not a retry ledger",
+        "not be interpreted as commit-safety or DLQ-publish authority",
     ]
 
     for expected_term in expected_terms:
@@ -130,3 +139,25 @@ def test_runtime_snapshot_public_field_names_remain_stable() -> None:
         "in_flight_count",
         "min_in_flight_offset",
     ]
+
+
+def test_engine_runtime_diagnostics_envelope_is_additive_to_v1_snapshot() -> None:
+    diagnostics = EngineRuntimeDiagnostics(
+        engine_type="process",
+        process=ProcessRuntimeDiagnostics(
+            batch_metrics=ProcessBatchMetrics(
+                size_flush_count=1,
+                timer_flush_count=0,
+                close_flush_count=0,
+                total_flushed_items=1,
+                last_flush_size=1,
+                last_flush_wait_seconds=0.0,
+                buffered_items=0,
+                buffered_age_seconds=0.0,
+            )
+        ),
+    )
+
+    assert diagnostics.engine_type == "process"
+    assert diagnostics.process is not None
+    assert diagnostics.process.batch_metrics.size_flush_count == 1

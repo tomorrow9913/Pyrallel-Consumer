@@ -13,6 +13,8 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 class BrokerRebalanceSupport:
+    """Hydrate and revoke offset trackers during Kafka rebalances."""
+
     def __init__(
         self,
         metadata_encoder: MetadataEncoder,
@@ -31,6 +33,7 @@ class BrokerRebalanceSupport:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
+        """Decode assignment completed offsets for rebalance state handoff."""
         if strategy != "metadata_snapshot":
             return set()
 
@@ -50,6 +53,7 @@ class BrokerRebalanceSupport:
         tracker: OffsetTracker,
         base_offset: int,
     ) -> str:
+        """Encode revoke metadata for rebalance state handoff."""
         if strategy != "metadata_snapshot":
             return ""
 
@@ -72,6 +76,7 @@ class BrokerRebalanceSupport:
         max_revoke_grace_ms: int,
         logger=None,
     ) -> dict[DtoTopicPartition, OffsetTracker]:
+        """Build assignments for rebalance state handoff."""
         if logger is None:
             logger = logging.getLogger(__name__)
         committed_offsets: dict[tuple[str, int], KafkaTopicPartition] = {}
@@ -83,9 +88,9 @@ class BrokerRebalanceSupport:
             for committed_tp in committed_partitions:
                 if committed_tp.offset is None:
                     continue
-                committed_offsets[
-                    (committed_tp.topic, committed_tp.partition)
-                ] = committed_tp
+                committed_offsets[(committed_tp.topic, committed_tp.partition)] = (
+                    committed_tp
+                )
         except KafkaException as exc:
             logger.warning(
                 "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
@@ -127,11 +132,13 @@ class BrokerRebalanceSupport:
                 max_revoke_grace_ms=max_revoke_grace_ms,
                 initial_completed_offsets=initial_completed_offsets,
             )
-            tracker.last_committed_offset = last_committed
-            tracker.last_fetched_offset = max(
-                [last_committed, *initial_completed_offsets]
-                if initial_completed_offsets
-                else [last_committed]
+            tracker.rehydrate_assignment_state(
+                last_committed_offset=last_committed,
+                last_fetched_offset=max(
+                    [last_committed, *initial_completed_offsets]
+                    if initial_completed_offsets
+                    else [last_committed]
+                ),
             )
             tracker.increment_epoch()
             assignments[tp_dto] = tracker
@@ -151,6 +158,7 @@ class BrokerRebalanceSupport:
             Callable[[DtoTopicPartition, str], None]
         ] = None,
     ) -> None:
+        """Handle revoke for rebalance state handoff."""
         tp_dtos = [
             DtoTopicPartition(topic=tp.topic, partition=tp.partition)
             for tp in partitions

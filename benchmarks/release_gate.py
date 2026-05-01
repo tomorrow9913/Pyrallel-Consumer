@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 RELEASE_GATE_MIN_MESSAGES = 10000
 RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
+REQUIRED_PROCESS_TRANSPORT_MODES = ("shared_queue", "worker_pipes")
 
 Combination = tuple[str, str, str]
 BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
@@ -16,8 +17,19 @@ BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
 
 @dataclass(frozen=True)
 class ReleaseThreshold:
+    """Represent release threshold data used by release gate."""
+
     tps_floor: float
     p99_ceiling_ms: float
+
+
+@dataclass(frozen=True)
+class ArtifactProvenanceBinding:
+    """Represent artifact provenance binding data used by release gate."""
+
+    repository: str
+    git_ref: str
+    git_sha: str
 
 
 RELEASE_THRESHOLDS: dict[Combination, ReleaseThreshold] = {
@@ -37,6 +49,7 @@ RELEASE_THRESHOLDS: dict[Combination, ReleaseThreshold] = {
 
 
 def _check(code: str, status: str, message: str, **details: Any) -> dict[str, Any]:
+    """Handle check within release gate."""
     check: dict[str, Any] = {"code": code, "status": status, "message": message}
     if details:
         check["details"] = details
@@ -44,6 +57,7 @@ def _check(code: str, status: str, message: str, **details: Any) -> dict[str, An
 
 
 def _load_summary(path: Path) -> Mapping[str, Any]:
+    """Handle load summary within release gate."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -54,18 +68,21 @@ def _load_summary(path: Path) -> Mapping[str, Any]:
 
 
 def _as_number(value: Any, field: str, *, path: Path) -> float:
+    """Handle as number within release gate."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("%s must be numeric in %s" % (field, path))
     return float(value)
 
 
 def _as_int(value: Any, field: str, *, path: Path) -> int:
+    """Handle as int within release gate."""
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("%s must be an integer in %s" % (field, path))
     return value
 
 
 def _result_combination(result: Mapping[str, Any], *, path: Path) -> Combination:
+    """Handle result combination within release gate."""
     run_type = result.get("run_type")
     workload = result.get("workload")
     ordering = result.get("ordering")
@@ -75,6 +92,7 @@ def _result_combination(result: Mapping[str, Any], *, path: Path) -> Combination
 
 
 def _final_lag(result: Mapping[str, Any]) -> int | None:
+    """Handle final lag within release gate."""
     for field in ("final_lag", "consumer_parallel_lag"):
         value = result.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
@@ -88,6 +106,7 @@ def _final_lag(result: Mapping[str, Any]) -> int | None:
 
 
 def _final_gap_count(result: Mapping[str, Any]) -> int | None:
+    """Handle final gap count within release gate."""
     for field in ("final_gap_count", "consumer_gap_count"):
         value = result.get(field)
         if isinstance(value, int) and not isinstance(value, bool):
@@ -100,7 +119,16 @@ def _final_gap_count(result: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
+    """Handle process transport mode within release gate."""
+    value = result.get("process_transport_mode")
+    if isinstance(value, str) and value in REQUIRED_PROCESS_TRANSPORT_MODES:
+        return value
+    return None
+
+
 def _evaluate_options(path: Path, options: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Handle evaluate options within release gate."""
     checks: list[dict[str, Any]] = []
     if options.get("num_messages") != RELEASE_GATE_MIN_MESSAGES:
         checks.append(
@@ -153,6 +181,7 @@ def _evaluate_options(path: Path, options: Mapping[str, Any]) -> list[dict[str, 
 def _evaluate_persistent_gap(
     path: Path, summary: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
+    """Handle evaluate persistent gap within release gate."""
     observations = summary.get("metrics_observations")
     if observations is None:
         return []
@@ -216,6 +245,7 @@ def _evaluate_persistent_gap(
 
 
 def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
+    """Handle expected messages within release gate."""
     value = options.get("num_messages")
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -224,11 +254,13 @@ def _expected_messages(path: Path, options: Mapping[str, Any]) -> int | None:
 
 def _group_results(
     summaries: Iterable[tuple[Path, Mapping[str, Any]]],
-) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]]]:
+) -> tuple[dict[Combination, list[BenchmarkEntry]], list[dict[str, Any]], set[str]]:
+    """Handle group results within release gate."""
     grouped: dict[Combination, list[BenchmarkEntry]] = {
         combination: [] for combination in RELEASE_THRESHOLDS
     }
     checks: list[dict[str, Any]] = []
+    process_transport_modes: set[str] = set()
     for path, summary in summaries:
         expected_messages = None
         options = summary.get("options")
@@ -269,102 +301,136 @@ def _group_results(
                 )
                 continue
             combination = _result_combination(result, path=path)
+            if combination[0] == "process":
+                transport_mode = _process_transport_mode(result)
+                if transport_mode is None:
+                    checks.append(
+                        _check(
+                            "measurement_conditions",
+                            "FAIL",
+                            "process benchmark results must surface process_transport_mode",
+                            path=str(path),
+                            combination="/".join(combination),
+                        )
+                    )
+                    continue
+                process_transport_modes.add(transport_mode)
             if combination in grouped:
                 grouped[combination].append((path, result, expected_messages))
-    return grouped, checks
+    return grouped, checks, process_transport_modes
 
 
 def _evaluate_matrix(
     grouped: Mapping[Combination, list[BenchmarkEntry]],
     required_repetitions: int,
 ) -> list[dict[str, Any]]:
+    """Handle evaluate matrix within release gate."""
     checks: list[dict[str, Any]] = []
     for combination, threshold in RELEASE_THRESHOLDS.items():
         entries = grouped[combination]
-        label = "/".join(combination)
-        distinct_artifact_count = len({path.resolve() for path, _result, _ in entries})
-        if distinct_artifact_count < required_repetitions:
-            checks.append(
-                _check(
-                    "repetitions",
-                    "FAIL",
-                    "release gate requires repeated runs per combination",
-                    combination=label,
-                    expected=required_repetitions,
-                    actual=distinct_artifact_count,
-                )
-            )
-            continue
+        entries_by_label: dict[str, list[BenchmarkEntry]]
+        if combination[0] == "process":
+            entries_by_label = {
+                "%s/%s" % ("/".join(combination), transport_mode): [
+                    entry
+                    for entry in entries
+                    if _process_transport_mode(entry[1]) == transport_mode
+                ]
+                for transport_mode in REQUIRED_PROCESS_TRANSPORT_MODES
+            }
+        else:
+            entries_by_label = {"/".join(combination): entries}
 
-        tps_values = []
-        p99_values = []
-        for path, result, expected_messages in entries:
-            if expected_messages is None:
+        for label, labeled_entries in entries_by_label.items():
+            distinct_artifact_count = len(
+                {path.resolve() for path, _result, _ in labeled_entries}
+            )
+            if distinct_artifact_count < required_repetitions:
                 checks.append(
                     _check(
-                        "measurement_conditions",
+                        "repetitions",
                         "FAIL",
-                        "options.num_messages must be an integer",
-                        path=str(path),
+                        "release gate requires repeated runs per combination",
                         combination=label,
+                        expected=required_repetitions,
+                        actual=distinct_artifact_count,
                     )
                 )
                 continue
-            messages_processed = _as_int(
-                result.get("messages_processed"), "messages_processed", path=path
-            )
-            if messages_processed != expected_messages:
-                checks.append(
-                    _check(
-                        "completion",
-                        "FAIL",
-                        "messages_processed must equal num_messages",
-                        path=str(path),
-                        combination=label,
-                        expected=expected_messages,
-                        actual=messages_processed,
-                    )
-                )
-            final_lag = _final_lag(result)
-            final_gap_count = _final_gap_count(result)
-            if final_lag != 0 or final_gap_count != 0:
-                checks.append(
-                    _check(
-                        "lag_gap",
-                        "FAIL",
-                        "final lag and final gap count must be explicitly zero",
-                        path=str(path),
-                        combination=label,
-                        final_lag=final_lag,
-                        final_gap_count=final_gap_count,
-                    )
-                )
-            tps_values.append(
-                _as_number(result.get("throughput_tps"), "throughput_tps", path=path)
-            )
-            p99_values.append(
-                _as_number(
-                    result.get("p99_processing_ms"), "p99_processing_ms", path=path
-                )
-            )
 
-        if not tps_values or not p99_values:
-            continue
-        worst_tps = min(tps_values)
-        worst_p99 = max(p99_values)
-        if worst_tps < threshold.tps_floor or worst_p99 > threshold.p99_ceiling_ms:
-            checks.append(
-                _check(
-                    "thresholds",
-                    "FAIL",
-                    "worst-case TPS and p99 must satisfy release thresholds",
-                    combination=label,
-                    tps_floor=threshold.tps_floor,
-                    worst_tps=worst_tps,
-                    p99_ceiling_ms=threshold.p99_ceiling_ms,
-                    worst_p99_ms=worst_p99,
+            tps_values = []
+            p99_values = []
+            for path, result, expected_messages in labeled_entries:
+                if expected_messages is None:
+                    checks.append(
+                        _check(
+                            "measurement_conditions",
+                            "FAIL",
+                            "options.num_messages must be an integer",
+                            path=str(path),
+                            combination=label,
+                        )
+                    )
+                    continue
+                messages_processed = _as_int(
+                    result.get("messages_processed"), "messages_processed", path=path
                 )
-            )
+                if messages_processed != expected_messages:
+                    checks.append(
+                        _check(
+                            "completion",
+                            "FAIL",
+                            "messages_processed must equal num_messages",
+                            path=str(path),
+                            combination=label,
+                            expected=expected_messages,
+                            actual=messages_processed,
+                        )
+                    )
+                final_lag = _final_lag(result)
+                final_gap_count = _final_gap_count(result)
+                if final_lag != 0 or final_gap_count != 0:
+                    checks.append(
+                        _check(
+                            "lag_gap",
+                            "FAIL",
+                            "final lag and final gap count must be explicitly zero",
+                            path=str(path),
+                            combination=label,
+                            final_lag=final_lag,
+                            final_gap_count=final_gap_count,
+                        )
+                    )
+                tps_values.append(
+                    _as_number(
+                        result.get("throughput_tps"), "throughput_tps", path=path
+                    )
+                )
+                p99_values.append(
+                    _as_number(
+                        result.get("p99_processing_ms"),
+                        "p99_processing_ms",
+                        path=path,
+                    )
+                )
+
+            if not tps_values or not p99_values:
+                continue
+            worst_tps = min(tps_values)
+            worst_p99 = max(p99_values)
+            if worst_tps < threshold.tps_floor or worst_p99 > threshold.p99_ceiling_ms:
+                checks.append(
+                    _check(
+                        "thresholds",
+                        "FAIL",
+                        "worst-case TPS and p99 must satisfy release thresholds",
+                        combination=label,
+                        tps_floor=threshold.tps_floor,
+                        worst_tps=worst_tps,
+                        p99_ceiling_ms=threshold.p99_ceiling_ms,
+                        worst_p99_ms=worst_p99,
+                    )
+                )
     if not checks:
         checks.append(
             _check(
@@ -376,11 +442,78 @@ def _evaluate_matrix(
     return checks
 
 
+def _artifact_provenance_binding(
+    path: Path, summary: Mapping[str, Any]
+) -> tuple[ArtifactProvenanceBinding | None, list[dict[str, Any]]]:
+    """Handle artifact provenance binding within release gate."""
+    metadata = summary.get("artifact_metadata")
+    values: dict[str, str] = {}
+    if isinstance(metadata, Mapping):
+        metadata_field_map = {
+            "repository": "github_repository",
+            "git_ref": "git_ref",
+            "git_sha": "git_commit_sha",
+        }
+        missing_fields = []
+        for field, metadata_field in metadata_field_map.items():
+            value = metadata.get(metadata_field)
+            if not isinstance(value, str) or not value:
+                missing_fields.append(metadata_field)
+                continue
+            values[field] = value
+        if not missing_fields:
+            return (
+                ArtifactProvenanceBinding(
+                    repository=values["repository"],
+                    git_ref=values["git_ref"],
+                    git_sha=values["git_sha"],
+                ),
+                [],
+            )
+
+    provenance = summary.get("artifact_provenance")
+    if not isinstance(provenance, Mapping):
+        return None, [
+            _check(
+                "provenance_binding",
+                "FAIL",
+                (
+                    "benchmark summary must include artifact_metadata "
+                    "(github_repository/git_ref/git_commit_sha) or legacy "
+                    "artifact_provenance binding metadata"
+                ),
+                path=str(path),
+            )
+        ]
+
+    for field in ("repository", "git_ref", "git_sha"):
+        value = provenance.get(field)
+        if not isinstance(value, str) or not value:
+            return None, [
+                _check(
+                    "provenance_binding",
+                    "FAIL",
+                    "artifact_provenance.%s must be a non-empty string" % field,
+                    path=str(path),
+                )
+            ]
+        values[field] = value
+    return (
+        ArtifactProvenanceBinding(
+            repository=values["repository"],
+            git_ref=values["git_ref"],
+            git_sha=values["git_sha"],
+        ),
+        [],
+    )
+
+
 def evaluate_release_gate(
     benchmark_json_paths: Iterable[str | Path],
     *,
     required_repetitions: int = DEFAULT_REQUIRED_REPETITIONS,
 ) -> dict[str, Any]:
+    """Handle evaluate release gate within release gate."""
     paths = [Path(path) for path in benchmark_json_paths]
     checks: list[dict[str, Any]] = []
     if required_repetitions < 1:
@@ -403,7 +536,35 @@ def evaluate_release_gate(
             )
         )
     summaries = [(path, _load_summary(path)) for path in paths]
-    grouped, grouped_checks = _group_results(summaries)
+    provenance_binding: ArtifactProvenanceBinding | None = None
+    for path, summary in summaries:
+        candidate_binding, binding_checks = _artifact_provenance_binding(path, summary)
+        checks.extend(binding_checks)
+        if candidate_binding is None:
+            continue
+        if provenance_binding is None:
+            provenance_binding = candidate_binding
+            continue
+        if candidate_binding != provenance_binding:
+            checks.append(
+                _check(
+                    "provenance_binding",
+                    "FAIL",
+                    "release-gate artifacts must bind to the same repository/ref/sha",
+                    path=str(path),
+                    expected={
+                        "repository": provenance_binding.repository,
+                        "git_ref": provenance_binding.git_ref,
+                        "git_sha": provenance_binding.git_sha,
+                    },
+                    actual={
+                        "repository": candidate_binding.repository,
+                        "git_ref": candidate_binding.git_ref,
+                        "git_sha": candidate_binding.git_sha,
+                    },
+                )
+            )
+    grouped, grouped_checks, process_transport_modes = _group_results(summaries)
     checks.extend(grouped_checks)
     checks.extend(_evaluate_matrix(grouped, required_repetitions))
     verdict = "NO-GO" if any(check["status"] == "FAIL" for check in checks) else "PASS"
@@ -413,12 +574,24 @@ def evaluate_release_gate(
             "artifacts": [str(path) for path in paths],
             "required_repetitions": required_repetitions,
             "expected_combinations": len(RELEASE_THRESHOLDS),
+            "required_process_transport_modes": list(REQUIRED_PROCESS_TRANSPORT_MODES),
+            "process_transport_modes": sorted(process_transport_modes),
+            "provenance_binding": (
+                {
+                    "repository": provenance_binding.repository,
+                    "git_ref": provenance_binding.git_ref,
+                    "git_sha": provenance_binding.git_sha,
+                }
+                if provenance_binding is not None
+                else None
+            ),
         },
         "checks": checks,
     }
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build parser for release gate."""
     parser = argparse.ArgumentParser(
         description="Evaluate benchmark JSON artifacts against release performance gates."
     )
@@ -438,6 +611,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line entrypoint."""
     args = _build_parser().parse_args(argv)
     try:
         report = evaluate_release_gate(
@@ -451,6 +625,8 @@ def main(argv: list[str] | None = None) -> int:
                 "artifacts": args.benchmark_json,
                 "required_repetitions": args.required_repetitions,
                 "expected_combinations": len(RELEASE_THRESHOLDS),
+                "process_transport_modes": [],
+                "provenance_binding": None,
             },
             "checks": [
                 _check("schema", "FAIL", str(exc), artifacts=args.benchmark_json)

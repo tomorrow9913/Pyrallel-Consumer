@@ -8,11 +8,15 @@ from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
 
 
 class AsyncConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     task_timeout_ms: int = 30000
     shutdown_grace_timeout_ms: int = 5000
 
 
 class ProcessConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="PROCESS_",
         env_file=".env",
@@ -26,10 +30,11 @@ class ProcessConfig(BaseSettings):
     require_picklable_worker: bool = True
     batch_size: int = Field(default=64, gt=0)
     batch_bytes: str = "256KB"
+    transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
     max_batch_wait_ms: int = 5
-    flush_policy: Literal[
-        "size_or_timer", "demand", "demand_min_residence"
-    ] = "size_or_timer"
+    flush_policy: Literal["size_or_timer", "demand", "demand_min_residence"] = (
+        "size_or_timer"
+    )
     demand_flush_min_residence_ms: int = 0
     shutdown_drain_timeout_ms: int = 5000
     worker_join_timeout_ms: int = 30000
@@ -40,6 +45,8 @@ class ProcessConfig(BaseSettings):
 
 
 class MetricsConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="METRICS_",
         env_file=".env",
@@ -52,6 +59,8 @@ class MetricsConfig(BaseSettings):
 
 
 class AdaptiveConcurrencyConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -66,6 +75,8 @@ class AdaptiveConcurrencyConfig(BaseSettings):
 
 
 class AdaptiveBackpressureConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -83,6 +94,8 @@ class AdaptiveBackpressureConfig(BaseSettings):
 
 
 class PoisonMessageConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -95,6 +108,8 @@ class PoisonMessageConfig(BaseSettings):
 
 
 class ExecutionConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="EXECUTION_",
         env_file=".env",
@@ -120,6 +135,7 @@ class ExecutionConfig(BaseSettings):
     @field_validator("mode", mode="before")
     @classmethod
     def _normalize_mode(cls, v: object) -> ExecutionMode:
+        """Normalize mode for runtime configuration and librdkafka client setup."""
         if isinstance(v, ExecutionMode):
             return v
         if isinstance(v, str):
@@ -129,9 +145,11 @@ class ExecutionConfig(BaseSettings):
 
     @property
     def max_in_flight_messages(self) -> int:
+        """Handle max in flight messages within runtime configuration and librdkafka client setup."""
         return self.max_in_flight
 
     def resolve_shutdown_drain_timeout_ms(self) -> int:
+        """Resolve shutdown drain timeout ms for runtime configuration and librdkafka client setup."""
         if self.shutdown_policy == "abort":
             return 0
         if "shutdown_drain_timeout_ms" in self.model_fields_set:
@@ -142,6 +160,8 @@ class ExecutionConfig(BaseSettings):
 
 
 class ParallelConsumerConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="PARALLEL_CONSUMER_",
         env_file=".env",
@@ -160,17 +180,20 @@ class ParallelConsumerConfig(BaseSettings):
     max_blocking_duration_ms: int = 0
     blocking_cache_ttl: int = 100
     strict_completion_monitor_enabled: bool = True
+    commit_debounce_completion_threshold: int = Field(default=100, gt=0)
+    commit_debounce_interval_ms: int = Field(default=100, ge=0)
     adaptive_backpressure: AdaptiveBackpressureConfig = AdaptiveBackpressureConfig()
     adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
     poison_message: PoisonMessageConfig = PoisonMessageConfig()
-    rebalance_state_strategy: Literal[
-        "contiguous_only", "metadata_snapshot"
-    ] = "contiguous_only"
+    rebalance_state_strategy: Literal["contiguous_only", "metadata_snapshot"] = (
+        "contiguous_only"
+    )
     execution: ExecutionConfig = ExecutionConfig()
 
     @field_validator("ordering_mode", mode="before")
     @classmethod
     def _normalize_ordering_mode(cls, v: object) -> OrderingMode:
+        """Normalize ordering mode for runtime configuration and librdkafka client setup."""
         if isinstance(v, OrderingMode):
             return v
         if isinstance(v, str):
@@ -182,6 +205,8 @@ class ParallelConsumerConfig(BaseSettings):
 
 
 class KafkaConfig(BaseSettings):
+    """Hold settings for runtime configuration and librdkafka client setup."""
+
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="KAFKA_",
         env_file=".env",
@@ -341,9 +366,11 @@ class KafkaConfig(BaseSettings):
     parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
 
     def _bootstrap_servers_csv(self) -> str:
+        """Handle bootstrap servers csv within runtime configuration and librdkafka client setup."""
         return ",".join(self._parse_bootstrap_servers(self.bootstrap_servers))
 
     def _get_security_config(self) -> dict[str, str]:
+        """Return security config for runtime configuration and librdkafka client setup."""
         security_config: dict[str, str] = {}
         field_to_config_key = {
             "security_protocol": "security.protocol",
@@ -367,6 +394,7 @@ class KafkaConfig(BaseSettings):
         return security_config
 
     def get_producer_config(self) -> dict[str, str]:
+        """Return producer config for runtime configuration and librdkafka client setup."""
         config = {
             "bootstrap.servers": self._bootstrap_servers_csv(),
             "client.id": socket.gethostname(),
@@ -375,6 +403,7 @@ class KafkaConfig(BaseSettings):
         return config
 
     def get_consumer_config(self) -> dict[str, str | int | bool]:
+        """Return consumer config for runtime configuration and librdkafka client setup."""
         config: dict[str, str | int | bool] = {
             "bootstrap.servers": self._bootstrap_servers_csv(),
             "group.id": self.consumer_group,
@@ -386,6 +415,7 @@ class KafkaConfig(BaseSettings):
         return config
 
     def get_admin_config(self) -> dict[str, str]:
+        """Return admin config for runtime configuration and librdkafka client setup."""
         config = {
             "bootstrap.servers": self._bootstrap_servers_csv(),
         }
@@ -407,6 +437,7 @@ class KafkaConfig(BaseSettings):
     def _normalize_optional_security_field(
         cls, v: object, info: ValidationInfo
     ) -> object:
+        """Normalize optional security field for runtime configuration and librdkafka client setup."""
         if isinstance(v, str):
             cleaned = v.strip()
             if cleaned == "":
@@ -419,6 +450,7 @@ class KafkaConfig(BaseSettings):
     @field_validator("dlq_payload_mode", mode="before")
     @classmethod
     def _normalize_dlq_mode(cls, v: object) -> DLQPayloadMode:
+        """Normalize dlq mode for runtime configuration and librdkafka client setup."""
         if isinstance(v, DLQPayloadMode):
             return v
         if isinstance(v, str):
@@ -431,6 +463,7 @@ class KafkaConfig(BaseSettings):
     @field_validator("bootstrap_servers", mode="before")
     @classmethod
     def _parse_bootstrap_servers(cls, v: object) -> list[str]:
+        """Parse bootstrap servers for runtime configuration and librdkafka client setup."""
         if isinstance(v, str):
             return [s.strip() for s in v.split(",") if s.strip()]
         if isinstance(v, list):
@@ -453,6 +486,7 @@ class KafkaConfig(BaseSettings):
         return self._build_rdkafka_config(include_secrets=True)
 
     def _build_rdkafka_config(self, *, include_secrets: bool) -> dict[str, object]:
+        """Build rdkafka config for runtime configuration and librdkafka client setup."""
         data: dict[str, object] = self.model_dump(exclude_none=True)
 
         _exclude = {
@@ -490,56 +524,70 @@ class KafkaConfig(BaseSettings):
 
     @property
     def BOOTSTRAP_SERVERS(self) -> list[str]:
+        """Handle bootstrap servers within runtime configuration and librdkafka client setup."""
         return self._parse_bootstrap_servers(self.bootstrap_servers)
 
     @BOOTSTRAP_SERVERS.setter
     def BOOTSTRAP_SERVERS(self, value: str | list[str]) -> None:
+        """Handle bootstrap servers within runtime configuration and librdkafka client setup."""
         self.bootstrap_servers = self._parse_bootstrap_servers(value)
 
     @property
     def CONSUMER_GROUP(self) -> str:
+        """Handle consumer group within runtime configuration and librdkafka client setup."""
         return self.consumer_group
 
     @CONSUMER_GROUP.setter
     def CONSUMER_GROUP(self, value: str) -> None:
+        """Handle consumer group within runtime configuration and librdkafka client setup."""
         self.consumer_group = value
 
     @property
     def DLQ_TOPIC_SUFFIX(self) -> str:
+        """Handle dlq topic suffix within runtime configuration and librdkafka client setup."""
         return self.dlq_topic_suffix
 
     @DLQ_TOPIC_SUFFIX.setter
     def DLQ_TOPIC_SUFFIX(self, value: str) -> None:
+        """Handle dlq topic suffix within runtime configuration and librdkafka client setup."""
         self.dlq_topic_suffix = value
 
     @property
     def DLQ_FLUSH_TIMEOUT_MS(self) -> int:
+        """Handle dlq flush timeout ms within runtime configuration and librdkafka client setup."""
         return self.dlq_flush_timeout_ms
 
     @DLQ_FLUSH_TIMEOUT_MS.setter
     def DLQ_FLUSH_TIMEOUT_MS(self, value: int) -> None:
+        """Handle dlq flush timeout ms within runtime configuration and librdkafka client setup."""
         self.dlq_flush_timeout_ms = value
 
     @property
     def AUTO_OFFSET_RESET(self) -> Literal["earliest", "latest", "none"]:
+        """Handle auto offset reset within runtime configuration and librdkafka client setup."""
         return self.auto_offset_reset
 
     @AUTO_OFFSET_RESET.setter
     def AUTO_OFFSET_RESET(self, value: Literal["earliest", "latest", "none"]) -> None:
+        """Handle auto offset reset within runtime configuration and librdkafka client setup."""
         self.auto_offset_reset = value
 
     @property
     def ENABLE_AUTO_COMMIT(self) -> bool:
+        """Handle enable auto commit within runtime configuration and librdkafka client setup."""
         return self.enable_auto_commit
 
     @ENABLE_AUTO_COMMIT.setter
     def ENABLE_AUTO_COMMIT(self, value: bool) -> None:
+        """Handle enable auto commit within runtime configuration and librdkafka client setup."""
         self.enable_auto_commit = value
 
     @property
     def SESSION_TIMEOUT_MS(self) -> int:
+        """Handle session timeout ms within runtime configuration and librdkafka client setup."""
         return self.session_timeout_ms
 
     @SESSION_TIMEOUT_MS.setter
     def SESSION_TIMEOUT_MS(self, value: int) -> None:
+        """Handle session timeout ms within runtime configuration and librdkafka client setup."""
         self.session_timeout_ms = value

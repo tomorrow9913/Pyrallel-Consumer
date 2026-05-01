@@ -110,6 +110,27 @@ def test_get_gaps_with_single_gap(offset_tracker):
     assert gaps[1] == OffsetRange(start=3, end=5)
 
 
+def test_get_first_gap_head_updates_incrementally(offset_tracker):
+    offset_tracker.update_last_fetched_offset(5)
+    assert offset_tracker.get_first_gap_head() == 0
+
+    offset_tracker.mark_complete(0)
+    offset_tracker.advance_high_water_mark()
+    assert offset_tracker.get_first_gap_head() == 1
+
+    offset_tracker.mark_complete(2)
+    assert offset_tracker.get_first_gap_head() == 1
+
+    offset_tracker.mark_complete(1)
+    assert offset_tracker.get_first_gap_head() == 3
+
+    offset_tracker.mark_complete(3)
+    offset_tracker.mark_complete(4)
+    offset_tracker.mark_complete(5)
+    offset_tracker.advance_high_water_mark()
+    assert offset_tracker.get_first_gap_head() is None
+
+
 def test_get_gaps_with_multiple_gaps(offset_tracker):
     offset_tracker.update_last_fetched_offset(10)
     offset_tracker.mark_complete(0)

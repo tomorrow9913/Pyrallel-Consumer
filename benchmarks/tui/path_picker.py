@@ -9,6 +9,7 @@ from textual.widgets import Button, DirectoryTree, Static
 
 
 def _normalize_start_path(start_path: Path | str) -> Path:
+    """Normalize start path for path picker."""
     path = Path(start_path).expanduser()
     if path.exists():
         if path.is_file():
@@ -20,6 +21,8 @@ def _normalize_start_path(start_path: Path | str) -> Path:
 
 
 class DirectoryPickerScreen(ModalScreen[str | None]):
+    """Represent directory picker screen data used by path picker."""
+
     BINDINGS = [("escape", "cancel", "Cancel")]
     DEFAULT_CSS = """
     DirectoryPickerScreen {
@@ -65,6 +68,7 @@ class DirectoryPickerScreen(ModalScreen[str | None]):
         self._selected_path = self._start_path
 
     def compose(self) -> ComposeResult:
+        """Handle compose within path picker."""
         with Container(id="directory-picker-dialog"):
             yield Static("Select output directory", id="directory-picker-title")
             yield DirectoryTree(self._start_path, id="directory-picker-tree")
@@ -80,6 +84,7 @@ class DirectoryPickerScreen(ModalScreen[str | None]):
     def on_directory_tree_directory_selected(
         self, event: DirectoryTree.DirectorySelected
     ) -> None:
+        """Handle on directory tree directory selected within path picker."""
         self._selected_path = event.path
         self.query_one("#directory-picker-selection", Static).update(
             str(self._selected_path)
@@ -88,16 +93,19 @@ class DirectoryPickerScreen(ModalScreen[str | None]):
     def on_directory_tree_file_selected(
         self, event: DirectoryTree.FileSelected
     ) -> None:
+        """Handle on directory tree file selected within path picker."""
         self._selected_path = event.path.parent
         self.query_one("#directory-picker-selection", Static).update(
             str(self._selected_path)
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle on button pressed within path picker."""
         if event.button.id == "directory-picker-confirm":
             self.dismiss(str(self._selected_path))
         elif event.button.id == "directory-picker-cancel":
             self.dismiss(None)
 
     def action_cancel(self) -> None:
+        """Handle action cancel within path picker."""
         self.dismiss(None)

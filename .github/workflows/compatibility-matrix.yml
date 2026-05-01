@@ -1,32 +1,6 @@
 name: compatibility-matrix
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - "**/*.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "README.md"
-      - "README.ko.md"
-      - "docs/operations/**"
-      - ".github/e2e.compose.yml"
-      - ".github/compatibility-matrix.json"
-      - "scripts/compatibility_matrix.py"
-      - ".github/workflows/compatibility-matrix.yml"
-  pull_request:
-    branches: [main, develop]
-    paths:
-      - "**/*.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "README.md"
-      - "README.ko.md"
-      - "docs/operations/**"
-      - ".github/e2e.compose.yml"
-      - ".github/compatibility-matrix.json"
-      - "scripts/compatibility_matrix.py"
-      - ".github/workflows/compatibility-matrix.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +12,7 @@ jobs:
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check generated compatibility docs
         run: |
           python3 scripts/compatibility_matrix.py --check
@@ -66,8 +40,8 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     name: ${{ matrix.name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
@@ -122,7 +96,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload compatibility report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-${{ matrix.name }}-${{ github.run_id }}
           path: |
