@@ -108,6 +108,31 @@ def test_execution_config_shutdown_policy_env_override(
     monkeypatch.delenv("EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS", raising=False)
 
 
+def test_execution_config_route_batch_size_defaults_to_one() -> None:
+    config = ExecutionConfig()
+
+    assert config.route_batch_size == 1
+
+
+def test_execution_config_route_batch_size_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXECUTION_ROUTE_BATCH_SIZE", "64")
+
+    config = ExecutionConfig()
+
+    assert config.route_batch_size == 64
+
+    monkeypatch.delenv("EXECUTION_ROUTE_BATCH_SIZE", raising=False)
+
+
+def test_execution_config_rejects_invalid_route_batch_size() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        ExecutionConfig(route_batch_size=0)
+
+    assert "route_batch_size" in str(excinfo.value)
+
+
 def test_process_config_transport_mode_defaults_to_shared_queue() -> None:
     config = ProcessConfig()
 
