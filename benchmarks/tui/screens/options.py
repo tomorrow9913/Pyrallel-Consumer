@@ -42,11 +42,19 @@ class OptionsScreen(Screen[None]):
         "num-keys": 1,
         "num-partitions": 1,
         "timeout-sec": 1,
+        "route-batch-size": 1,
     }
     _NON_NEGATIVE_INT_FIELDS = {
         "metrics-port": 0,
         "worker-cpu-iterations": 0,
         "profile-top-n": 0,
+    }
+    _OPTIONAL_POSITIVE_INT_FIELDS = {
+        "process-count": 1,
+        "process-batch-size": 1,
+    }
+    _OPTIONAL_NON_NEGATIVE_INT_FIELDS = {
+        "process-max-batch-wait-ms": 0,
     }
     _NON_NEGATIVE_FLOAT_FIELDS = {
         "worker-sleep-ms": 0.0,
@@ -294,6 +302,51 @@ class OptionsScreen(Screen[None]):
                         widget_id="metrics-port",
                         placeholder="9091",
                     )
+                    yield from self._labeled_input(
+                        option_id="process-count",
+                        value=(
+                            ""
+                            if state.process_count is None
+                            else str(state.process_count)
+                        ),
+                        widget_id="process-count",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_select(
+                        option_id="process-transport",
+                        options=[
+                            ("shared_queue", "shared_queue"),
+                            ("worker_pipes", "worker_pipes"),
+                        ],
+                        value=state.process_transport,
+                        widget_id="process-transport",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-batch-size",
+                        value=(
+                            ""
+                            if state.process_batch_size is None
+                            else str(state.process_batch_size)
+                        ),
+                        widget_id="process-batch-size",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-max-batch-wait-ms",
+                        value=(
+                            ""
+                            if state.process_max_batch_wait_ms is None
+                            else str(state.process_max_batch_wait_ms)
+                        ),
+                        widget_id="process-max-batch-wait-ms",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_input(
+                        option_id="route-batch-size",
+                        value=str(state.route_batch_size),
+                        widget_id="route-batch-size",
+                        placeholder="1",
+                    )
                     yield from self._switch_field(
                         option_id="skip-reset",
                         value=state.skip_reset,
@@ -493,6 +546,10 @@ class OptionsScreen(Screen[None]):
             if widget_id == "profile-top-n" and not profiling_enabled:
                 continue
             self._validate_int(widget_id, minimum, parsed_ints, errors)
+        for widget_id, minimum in self._OPTIONAL_POSITIVE_INT_FIELDS.items():
+            self._validate_optional_int(widget_id, minimum, parsed_ints, errors)
+        for widget_id, minimum in self._OPTIONAL_NON_NEGATIVE_INT_FIELDS.items():
+            self._validate_optional_int(widget_id, minimum, parsed_ints, errors)
         for widget_id, minimum_float in self._NON_NEGATIVE_FLOAT_FIELDS.items():
             self._validate_float(widget_id, minimum_float, parsed_floats, errors)
 
@@ -525,6 +582,11 @@ class OptionsScreen(Screen[None]):
             num_partitions=parsed_ints["num-partitions"],
             timeout_sec=parsed_ints["timeout-sec"],
             metrics_port=parsed_ints["metrics-port"],
+            process_count=parsed_ints.get("process-count"),
+            process_transport=str(self.query_one("#process-transport", Select).value),
+            process_batch_size=parsed_ints.get("process-batch-size"),
+            process_max_batch_wait_ms=parsed_ints.get("process-max-batch-wait-ms"),
+            route_batch_size=parsed_ints["route-batch-size"],
             topic_prefix=self.query_one("#topic-prefix", Input).value,
             workloads=workloads,
             ordering_modes=ordering_modes,
@@ -565,6 +627,27 @@ class OptionsScreen(Screen[None]):
         if value < minimum:
             comparator = ">="
             errors[widget_id] = "Enter a whole number %s %d." % (comparator, minimum)
+            return
+        parsed_values[widget_id] = value
+
+    def _validate_optional_int(
+        self,
+        widget_id: str,
+        minimum: int,
+        parsed_values: dict[str, int],
+        errors: dict[str, str],
+    ) -> None:
+        """Validate optional int for options."""
+        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
+        if not raw_value:
+            return
+        try:
+            value = int(raw_value)
+        except ValueError:
+            errors[widget_id] = "Enter a whole number or leave blank."
+            return
+        if value < minimum:
+            errors[widget_id] = "Enter a whole number >= %d or leave blank." % minimum
             return
         parsed_values[widget_id] = value
 

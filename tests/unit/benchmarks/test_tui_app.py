@@ -14,6 +14,7 @@ from textual.widgets import (
     Label,
     LoadingIndicator,
     ProgressBar,
+    Select,
     SelectionList,
     Static,
     Switch,
@@ -163,6 +164,11 @@ async def test_options_screen_shows_human_readable_field_labels() -> None:
     assert "Timeout (sec)" in labels
     assert "Workloads" in labels
     assert "Ordering modes" in labels
+    assert "Process count" in labels
+    assert "Process transport" in labels
+    assert "Process batch size" in labels
+    assert "Process max batch wait (ms)" in labels
+    assert "Route batch size" in labels
 
 
 @pytest.mark.asyncio
@@ -222,6 +228,9 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
         output_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-json-output")
         )
+        process_ancestors = _ancestor_ids(
+            app.screen.query_one("#option-block-process-transport")
+        )
         profiling_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-profiling-enabled")
         )
@@ -233,6 +242,7 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
     assert "option-section-cluster-workload" in sleep_ancestors
     assert "option-section-cluster-workload" in ordering_ancestors
     assert "option-section-output-execution" in output_ancestors
+    assert "option-section-output-execution" in process_ancestors
     assert "option-section-profiling" in profiling_ancestors
     assert "option-section-advanced-options" in topic_prefix_ancestors
 
@@ -272,6 +282,59 @@ async def test_options_screen_exposes_output_path_fields_with_browse_buttons() -
         "browse-profile-dir": "Browse",
         "browse-py-spy-output": "Browse",
     }
+
+
+@pytest.mark.asyncio
+async def test_options_screen_exposes_process_route_batch_controls() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        del pilot
+        process_count = app.screen.query_one("#process-count", Input)
+        process_transport = app.screen.query_one("#process-transport", Select)
+        process_batch_size = app.screen.query_one("#process-batch-size", Input)
+        process_max_batch_wait_ms = app.screen.query_one(
+            "#process-max-batch-wait-ms", Input
+        )
+        route_batch_size = app.screen.query_one("#route-batch-size", Input)
+
+    assert process_count.value == "4"
+    assert process_transport.value == "worker_pipes"
+    assert process_batch_size.value == "1"
+    assert process_max_batch_wait_ms.value == "0"
+    assert route_batch_size.value == "64"
+
+
+@pytest.mark.asyncio
+async def test_options_screen_updates_preview_with_process_route_batch_controls() -> (
+    None
+):
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        process_count = app.screen.query_one("#process-count", Input)
+        process_transport = app.screen.query_one("#process-transport", Select)
+        process_batch_size = app.screen.query_one("#process-batch-size", Input)
+        process_max_batch_wait_ms = app.screen.query_one(
+            "#process-max-batch-wait-ms", Input
+        )
+        route_batch_size = app.screen.query_one("#route-batch-size", Input)
+
+        process_count.value = "4"
+        process_transport.value = "worker_pipes"
+        process_batch_size.value = "1"
+        process_max_batch_wait_ms.value = "0"
+        route_batch_size.value = "64"
+        await pilot.pause()
+
+        preview = app.screen.query_one("#argv-preview", Static)
+
+    preview_text = str(preview.content)
+    assert "--process-count 4" in preview_text
+    assert "--process-transport worker_pipes" in preview_text
+    assert "--process-batch-size 1" in preview_text
+    assert "--process-max-batch-wait-ms 0" in preview_text
+    assert "--route-batch-size 64" in preview_text
 
 
 @pytest.mark.asyncio
