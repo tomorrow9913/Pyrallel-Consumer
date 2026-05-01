@@ -32,6 +32,11 @@ class BaseExecutionEngine(ABC):
 
     """
 
+    @property
+    def supports_ordered_route_batch(self) -> bool:
+        """Return whether this engine can run ordered route batches safely."""
+        return False
+
     @abstractmethod
     async def submit(self, work_item: WorkItem) -> None:
         """Submit a WorkItem to the execution engine for processing.
@@ -49,6 +54,10 @@ class BaseExecutionEngine(ABC):
         This default fallback preserves existing engine semantics while allowing
         the control plane to become batch-aware. Engines may override this method
         for transport-specific batch optimizations.
+
+        Contract: implementations must either submit the batch atomically, where
+        any failure means no item was accepted, or raise BatchSubmitError after
+        partial acceptance with accepted_count set to the accepted prefix length.
 
         Args:
             work_items: Work items to submit in order.
