@@ -16,6 +16,8 @@
 - process engine도 장기적으로는 같은 철학을 따라야 한다.
 - 즉, `WorkManager`가 safe-to-run item을 고르면 process engine은 submit 순간
   route identity를 사용해 적절한 worker execution slot/channel로 보내야 한다.
+  이 경계는 단일 `submit(work_item)`과 route 단위
+  `submit_batch(work_items)`를 모두 포함한다.
 - 이 route identity는 process 전용 새 scheduling hint가 아니다. async path에서도
   `WorkManager`가 이미 사용하는 동일한 logical queue identity를 process IPC
   routing에 재사용하는 것이다.
@@ -67,8 +69,22 @@ queue를 process boundary 앞에서 다시 하나로 합치는 문제가 있다.
 | --- | --- |
 | [01-requirements.ko.md](./01-requirements.ko.md) | process engine 책임, transport mode, acceptance 기준 |
 | [02-architecture.ko.md](./02-architecture.ko.md) | shared queue topology와 target worker-affine topology 비교 |
-| [03-design.ko.md](./03-design.ko.md) | config, routing identity, batching/lifecycle/runtime contract |
-| [04-worker-pipe-transport-experiment.ko.md](./04-worker-pipe-transport-experiment.ko.md) | worker-affine topology를 bounded slice로 검증하는 실험 지시서 |
+| [03-design.ko.md](./03-design.ko.md) | config, routing identity, route batching/lifecycle/runtime contract |
+| [04-worker-pipe-transport-experiment.ko.md](./04-worker-pipe-transport-experiment.ko.md) | worker-pipe transport와 route-batch 실험 계약 |
+
+## 현재 route-batch 구현 상태
+
+- `shared_queue`는 여전히 기본 compatibility path다.
+- `ExecutionConfig.route_batch_size` 기본값은 `1`이며, `1`보다 큰 값은 명시적
+  실험/benchmark 옵션이다.
+- `WorkManager`는 engine이 `supports_ordered_route_batch=True`를 광고할 때만
+  ordered route에서 batch lease를 허용한다.
+- `worker_pipes`는 같은 route의 item 묶음을 하나의 route-batch payload로 보내고,
+  worker는 batch 내부 item을 순서대로 실행한다.
+- worker-to-parent completion은 정상 경로에서 하나의 internal `BatchCompletion`
+  envelope로 이동하고, parent가 기존 `CompletionEvent` 목록으로 펼친다.
+- registry, retry, commit, recovery accounting은 item 단위를 유지한다. batch는
+  transport envelope일 뿐 commit/retry 단위가 아니다.
 
 ## 빠른 읽기 분기
 

@@ -45,8 +45,11 @@ flowchart LR
 2. runner가 producer를 통해 테스트 메시지를 준비한다.
 3. baseline, async, process 라운드를 순서대로 또는 선택적으로 실행한다.
 4. 각 라운드의 처리량과 지연을 `stats.py`가 요약한다.
-5. 결과는 콘솔 출력과 JSON artifact로 남는다.
-6. profiling 옵션이 켜져 있으면 해당 모드에 맞는 profiler artifact를 추가로 만든다.
+5. process route-batch 실험에서는 `route_batch_size`가 config와 direct
+   `WorkManager` 생성 경로 모두에 전달된다.
+6. 결과는 콘솔 출력과 JSON artifact로 남는다. route-batch IPC metric은
+   baseline/async에서는 `null`, process에서는 관측값으로 남을 수 있다.
+7. profiling 옵션이 켜져 있으면 해당 모드에 맞는 profiler artifact를 추가로 만든다.
 
 ## 5. 경계
 

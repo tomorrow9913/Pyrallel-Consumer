@@ -19,6 +19,8 @@
 | `--strict-completion-monitor` | completion monitor 비교 |
 | `--profile` | yappi profiling |
 | `--py-spy` | process worker 포함 profiling |
+| `--process-batch-size` | process micro-batch size override |
+| `--route-batch-size` | 같은 route lease size override. `process-batch-size`와 별도 축 |
 
 ## 3. workload 의미
 
@@ -34,6 +36,7 @@
 | --- | --- |
 | 콘솔 표 | 각 라운드 TPS/latency 요약 |
 | JSON summary | 재분석 가능한 구조화 결과 |
+| route-batch JSON fields | `route_batch_size`, `items_per_input_ipc`, `items_per_completion_ipc`, `route_batch_count`, `route_batch_item_count`, `route_batch_size_avg`, `route_batch_size_max`, `completion_item_payload_count`, `completion_batch_payload_count` |
 | `.prof` 파일 | yappi profile 결과 |
 | py-spy artifact | flamegraph/speedscope/chrometrace 등 |
 
@@ -44,3 +47,9 @@
 - profiling을 켠 실행은 overhead 때문에 non-profiled run과 직접 TPS 비교하면 안 된다.
 - async가 높은 TPS를 보여도 queueing latency가 함께 증가할 수 있다.
 - process는 CPU workload에서 유리할 수 있지만 IPC와 scheduling 비용 때문에 per-message latency가 높아질 수 있다.
+- `process_batch_size`와 `route_batch_size`는 다른 축이다. 전자는 process payload
+  accumulation이고, 후자는 same-route scheduling/IPC amortization이다.
+- route-batch IPC metric은 process transport 증거다. baseline/async row에서는 해당
+  없는 필드를 `null`로 둔다.
+- `items_per_input_ipc`와 `items_per_completion_ipc`는 실제로 IPC가 batch 단위로
+  amortize되었는지를 설명한다. TPS/correctness와 함께 읽어야 한다.

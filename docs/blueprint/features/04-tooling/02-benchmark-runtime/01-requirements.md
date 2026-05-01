@@ -25,6 +25,8 @@ The benchmark runtime must:
 - The baseline round, Pyrallel async round, and Pyrallel process round must be individually skippable.
 - Pyrallel rounds must support strict-completion-monitor A/B runs (`on`, `off`).
 - Pyrallel rounds must support adaptive-concurrency A/B runs (`off`, `on`).
+- Process rounds must expose `route_batch_size` as a benchmark axis without
+  conflating it with process micro-batch flags such as `process_batch_size`.
 
 ### 2.2 Environment preparation
 
@@ -46,6 +48,9 @@ The benchmark runtime must:
 - Every run must emit a console results table.
 - Every benchmark invocation must emit a JSON summary, defaulting to `benchmarks/results/<UTC timestamp>.json` when `--json-output` is omitted.
 - JSON summaries must preserve the machine-readable fields consumed by the current release-gate evaluator, including per-run metrics observations and derived performance-improvement sections when those are available.
+- JSON summaries must preserve route-batch controls and nullable route-batch IPC
+  metrics so baseline/async rows can remain comparable without inventing process
+  metrics for non-process modes.
 - Optional profiler outputs must be written beneath the configured profile directory.
 - The TUI must preserve discoverability of the same runtime options instead of inventing a separate benchmark contract.
 
@@ -66,12 +71,16 @@ The benchmark runtime must:
 - message count, key count, partition count, timeout, and skip flags
 - profiling and optional metrics-port settings
 - benchmark-only process micro-batch override flags
+- benchmark-only route-batch override flags
 
 ### Outputs
 
 - console status and summary table
 - JSON benchmark summary
 - machine-readable release-gate evidence embedded in the JSON summary (`metrics_observations`, run-level lag/gap snapshots, and comparison sections such as `performance_improvements`)
+- route-batch fields in process run summaries, including `route_batch_size`,
+  `items_per_input_ipc`, `items_per_completion_ipc`, and route-batch size
+  histograms where available
 - yappi `.prof` files and optional merged worker profiles
 - py-spy artifacts (`svg`, `json`, or `txt`, depending on format)
 - TUI progress, logs, and results rendering
@@ -86,3 +95,5 @@ This subfeature is acceptable only if:
 - the docs describe release-gate evidence as an output consumer of benchmark JSON rather than as ad-hoc console interpretation;
 - TPS, total runtime, average latency, and p99 latency are explained as different but complementary signals;
 - profiling outputs and non-profiled throughput comparisons are clearly separated.
+- `route_batch_size` and route-batch IPC metrics are documented as process
+  transport evidence, not as baseline or async engine metrics.

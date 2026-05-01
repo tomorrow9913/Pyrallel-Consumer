@@ -50,11 +50,13 @@ WorkManager virtual queues
 
 ```text
 WorkManager virtual queues
-  -> ProcessExecutionEngine.submit()
-  -> route identity resolution
+  -> ProcessExecutionEngine.submit() / submit_batch()
+  -> route identity resolution 또는 RouteBatch lease
   -> worker-affine execution slot/channel
   -> owner worker process
-  -> single completion queue
+  -> item CompletionEvent 또는 BatchCompletion envelope
+  -> parent-side CompletionEvent[] expansion
+  -> single completion queue surface
   -> single registry event queue
 ```
 
@@ -104,10 +106,33 @@ payload 수신/경쟁**에 더 가깝다는 뜻이다.
 
 - 역할: ordered parallelism 검증과 장기 방향의 first-class path
 - input: worker별 parent-to-worker channel
-- routing: `WorkItem` route identity 기반 sticky dispatch
-- completion: 기존 single aggregator 유지
+- routing: `WorkItem` route identity 또는 같은 route의 `RouteBatch` 기반 sticky dispatch
+- completion: 정상 route-batch path에서는 internal `BatchCompletion` envelope를 쓰고,
+  parent가 기존 item-level completion으로 펼침
 - 장점: ordered affinity preservation
-- 약점: batching/recycle/restart parity를 transport별로 더 명시해야 함
+- 약점: recycle/restart parity와 large in-flight pending lookup 비용은 transport별로
+  계속 명시해야 함
+
+### 6.3 route-batch path
+
+```mermaid
+flowchart LR
+    Poll["Kafka poll batch"]
+    WM["WorkManager virtual queues"]
+    Lease["same-route lease"]
+    Engine["submit_batch(items)"]
+    Pipe["worker_pipes route-batch payload"]
+    Worker["worker sequential loop"]
+    Done["BatchCompletion envelope"]
+    Expand["parent expands CompletionEvent[]"]
+    Commit["OffsetTracker / commit"]
+
+    Poll --> WM --> Lease --> Engine --> Pipe --> Worker --> Done --> Expand --> Commit
+```
+
+batch 경계는 control plane 아래에 있다. `WorkManager`는 여전히 safe-to-run item만
+고르고, parent-side recovery는 envelope 안의 개별 `WorkItem` identity를 기준으로
+동작한다.
 
 ## 7. route identity와 affinity
 
@@ -132,11 +157,12 @@ route_identity = (topic, partition, key)
 | 계층 | 유지할 계약 |
 | --- | --- |
 | input dispatch | transport mode별로 달라질 수 있음 |
-| completion aggregation | 1차로 single queue 유지 |
+| completion aggregation | parent-side item completion surface 유지. route-batch IPC는 internal envelope 사용 가능 |
 | registry event queue | parent-side in-flight/lifecycle accounting 유지 |
 | logging queue | worker log를 parent listener에 집계 |
 
-즉, 지금 바꾸려는 것은 “input topology”지 “completion topology”가 아니다.
+즉, route-batch가 바꾸는 것은 IPC envelope와 input topology다. commit/retry/DLQ
+correctness 단위는 여전히 item이다.
 
 ## 9. lifecycle / shutdown architecture
 

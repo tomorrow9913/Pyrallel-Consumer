@@ -27,11 +27,14 @@
 | `PROCESS_MSGPACK_MAX_BYTES` | decode safety limit | `1000000` |
 | `PROCESS_MAX_TASKS_PER_CHILD` | worker recycle threshold | `0` |
 | `PROCESS_RECYCLE_JITTER_MS` | recycle jitter | `0` |
+| `EXECUTION_ROUTE_BATCH_SIZE` | 같은 route에서 한 번에 lease할 item 수 | `1` |
 
 설계 원칙:
 
 - `transport_mode=shared_queue`는 기본값이다.
 - `transport_mode=worker_pipes`는 ordered affinity-preserving path다.
+- `route_batch_size=1`은 기존 item submission 의미를 유지한다.
+- `route_batch_size>1`은 명시적 실험/benchmark 옵션이다.
 - invalid transport 값은 config validation에서 즉시 실패해야 한다.
 
 ## 3. worker 계약
@@ -79,11 +82,13 @@ routing에 쓰지 않고 `create_task()`로 바로 실행한다.
 
 - submit 순간 worker channel을 선택한다.
 - parent는 worker별 input channel에 payload를 보낸다.
-- completion은 기존 single completion queue를 유지한다.
+- parent-facing completion surface는 기존 item-level completion queue 의미를
+  유지한다.
+- route-batch 정상 경로는 internal `BatchCompletion` envelope를 쓸 수 있다.
 - registry event queue도 parent-side 단일 drain 경로를 유지한다.
 
-즉 design 레벨에서 바꾸는 것은 input dispatch다. completion aggregation은 1차
-slice에서 바꾸지 않는다.
+즉 design 레벨에서 바꾸는 것은 input dispatch와 route-batch IPC envelope다.
+completion/retry/commit correctness 단위는 item으로 유지한다.
 
 ## 6. batching 계약
 
@@ -96,14 +101,25 @@ batching은 correctness layer가 아니라 IPC 비용 절감 수단이다.
 
 ### worker_pipes
 
-- 1차 slice에서는 `batch_size=1`, `max_batch_wait_ms=0` 중심으로 bounded support를
-  두는 것이 기본이다.
-- richer batching을 지원하지 못하면 silent fallback 대신 startup reject가
-  우선이다.
-- 아래 의미를 암묵적으로 바꾸면 안 된다.
-  - `size_or_timer`
-  - `demand`
-  - `demand_min_residence`
+- `ProcessConfig.batch_size`와 `ExecutionConfig.route_batch_size`는 별도 축이다.
+- `worker_pipes`의 ordered route batching은 `route_batch_size`로 제어한다.
+- `KEY_HASH`/`PARTITION` ordered route batch는 engine이
+  `supports_ordered_route_batch=True`를 명시할 때만 활성화한다.
+- batch payload는 같은 route의 item만 포함해야 하며, worker는 batch 내부 item을
+  순서대로 실행한다.
+- 정상 completion path는 executed prefix를 하나의 internal `BatchCompletion`
+  envelope로 보내고, parent가 기존 `CompletionEvent` 단위로 펼친다.
+- registry, retry, DLQ, commit accounting은 item 단위를 유지한다.
+- 기존 process micro-batch flush policy의 의미(`size_or_timer`, `demand`,
+  `demand_min_residence`)를 route batch 의미로 암묵적으로 재해석하면 안 된다.
+
+### `submit_batch()` contract
+
+- 기본 fallback은 `submit()`을 item 순서대로 호출한다.
+- 일부 prefix만 accept한 뒤 실패하면 `BatchSubmitError(accepted_count=...)`로
+  알려야 한다.
+- 일반 예외는 accepted count `0`으로 취급한다.
+- fallback 자체는 ordered same-route 실행을 보장하는 sequential executor가 아니다.
 
 ## 7. `wait_for_completion()` 계약
 
@@ -142,6 +158,10 @@ transport가 달라도 다음 의미를 유지해야 한다.
 
 - `get_runtime_metrics()`는 transport별 runtime 해석이 가능해야 한다.
 - benchmark metadata는 transport mode를 포함해야 한다.
+- route-batch path는 `items_per_input_ipc`, `items_per_completion_ipc`,
+  `route_batch_count`, `route_batch_item_count`, `route_batch_size_avg`,
+  `route_batch_size_max`, `completion_item_payload_count`,
+  `completion_batch_payload_count`를 통해 IPC amortization을 해석할 수 있어야 한다.
 - release-gate는 final lag / final gap / ordering evidence를 같은 기준으로
   평가해야 한다.
 - transport별 unsupported/rejected 조합도 로그 또는 runtime metadata로
@@ -156,3 +176,15 @@ transport가 달라도 다음 의미를 유지해야 한다.
 - `worker_pipes`는 ordered throughput 개선을 위한 direction path로 다룬다.
 - completion queue 분리, broker I/O bridge, work stealing, shared memory transport는
   이 design 범위에 포함하지 않는다.
+
+## 11. route-batch safety guard
+
+- poison/force-fail 대상이 batch 뒤쪽에 있으면 그 item 앞에서 batch를 끊는다.
+- worker death 전/후 아직 start되지 않은 batch tail은 recoverable해야 한다.
+- live-worker `not_started` tail은 diagnostic-only가 아니라 requeue/recovery 신호다.
+- fatal timeout/exit path는 worker가 죽기 전에 completed prefix
+  `BatchCompletion`을 flush해야 한다.
+- duplicate completion suppression은 장기 실행에서 메모리가 무한히 늘지 않도록
+  bounded cache여야 한다.
+- msgpack completion bytes는 unpack 전에 size guard를 거치고, malformed batch
+  payload는 빈 work/completion으로 해석하지 않는다.
