@@ -13,6 +13,15 @@ from pyrallel_consumer.dto import (
 )
 
 
+class BatchSubmitError(RuntimeError):
+    """Raised when default batch submission fails after partial acceptance."""
+
+    def __init__(self, accepted_count: int, original_error: Exception) -> None:
+        super().__init__(str(original_error))
+        self.accepted_count = accepted_count
+        self.original_error = original_error
+
+
 class BaseExecutionEngine(ABC):
     """Basic abstract class for execution engines.
 
@@ -33,6 +42,25 @@ class BaseExecutionEngine(ABC):
             work_item (WorkItem): 제출할 작업 항목
 
         """
+
+    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+        """Submit WorkItems using the existing item-level engine contract.
+
+        This default fallback preserves existing engine semantics while allowing
+        the control plane to become batch-aware. Engines may override this method
+        for transport-specific batch optimizations.
+
+        Args:
+            work_items: Work items to submit in order.
+
+        """
+        accepted_count = 0
+        for work_item in work_items:
+            try:
+                await self.submit(work_item)
+            except Exception as exc:
+                raise BatchSubmitError(accepted_count, exc) from exc
+            accepted_count += 1
 
     @abstractmethod
     async def poll_completed_events(

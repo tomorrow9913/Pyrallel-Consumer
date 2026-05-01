@@ -13,6 +13,7 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 ALLOWED_ENGINE_CONTRACT_METHODS = {
     "submit",
+    "submit_batch",
     "poll_completed_events",
     "wait_for_completion",
     "get_in_flight_count",
