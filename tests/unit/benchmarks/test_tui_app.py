@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import signal
 from pathlib import Path
 from typing import cast
@@ -354,10 +355,52 @@ async def test_options_screen_copies_full_cli_command(monkeypatch) -> None:
         status = app.screen.query_one("#copy-command-status", Static)
 
     assert copied_values == [
-        "uv run python -m benchmarks.run_parallel_benchmark "
-        + " ".join(BenchmarkTuiState().to_argv())
+        shlex.join(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "benchmarks.run_parallel_benchmark",
+                *BenchmarkTuiState().to_argv(),
+            ]
+        )
     ]
     assert str(status.content) == "CLI command copied to clipboard."
+
+
+@pytest.mark.asyncio
+async def test_options_screen_shell_quotes_copied_cli_command(monkeypatch) -> None:
+    state = BenchmarkTuiState(json_output="benchmarks/results/space path.json")
+    app = BenchmarkTuiApp()
+    copied_values: list[str] = []
+
+    def _record_clipboard(text: str) -> None:
+        copied_values.append(text)
+
+    monkeypatch.setattr(app, "copy_to_clipboard", _record_clipboard)
+
+    async with app.run_test() as pilot:
+        json_output = app.screen.query_one("#json-output", Input)
+        json_output.value = state.json_output
+        await pilot.pause()
+
+        await pilot.click("#copy-command-button")
+        await pilot.pause()
+
+    assert copied_values == [
+        shlex.join(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "benchmarks.run_parallel_benchmark",
+                *state.to_argv(),
+            ]
+        )
+    ]
+    assert "'benchmarks/results/space path.json'" in copied_values[0]
 
 
 @pytest.mark.asyncio

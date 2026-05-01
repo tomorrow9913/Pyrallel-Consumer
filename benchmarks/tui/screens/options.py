@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -538,8 +539,15 @@ class OptionsScreen(Screen[None]):
     @staticmethod
     def _cli_command(state: BenchmarkTuiState) -> str:
         """Build the full CLI command for the current TUI state."""
-        return "uv run python -m benchmarks.run_parallel_benchmark %s" % " ".join(
-            state.to_argv()
+        return shlex.join(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "benchmarks.run_parallel_benchmark",
+                *state.to_argv(),
+            ]
         )
 
     def _render_errors(self, errors: dict[str, str]) -> None:
