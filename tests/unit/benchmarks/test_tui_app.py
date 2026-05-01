@@ -338,6 +338,29 @@ async def test_options_screen_updates_preview_with_process_route_batch_controls(
 
 
 @pytest.mark.asyncio
+async def test_options_screen_copies_full_cli_command(monkeypatch) -> None:
+    app = BenchmarkTuiApp()
+    copied_values: list[str] = []
+
+    def _record_clipboard(text: str) -> None:
+        copied_values.append(text)
+
+    monkeypatch.setattr(app, "copy_to_clipboard", _record_clipboard)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#copy-command-button")
+        await pilot.pause()
+
+        status = app.screen.query_one("#copy-command-status", Static)
+
+    assert copied_values == [
+        "uv run python -m benchmarks.run_parallel_benchmark "
+        + " ".join(BenchmarkTuiState().to_argv())
+    ]
+    assert str(status.content) == "CLI command copied to clipboard."
+
+
+@pytest.mark.asyncio
 async def test_browse_button_opens_directory_picker_modal() -> None:
     app = BenchmarkTuiApp()
 

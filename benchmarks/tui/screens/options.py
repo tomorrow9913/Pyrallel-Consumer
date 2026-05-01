@@ -464,6 +464,8 @@ class OptionsScreen(Screen[None]):
             with Container(id="options-footer"):
                 yield Static("", id="form-error-summary")
                 yield Static(" ".join(state.to_argv()), id="argv-preview")
+                yield Button("Copy CLI command", id="copy-command-button")
+                yield Static("", id="copy-command-status")
                 with Container(id="options-actions"):
                     yield Button("Run benchmark", id="run-button", variant="primary")
                     yield Button("Quit", id="quit-button")
@@ -498,10 +500,20 @@ class OptionsScreen(Screen[None]):
         """Handle on button pressed within options."""
         if event.button.id == "run-button" and not event.button.disabled:
             self.app.push_screen(RunScreen(self._last_valid_state))
+        elif event.button.id == "copy-command-button":
+            self._copy_cli_command()
         elif event.button.id == "quit-button":
             self.app.exit()
         elif event.button.id is not None and event.button.id.startswith("browse-"):
             self._open_directory_picker(event.button.id.removeprefix("browse-"))
+
+    def _copy_cli_command(self) -> None:
+        """Copy the current benchmark command to the clipboard."""
+        command = self._cli_command(self._last_valid_state)
+        self.app.copy_to_clipboard(command)
+        self.query_one("#copy-command-status", Static).update(
+            "CLI command copied to clipboard."
+        )
 
     def _refresh_form_state(self) -> None:
         """Refresh form state for options."""
@@ -522,6 +534,13 @@ class OptionsScreen(Screen[None]):
             self.query_one("#argv-preview", Static).update(
                 " ".join(validation.state.to_argv())
             )
+
+    @staticmethod
+    def _cli_command(state: BenchmarkTuiState) -> str:
+        """Build the full CLI command for the current TUI state."""
+        return "uv run python -m benchmarks.run_parallel_benchmark %s" % " ".join(
+            state.to_argv()
+        )
 
     def _render_errors(self, errors: dict[str, str]) -> None:
         """Handle render errors within options."""
