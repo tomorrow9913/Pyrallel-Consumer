@@ -20,7 +20,7 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
 
 OffsetTrackerAssignment = Mapping[DtoTopicPartition, int | OffsetTracker]
 GroupedMessage = tuple[int, int, Any] | tuple[int, int, Any, Any]
@@ -59,6 +59,7 @@ class WorkManager:
         blocking_cache_ttl: int = 100,
         max_revoke_grace_ms: int = 500,
         poison_message_circuit: Optional[PoisonMessageCircuitBreaker] = None,
+        route_batch_size: int = 1,
     ):
         """Initialize this component.
 
@@ -70,8 +71,11 @@ class WorkManager:
             blocking_cache_ttl: Number of scheduling cycles to keep blocking-offset cache entries.
             max_revoke_grace_ms: Maximum revoke grace period in milliseconds.
             poison_message_circuit: Optional poison-message circuit breaker.
+            route_batch_size: Maximum same-route work items to lease per schedule step.
 
         """
+        if route_batch_size < 1:
+            raise ValueError("route_batch_size must be >= 1")
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
@@ -108,6 +112,7 @@ class WorkManager:
         self._head_offsets = self._queue_topology.head_offsets
         self._head_queue_keys_by_offset = self._queue_topology.head_queue_keys_by_offset
         self._poison_message_circuit = poison_message_circuit
+        self._route_batch_size = route_batch_size
 
     def get_ordering_mode(self) -> OrderingMode:
         """Return ordering mode for work scheduling and completion accounting.
@@ -117,6 +122,15 @@ class WorkManager:
 
         """
         return self._ordering_mode
+
+    def get_route_batch_size(self) -> int:
+        """Return configured route batch size for scheduling leases.
+
+        Returns:
+            Configured route batch size.
+
+        """
+        return self._route_batch_size
 
     def set_metrics_exporter(self, metrics_exporter: Optional[MetricsExporter]) -> None:
         """Install or update metrics exporter for work scheduling and completion accounting.
@@ -241,6 +255,23 @@ class WorkManager:
         """
         return WorkQueueTopology.peek_queue(queue)
 
+    @staticmethod
+    def _peek_queue_batch(
+        queue: asyncio.Queue[WorkItem],
+        limit: int,
+    ) -> list[WorkItem]:
+        """Peek at a same-queue route batch without mutating queue state.
+
+        Args:
+            queue: Queue being inspected.
+            limit: Maximum number of work items to inspect.
+
+        Returns:
+            Work items currently at the queue head, up to the limit.
+
+        """
+        return WorkQueueTopology.peek_queue_batch(queue, limit)
+
     def _cleanup_empty_queue(self, tp: DtoTopicPartition, key: Any) -> None:
         """Clean up empty queue for work scheduling and completion accounting.
 
@@ -350,6 +381,47 @@ class WorkManager:
         if self._ordering_mode == OrderingMode.PARTITION:
             return tp not in self._partitions_in_flight
         return True
+
+    def _resolve_route_batch_limit(self) -> int:
+        """Resolve same-queue route batch lease limit for the current schedule step."""
+        remaining_capacity = (
+            self._max_in_flight_messages - self._current_in_flight_count
+        )
+        if remaining_capacity <= 0:
+            return 0
+        if self._ordering_mode in {OrderingMode.KEY_HASH, OrderingMode.PARTITION}:
+            return 1
+        return min(self._route_batch_size, remaining_capacity)
+
+    def _select_same_queue_batch(
+        self,
+        queue: asyncio.Queue[WorkItem],
+    ) -> list[WorkItem]:
+        """Select a same-virtual-queue batch for Slice 2A route leasing."""
+        return self._peek_queue_batch(queue, self._resolve_route_batch_limit())
+
+    def _truncate_batch_before_force_fail(
+        self,
+        items: list[WorkItem],
+    ) -> list[WorkItem]:
+        """Keep batch candidates only until the first poison force-fail item."""
+        if self._poison_message_circuit is None:
+            return items
+
+        accepted_items: list[WorkItem] = []
+        for item in items:
+            if self._poison_message_circuit.should_force_fail(item):
+                break
+            accepted_items.append(item)
+        return accepted_items
+
+    def _record_submitted_items(self, items: list[WorkItem]) -> None:
+        """Record successfully accepted work items in dispatch accounting."""
+        for dequeued_item in items:
+            self._total_queued_messages = max(0, self._total_queued_messages - 1)
+            self._current_in_flight_count += 1
+            self._dispatch_timestamps[dequeued_item.id] = time.perf_counter()
+            self._record_ordering_lock(dequeued_item)
 
     def _record_ordering_lock(self, item: WorkItem) -> None:
         """Record ordering lock for work scheduling and completion accounting.
@@ -639,65 +711,119 @@ class WorkManager:
             blocking_offsets = self._blocking_cache
             self._blocking_cache_counter -= 1
 
-        while True:
-            if self._current_in_flight_count >= self._max_in_flight_messages:
-                return
-            if self._rebalancing:
-                return
-
-            selected_queue_key = self._pick_blocking_queue_key(blocking_offsets)
-            if selected_queue_key is None:
-                selected_queue_key = self._pick_next_runnable_queue_key()
-
-            item_to_submit: Optional[WorkItem] = None
-            queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
-
-            if selected_queue_key is not None:
-                selected_tp, selected_key = selected_queue_key
-                queue_to_dequeue_from = self._virtual_partition_queues.get(
-                    selected_tp, {}
-                ).get(selected_key)
-                if queue_to_dequeue_from is None or queue_to_dequeue_from.empty():
-                    self._deactivate_queue_key(selected_queue_key)
-                    continue
-
-                item_to_submit = self._peek_queue(queue_to_dequeue_from)
-
-            if item_to_submit:
-                force_failed = await self._force_fail_queued_item(
-                    item_to_submit=item_to_submit,
-                    selected_tp=selected_tp,
-                    selected_key=selected_key,
-                )
-                if force_failed:
-                    continue
-
-                try:
-                    await self._execution_engine.submit(item_to_submit)
-                    dequeued_item = self._queue_topology.dequeue_submitted_item(
-                        selected_tp, selected_key
-                    )
-                    if dequeued_item is None:
-                        return
-                    self._total_queued_messages = max(
-                        0, self._total_queued_messages - 1
-                    )
-                    self._current_in_flight_count += 1
-                    self._dispatch_timestamps[item_to_submit.id] = time.perf_counter()
-                    self._record_ordering_lock(item_to_submit)
-                except Exception:
-                    self._logger.exception(
-                        "Error submitting work item %s", item_to_submit.id
-                    )
-                    if queue_to_dequeue_from is not None:
-                        self._refresh_queue_head(
-                            item_to_submit.tp,
-                            item_to_submit.key,
-                            queue_to_dequeue_from,
-                        )
+        deferred_queue_keys: set[tuple[DtoTopicPartition, Any]] = set()
+        try:
+            while True:
+                if self._current_in_flight_count >= self._max_in_flight_messages:
                     return
-            else:
-                return
+                if self._rebalancing:
+                    return
+
+                selected_queue_key = self._pick_blocking_queue_key(blocking_offsets)
+                if selected_queue_key is None:
+                    selected_queue_key = self._pick_next_runnable_queue_key()
+
+                items_to_submit: list[WorkItem] = []
+                queue_to_dequeue_from: Optional[asyncio.Queue[WorkItem]] = None
+                selected_tp: Optional[DtoTopicPartition] = None
+                selected_key: Any = None
+
+                if selected_queue_key is not None:
+                    selected_tp, selected_key = selected_queue_key
+                    queue_to_dequeue_from = self._virtual_partition_queues.get(
+                        selected_tp, {}
+                    ).get(selected_key)
+                    if queue_to_dequeue_from is None or queue_to_dequeue_from.empty():
+                        self._deactivate_queue_key(selected_queue_key)
+                        continue
+
+                    items_to_submit = self._select_same_queue_batch(
+                        queue_to_dequeue_from
+                    )
+
+                if items_to_submit:
+                    if selected_tp is None:
+                        return
+                    item_to_submit = items_to_submit[0]
+                    force_failed = await self._force_fail_queued_item(
+                        item_to_submit=item_to_submit,
+                        selected_tp=selected_tp,
+                        selected_key=selected_key,
+                    )
+                    if force_failed:
+                        continue
+                    selected_batch_size = len(items_to_submit)
+                    items_to_submit = self._truncate_batch_before_force_fail(
+                        items_to_submit
+                    )
+                    if not items_to_submit:
+                        continue
+                    batch_truncated_by_force_fail = (
+                        len(items_to_submit) < selected_batch_size
+                    )
+
+                    try:
+                        if len(items_to_submit) == 1:
+                            await self._execution_engine.submit(items_to_submit[0])
+                        else:
+                            # Slice 2A assumes submit_batch is all-or-nothing from the
+                            # control plane perspective. Dequeue/accounting happens only
+                            # after the engine call returns successfully; partial accept
+                            # recovery is handled in later transport-specific slices.
+                            await self._execution_engine.submit_batch(items_to_submit)
+                        dequeued_items = self._queue_topology.dequeue_submitted_items(
+                            selected_tp, selected_key, len(items_to_submit)
+                        )
+                        if not dequeued_items:
+                            return
+                        self._record_submitted_items(dequeued_items)
+                        if (
+                            batch_truncated_by_force_fail
+                            and selected_queue_key is not None
+                        ):
+                            self._deactivate_queue_key(selected_queue_key)
+                            deferred_queue_keys.add(selected_queue_key)
+                        continue
+                    except BatchSubmitError as exc:
+                        self._logger.exception(
+                            "Error submitting work item %s after %d batch items accepted",
+                            item_to_submit.id,
+                            exc.accepted_count,
+                        )
+                        if exc.accepted_count > 0:
+                            dequeued_items = (
+                                self._queue_topology.dequeue_submitted_items(
+                                    selected_tp,
+                                    selected_key,
+                                    exc.accepted_count,
+                                )
+                            )
+                            self._record_submitted_items(dequeued_items)
+                        elif queue_to_dequeue_from is not None:
+                            self._refresh_queue_head(
+                                item_to_submit.tp,
+                                item_to_submit.key,
+                                queue_to_dequeue_from,
+                            )
+                        return
+                    except Exception:
+                        self._logger.exception(
+                            "Error submitting work item %s", item_to_submit.id
+                        )
+                        if queue_to_dequeue_from is not None:
+                            self._refresh_queue_head(
+                                item_to_submit.tp,
+                                item_to_submit.key,
+                                queue_to_dequeue_from,
+                            )
+                        return
+                else:
+                    return
+        finally:
+            for tp, key in deferred_queue_keys:
+                queue = self._virtual_partition_queues.get(tp, {}).get(key)
+                if queue is not None and not queue.empty():
+                    self._refresh_queue_head(tp, key, queue)
 
     async def poll_completed_events(
         self, *, schedule_after_release: bool = True
@@ -784,6 +910,7 @@ class WorkManager:
                 now=time.perf_counter(),
             )
         if dispatch_time is not None and self._metrics_exporter is not None:
+            duration = max(0.0, time.perf_counter() - dispatch_time)
             completion_observer = getattr(
                 self._metrics_exporter, "observe_work_completion", None
             )

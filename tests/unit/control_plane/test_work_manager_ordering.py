@@ -47,6 +47,121 @@ def _setup_wm(engine, tp, ordering_mode, max_in_flight=100):
     return wm, tracker
 
 
+class _PartiallyFailingBatchEngine(BaseExecutionEngine):
+    def __init__(self, fail_offset: int) -> None:
+        self.fail_offset = fail_offset
+        self.submitted_offsets: list[int] = []
+
+    async def submit(self, work_item) -> None:
+        self.submitted_offsets.append(work_item.offset)
+        if work_item.offset == self.fail_offset:
+            raise RuntimeError("submit failed")
+
+    async def poll_completed_events(self, batch_limit: int = 1000):
+        return []
+
+    async def wait_for_completion(self, timeout_seconds=None) -> bool:
+        return True
+
+    def get_in_flight_count(self) -> int:
+        return 0
+
+    async def shutdown(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_key_hash_route_batching_is_deferred_until_engine_batches_are_ordering_safe(
+    mock_engine, tp
+):
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=10,
+    )
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    assert mock_engine.submit.await_count == 1
+    mock_engine.submit_batch.assert_not_awaited()
+    submitted_item = mock_engine.submit.await_args.args[0]
+    assert submitted_item.offset == 0
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_unordered_route_batch_respects_remaining_in_flight_capacity(
+    mock_engine, tp
+):
+    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED, max_in_flight=2)
+    wm._route_batch_size = 5
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    batch = mock_engine.submit_batch.await_args.args[0]
+    assert [item.offset for item in batch] == [0, 1]
+    assert wm.get_total_in_flight_count() == 2
+    assert wm.get_total_queued_messages() == 1
+
+
+@pytest.mark.asyncio
+async def test_unordered_route_batch_tracks_items_accepted_before_later_submit_failure(
+    tp,
+):
+    engine = _PartiallyFailingBatchEngine(fail_offset=1)
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.UNORDERED, max_in_flight=10)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    assert engine.submitted_offsets == [0, 1]
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_route_batch_size_one_preserves_item_submit_path(mock_engine, tp):
+    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH, max_in_flight=10)
+    wm._route_batch_size = 1
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+
+    await wm.schedule()
+
+    assert mock_engine.submit.await_count == 1
+    mock_engine.submit_batch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partition_mode_defers_cross_key_route_batching_for_now(mock_engine, tp):
+    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION, max_in_flight=10)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+
+    await wm.schedule()
+
+    assert mock_engine.submit.await_count == 1
+    mock_engine.submit_batch.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_key_hash_blocks_same_key_concurrent(mock_engine, tp):
     """KEY_HASH: second item with same key must NOT be submitted while first is in-flight."""
