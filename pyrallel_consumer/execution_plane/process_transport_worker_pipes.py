@@ -132,7 +132,14 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             worker_index=worker_idx,
             items=route_batch.items,
         )
-        self._acquire_worker_pipe_queue_slot(worker_idx=worker_idx, payload={})
+        serialized_items = [
+            self._serialize_work_item(item) for item in batch_with_worker.items
+        ]
+        representative_payload = serialized_items[0] if serialized_items else {}
+        self._acquire_worker_pipe_queue_slot(
+            worker_idx=worker_idx,
+            payload=representative_payload,
+        )
         pending_key = self._pending_dispatch_key_for_route_batch(
             worker_idx,
             batch_with_worker,
@@ -141,9 +148,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             "batch_id": batch_with_worker.batch_id,
             "route_identity": list(batch_with_worker.route_identity),
             "worker_index": worker_idx,
-            "items": [
-                self._serialize_work_item(item) for item in batch_with_worker.items
-            ],
+            "items": serialized_items,
             "slot_released": False,
         }
         with self._pending_dispatch_lock:

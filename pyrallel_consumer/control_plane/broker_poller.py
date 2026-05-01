@@ -156,8 +156,9 @@ class BrokerPoller:
                 forced_failure_attempt=pc_conf.execution.max_retries,
             )
         route_batch_size = getattr(pc_conf.execution, "route_batch_size", 1)
-        if not isinstance(route_batch_size, int):
+        if isinstance(route_batch_size, bool) or not isinstance(route_batch_size, int):
             route_batch_size = 1
+        route_batch_size = max(1, route_batch_size)
         self._work_manager = work_manager or WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=configured_max_in_flight,

@@ -36,12 +36,14 @@ def _require_fields(
     required_fields: tuple[str, ...],
     error_name: str,
 ) -> None:
+    """Raise a shaped validation error when required payload fields are absent."""
     missing_fields = [field for field in required_fields if field not in payload]
     if missing_fields:
         raise ValueError("%s_missing_%s" % (error_name, "_".join(missing_fields)))
 
 
 def _require_non_empty_list(value: Any, field_name: str, error_name: str) -> list[Any]:
+    """Return a non-empty list field or raise a shaped validation error."""
     if not isinstance(value, list):
         raise ValueError("%s_%s_not_list" % (error_name, field_name))
     if not value:

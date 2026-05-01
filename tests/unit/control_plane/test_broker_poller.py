@@ -116,6 +116,21 @@ def test_broker_poller_wires_route_batch_size_to_fallback_work_manager(
     assert manager.call_args.kwargs["route_batch_size"] == 9
 
 
+def test_broker_poller_treats_bool_route_batch_size_as_default(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.route_batch_size = True
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
+        BrokerPoller(
+            consume_topic="test-topic",
+            kafka_config=mock_kafka_config,
+            execution_engine=mock_execution_engine,
+        )
+
+    assert manager.call_args.kwargs["route_batch_size"] == 1
+
+
 @pytest.mark.asyncio
 async def test_check_backpressure_updates_effective_inflight_limit_when_adaptive_enabled(
     mock_kafka_config, mock_execution_engine, mock_consumer

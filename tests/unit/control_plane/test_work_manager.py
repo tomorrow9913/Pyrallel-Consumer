@@ -106,6 +106,11 @@ def test_work_manager_rejects_invalid_route_batch_size(mock_execution_engine):
         WorkManager(execution_engine=mock_execution_engine, route_batch_size=0)
 
 
+def test_work_manager_rejects_bool_route_batch_size(mock_execution_engine):
+    with pytest.raises(ValueError, match="route_batch_size must be >= 1"):
+        WorkManager(execution_engine=mock_execution_engine, route_batch_size=True)
+
+
 @pytest.mark.asyncio
 async def test_on_assign_uses_configured_max_revoke_grace_ms(
     mock_execution_engine, mock_dto_topic_partition

@@ -99,6 +99,7 @@ _SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
 _POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
 _POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
 _DEFAULT_MSGPACK_MAX_BYTES = 1_000_000
+_MAX_SEEN_COMPLETION_IDENTITIES = 100_000
 _logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -165,6 +166,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._registry_event_queue: Queue[Any] = Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._seen_completion_identities: set[tuple[str, str, int, int, int]] = set()
+        self._seen_completion_identity_order: Deque[
+            tuple[str, str, int, int, int]
+        ] = deque()
         self._in_flight_registry: dict[
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
@@ -819,6 +823,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if seen is None:
             seen = set()
             self._seen_completion_identities = seen
+        order = getattr(self, "_seen_completion_identity_order", None)
+        if order is None:
+            order = deque()
+            self._seen_completion_identity_order = order
         identity = (
             event.id,
             event.tp.topic,
@@ -829,6 +837,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if identity in seen:
             return True
         seen.add(identity)
+        order.append(identity)
+        max_seen = max(1, _MAX_SEEN_COMPLETION_IDENTITIES)
+        while len(order) > max_seen:
+            seen.discard(order.popleft())
         return False
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
@@ -1336,10 +1348,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 raw_event,
                 msgpack_max_bytes,
             )
-            if (
-                isinstance(payload, dict)
-                and payload.get("kind") == BATCH_COMPLETION_KIND
-            ):
+            if not isinstance(payload, dict):
+                raise ValueError("invalid_completion_payload_type")
+            if payload.get("kind") == BATCH_COMPLETION_KIND:
                 decoded_payload = _decode_batch_completion_payload(
                     payload,
                     max_bytes=msgpack_max_bytes,

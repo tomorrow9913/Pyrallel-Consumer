@@ -74,7 +74,7 @@ class WorkManager:
             route_batch_size: Maximum same-route work items to lease per schedule step.
 
         """
-        if route_batch_size < 1:
+        if isinstance(route_batch_size, bool) or route_batch_size < 1:
             raise ValueError("route_batch_size must be >= 1")
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine

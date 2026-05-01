@@ -394,6 +394,14 @@ def test_decode_completion_queue_item_events_rejects_oversized_item_completion_b
         engine._decode_completion_queue_item_events(raw_event)
 
 
+def test_decode_completion_queue_item_events_rejects_non_dict_payload() -> None:
+    raw_event = msgpack.packb(["not", "a", "dict"], use_bin_type=True)
+    engine = _make_decode_only_process_engine(max_bytes=len(raw_event) + 1)
+
+    with pytest.raises(ValueError, match="invalid_completion_payload_type"):
+        engine._decode_completion_queue_item_events(raw_event)
+
+
 def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_bytes() -> (
     None
 ):
@@ -410,6 +418,21 @@ def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_
 
     with pytest.raises(ValueError, match="payload_too_large"):
         engine._decode_completion_queue_item_events(raw_event)
+
+
+def test_completion_identity_cache_evicts_oldest_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _make_decode_only_process_engine(max_bytes=1024)
+    monkeypatch.setattr(process_engine, "_MAX_SEEN_COMPLETION_IDENTITIES", 2)
+
+    assert engine._is_duplicate_completion_event(_make_completion_event(0)) is False
+    assert engine._is_duplicate_completion_event(_make_completion_event(1)) is False
+    assert engine._is_duplicate_completion_event(_make_completion_event(2)) is False
+
+    assert len(engine._seen_completion_identities) == 2
+    assert engine._is_duplicate_completion_event(_make_completion_event(1)) is True
+    assert engine._is_duplicate_completion_event(_make_completion_event(0)) is False
 
 
 @pytest.mark.asyncio

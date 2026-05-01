@@ -890,6 +890,52 @@ def test_worker_pipe_submit_batch_send_failure_rolls_back_pending_and_slot() -> 
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
 
 
+def test_worker_pipe_route_batch_slot_acquire_uses_representative_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    acquired_payloads: list[dict[str, Any]] = []
+    original_acquire = transport._acquire_worker_pipe_queue_slot
+
+    def capture_acquire(worker_idx: int, payload: dict[str, Any]) -> None:
+        acquired_payloads.append(payload)
+        original_acquire(worker_idx=worker_idx, payload=payload)
+
+    monkeypatch.setattr(transport, "_acquire_worker_pipe_queue_slot", capture_acquire)
+
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-representative",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    assert acquired_payloads == [_work_item_to_dict(item)]
+
+
 def test_worker_pipe_route_batch_start_keeps_unstarted_tail_recoverable() -> None:
     sender = _PipeSender()
     transport = WorkerPipesProcessTransport(
