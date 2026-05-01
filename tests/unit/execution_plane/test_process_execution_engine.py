@@ -1912,6 +1912,59 @@ def test_worker_runtime_route_batch_emits_only_batch_completion_envelope() -> No
     assert raw_payloads[0]["kind"] == "batch_completion"
 
 
+def test_worker_runtime_defers_route_batch_done_until_completion_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-done-after-flush", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    original_flush = worker_runtime_module._flush_route_batch_completion
+    seen_done_before_flush: list[dict[str, Any]] = []
+
+    def capture_flush(**kwargs: Any) -> None:
+        queue_ref = cast(queue.Queue[object], kwargs["registry_event_queue"])
+        seen_done_before_flush.extend(
+            cast(dict[str, Any], event)
+            for event in list(queue_ref.queue)
+            if isinstance(event, dict) and event.get("kind") == "done"
+        )
+        original_flush(**kwargs)
+
+    monkeypatch.setattr(
+        worker_runtime_module,
+        "_flush_route_batch_completion",
+        capture_flush,
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    assert seen_done_before_flush == []
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    assert [event.get("kind") for event in registry_events].count("done") == 1
+
+
 def test_worker_runtime_fatal_route_batch_flushes_prefix_completion_before_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -253,6 +253,7 @@ def _worker_loop(
         batch_run_started_at: Optional[float] = None
         batch_completed_sent = False
         batch_completion_results: list[CompletionEvent] = []
+        deferred_done_events: list[dict[str, Any]] = []
 
         for idx, payload in enumerate(payloads):
             work_item = _work_item_from_dict(payload)
@@ -416,13 +417,15 @@ def _worker_loop(
                             process_idx,
                             put_exc,
                         )
-                registry_event_queue.put(
-                    {
-                        "kind": "done",
-                        "key": in_flight_key,
-                        "payload": _work_item_identity_payload(payload),
-                    }
-                )
+                done_event = {
+                    "kind": "done",
+                    "key": in_flight_key,
+                    "payload": _work_item_identity_payload(payload),
+                }
+                if route_batch_id is None:
+                    registry_event_queue.put(done_event)
+                else:
+                    deferred_done_events.append(done_event)
 
                 if status == CompletionStatus.FAILURE and route_batch_id is not None:
                     remaining_payloads = [dict(entry) for entry in payloads[idx + 1 :]]
@@ -498,6 +501,8 @@ def _worker_loop(
                 route_identity=route_identity,
                 batch_completion_results=batch_completion_results,
             )
+            for done_event in deferred_done_events:
+                registry_event_queue.put(done_event)
 
         if should_exit_after_batch:
             break
