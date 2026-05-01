@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/process_registry_support.py
+# Role: Manages process-engine in-flight registry transitions and dead-worker recovery decisions.
+# Extend here for registry state rules; keep transport send/receive mechanics in transport modules.
 from __future__ import annotations
 
 import queue
@@ -28,7 +32,18 @@ class ProcessRegistrySupport:
         max_retries: int,
         emit_worker_recovery_failure: Callable[..., None],
     ) -> list[SerializedWorkItem]:
-        """Recover dead worker items for process in-flight registry management."""
+        """Recover dead worker items for process in-flight registry management.
+
+        Args:
+            worker_index: Worker index owning the registry entries.
+            in_flight_registry: Registry of work currently assigned to process workers.
+            max_retries: Max retries value used by this function.
+            emit_worker_recovery_failure: Callback used to emit an unrecoverable worker failure.
+
+        Returns:
+            list[SerializedWorkItem] result produced by this function.
+
+        """
         items = [
             (key, payload)
             for key, payload in in_flight_registry.items()
@@ -72,7 +87,15 @@ class ProcessRegistrySupport:
         record_main_to_worker_ipc: Callable[[Any], None],
         record_worker_exec: Callable[[Any], None],
     ) -> None:
-        """Handle apply registry event within process in-flight registry management."""
+        """Handle apply registry event within process in-flight registry management.
+
+        Args:
+            event: Completion or registry event being processed.
+            in_flight_registry: Registry of work currently assigned to process workers.
+            record_main_to_worker_ipc: Callback recording main-to-worker IPC latency.
+            record_worker_exec: Callback recording worker execution latency.
+
+        """
         kind = event.get("kind")
         key = event.get("key")
         if kind == "start" and key is not None:
@@ -129,7 +152,16 @@ class ProcessRegistrySupport:
         registry_event_queue: Any,
         apply_event: Callable[[dict[str, Any]], None],
     ) -> int:
-        """Drain registry event queue for process in-flight registry management."""
+        """Drain registry event queue for process in-flight registry management.
+
+        Args:
+            registry_event_queue: Queue containing worker registry events.
+            apply_event: Callback used to apply one registry event.
+
+        Returns:
+            Computed integer value.
+
+        """
         if registry_event_queue is None:
             return 0
 
@@ -148,7 +180,13 @@ class ProcessRegistrySupport:
         in_flight_registry: InFlightRegistry,
         event: CompletionEvent,
     ) -> None:
-        """Build discard completion from registry."""
+        """Build discard completion from registry.
+
+        Args:
+            in_flight_registry: Registry of work currently assigned to process workers.
+            event: Completion or registry event being processed.
+
+        """
         expected_identity = logical_work_identity_from_completion_event(event)
         for key, payload in list(in_flight_registry.items()):
             if (
@@ -163,7 +201,16 @@ class ProcessRegistrySupport:
         in_flight_registry: InFlightRegistry,
         tp: TopicPartition,
     ) -> Optional[int]:
-        """Return min inflight offset for process in-flight registry management."""
+        """Return min inflight offset for process in-flight registry management.
+
+        Args:
+            in_flight_registry: Registry of work currently assigned to process workers.
+            tp: Topic-partition affected by the operation.
+
+        Returns:
+            Computed integer value, or None when no value is available.
+
+        """
         min_offset = None
         for (
             _worker_index,
@@ -184,7 +231,17 @@ class ProcessRegistrySupport:
         key: InFlightRegistryKey,
         registry_payload: SerializedWorkItem,
     ) -> bool:
-        """Handle event matches registry entry within process in-flight registry management."""
+        """Handle event matches registry entry within process in-flight registry management.
+
+        Args:
+            event: Completion or registry event being processed.
+            key: Kafka record key or virtual queue key.
+            registry_payload: Registry payload value used by this function.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         event_payload = event.get("payload")
         if not isinstance(event_payload, dict):
             return True
@@ -199,7 +256,17 @@ class ProcessRegistrySupport:
         key: InFlightRegistryKey,
         registry_payload: SerializedWorkItem,
     ) -> bool:
-        """Start event supersedes registry entry for process in-flight registry management."""
+        """Start event supersedes registry entry for process in-flight registry management.
+
+        Args:
+            event: Completion or registry event being processed.
+            key: Kafka record key or virtual queue key.
+            registry_payload: Registry payload value used by this function.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         event_payload = event.get("payload")
         if not isinstance(event_payload, dict):
             return True

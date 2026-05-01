@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/adaptive_backpressure.py
+# Role: Adjusts effective in-flight limits from lag, queue depth, latency, and pause state.
+# Extend here for adaptive backpressure policy; keep concurrency-limit sampling separate.
 from __future__ import annotations
 
 import time
@@ -16,6 +20,13 @@ class AdaptiveBackpressureController:
         configured_max_in_flight: int,
         config: AdaptiveBackpressureConfig,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            configured_max_in_flight: Configured max in flight value used to initialize this component.
+            config: Configuration object used to initialize this component.
+
+        """
         self._config = config
         self._configured_max_in_flight = max(1, int(configured_max_in_flight))
         self._min_in_flight = min(
@@ -29,12 +40,22 @@ class AdaptiveBackpressureController:
 
     @property
     def enabled(self) -> bool:
-        """Return whether this controller is active."""
+        """Return whether this controller is active.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         return bool(self._config.enabled)
 
     @property
     def effective_max_in_flight(self) -> int:
-        """Handle effective max in flight within adaptive backpressure control."""
+        """Handle effective max in flight within adaptive backpressure control.
+
+        Returns:
+            Computed integer value.
+
+        """
         return self._effective_max_in_flight
 
     def evaluate(
@@ -46,7 +67,19 @@ class AdaptiveBackpressureController:
         is_paused: bool,
         now_monotonic: Optional[float] = None,
     ) -> int:
-        """Evaluate the latest sample and return any control adjustment."""
+        """Evaluate the latest sample and return any control adjustment.
+
+        Args:
+            total_true_lag: Total true lag across assigned partitions.
+            total_queued: Total number of queued messages.
+            avg_completion_latency_seconds: Average completion latency in seconds, when available.
+            is_paused: Whether consumption is currently paused.
+            now_monotonic: Monotonic timestamp override used for deterministic evaluation.
+
+        Returns:
+            Computed integer value.
+
+        """
         if not self.enabled:
             self.last_decision = "disabled"
             return self._effective_max_in_flight
@@ -108,7 +141,15 @@ class AdaptiveBackpressureController:
     def build_runtime_snapshot(
         self, *, avg_completion_latency_seconds: Optional[float]
     ) -> AdaptiveBackpressureSnapshot:
-        """Build runtime snapshot for adaptive backpressure control."""
+        """Build runtime snapshot for adaptive backpressure control.
+
+        Args:
+            avg_completion_latency_seconds: Average completion latency in seconds, when available.
+
+        Returns:
+            Runtime snapshot of adaptive backpressure state.
+
+        """
         return AdaptiveBackpressureSnapshot(
             configured_max_in_flight=self._configured_max_in_flight,
             effective_max_in_flight=self._effective_max_in_flight,

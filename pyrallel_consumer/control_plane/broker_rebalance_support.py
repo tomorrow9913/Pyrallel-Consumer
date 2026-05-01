@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_rebalance_support.py
+# Role: Builds and revokes partition assignments while preserving offset-tracker state.
+# Extend here for rebalance state handoff; keep commit planning in broker_support.py.
 from __future__ import annotations
 
 import logging
@@ -21,6 +25,14 @@ class BrokerRebalanceSupport:
         tracker_factory=OffsetTracker,
         committed_lookup_timeout_seconds: float = 5.0,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            metadata_encoder: Metadata encoder used for commit state handoff.
+            tracker_factory: Factory used to create offset trackers.
+            committed_lookup_timeout_seconds: Timeout for committed-offset lookups.
+
+        """
         self._metadata_encoder = metadata_encoder
         self._tracker_factory = tracker_factory
         self._committed_lookup_timeout_seconds = committed_lookup_timeout_seconds
@@ -33,7 +45,18 @@ class BrokerRebalanceSupport:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
-        """Decode assignment completed offsets for rebalance state handoff."""
+        """Decode assignment completed offsets for rebalance state handoff.
+
+        Args:
+            strategy: Rebalance metadata strategy to use.
+            partition: Kafka topic-partition object being inspected.
+            committed_partition: Committed Kafka partition metadata, when available.
+            last_committed: Last committed offset used as the decode baseline.
+
+        Returns:
+            set[int] result produced by this function.
+
+        """
         if strategy != "metadata_snapshot":
             return set()
 
@@ -53,7 +76,17 @@ class BrokerRebalanceSupport:
         tracker: OffsetTracker,
         base_offset: int,
     ) -> str:
-        """Encode revoke metadata for rebalance state handoff."""
+        """Encode revoke metadata for rebalance state handoff.
+
+        Args:
+            strategy: Rebalance metadata strategy to use.
+            tracker: Offset tracker whose state is being read or updated.
+            base_offset: Base offset used for relative metadata encoding.
+
+        Returns:
+            Computed string value.
+
+        """
         if strategy != "metadata_snapshot":
             return ""
 
@@ -76,7 +109,19 @@ class BrokerRebalanceSupport:
         max_revoke_grace_ms: int,
         logger=None,
     ) -> dict[DtoTopicPartition, OffsetTracker]:
-        """Build assignments for rebalance state handoff."""
+        """Build assignments for rebalance state handoff.
+
+        Args:
+            consumer: Kafka consumer instance.
+            partitions: Kafka topic partitions passed by the rebalance callback.
+            strategy: Rebalance metadata strategy to use.
+            max_revoke_grace_ms: Max revoke grace ms value used by this function.
+            logger: Logger used to report operational details.
+
+        Returns:
+            dict[DtoTopicPartition, OffsetTracker] result produced by this function.
+
+        """
         if logger is None:
             logger = logging.getLogger(__name__)
         committed_offsets: dict[tuple[str, int], KafkaTopicPartition] = {}
@@ -88,9 +133,9 @@ class BrokerRebalanceSupport:
             for committed_tp in committed_partitions:
                 if committed_tp.offset is None:
                     continue
-                committed_offsets[(committed_tp.topic, committed_tp.partition)] = (
-                    committed_tp
-                )
+                committed_offsets[
+                    (committed_tp.topic, committed_tp.partition)
+                ] = committed_tp
         except KafkaException as exc:
             logger.warning(
                 "Failed to fetch committed offsets on assignment, falling back to assignment offsets: %s",
@@ -158,7 +203,19 @@ class BrokerRebalanceSupport:
             Callable[[DtoTopicPartition, str], None]
         ] = None,
     ) -> None:
-        """Handle revoke for rebalance state handoff."""
+        """Handle revoke for rebalance state handoff.
+
+        Args:
+            consumer: Kafka consumer instance.
+            partitions: Kafka topic partitions passed by the rebalance callback.
+            work_manager: Work manager value used by this function.
+            offset_trackers: Offset trackers keyed by topic-partition.
+            drop_cached_partition_messages: Drop cached partition messages value used by this function.
+            strategy: Rebalance metadata strategy to use.
+            logger: Logger used to report operational details.
+            record_commit_failure: Record commit failure value used by this function.
+
+        """
         tp_dtos = [
             DtoTopicPartition(topic=tp.topic, partition=tp.partition)
             for tp in partitions

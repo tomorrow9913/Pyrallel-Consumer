@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/process_worker_runtime.py
+# Role: Runs child-process worker loops, task decoding, retries, and completion emission.
+# Extend here for worker-process runtime behavior; keep parent orchestration in process_engine.py.
 from __future__ import annotations
 
 import logging
@@ -37,7 +41,15 @@ _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
 
 
 def _receive_task_payload(task_source: Any) -> Any:
-    """Handle receive task payload within process worker runtime."""
+    """Handle receive task payload within process worker runtime.
+
+    Args:
+        task_source: Queue or pipe endpoint from which the worker receives tasks.
+
+    Returns:
+        Any result produced by this function.
+
+    """
     recv_bytes = getattr(task_source, "recv_bytes", None)
     if callable(recv_bytes):
         return recv_bytes()
@@ -51,8 +63,19 @@ def _calculate_backoff(
     max_retry_backoff_ms: int,
     retry_jitter_ms: int,
 ) -> float:
-    """Calculate backoff delay in seconds with optional exponential scaling and jitter."""
+    """Calculate backoff delay in seconds with optional exponential scaling and jitter.
 
+    Args:
+        attempt: Current retry attempt number.
+        retry_backoff_ms: Base retry backoff in milliseconds.
+        exponential_backoff: Whether to apply exponential retry backoff.
+        max_retry_backoff_ms: Maximum retry backoff in milliseconds.
+        retry_jitter_ms: Maximum retry jitter in milliseconds.
+
+    Returns:
+        Computed floating-point value.
+
+    """
     if exponential_backoff:
         backoff_ms = retry_backoff_ms * (2 ** (attempt - 1))
     else:
@@ -73,7 +96,21 @@ def _worker_loop(
     execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
 ):
-    """Handle worker loop within process worker runtime."""
+    """Handle worker loop within process worker runtime.
+
+    Args:
+        task_source: Queue or pipe endpoint from which the worker receives tasks.
+        completion_queue: Queue used to send completion events to the parent process.
+        registry_event_queue: Queue containing worker registry events.
+        worker_fn: User worker callable invoked for each work item.
+        process_idx: Index of the worker process running this loop.
+        execution_config: Execution configuration used by the worker loop.
+        log_queue: Optional logging queue configured by the parent process.
+
+    Raises:
+        TimeoutError: If the worker task exceeds its configured timeout.
+
+    """
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
 
@@ -187,7 +224,16 @@ def _worker_loop(
                     if timeout_sec > 0:
 
                         def _handle_timeout(signum, frame):
-                            """Handle timeout for process worker runtime."""
+                            """Handle timeout for process worker runtime.
+
+                            Args:
+                                signum: Signal number received by the worker timeout handler.
+                                frame: Interpreter frame supplied by the signal handler.
+
+                            Raises:
+                                TimeoutError: If the worker task exceeds its configured timeout.
+
+                            """
                             raise TimeoutError(
                                 "Task offset=%d exceeded %.3fs"
                                 % (work_item.offset, timeout_sec)

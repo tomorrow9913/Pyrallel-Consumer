@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_task_lifecycle_support.py
+# Role: Starts and stops broker runtime resources and background tasks.
+# Extend here for lifecycle wiring; keep polling and business decisions in broker_poller.py.
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +20,15 @@ class BrokerTaskLifecycleSupport:
         consumer_factory: Callable[[dict[str, Any]], Any],
         task_factory: Callable[[Awaitable[Any], str | None], Any],
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            producer_factory: Factory used to create Kafka producers.
+            admin_factory: Factory used to create Kafka admin clients.
+            consumer_factory: Factory used to create Kafka consumers.
+            task_factory: Factory used to create asyncio tasks.
+
+        """
         self._producer_factory = producer_factory
         self._admin_factory = admin_factory
         self._consumer_factory = consumer_factory
@@ -34,7 +47,23 @@ class BrokerTaskLifecycleSupport:
         completion_monitor_coro_factory: Callable[[], Awaitable[Any]],
         strict_completion_monitor_enabled: bool,
     ) -> tuple[Any, Any, Any, Any, Any | None]:
-        """Start runtime for broker task lifecycle management."""
+        """Start runtime for broker task lifecycle management.
+
+        Args:
+            consume_topic: Kafka topic being consumed.
+            producer_conf: Kafka producer configuration.
+            admin_conf: Kafka admin client configuration.
+            consumer_conf: Kafka consumer configuration.
+            on_assign: Kafka assignment callback.
+            on_revoke: Kafka revoke callback.
+            consumer_loop_coro_factory: Factory for the consumer-loop coroutine.
+            completion_monitor_coro_factory: Factory for the completion-monitor coroutine.
+            strict_completion_monitor_enabled: Whether to start a strict completion monitor task.
+
+        Returns:
+            tuple[Any, Any, Any, Any, Any | None] result produced by this function.
+
+        """
         producer = self._producer_factory(producer_conf)
         admin = self._admin_factory(admin_conf)
         consumer = self._consumer_factory(consumer_conf)
@@ -63,7 +92,16 @@ class BrokerTaskLifecycleSupport:
         wait_for: Callable[[Any, float], Awaitable[Any]] | None = None,
         gather: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
-        """Stop runtime for broker task lifecycle management."""
+        """Stop runtime for broker task lifecycle management.
+
+        Args:
+            consumer_task: Background consumer task to stop or await.
+            shutdown_event: Event set when shutdown has completed.
+            timeout_seconds: Maximum time to wait, in seconds; None waits indefinitely.
+            wait_for: Awaitable timeout helper, defaults to asyncio.wait_for.
+            gather: Awaitable gather helper, defaults to asyncio.gather.
+
+        """
         if wait_for is None:
             wait_for = asyncio.wait_for
         if gather is None:
@@ -81,6 +119,12 @@ class BrokerTaskLifecycleSupport:
         shutdown_event: asyncio.Event,
         raise_if_failed: Callable[[], None],
     ) -> None:
-        """Wait for closed in broker task lifecycle management."""
+        """Wait for closed in broker task lifecycle management.
+
+        Args:
+            shutdown_event: Event set when shutdown has completed.
+            raise_if_failed: Callback that raises any stored runtime failure.
+
+        """
         await shutdown_event.wait()
         raise_if_failed()

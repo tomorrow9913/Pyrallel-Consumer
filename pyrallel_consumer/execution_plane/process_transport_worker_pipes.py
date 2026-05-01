@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/process_transport_worker_pipes.py
+# Role: Implements worker-affine pipe transport with routing, slot accounting, and dispatch recovery.
+# Extend here for pipe-based IPC behavior; keep generic transport contracts in process_transport.py.
 from __future__ import annotations
 
 import threading
@@ -40,6 +44,22 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         slot_wait_liveness_check: Callable[[], None] | None = None,
         slot_wait_timeout_seconds: float = 0.05,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            process_count: Number of process workers.
+            queue_size: Maximum queued pipe messages.
+            max_payload_bytes: Maximum allowed encoded payload size.
+            serialize_work_item: Serialize work item value used to initialize this component.
+            serialize_batch_payload: Serialize batch payload value used to initialize this component.
+            work_item_from_dict: Work item from dict value used to initialize this component.
+            get_worker_pipe_senders: Get worker pipe senders value used to initialize this component.
+            increment_in_flight: Increment in flight value used to initialize this component.
+            pipe_sentinel: Sentinel bytes used to stop pipe workers.
+            slot_wait_liveness_check: Slot wait liveness check value used to initialize this component.
+            slot_wait_timeout_seconds: Slot wait timeout seconds value used to initialize this component.
+
+        """
         self._process_count = process_count
         self._max_payload_bytes = max_payload_bytes
         self._serialize_work_item = serialize_work_item
@@ -61,7 +81,18 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
-        """Dispatch payload for worker-pipe process transport."""
+        """Dispatch payload for worker-pipe process transport.
+
+        Args:
+            payload: Serialized or decoded payload handled by this function.
+            route_identity: Routing identity used to choose the process worker.
+            count_in_flight: Whether dispatch should increment in-flight accounting.
+
+        Raises:
+            Exception: Propagates serialization, validation, or pipe-send failures after
+                releasing any pending dispatch accounting.
+
+        """
         work_item = self._work_item_from_dict(payload)
         worker_idx = stable_worker_index_for_route(route_identity, self._process_count)
         self._acquire_worker_pipe_queue_slot(worker_idx=worker_idx, payload=payload)
@@ -86,7 +117,15 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             self._increment_in_flight()
 
     def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
-        """Start worker task source for worker-pipe process transport."""
+        """Start worker task source for worker-pipe process transport.
+
+        Args:
+            idx: Worker index being inspected or restarted.
+
+        Returns:
+            tuple[Any, bool] result produced by this function.
+
+        """
         worker_receiver, parent_sender = Pipe(duplex=False)
         senders = self._get_worker_pipe_senders()
         if idx < len(senders):
@@ -101,11 +140,21 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
 
     @property
     def capabilities(self) -> ProcessTransportCapabilities:
-        """Return capabilities supported by this transport."""
+        """Return capabilities supported by this transport.
+
+        Returns:
+            ProcessTransportCapabilities result produced by this function.
+
+        """
         return ProcessTransportCapabilities(pending_dispatch_recovery=True)
 
     def handle_registry_event(self, event: dict[str, Any]) -> None:
-        """Handle registry event for worker-pipe process transport."""
+        """Handle registry event for worker-pipe process transport.
+
+        Args:
+            event: Completion or registry event being processed.
+
+        """
         if event.get("kind") != "start":
             return
         key = event.get("key")
@@ -120,7 +169,15 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._release_worker_pipe_queue_slot()
 
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
-        """Recover pending dispatches for worker-pipe process transport."""
+        """Recover pending dispatches for worker-pipe process transport.
+
+        Args:
+            idx: Worker index being inspected or restarted.
+
+        Returns:
+            list[PendingDispatchRecovery] result produced by this function.
+
+        """
         recovered: list[PendingDispatchRecovery] = []
         with self._pending_dispatch_lock:
             for key, payload in list(self._pending_dispatch.items()):
@@ -141,7 +198,12 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         return recovered
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
-        """Requeue payloads for worker-pipe process transport."""
+        """Requeue payloads for worker-pipe process transport.
+
+        Args:
+            payloads: Serialized payloads handled by this function.
+
+        """
         for payload in payloads:
             work_item = self._work_item_from_dict(payload)
             self.dispatch_payload(
@@ -155,7 +217,12 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             )
 
     def signal_shutdown(self, worker_count: int) -> None:
-        """Handle signal shutdown within worker-pipe process transport."""
+        """Handle signal shutdown within worker-pipe process transport.
+
+        Args:
+            worker_count: Number of worker shutdown signals to send.
+
+        """
         del worker_count
         for sender in self._get_worker_pipe_senders():
             try:
@@ -181,7 +248,16 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         worker_idx: int,
         payload: SerializedWorkItem,
     ) -> PendingDispatchKey:
-        """Handle pending dispatch key within worker-pipe process transport."""
+        """Handle pending dispatch key within worker-pipe process transport.
+
+        Args:
+            worker_idx: Worker index selected for dispatch.
+            payload: Serialized or decoded payload handled by this function.
+
+        Returns:
+            PendingDispatchKey result produced by this function.
+
+        """
         identity = worker_execution_identity_from_payload(worker_idx, payload)
         return (
             identity.worker_index,
@@ -197,7 +273,16 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         key: Any,
         payload: Any,
     ) -> PendingDispatchKey | None:
-        """Handle pending dispatch key for registry start within worker-pipe process transport."""
+        """Handle pending dispatch key for registry start within worker-pipe process transport.
+
+        Args:
+            key: Kafka record key or virtual queue key.
+            payload: Serialized or decoded payload handled by this function.
+
+        Returns:
+            PendingDispatchKey | None result produced by this function.
+
+        """
         if not isinstance(key, tuple) or len(key) < 4 or not isinstance(payload, dict):
             return None
         if (
@@ -216,7 +301,15 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             return
 
     def _validate_packed_payload(self, payload: bytes) -> None:
-        """Validate packed payload for worker-pipe process transport."""
+        """Validate packed payload for worker-pipe process transport.
+
+        Args:
+            payload: Serialized or decoded payload handled by this function.
+
+        Raises:
+            ValueError: If the provided configuration or state is invalid.
+
+        """
         if len(payload) > self._max_payload_bytes:
             raise ValueError("payload_too_large")
 
@@ -239,7 +332,13 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         worker_idx: int,
         payload: SerializedWorkItem,
     ) -> None:
-        """Handle acquire worker pipe queue slot within worker-pipe process transport."""
+        """Handle acquire worker pipe queue slot within worker-pipe process transport.
+
+        Args:
+            worker_idx: Worker index selected for dispatch.
+            payload: Serialized or decoded payload handled by this function.
+
+        """
         del worker_idx, payload
         liveness_check = self._slot_wait_liveness_check
         timeout_seconds = self._slot_wait_timeout_seconds
@@ -259,7 +358,17 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         payload: SerializedWorkItem,
         packed_payload: bytes,
     ) -> None:
-        """Handle send packed payload within worker-pipe process transport."""
+        """Handle send packed payload within worker-pipe process transport.
+
+        Args:
+            worker_idx: Worker index selected for dispatch.
+            payload: Serialized or decoded payload handled by this function.
+            packed_payload: Serialized payload bytes to send to the worker.
+
+        Raises:
+            RuntimeError: If the runtime is in a failed or unsupported state.
+
+        """
         senders = self._get_worker_pipe_senders()
         try:
             sender = senders[worker_idx]

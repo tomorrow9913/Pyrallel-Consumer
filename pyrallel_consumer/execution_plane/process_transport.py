@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/process_transport.py
+# Role: Defines process-transport identities, routing helpers, and the transport interface.
+# Extend here for transport-wide contracts; keep concrete queue or pipe behavior in sibling modules.
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +60,15 @@ class PendingDispatchRecovery:
 
 
 def resolve_route_identity(work_item: WorkItem) -> RouteIdentity:
-    """Resolve route identity for process transport routing."""
+    """Resolve route identity for process transport routing.
+
+    Args:
+        work_item: Work item being scheduled or processed.
+
+    Returns:
+        RouteIdentity result produced by this function.
+
+    """
     return RouteIdentity(
         topic=work_item.tp.topic,
         partition=work_item.tp.partition,
@@ -67,7 +79,15 @@ def resolve_route_identity(work_item: WorkItem) -> RouteIdentity:
 def logical_work_identity_from_payload(
     payload: SerializedWorkItem,
 ) -> LogicalWorkIdentity:
-    """Build logical work identity from payload."""
+    """Build logical work identity from payload.
+
+    Args:
+        payload: Serialized or decoded payload handled by this function.
+
+    Returns:
+        LogicalWorkIdentity result produced by this function.
+
+    """
     return LogicalWorkIdentity(
         topic=str(payload["topic"]),
         partition=int(payload["partition"]),
@@ -80,7 +100,15 @@ def logical_work_identity_from_payload(
 def logical_work_identity_from_completion_event(
     event: CompletionEvent,
 ) -> LogicalWorkIdentity:
-    """Build logical work identity from completion event."""
+    """Build logical work identity from completion event.
+
+    Args:
+        event: Completion or registry event being processed.
+
+    Returns:
+        LogicalWorkIdentity result produced by this function.
+
+    """
     return LogicalWorkIdentity(
         topic=event.tp.topic,
         partition=event.tp.partition,
@@ -94,7 +122,16 @@ def logical_work_identity_from_registry_entry(
     key: InFlightRegistryKey,
     payload: SerializedWorkItem,
 ) -> LogicalWorkIdentity:
-    """Build logical work identity from registry entry."""
+    """Build logical work identity from registry entry.
+
+    Args:
+        key: Kafka record key or virtual queue key.
+        payload: Serialized or decoded payload handled by this function.
+
+    Returns:
+        LogicalWorkIdentity result produced by this function.
+
+    """
     _worker_index, topic, partition, offset = key
     return LogicalWorkIdentity(
         topic=topic,
@@ -109,7 +146,16 @@ def worker_execution_identity_from_payload(
     worker_index: int,
     payload: SerializedWorkItem,
 ) -> WorkerExecutionIdentity:
-    """Build worker execution identity from payload."""
+    """Build worker execution identity from payload.
+
+    Args:
+        worker_index: Worker index owning the registry entries.
+        payload: Serialized or decoded payload handled by this function.
+
+    Returns:
+        WorkerExecutionIdentity result produced by this function.
+
+    """
     return WorkerExecutionIdentity(
         worker_index=worker_index,
         work=logical_work_identity_from_payload(payload),
@@ -120,7 +166,16 @@ def worker_execution_identity_from_registry_entry(
     key: InFlightRegistryKey,
     payload: SerializedWorkItem,
 ) -> WorkerExecutionIdentity:
-    """Build worker execution identity from registry entry."""
+    """Build worker execution identity from registry entry.
+
+    Args:
+        key: Kafka record key or virtual queue key.
+        payload: Serialized or decoded payload handled by this function.
+
+    Returns:
+        WorkerExecutionIdentity result produced by this function.
+
+    """
     return WorkerExecutionIdentity(
         worker_index=key[0],
         work=logical_work_identity_from_registry_entry(key, payload),
@@ -132,7 +187,17 @@ def registry_entry_matches_payload(
     registry_payload: SerializedWorkItem,
     expected_payload: SerializedWorkItem,
 ) -> bool:
-    """Handle registry entry matches payload within process transport routing."""
+    """Handle registry entry matches payload within process transport routing.
+
+    Args:
+        key: Kafka record key or virtual queue key.
+        registry_payload: Registry payload value used by this function.
+        expected_payload: Expected payload value used by this function.
+
+    Returns:
+        True when the operation succeeds or the condition is met; otherwise False.
+
+    """
     return logical_work_identity_from_registry_entry(
         key, registry_payload
     ) == logical_work_identity_from_payload(expected_payload)
@@ -142,7 +207,16 @@ def stable_worker_index_for_route(
     route_identity: RouteIdentity,
     process_count: int,
 ) -> int:
-    """Handle stable worker index for route within process transport routing."""
+    """Handle stable worker index for route within process transport routing.
+
+    Args:
+        route_identity: Routing identity used to choose the process worker.
+        process_count: Number of worker processes available for routing.
+
+    Returns:
+        Computed integer value.
+
+    """
     digest = hashlib.blake2b(
         msgpack.packb(
             {
@@ -162,7 +236,12 @@ class ProcessTransport(ABC):
 
     @property
     def capabilities(self) -> ProcessTransportCapabilities:
-        """Return capabilities supported by this transport."""
+        """Return capabilities supported by this transport.
+
+        Returns:
+            ProcessTransportCapabilities result produced by this function.
+
+        """
         return ProcessTransportCapabilities()
 
     @abstractmethod
@@ -173,7 +252,17 @@ class ProcessTransport(ABC):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
-        """Submit work item for process transport routing."""
+        """Submit work item for process transport routing.
+
+        Args:
+            work_item: Work item being scheduled or processed.
+            route_identity: Routing identity used to choose the process worker.
+            count_in_flight: Whether dispatch should increment in-flight accounting.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -184,42 +273,108 @@ class ProcessTransport(ABC):
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
-        """Dispatch payload for process transport routing."""
+        """Dispatch payload for process transport routing.
+
+        Args:
+            payload: Serialized or decoded payload handled by this function.
+            route_identity: Routing identity used to choose the process worker.
+            count_in_flight: Whether dispatch should increment in-flight accounting.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
-        """Start worker task source for process transport routing."""
+        """Start worker task source for process transport routing.
+
+        Args:
+            idx: Worker index being inspected or restarted.
+
+        Returns:
+            tuple[Any, bool] result produced by this function.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def handle_registry_event(self, event: dict[str, Any]) -> None:
-        """Handle registry event for process transport routing."""
+        """Handle registry event for process transport routing.
+
+        Args:
+            event: Completion or registry event being processed.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
-        """Recover pending dispatches for process transport routing."""
+        """Recover pending dispatches for process transport routing.
+
+        Args:
+            idx: Worker index being inspected or restarted.
+
+        Returns:
+            list[PendingDispatchRecovery] result produced by this function.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
-        """Requeue payloads for process transport routing."""
+        """Requeue payloads for process transport routing.
+
+        Args:
+            payloads: Serialized payloads handled by this function.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def clear_pending_dispatches(self) -> None:
-        """Clear pending dispatches for process transport routing."""
+        """Clear pending dispatches for process transport routing.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def signal_shutdown(self, worker_count: int) -> None:
-        """Handle signal shutdown within process transport routing."""
+        """Handle signal shutdown within process transport routing.
+
+        Args:
+            worker_count: Number of worker shutdown signals to send.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None:
-        """Release resources held by this component."""
+        """Release resources held by this component.
+
+        Raises:
+            NotImplementedError: If the concrete transport does not implement this operation.
+
+        """
         raise NotImplementedError
 
 
@@ -233,7 +388,14 @@ class AsyncToThreadSubmitMixin:
         route_identity: RouteIdentity,
         count_in_flight: bool,
     ) -> None:
-        """Submit work item for process transport routing."""
+        """Submit work item for process transport routing.
+
+        Args:
+            work_item: Work item being scheduled or processed.
+            route_identity: Routing identity used to choose the process worker.
+            count_in_flight: Whether dispatch should increment in-flight accounting.
+
+        """
         serialize_work_item = getattr(self, "_serialize_work_item")
         dispatch_payload = getattr(self, "dispatch_payload")
         payload = serialize_work_item(work_item)

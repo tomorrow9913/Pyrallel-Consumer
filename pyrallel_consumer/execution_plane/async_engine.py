@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/async_engine.py
+# Role: Implements asyncio-based WorkItem execution, retry handling, and completion event buffering.
+# Extend here for async-engine behavior; keep shared engine contracts in base.py.
 import asyncio
 import contextvars
 import logging
@@ -18,16 +22,24 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
 class AsyncExecutionEngine(BaseExecutionEngine):
-    """
-    비동기 실행 엔진의 구현입니다. asyncio.Task를 기반으로 워커 함수를 실행하고,
+    """비동기 실행 엔진의 구현입니다.
+
     세마포어를 사용하여 동시 실행 태스크 수를 제어합니다.
 
     Args:
         config (ExecutionConfig): 실행 엔진 설정.
         worker_fn (Callable[[WorkItem], Any]): 사용자 정의 비동기 워커 함수.
+
     """
 
     def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+        """Initialize this component.
+
+        Args:
+            config: Configuration object used to initialize this component.
+            worker_fn: User worker callable invoked for each work item.
+
+        """
         self._config = config
         self._worker_fn = worker_fn
         self._semaphore = Semaphore(config.max_in_flight)
@@ -46,11 +58,14 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._context = contextvars.copy_context()
 
     async def submit(self, work_item: WorkItem) -> None:
-        """
-        제출된 작업 항목을 처리합니다. 세마포어를 획득하고, 새 비동기 태스크를 생성하여 워커 함수를 실행합니다.
+        """제출된 작업 항목을 처리합니다. 세마포어를 획득하고, 새 비동기 태스크를 생성하여 워커 함수를 실행합니다.
 
         Args:
             work_item (WorkItem): 제출할 작업 항목
+
+        Raises:
+            RuntimeError: 실행 엔진이 종료 중이면 새 작업을 받을 수 없을 때 발생합니다.
+
         """
         if self._shutdown_event.is_set():
             raise RuntimeError("Engine is shutting down, cannot accept new work")
@@ -65,9 +80,13 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         task.add_done_callback(self._task_done_callback)
 
     async def _execute_worker_task(self, work_item: WorkItem) -> None:
-        """
-        사용자 워커 함수를 실행하고 결과를 완료 큐에 넣습니다.
+        """사용자 워커 함수를 실행하고 결과를 완료 큐에 넣습니다.
+
         예외 처리 및 타임아웃 로직을 포함합니다.
+
+        Args:
+            work_item (WorkItem): 워커 함수에 전달할 작업 항목입니다.
+
         """
         status = CompletionStatus.SUCCESS
         error: Optional[str] = None
@@ -110,7 +129,12 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         await self._completion_queue.put(completion_event)
 
     async def _apply_backoff(self, attempt: int) -> None:
-        """Handle apply backoff within async execution."""
+        """Handle apply backoff within async execution.
+
+        Args:
+            attempt (int): 현재 재시도 횟수입니다.
+
+        """
         base_delay_ms = self._config.retry_backoff_ms
 
         if self._config.exponential_backoff:
@@ -126,8 +150,11 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         await asyncio.sleep(delay_ms / 1000.0)
 
     def _task_done_callback(self, task: Task) -> None:
-        """
-        태스크 완료 시 호출되는 콜백. 세마포어를 해제하고 완료된 태스크를 추적 목록에서 제거합니다.
+        """태스크 완료 시 호출되는 콜백. 세마포어를 해제하고 완료된 태스크를 추적 목록에서 제거합니다.
+
+        Args:
+            task (Task): 완료된 asyncio 태스크입니다.
+
         """
         self._in_flight_tasks.discard(task)
         self._semaphore.release()
@@ -148,8 +175,14 @@ class AsyncExecutionEngine(BaseExecutionEngine):
     async def poll_completed_events(
         self, batch_limit: int = 1000
     ) -> List[CompletionEvent]:
-        """
-        완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
+        """완료 큐에서 완료 이벤트를 가져와 리스트로 반환합니다.
+
+        Args:
+            batch_limit (int): 한 번에 반환할 최대 완료 이벤트 수입니다.
+
+        Returns:
+            List[CompletionEvent]: 완료 이벤트 목록입니다.
+
         """
         completed_events: List[CompletionEvent] = []
         while (
@@ -165,7 +198,16 @@ class AsyncExecutionEngine(BaseExecutionEngine):
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
-        """Wait for for completion in async execution."""
+        """Wait for completion in async execution.
+
+        Args:
+            timeout_seconds (Optional[float]): 완료 이벤트를 기다릴 최대 시간입니다.
+                None이면 무기한 대기합니다.
+
+        Returns:
+            bool: 완료 이벤트가 준비되었으면 True, 제한 시간 안에 없으면 False입니다.
+
+        """
         if self._prefetched_completion_events or not self._completion_queue.empty():
             return True
 
@@ -184,20 +226,29 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         return True
 
     def get_in_flight_count(self) -> int:
-        """
-        현재 처리 중인 작업 항목의 수를 반환합니다.
+        """현재 처리 중인 작업 항목의 수를 반환합니다.
+
+        Returns:
+            int: 아직 완료되지 않은 비동기 작업 수입니다.
+
         """
         return len(self._in_flight_tasks)
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
-        """Return min inflight offset for async execution."""
+        """Return min inflight offset for async execution.
+
+        Args:
+            tp (TopicPartition): 조회할 토픽 파티션입니다.
+
+        Returns:
+            Optional[int]: async 엔진은 offset별 in-flight 추적을 제공하지 않으므로 항상 None입니다.
+
+        """
         del tp
         return None
 
     async def shutdown(self) -> None:
-        """
-        실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다.
-        """
+        """실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다."""
         self._logger.debug("Initiating AsyncExecutionEngine shutdown.")
         self._shutdown_event.set()
 

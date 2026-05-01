@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_dispatch_support.py
+# Role: Converts consumed Kafka messages into WorkManager submissions under ordering rules.
+# Extend here for dispatch planning; keep Kafka polling ownership in broker_poller.py.
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -25,6 +29,18 @@ class BrokerDispatchSupport:
         get_min_inflight_offset: Callable[[DtoTopicPartition], int | None],
         logger: Any,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            ordering_mode: Ordering mode used by the scheduler.
+            offset_trackers: Offset trackers value used to initialize this component.
+            cache_message_for_dlq: Cache message for dlq value used to initialize this component.
+            submit_message: Submit message value used to initialize this component.
+            submit_grouped_messages: Submit grouped messages value used to initialize this component.
+            get_min_inflight_offset: Get min inflight offset value used to initialize this component.
+            logger: Logger used for diagnostics.
+
+        """
         self._ordering_mode = ordering_mode
         self._offset_trackers = offset_trackers
         self._cache_message_for_dlq = cache_message_for_dlq
@@ -34,7 +50,12 @@ class BrokerDispatchSupport:
         self._logger = logger
 
     async def dispatch_messages(self, messages: list[Message]) -> None:
-        """Dispatch messages for broker dispatch planning."""
+        """Dispatch messages for broker dispatch planning.
+
+        Args:
+            messages: Messages value used by this function.
+
+        """
         grouped_messages: dict[
             tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]
         ] = {}
@@ -95,7 +116,12 @@ class BrokerDispatchSupport:
             await self._submit_grouped_messages(grouped_messages)
 
     def build_commit_candidates(self) -> list[tuple[DtoTopicPartition, int]]:
-        """Build commit candidates for broker dispatch planning."""
+        """Build commit candidates for broker dispatch planning.
+
+        Returns:
+            list[tuple[DtoTopicPartition, int]] result produced by this function.
+
+        """
         commits_to_make: list[tuple[DtoTopicPartition, int]] = []
 
         for tp, tracker in self._offset_trackers.items():

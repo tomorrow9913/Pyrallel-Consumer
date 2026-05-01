@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_dlq_publisher.py
+# Role: Publishes failed records to the configured dead-letter topic with retry metadata.
+# Extend here for DLQ publication behavior; keep completion decisions in broker_completion_support.py.
 """DLQ publication helper for BrokerPoller."""
 
 import asyncio
@@ -26,7 +30,25 @@ async def publish_to_dlq(
     attempt: int,
     logger: Any,
 ) -> bool:
-    """Convert publish to dlq."""
+    """Convert publish to dlq.
+
+    Args:
+        producer: Kafka producer instance.
+        consume_topic: Kafka topic being consumed.
+        kafka_config: Kafka and parallel-consumer configuration.
+        tp: Topic-partition affected by the operation.
+        offset: Kafka record offset.
+        epoch: Partition ownership epoch associated with the work item.
+        key: Kafka record key or virtual queue key.
+        value: Kafka record value.
+        error: Error reason to attach to the completion or DLQ record.
+        attempt: Current retry attempt number.
+        logger: Logger used to report operational details.
+
+    Returns:
+        True when the operation succeeds or the condition is met; otherwise False.
+
+    """
     source_topic = validate_topic_name(consume_topic)
     suffix = validate_topic_name(kafka_config.DLQ_TOPIC_SUFFIX)
     dlq_topic = source_topic + suffix
