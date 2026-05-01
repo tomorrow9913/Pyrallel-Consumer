@@ -24,6 +24,7 @@ def mock_kafka_config():
     parallel_consumer_mock = MagicMock()
     parallel_consumer_mock.poll_batch_size = 1000
     parallel_consumer_mock.worker_pool_size = 8
+    parallel_consumer_mock.execution.route_batch_size = 1
     config.parallel_consumer = parallel_consumer_mock
 
     return config
@@ -98,6 +99,36 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
     )
 
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
+
+
+def test_broker_poller_wires_route_batch_size_to_fallback_work_manager(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.route_batch_size = 9
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
+        BrokerPoller(
+            consume_topic="test-topic",
+            kafka_config=mock_kafka_config,
+            execution_engine=mock_execution_engine,
+        )
+
+    assert manager.call_args.kwargs["route_batch_size"] == 9
+
+
+def test_broker_poller_treats_bool_route_batch_size_as_default(
+    mock_kafka_config, mock_execution_engine
+):
+    mock_kafka_config.parallel_consumer.execution.route_batch_size = True
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
+        BrokerPoller(
+            consume_topic="test-topic",
+            kafka_config=mock_kafka_config,
+            execution_engine=mock_execution_engine,
+        )
+
+    assert manager.call_args.kwargs["route_batch_size"] == 1
 
 
 @pytest.mark.asyncio

@@ -108,6 +108,25 @@ class WorkItem:
     poison_key: Any = WORK_ITEM_POISON_KEY_UNSET
 
 
+@dataclass(frozen=True)
+class RouteBatch:
+    """Internal process transport route batch payload."""
+
+    batch_id: str
+    route_identity: tuple[Any, ...]
+    worker_index: Optional[int]
+    items: list[WorkItem]
+
+
+@dataclass(frozen=True)
+class BatchCompletion:
+    """Internal process transport batch completion payload."""
+
+    batch_id: str
+    route_identity: tuple[Any, ...]
+    results: list[CompletionEvent]
+
+
 # --- Process Execution ---
 @dataclass(frozen=True)
 class ProcessTask:
@@ -207,6 +226,14 @@ class ProcessBatchMetrics:
     timer_flush_supported: bool = True
     demand_flush_supported: bool = True
     recycle_supported: bool = True
+    items_per_input_ipc: Optional[float] = None
+    items_per_completion_ipc: Optional[float] = None
+    route_batch_count: int = 0
+    route_batch_item_count: int = 0
+    route_batch_size_avg: Optional[float] = None
+    route_batch_size_max: Optional[int] = None
+    completion_item_payload_count: int = 0
+    completion_batch_payload_count: int = 0
 
 
 @dataclass(frozen=True)

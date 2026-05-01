@@ -32,9 +32,9 @@ class ProcessConfig(BaseSettings):
     batch_bytes: str = "256KB"
     transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
     max_batch_wait_ms: int = 5
-    flush_policy: Literal["size_or_timer", "demand", "demand_min_residence"] = (
-        "size_or_timer"
-    )
+    flush_policy: Literal[
+        "size_or_timer", "demand", "demand_min_residence"
+    ] = "size_or_timer"
     demand_flush_min_residence_ms: int = 0
     shutdown_drain_timeout_ms: int = 5000
     worker_join_timeout_ms: int = 30000
@@ -120,6 +120,7 @@ class ExecutionConfig(BaseSettings):
 
     mode: ExecutionMode = ExecutionMode.ASYNC
     max_in_flight: int = Field(default=1000, gt=0)
+    route_batch_size: int = Field(default=1, gt=0)
     max_revoke_grace_ms: int = 500
     shutdown_policy: Literal["graceful", "abort"] = "graceful"
     consumer_task_stop_timeout_ms: int = Field(default=5000, ge=0)
@@ -185,9 +186,9 @@ class ParallelConsumerConfig(BaseSettings):
     adaptive_backpressure: AdaptiveBackpressureConfig = AdaptiveBackpressureConfig()
     adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
     poison_message: PoisonMessageConfig = PoisonMessageConfig()
-    rebalance_state_strategy: Literal["contiguous_only", "metadata_snapshot"] = (
-        "contiguous_only"
-    )
+    rebalance_state_strategy: Literal[
+        "contiguous_only", "metadata_snapshot"
+    ] = "contiguous_only"
     execution: ExecutionConfig = ExecutionConfig()
 
     @field_validator("ordering_mode", mode="before")

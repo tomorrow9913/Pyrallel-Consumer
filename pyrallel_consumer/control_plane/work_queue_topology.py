@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from itertools import islice
 from typing import Any, Callable, Optional
 
 from pyrallel_consumer.dto import OffsetRange
@@ -130,6 +131,26 @@ class WorkQueueTopology:
         """
         internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
         return internal[0]
+
+    @staticmethod
+    def peek_queue_batch(
+        queue: asyncio.Queue[WorkItem],
+        limit: int,
+    ) -> list[WorkItem]:
+        """Peek at up to limit work items without mutating the queue.
+
+        Args:
+            queue: Queue being inspected.
+            limit: Maximum number of items to return.
+
+        Returns:
+            Work items currently at the queue head, up to the limit.
+
+        """
+        if limit <= 0:
+            return []
+        internal = getattr(queue, "_queue")  # type: ignore[attr-defined]
+        return list(islice(internal, limit))
 
     @staticmethod
     def enqueue_work_items(
@@ -438,6 +459,42 @@ class WorkQueueTopology:
         else:
             self.refresh_queue_head(tp, key, queue)
         return work_item
+
+    def dequeue_submitted_items(
+        self,
+        tp: DtoTopicPartition,
+        key: Any,
+        count: int,
+    ) -> list[WorkItem]:
+        """Dequeue submitted items from a single virtual queue.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+            key: Kafka record key or virtual queue key.
+            count: Maximum number of submitted items to dequeue.
+
+        Returns:
+            Dequeued work items, preserving queue order.
+
+        """
+        if count <= 0:
+            return []
+        queue = self.get_queue(tp, key)
+        if queue is None or queue.empty():
+            self.deactivate_queue_key((tp, key))
+            return []
+
+        work_items: list[WorkItem] = []
+        for _ in range(count):
+            if queue.empty():
+                break
+            work_items.append(queue.get_nowait())
+
+        if queue.empty():
+            self.cleanup_empty_queue(tp, key)
+        else:
+            self.refresh_queue_head(tp, key, queue)
+        return work_items
 
     def get_virtual_queue_sizes(self) -> dict[DtoTopicPartition, dict[Any, int]]:
         """Return virtual queue sizes for virtual queue scheduling.

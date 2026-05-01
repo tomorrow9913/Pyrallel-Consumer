@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import msgpack  # type: ignore[import-untyped]
 
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import RouteBatch, WorkItem
 from pyrallel_consumer.execution_plane.process_transport import (
     AsyncToThreadSubmitMixin,
     PendingDispatchRecovery,
@@ -19,11 +19,12 @@ from pyrallel_consumer.execution_plane.process_transport import (
     ProcessTransportCapabilities,
     RouteIdentity,
     SerializedWorkItem,
+    logical_work_identity_from_payload,
     stable_worker_index_for_route,
     worker_execution_identity_from_payload,
 )
 
-PendingDispatchKey = tuple[int, str, int, int, str, int]
+PendingDispatchKey = tuple[int, str, int, int, str, int] | tuple[int, str]
 
 
 class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
@@ -36,7 +37,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         queue_size: int,
         max_payload_bytes: int,
         serialize_work_item: Callable[[WorkItem], SerializedWorkItem],
-        serialize_batch_payload: Callable[[list[WorkItem], float], bytes],
+        serialize_batch_payload: Callable[[Any, float], bytes],
         work_item_from_dict: Callable[[SerializedWorkItem], WorkItem],
         get_worker_pipe_senders: Callable[[], list[Any]],
         increment_in_flight: Callable[[], None],
@@ -72,7 +73,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._slot_wait_timeout_seconds = slot_wait_timeout_seconds
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
         self._pending_dispatch_lock = threading.Lock()
-        self._pending_dispatch: dict[PendingDispatchKey, SerializedWorkItem] = {}
+        self._pending_dispatch: dict[PendingDispatchKey, dict[str, Any]] = {}
 
     def dispatch_payload(
         self,
@@ -116,6 +117,60 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         if count_in_flight:
             self._increment_in_flight()
 
+    def dispatch_route_batch(
+        self,
+        route_batch: RouteBatch,
+        *,
+        route_identity: RouteIdentity,
+        count_in_flight: bool,
+    ) -> None:
+        """Dispatch one ordered route batch as a single worker-pipe payload."""
+        worker_idx = stable_worker_index_for_route(route_identity, self._process_count)
+        batch_with_worker = RouteBatch(
+            batch_id=route_batch.batch_id,
+            route_identity=route_batch.route_identity,
+            worker_index=worker_idx,
+            items=route_batch.items,
+        )
+        serialized_items = [
+            self._serialize_work_item(item) for item in batch_with_worker.items
+        ]
+        representative_payload = serialized_items[0] if serialized_items else {}
+        self._acquire_worker_pipe_queue_slot(
+            worker_idx=worker_idx,
+            payload=representative_payload,
+        )
+        pending_key = self._pending_dispatch_key_for_route_batch(
+            worker_idx,
+            batch_with_worker,
+        )
+        pending_payload = {
+            "batch_id": batch_with_worker.batch_id,
+            "route_identity": list(batch_with_worker.route_identity),
+            "worker_index": worker_idx,
+            "items": serialized_items,
+            "slot_released": False,
+        }
+        with self._pending_dispatch_lock:
+            self._pending_dispatch[pending_key] = pending_payload
+        try:
+            packed = self._serialize_batch_payload(batch_with_worker, time.monotonic())
+            self._validate_packed_payload(packed)
+            self._send_packed_route_batch(
+                worker_idx=worker_idx,
+                batch_id=batch_with_worker.batch_id,
+                packed_payload=packed,
+            )
+        except Exception:
+            with self._pending_dispatch_lock:
+                self._pending_dispatch.pop(pending_key, None)
+            self._release_worker_pipe_queue_slot()
+            raise
+
+        if count_in_flight:
+            for _item in batch_with_worker.items:
+                self._increment_in_flight()
+
     def start_worker_task_source(self, idx: int) -> tuple[Any, bool]:
         """Start worker task source for worker-pipe process transport.
 
@@ -155,18 +210,69 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             event: Completion or registry event being processed.
 
         """
-        if event.get("kind") != "start":
+        kind = event.get("kind")
+        if kind == "not_started":
+            self._handle_not_started_route_batch_event(event)
+            return
+        if kind != "start":
             return
         key = event.get("key")
         payload = event.get("payload")
         pending_key = self._pending_dispatch_key_for_registry_start(key, payload)
+        release_slot = False
 
         with self._pending_dispatch_lock:
             if pending_key in self._pending_dispatch:
                 self._pending_dispatch.pop(pending_key, None)
+                release_slot = True
             else:
+                pending_key = self._pending_route_batch_key_for_registry_start(
+                    key,
+                    payload,
+                )
+                if pending_key in self._pending_dispatch:
+                    pending_payload = self._pending_dispatch[pending_key]
+                    self._remove_started_item_from_pending_route_batch(
+                        pending_payload,
+                        payload,
+                    )
+                    if not pending_payload.get("items"):
+                        self._pending_dispatch.pop(pending_key, None)
+                    if not pending_payload.get("slot_released", False):
+                        pending_payload["slot_released"] = True
+                        release_slot = True
+                else:
+                    return
+            if pending_key is None:
                 return
-        self._release_worker_pipe_queue_slot()
+        if release_slot:
+            self._release_worker_pipe_queue_slot()
+
+    def _handle_not_started_route_batch_event(self, event: dict[str, Any]) -> None:
+        """Remove skipped route-batch tail entries from pending dispatch state."""
+        batch_id = event.get("batch_id")
+        payloads = event.get("payloads")
+        if batch_id is None or not isinstance(payloads, list):
+            event["_route_batch_pending_not_started"] = False
+            return
+        pending_match = False
+        with self._pending_dispatch_lock:
+            for pending_key, pending_payload in list(self._pending_dispatch.items()):
+                if (
+                    not self._is_pending_route_batch(pending_payload)
+                    or pending_payload.get("batch_id") != batch_id
+                ):
+                    continue
+                pending_match = True
+                for payload in payloads:
+                    self._remove_started_item_from_pending_route_batch(
+                        pending_payload,
+                        payload,
+                    )
+                if not pending_payload.get("items"):
+                    self._pending_dispatch.pop(pending_key, None)
+                break
+        event["_route_batch_pending_not_started"] = pending_match
 
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         """Recover pending dispatches for worker-pipe process transport.
@@ -183,18 +289,32 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             for key, payload in list(self._pending_dispatch.items()):
                 if key[0] != idx:
                     continue
-                recovered_payload = dict(payload)
-                recovered.append(
-                    PendingDispatchRecovery(
-                        identity=worker_execution_identity_from_payload(
-                            idx,
-                            recovered_payload,
-                        ),
-                        payload=recovered_payload,
+                if self._is_pending_route_batch(payload):
+                    for item_payload in payload["items"]:
+                        recovered_payload = dict(item_payload)
+                        recovered.append(
+                            PendingDispatchRecovery(
+                                identity=worker_execution_identity_from_payload(
+                                    idx,
+                                    recovered_payload,
+                                ),
+                                payload=recovered_payload,
+                            )
+                        )
+                else:
+                    recovered_payload = dict(payload)
+                    recovered.append(
+                        PendingDispatchRecovery(
+                            identity=worker_execution_identity_from_payload(
+                                idx,
+                                recovered_payload,
+                            ),
+                            payload=recovered_payload,
+                        )
                     )
-                )
                 self._pending_dispatch.pop(key, None)
-                self._release_worker_pipe_queue_slot()
+                if not payload.get("slot_released", False):
+                    self._release_worker_pipe_queue_slot()
         return recovered
 
     def requeue_payloads(self, payloads: list[SerializedWorkItem]) -> None:
@@ -292,6 +412,56 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         ):
             return None
         return WorkerPipesProcessTransport._pending_dispatch_key(key[0], payload)
+
+    @staticmethod
+    def _pending_dispatch_key_for_route_batch(
+        worker_idx: int,
+        route_batch: RouteBatch,
+    ) -> PendingDispatchKey:
+        """Build the pending key for a pipe-level route batch send."""
+        return (worker_idx, route_batch.batch_id)
+
+    def _pending_route_batch_key_for_registry_start(
+        self,
+        key: Any,
+        payload: Any,
+    ) -> PendingDispatchKey | None:
+        """Match a worker item start event back to its pending route batch."""
+        if not isinstance(key, tuple) or len(key) < 4 or not isinstance(payload, dict):
+            return None
+        worker_idx = int(key[0])
+        for pending_key, pending_payload in self._pending_dispatch.items():
+            if pending_key[0] != worker_idx or not self._is_pending_route_batch(
+                pending_payload
+            ):
+                continue
+            for item_payload in pending_payload["items"]:
+                if self._pending_dispatch_key_for_registry_start(
+                    key,
+                    item_payload,
+                ) == self._pending_dispatch_key(worker_idx, payload):
+                    return pending_key
+        return None
+
+    @staticmethod
+    def _is_pending_route_batch(payload: dict[str, Any]) -> bool:
+        """Return whether a pending dispatch payload represents a route batch."""
+        return "batch_id" in payload and isinstance(payload.get("items"), list)
+
+    @staticmethod
+    def _remove_started_item_from_pending_route_batch(
+        pending_payload: dict[str, Any],
+        started_payload: Any,
+    ) -> None:
+        """Remove one started item from a pending route batch, leaving the tail."""
+        if not isinstance(started_payload, dict):
+            return
+        started_identity = logical_work_identity_from_payload(started_payload)
+        pending_payload["items"] = [
+            item_payload
+            for item_payload in pending_payload.get("items", [])
+            if logical_work_identity_from_payload(item_payload) != started_identity
+        ]
 
     def _release_worker_pipe_queue_slot(self) -> None:
         """Handle release worker pipe queue slot within worker-pipe process transport."""
@@ -391,4 +561,36 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
             raise RuntimeError(
                 "Failed to dispatch worker pipe payload worker=%d offset=%d"
                 % (worker_idx, payload["offset"])
+            ) from exc
+
+    def _send_packed_route_batch(
+        self,
+        *,
+        worker_idx: int,
+        batch_id: str,
+        packed_payload: bytes,
+    ) -> None:
+        """Send one encoded route batch to a worker pipe."""
+        senders = self._get_worker_pipe_senders()
+        try:
+            sender = senders[worker_idx]
+        except IndexError as exc:
+            raise RuntimeError(
+                "Missing worker pipe sender for worker=%d batch_id=%s"
+                % (worker_idx, batch_id)
+            ) from exc
+
+        send_bytes = getattr(sender, "send_bytes", None)
+        if not callable(send_bytes):
+            raise RuntimeError(
+                "Worker pipe sender for worker=%d batch_id=%s is not writable"
+                % (worker_idx, batch_id)
+            )
+
+        try:
+            send_bytes(packed_payload)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to dispatch worker pipe route batch worker=%d batch_id=%s"
+                % (worker_idx, batch_id)
             ) from exc

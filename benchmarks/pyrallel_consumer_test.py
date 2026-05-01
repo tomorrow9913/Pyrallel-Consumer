@@ -257,6 +257,7 @@ def build_kafka_config(
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
     process_transport_mode: Optional[ProcessTransportMode] = None,
+    route_batch_size: int = 1,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> KafkaConfig:
@@ -276,6 +277,7 @@ def build_kafka_config(
     )
 
     kafka_config.parallel_consumer.execution.max_in_flight = 2000
+    kafka_config.parallel_consumer.execution.route_batch_size = route_batch_size
     kafka_config.parallel_consumer.execution.async_config.task_timeout_ms = 10000
     kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
         strict_completion_monitor_enabled
@@ -345,6 +347,7 @@ async def run_pyrallel_consumer_test(
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
     process_transport_mode: Optional[ProcessTransportMode] = None,
+    route_batch_size: int = 1,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
@@ -378,6 +381,7 @@ async def run_pyrallel_consumer_test(
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
         process_transport_mode=process_transport_mode,
+        route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
@@ -523,6 +527,7 @@ async def run_pyrallel_consumer_test(
         max_in_flight_messages=execution_config.max_in_flight,
         ordering_mode=ordering_mode_value,
         metrics_exporter=metrics_observer,
+        route_batch_size=execution_config.route_batch_size,
     )  # type: ignore[call-arg]
 
     broker_poller = BrokerPoller(
@@ -655,6 +660,10 @@ async def run_pyrallel_consumer_test(
         await broker_poller.stop()
         final_metrics = broker_poller.get_metrics()
         _record_release_gate_metrics_from_snapshot(final_metrics)
+        if stats is not None:
+            stats.record_process_batch_metrics(
+                getattr(final_metrics, "process_batch_metrics", None)
+            )
         if prometheus_exporter is not None:
             prometheus_exporter.update_from_system_metrics(final_metrics)
         await engine.shutdown()

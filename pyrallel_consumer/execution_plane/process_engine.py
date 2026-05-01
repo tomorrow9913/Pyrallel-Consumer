@@ -12,6 +12,7 @@ import pickle
 import queue
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from multiprocessing import Process, Queue
@@ -26,6 +27,7 @@ from pyrallel_consumer.dto import (
     EngineRuntimeDiagnostics,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
+    RouteBatch,
     TopicPartition,
     WorkItem,
 )
@@ -36,12 +38,22 @@ from pyrallel_consumer.execution_plane.process_batching import (
 from pyrallel_consumer.execution_plane.process_batching import (
     NoOpBatchAccumulator as _NoOpBatchAccumulator,
 )
-from pyrallel_consumer.execution_plane.process_codec import SerializedWorkItem
+from pyrallel_consumer.execution_plane.process_codec import (
+    BATCH_COMPLETION_KIND,
+    SerializedWorkItem,
+    _decode_msgpack_payload,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    batch_completion_from_dict as _batch_completion_from_dict,
+)
 from pyrallel_consumer.execution_plane.process_codec import (
     completion_event_from_dict as _completion_event_from_dict,
 )
 from pyrallel_consumer.execution_plane.process_codec import (
     completion_event_to_dict as _completion_event_to_dict,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    decode_batch_completion_payload as _decode_batch_completion_payload,
 )
 from pyrallel_consumer.execution_plane.process_codec import (
     decode_incoming_item as _decode_incoming_item,
@@ -86,6 +98,8 @@ from pyrallel_consumer.logger import LogManager
 _SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
 _POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
 _POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
+_DEFAULT_MSGPACK_MAX_BYTES = 1_000_000
+_MAX_SEEN_COMPLETION_IDENTITIES = 100_000
 _logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -151,6 +165,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._completion_queue: Queue[Any] = Queue()
         self._registry_event_queue: Queue[Any] = Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
+        self._seen_completion_identities: set[tuple[str, str, int, int, int]] = set()
+        self._seen_completion_identity_order: Deque[
+            tuple[str, str, int, int, int]
+        ] = deque()
         self._in_flight_registry: dict[
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
@@ -215,6 +233,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._transport = worker_pipe_transport
 
         self._start_workers()
+
+    @property
+    def supports_ordered_route_batch(self) -> bool:
+        """Return whether process mode can dispatch ordered route batches safely."""
+        return self._get_transport_mode() == "worker_pipes"
 
     def _validate_transport_config(self) -> None:
         """Validate transport config for multiprocessing execution.
@@ -715,12 +738,47 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         transport = getattr(self, "_transport", None)
         if transport is not None:
             transport.handle_registry_event(event)
+        if self._recover_not_started_payloads(event):
+            return
         ProcessRegistrySupport.apply_registry_event(
             event=event,
             in_flight_registry=self._in_flight_registry,
             record_main_to_worker_ipc=self._record_main_to_worker_ipc,
             record_worker_exec=self._record_worker_exec,
         )
+
+    def _recover_not_started_payloads(self, event: dict[str, Any]) -> bool:
+        """Requeue ordered route-batch tail payloads that a live worker skipped."""
+        if event.get("kind") != "not_started":
+            return False
+        if event.get("_route_batch_pending_not_started") is False:
+            return True
+        payloads = event.get("payloads")
+        if not isinstance(payloads, list):
+            return True
+        recovered_payloads = [
+            dict(payload) for payload in payloads if isinstance(payload, dict)
+        ]
+        if not recovered_payloads:
+            return True
+        try:
+            self._requeue_recovered_payloads(recovered_payloads)
+        except Exception as requeue_exc:
+            self._logger.error(
+                "Failed to requeue not_started route-batch tail payloads batch_id=%s: %s",
+                event.get("batch_id"),
+                requeue_exc,
+            )
+            for payload in recovered_payloads:
+                self._emit_worker_recovery_failure(
+                    -1,
+                    payload,
+                    error="not_started_requeue_failed: %s" % requeue_exc,
+                    attempt=int(
+                        payload.get("requeue_attempts", self._config.max_retries)
+                    ),
+                )
+        return True
 
     def _drain_registry_events(self) -> None:
         """Drain registry events for multiprocessing execution."""
@@ -744,19 +802,48 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     raw_event = completion_queue.get_nowait()
                 except queue.Empty:
                     return prefetched
-                event = self._decode_completion_queue_item(raw_event)
-                self._prefetch_completion_event(event)
+                for event in self._decode_completion_queue_item_events(raw_event):
+                    self._prefetch_completion_event(event)
                 prefetched += 1
 
-    def _prefetch_completion_event(self, event: CompletionEvent) -> None:
+    def _prefetch_completion_event(self, event: CompletionEvent) -> bool:
         """Handle prefetch completion event within multiprocessing execution.
 
         Args:
             event: Completion or registry event being processed.
 
         """
+        if self._is_duplicate_completion_event(event):
+            return False
         self._prefetched_completion_events.append(event)
         self._discard_registry_entry_for_completion(event)
+        return True
+
+    def _is_duplicate_completion_event(self, event: CompletionEvent) -> bool:
+        """Return True when this item completion was already surfaced."""
+        seen = getattr(self, "_seen_completion_identities", None)
+        if seen is None:
+            seen = set()
+            self._seen_completion_identities = seen
+        order = getattr(self, "_seen_completion_identity_order", None)
+        if order is None:
+            order = deque()
+            self._seen_completion_identity_order = order
+        identity = (
+            event.id,
+            event.tp.topic,
+            event.tp.partition,
+            event.offset,
+            event.epoch,
+        )
+        if identity in seen:
+            return True
+        seen.add(identity)
+        order.append(identity)
+        max_seen = max(1, _MAX_SEEN_COMPLETION_IDENTITIES)
+        while len(order) > max_seen:
+            seen.discard(order.popleft())
+        return False
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         """Handle discard registry entry for completion within multiprocessing execution.
@@ -790,9 +877,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             except queue.Empty:
                 break
             drained_completion += 1
-            self._prefetch_completion_event(
-                self._decode_completion_queue_item(raw_event)
-            )
+            for event in self._decode_completion_queue_item_events(raw_event):
+                self._prefetch_completion_event(event)
 
         return drained_registry, drained_completion
 
@@ -885,7 +971,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         self._drain_registry_events()
-        base_metrics = self._batch_accumulator.snapshot()
+        batch_accumulator = getattr(self, "_batch_accumulator", _NoOpBatchAccumulator())
+        base_metrics = batch_accumulator.snapshot()
         transport_mode = self._get_transport_mode()
         support_state = "bounded" if transport_mode == "worker_pipes" else "full"
         timer_flush_supported = transport_mode != "worker_pipes"
@@ -907,6 +994,24 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 self._worker_to_main_ipc_sum_seconds / self._worker_to_main_ipc_samples
                 if self._worker_to_main_ipc_samples > 0
                 else 0.0
+            )
+            items_per_input_ipc = (
+                self._input_ipc_item_count / self._input_ipc_count
+                if self._input_ipc_count > 0
+                else None
+            )
+            items_per_completion_ipc = (
+                self._completion_ipc_item_count / self._completion_ipc_count
+                if self._completion_ipc_count > 0
+                else None
+            )
+            route_batch_size_avg = (
+                self._route_batch_item_count / self._route_batch_count
+                if self._route_batch_count > 0
+                else None
+            )
+            route_batch_size_max = (
+                self._route_batch_size_max if self._route_batch_count > 0 else None
             )
             return EngineRuntimeDiagnostics(
                 engine_type="process",
@@ -932,6 +1037,18 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                         timer_flush_supported=timer_flush_supported,
                         demand_flush_supported=demand_flush_supported,
                         recycle_supported=recycle_supported,
+                        items_per_input_ipc=items_per_input_ipc,
+                        items_per_completion_ipc=items_per_completion_ipc,
+                        route_batch_count=self._route_batch_count,
+                        route_batch_item_count=self._route_batch_item_count,
+                        route_batch_size_avg=route_batch_size_avg,
+                        route_batch_size_max=route_batch_size_max,
+                        completion_item_payload_count=(
+                            self._completion_item_payload_count
+                        ),
+                        completion_batch_payload_count=(
+                            self._completion_batch_payload_count
+                        ),
                     )
                 ),
             )
@@ -953,6 +1070,42 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             route_identity=resolve_route_identity(work_item),
             count_in_flight=True,
         )
+        if self._get_transport_mode() == "worker_pipes":
+            self._record_input_ipc(1)
+
+    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+        """Submit a route-local work batch through the worker-pipe transport."""
+        if self._get_transport_mode() != "worker_pipes" or not work_items:
+            await super().submit_batch(work_items)
+            return
+
+        route_identity = resolve_route_identity(work_items[0])
+        if any(
+            resolve_route_identity(item) != route_identity for item in work_items[1:]
+        ):
+            await super().submit_batch(work_items)
+            return
+
+        self._drain_registry_events()
+        await asyncio.to_thread(self._ensure_workers_alive, force=True)
+        route_batch = RouteBatch(
+            batch_id=uuid.uuid4().hex,
+            route_identity=(
+                route_identity.topic,
+                route_identity.partition,
+                route_identity.key,
+            ),
+            worker_index=None,
+            items=work_items,
+        )
+        dispatch_route_batch = getattr(self._transport, "dispatch_route_batch")
+        await asyncio.to_thread(
+            dispatch_route_batch,
+            route_batch,
+            route_identity=route_identity,
+            count_in_flight=True,
+        )
+        self._record_input_ipc(len(work_items), route_batch=True)
 
     async def poll_completed_events(
         self, batch_limit: int = 1000
@@ -982,11 +1135,17 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         while len(completed_events) < batch_limit:
             try:
                 raw_event = self._completion_queue.get_nowait()
-                event = self._decode_completion_queue_item(raw_event)
-                self._discard_registry_entry_for_completion(event)
-                completed_events.append(event)
-                with self._in_flight_lock:
-                    self._in_flight_count -= 1
+                for event in self._decode_completion_queue_item_events(raw_event):
+                    if self._is_duplicate_completion_event(event):
+                        continue
+                    if len(completed_events) >= batch_limit:
+                        self._prefetched_completion_events.append(event)
+                        self._discard_registry_entry_for_completion(event)
+                        continue
+                    self._discard_registry_entry_for_completion(event)
+                    completed_events.append(event)
+                    with self._in_flight_lock:
+                        self._in_flight_count -= 1
             except queue.Empty:
                 break
             except Exception as e:
@@ -1023,9 +1182,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             raw_event = None
 
         if raw_event is not None:
-            self._prefetch_completion_event(
-                self._decode_completion_queue_item(raw_event)
-            )
+            for event in self._decode_completion_queue_item_events(raw_event):
+                self._prefetch_completion_event(event)
             return True
 
         if timeout_seconds is not None and timeout_seconds <= 0:
@@ -1040,7 +1198,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         except queue.Empty:
             return False
 
-        self._prefetch_completion_event(self._decode_completion_queue_item(raw_event))
+        for event in self._decode_completion_queue_item_events(raw_event):
+            self._prefetch_completion_event(event)
         return True
 
     def _initialize_runtime_timing_state(self) -> None:
@@ -1057,6 +1216,46 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._worker_to_main_ipc_samples = 0
         self._worker_to_main_ipc_sum_seconds = 0.0
         self._last_worker_to_main_ipc_seconds = 0.0
+        self._input_ipc_count = 0
+        self._input_ipc_item_count = 0
+        self._completion_ipc_count = 0
+        self._completion_ipc_item_count = 0
+        self._route_batch_count = 0
+        self._route_batch_item_count = 0
+        self._route_batch_size_max = 0
+        self._completion_item_payload_count = 0
+        self._completion_batch_payload_count = 0
+
+    def _record_input_ipc(self, item_count: int, *, route_batch: bool = False) -> None:
+        """Record parent-to-worker IPC item counts."""
+        if item_count <= 0:
+            return
+        self._initialize_runtime_timing_state()
+        with self._runtime_timing_lock:
+            self._input_ipc_count += 1
+            self._input_ipc_item_count += item_count
+            if route_batch:
+                self._route_batch_count += 1
+                self._route_batch_item_count += item_count
+                self._route_batch_size_max = max(self._route_batch_size_max, item_count)
+
+    def _record_completion_ipc(
+        self,
+        item_count: int,
+        *,
+        batch_payload: bool = False,
+    ) -> None:
+        """Record worker-to-parent completion IPC item counts."""
+        if item_count <= 0:
+            return
+        self._initialize_runtime_timing_state()
+        with self._runtime_timing_lock:
+            self._completion_ipc_count += 1
+            self._completion_ipc_item_count += item_count
+            if batch_payload:
+                self._completion_batch_payload_count += 1
+            else:
+                self._completion_item_payload_count += 1
 
     def _record_main_to_worker_ipc(self, duration_seconds: Any) -> None:
         """Convert record main to worker ipc.
@@ -1136,15 +1335,56 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             Completion event produced by the operation.
 
         """
+        events = self._decode_completion_queue_item_events(raw_event)
+        if len(events) != 1:
+            raise ValueError("completion_queue_item_expanded_to_multiple_events")
+        return events[0]
+
+    def _decode_completion_queue_item_events(
+        self, raw_event: Any
+    ) -> list[CompletionEvent]:
+        """Decode one completion queue item into item-level completion events."""
         if isinstance(raw_event, (bytes, bytearray)):
-            payload = msgpack.unpackb(raw_event, raw=False)
+            msgpack_max_bytes = self._completion_msgpack_max_bytes()
+            payload = _decode_msgpack_payload(
+                raw_event,
+                msgpack_max_bytes,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("invalid_completion_payload_type")
+            if payload.get("kind") == BATCH_COMPLETION_KIND:
+                decoded_payload = _decode_batch_completion_payload(
+                    payload,
+                    max_bytes=msgpack_max_bytes,
+                )
+                timing = decoded_payload.get("timing", {})
+                completion_enqueued_at = timing.get("completion_enqueued_at")
+                if isinstance(completion_enqueued_at, (int, float)):
+                    self._record_worker_to_main_ipc(
+                        time.monotonic() - float(completion_enqueued_at)
+                    )
+                results = list(
+                    _batch_completion_from_dict(decoded_payload["completion"]).results
+                )
+                self._record_completion_ipc(len(results), batch_payload=True)
+                return results
             completion_enqueued_at = payload.get("completion_enqueued_at")
             if isinstance(completion_enqueued_at, (int, float)):
                 self._record_worker_to_main_ipc(
                     time.monotonic() - float(completion_enqueued_at)
                 )
-            return _completion_event_from_dict(payload)
-        return raw_event
+            self._record_completion_ipc(1, batch_payload=False)
+            return [_completion_event_from_dict(payload)]
+        return [raw_event]
+
+    def _completion_msgpack_max_bytes(self) -> int:
+        """Return completion decode msgpack byte limit without config construction."""
+        config = getattr(self, "_config", None)
+        process_config = getattr(config, "process_config", None)
+        msgpack_max_bytes = getattr(process_config, "msgpack_max_bytes", None)
+        if isinstance(msgpack_max_bytes, int) and msgpack_max_bytes > 0:
+            return msgpack_max_bytes
+        return _DEFAULT_MSGPACK_MAX_BYTES
 
     def get_in_flight_count(self) -> int:
         """현재 처리 중인 작업 항목의 수를 반환합니다.

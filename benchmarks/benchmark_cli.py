@@ -188,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override process-mode micro-batch size for benchmark runs",
     )
     parser.add_argument(
+        "--route-batch-size",
+        type=int,
+        default=1,
+        help="Override control-plane same-route batch lease size for benchmark runs",
+    )
+    parser.add_argument(
         "--process-max-batch-wait-ms",
         type=int,
         default=None,

@@ -141,6 +141,7 @@ class PyrallelConsumer:
             ordering_mode=ordering_mode,
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
             poison_message_circuit=poison_message_circuit,
+            route_batch_size=execution_config.route_batch_size,
         )
 
         # 3. Create Broker Poller (The main loop)

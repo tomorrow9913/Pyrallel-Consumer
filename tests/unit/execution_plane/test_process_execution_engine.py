@@ -18,10 +18,22 @@ from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
     ExecutionMode,
+    RouteBatch,
     TopicPartition,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane import process_engine as process_engine_module
+from pyrallel_consumer.execution_plane import (
+    process_transport_worker_pipes as worker_pipes_module,
+)
+from pyrallel_consumer.execution_plane import (
+    process_worker_runtime as worker_runtime_module,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    batch_completion_from_dict,
+    decode_worker_pipe_payload,
+    route_batch_from_dict,
+)
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _completion_event_from_dict,
@@ -36,6 +48,7 @@ from pyrallel_consumer.execution_plane.process_transport import (
     RouteIdentity,
     WorkerExecutionIdentity,
     logical_work_identity_from_payload,
+    stable_worker_index_for_route,
 )
 from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
     SharedQueueProcessTransport,
@@ -643,6 +656,621 @@ async def test_submit_routes_matching_identities_to_same_worker_pipe(
         await engine.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_worker_pipes_submit_batch_sends_one_route_batch_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=2,
+            queue_size=4,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+    senders = [_PipeSender(), _PipeSender()]
+    engine_any = cast(Any, engine)
+    engine_any._worker_pipe_senders.clear()
+    engine_any._worker_pipe_senders.extend(senders)
+    items = [
+        WorkItem(
+            id="work-a",
+            tp=TopicPartition("topic", 0),
+            offset=1,
+            epoch=1,
+            key=b"same-key",
+            payload=b"a",
+        ),
+        WorkItem(
+            id="work-b",
+            tp=TopicPartition("topic", 0),
+            offset=2,
+            epoch=1,
+            key=b"same-key",
+            payload=b"b",
+        ),
+    ]
+    route_identity = RouteIdentity("topic", 0, b"same-key")
+    expected_worker_idx = stable_worker_index_for_route(route_identity, 2)
+
+    try:
+        await engine.submit_batch(items)
+
+        assert [len(sender.payloads) for sender in senders].count(1) == 1
+        assert senders[expected_worker_idx].payloads
+        decoded_payload = decode_worker_pipe_payload(
+            senders[expected_worker_idx].payloads[0],
+            max_bytes=4096,
+        )
+        decoded_batch = route_batch_from_dict(decoded_payload["batch"])
+        assert decoded_payload["kind"] == "route_batch"
+        assert decoded_batch.worker_index == expected_worker_idx
+        assert decoded_batch.route_identity == ("topic", 0, b"same-key")
+        assert [item.id for item in decoded_batch.items] == ["work-a", "work-b"]
+        assert engine.get_in_flight_count() == 2
+        runtime_metrics = engine.get_runtime_metrics()
+        assert runtime_metrics is not None
+        assert runtime_metrics.process is not None
+        process_metrics = runtime_metrics.process.batch_metrics
+        assert process_metrics.route_batch_count == 1
+        assert process_metrics.route_batch_item_count == 2
+        assert process_metrics.items_per_input_ipc == 2.0
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_pipes_route_batch_metrics_calculate_size_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=1,
+            queue_size=4,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+    sender = _PipeSender()
+    engine_any = cast(Any, engine)
+    engine_any._worker_pipe_senders.clear()
+    engine_any._worker_pipe_senders.append(sender)
+    try:
+        await engine.submit_batch(
+            [
+                WorkItem("work-a", TopicPartition("topic", 0), 1, 1, b"same", b"a"),
+                WorkItem("work-b", TopicPartition("topic", 0), 2, 1, b"same", b"b"),
+            ]
+        )
+        await engine.submit_batch(
+            [
+                WorkItem("work-c", TopicPartition("topic", 0), 3, 1, b"same", b"c"),
+                WorkItem("work-d", TopicPartition("topic", 0), 4, 1, b"same", b"d"),
+                WorkItem("work-e", TopicPartition("topic", 0), 5, 1, b"same", b"e"),
+            ]
+        )
+
+        runtime_metrics = engine.get_runtime_metrics()
+        assert runtime_metrics is not None
+        assert runtime_metrics.process is not None
+        process_metrics = runtime_metrics.process.batch_metrics
+        assert process_metrics.route_batch_count == 2
+        assert process_metrics.route_batch_item_count == 5
+        assert process_metrics.route_batch_size_avg == 2.5
+        assert process_metrics.route_batch_size_max == 3
+        assert process_metrics.items_per_input_ipc == 2.5
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_pipes_submit_batch_hashes_route_once_and_records_pending_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+    hash_calls: list[RouteIdentity] = []
+
+    def fake_stable_worker_index(
+        route_identity: RouteIdentity,
+        process_count: int,
+    ) -> int:
+        assert process_count == 2
+        hash_calls.append(route_identity)
+        return 1
+
+    monkeypatch.setattr(
+        worker_pipes_module,
+        "stable_worker_index_for_route",
+        fake_stable_worker_index,
+    )
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=2,
+            queue_size=4,
+            transport_mode="worker_pipes",
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+    senders = [_PipeSender(), _PipeSender()]
+    engine_any = cast(Any, engine)
+    engine_any._worker_pipe_senders.clear()
+    engine_any._worker_pipe_senders.extend(senders)
+    items = [
+        WorkItem(
+            id="work-a",
+            tp=TopicPartition("topic", 3),
+            offset=10,
+            epoch=5,
+            key=b"same-key",
+            payload=b"a",
+        ),
+        WorkItem(
+            id="work-b",
+            tp=TopicPartition("topic", 3),
+            offset=11,
+            epoch=5,
+            key=b"same-key",
+            payload=b"b",
+        ),
+    ]
+
+    try:
+        await engine.submit_batch(items)
+
+        assert hash_calls == [RouteIdentity("topic", 3, b"same-key")]
+        transport = cast(Any, engine)._transport
+        pending_batches = list(transport._pending_dispatch.values())
+        assert len(pending_batches) == 1
+        pending_batch = pending_batches[0]
+        assert pending_batch["batch_id"]
+        assert [item["id"] for item in pending_batch["items"]] == ["work-a", "work-b"]
+        assert [item["offset"] for item in pending_batch["items"]] == [10, 11]
+    finally:
+        await engine.shutdown()
+
+
+def test_worker_pipe_submit_batch_send_failure_rolls_back_pending_and_slot() -> None:
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [_BrokenPipeSender()],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    route_batch = RouteBatch(
+        batch_id="batch-failure",
+        route_identity=("topic", 1, b"same-key"),
+        worker_index=None,
+        items=[
+            WorkItem(
+                id="work-a",
+                tp=TopicPartition("topic", 1),
+                offset=42,
+                epoch=7,
+                key=b"same-key",
+                payload=b"a",
+            ),
+            WorkItem(
+                id="work-b",
+                tp=TopicPartition("topic", 1),
+                offset=43,
+                epoch=7,
+                key=b"same-key",
+                payload=b"b",
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Failed to dispatch worker pipe route batch"
+    ):
+        transport.dispatch_route_batch(
+            route_batch,
+            route_identity=RouteIdentity("topic", 1, b"same-key"),
+            count_in_flight=True,
+        )
+
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
+def test_worker_pipe_route_batch_slot_acquire_uses_representative_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    acquired_payloads: list[dict[str, Any]] = []
+    original_acquire = transport._acquire_worker_pipe_queue_slot
+
+    def capture_acquire(worker_idx: int, payload: dict[str, Any]) -> None:
+        acquired_payloads.append(payload)
+        original_acquire(worker_idx=worker_idx, payload=payload)
+
+    monkeypatch.setattr(transport, "_acquire_worker_pipe_queue_slot", capture_acquire)
+
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-representative",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+
+    assert acquired_payloads == [_work_item_to_dict(item)]
+
+
+def test_worker_pipe_route_batch_start_keeps_unstarted_tail_recoverable() -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+    recovered = transport.recover_pending_dispatches(0)
+    assert recovered == [
+        PendingDispatchRecovery(
+            identity=WorkerExecutionIdentity(
+                worker_index=0,
+                work=logical_work_identity_from_payload(tail_payload),
+            ),
+            payload=tail_payload,
+        )
+    ]
+    assert transport._pending_dispatch == {}
+
+
+def test_worker_pipe_not_started_event_clears_pending_route_batch_tail() -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+
+    transport.handle_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert transport._pending_dispatch == {}
+
+
+def test_process_engine_not_started_requeues_tail_without_new_in_flight_count() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    transport = _RequeueRecordingTransport()
+    tail_payload = {
+        "id": "work-b",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 43,
+        "epoch": 7,
+        "key": b"same-key",
+        "payload": b"b",
+        "requeue_attempts": 0,
+    }
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert transport.requeued_payloads == [[tail_payload]]
+    assert engine.get_in_flight_count() == 2
+
+
+def test_process_engine_not_started_requeues_tail_still_pending_in_worker_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert requeued == [[tail_payload]]
+    assert transport._pending_dispatch == {}
+
+
+def test_process_engine_ignores_stale_not_started_tail_after_pending_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+    recovered = transport.recover_pending_dispatches(0)
+    assert [entry.payload for entry in recovered] == [tail_payload]
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert requeued == []
+
+
+@pytest.mark.asyncio
+async def test_shared_queue_submit_batch_keeps_base_fallback_behavior() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    submitted: list[WorkItem] = []
+
+    async def record_submit(work_item: WorkItem) -> None:
+        submitted.append(work_item)
+
+    engine.submit = record_submit  # type: ignore[method-assign]
+    items = [
+        WorkItem(
+            id="work-a",
+            tp=TopicPartition("topic", 0),
+            offset=1,
+            epoch=1,
+            key=b"same-key",
+            payload=b"a",
+        ),
+        WorkItem(
+            id="work-b",
+            tp=TopicPartition("topic", 0),
+            offset=2,
+            epoch=1,
+            key=b"same-key",
+            payload=b"b",
+        ),
+    ]
+
+    await engine.submit_batch(items)
+
+    assert submitted == items
+
+
 def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:
     engine = cast(
         ProcessExecutionEngine,
@@ -1042,6 +1670,640 @@ def test_worker_done_registry_event_uses_identity_payload_only() -> None:
     }
     assert "key" not in done_events[0]["payload"]
     assert "payload" not in done_events[0]["payload"]
+
+
+def test_worker_runtime_executes_route_batch_items_in_order() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-ordered", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    executed_offsets: list[int] = []
+
+    def record_order(item: WorkItem) -> None:
+        executed_offsets.append(item.offset)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        record_order,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    assert executed_offsets == [1, 2, 3]
+
+
+def test_worker_runtime_stops_route_batch_after_first_failure() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-fail", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    executed_offsets: list[int] = []
+
+    def fail_second(item: WorkItem) -> None:
+        executed_offsets.append(item.offset)
+        if item.offset == 2:
+            raise RuntimeError("boom")
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        fail_second,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payloads = []
+    while not completion_queue.empty():
+        raw_payloads.append(msgpack.unpackb(completion_queue.get_nowait(), raw=False))
+    completion = batch_completion_from_dict(
+        next(
+            payload
+            for payload in raw_payloads
+            if payload.get("kind") == "batch_completion"
+        )["completion"]
+    )
+    assert executed_offsets == [1, 2]
+    assert [(event.offset, event.status) for event in completion.results] == [
+        (1, CompletionStatus.SUCCESS),
+        (2, CompletionStatus.FAILURE),
+    ]
+    assert [payload for payload in raw_payloads if "id" in payload] == []
+
+
+def test_worker_runtime_emits_not_started_diagnostic_for_route_batch_remainder() -> (
+    None
+):
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-remainder", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fail_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise RuntimeError("boom")
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        fail_second,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events = []
+    while not registry_event_queue.empty():
+        registry_events.append(cast(dict[str, Any], registry_event_queue.get_nowait()))
+    not_started_events = [
+        event for event in registry_events if event.get("kind") == "not_started"
+    ]
+    assert not_started_events == [
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-remainder",
+            "payloads": [_work_item_to_dict(items[2])],
+        }
+    ]
+
+
+def test_worker_runtime_non_route_batch_keeps_item_level_completion_surface() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put([_work_item_to_dict(item)])
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    completion_payload = msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+    assert completion_payload["id"] == "work-1"
+    assert "batch_id" not in completion_payload
+    assert "results" not in completion_payload
+
+
+def test_worker_runtime_emits_batch_completion_for_executed_route_batch_prefix() -> (
+    None
+):
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-prefix", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fail_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise RuntimeError("boom")
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        fail_second,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payloads = [
+        msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+        for _ in range(completion_queue.qsize())
+    ]
+    batch_payloads = [
+        payload for payload in raw_payloads if payload.get("kind") == "batch_completion"
+    ]
+    item_payloads = [payload for payload in raw_payloads if "id" in payload]
+    assert len(raw_payloads) == 1
+    assert len(batch_payloads) == 1
+    assert item_payloads == []
+    completion = batch_completion_from_dict(batch_payloads[0]["completion"])
+    assert completion.batch_id == "batch-prefix"
+    assert completion.route_identity == ("topic", 1, b"key")
+    assert [event.id for event in completion.results] == ["work-1", "work-2"]
+    assert [event.offset for event in completion.results] == [1, 2]
+    assert [event.status for event in completion.results] == [
+        CompletionStatus.SUCCESS,
+        CompletionStatus.FAILURE,
+    ]
+    assert completion.results[1].error == "boom"
+    assert completion.results[1].attempt == 1
+
+
+def test_worker_runtime_batch_completion_excludes_not_started_remainder() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-skip", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fail_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise RuntimeError("boom")
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        fail_second,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payloads = [
+        msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+        for _ in range(completion_queue.qsize())
+    ]
+    batch_payload = next(
+        payload for payload in raw_payloads if payload.get("kind") == "batch_completion"
+    )
+    assert len(raw_payloads) == 1
+    assert [payload for payload in raw_payloads if "id" in payload] == []
+    completion = batch_completion_from_dict(batch_payload["completion"])
+    assert [event.id for event in completion.results] == ["work-1", "work-2"]
+
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    not_started_events = [
+        event for event in registry_events if event.get("kind") == "not_started"
+    ]
+    assert not_started_events == [
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-skip",
+            "payloads": [_work_item_to_dict(items[2])],
+        }
+    ]
+
+
+def test_worker_runtime_batch_completion_send_failure_is_diagnostic() -> None:
+    class ExplodingCompletionQueue:
+        def __init__(self) -> None:
+            self.payloads: list[object] = []
+
+        def put(self, payload: object) -> None:
+            decoded = msgpack.unpackb(cast(bytes, payload), raw=False)
+            if decoded.get("kind") == "batch_completion":
+                raise RuntimeError("batch-wire-down")
+            self.payloads.append(payload)
+
+    task_source: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    completion_queue = ExplodingCompletionQueue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-send-failure", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        cast(Any, completion_queue),
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    diagnostics = [
+        event
+        for event in registry_events
+        if event.get("kind") == "batch_completion_send_failed"
+    ]
+    assert diagnostics == [
+        {
+            "kind": "batch_completion_send_failed",
+            "batch_id": "batch-send-failure",
+            "error": "batch-wire-down",
+        }
+    ]
+    fallback_payloads = [
+        msgpack.unpackb(cast(bytes, payload), raw=False)
+        for payload in completion_queue.payloads
+    ]
+    assert [
+        (payload["id"], payload["offset"], payload["status"])
+        for payload in fallback_payloads
+    ] == [("work-1", 1, "success")]
+
+
+def test_worker_runtime_route_batch_emits_only_batch_completion_envelope() -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-item-level", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payloads = [
+        msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+        for _ in range(completion_queue.qsize())
+    ]
+    assert len(raw_payloads) == 1
+    assert [payload for payload in raw_payloads if "id" in payload] == []
+    assert raw_payloads[0]["kind"] == "batch_completion"
+
+
+def test_worker_runtime_defers_route_batch_done_until_completion_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-done-after-flush", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    original_flush = worker_runtime_module._flush_route_batch_completion
+    seen_done_before_flush: list[dict[str, Any]] = []
+
+    def capture_flush(**kwargs: Any) -> None:
+        queue_ref = cast(queue.Queue[object], kwargs["registry_event_queue"])
+        seen_done_before_flush.extend(
+            cast(dict[str, Any], event)
+            for event in list(queue_ref.queue)
+            if isinstance(event, dict) and event.get("kind") == "done"
+        )
+        original_flush(**kwargs)
+
+    monkeypatch.setattr(
+        worker_runtime_module,
+        "_flush_route_batch_completion",
+        capture_flush,
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    assert seen_done_before_flush == []
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    assert [event.get("kind") for event in registry_events].count("done") == 1
+
+
+def test_worker_runtime_fatal_route_batch_flushes_prefix_completion_before_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-fatal-prefix", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    def timeout_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise TimeoutError("fatal-timeout")
+
+    monkeypatch.setattr(worker_runtime_module.os, "_exit", fake_exit)
+
+    with pytest.raises(SystemExit):
+        _worker_loop(
+            task_source,
+            completion_queue,  # type: ignore[arg-type]
+            registry_event_queue,  # type: ignore[arg-type]
+            timeout_second,
+            0,
+            ExecutionConfig(
+                mode=ExecutionMode.PROCESS,
+                max_retries=1,
+                process_config=ProcessConfig(process_count=1),
+            ),
+        )
+
+    raw_payloads = [
+        msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+        for _ in range(completion_queue.qsize())
+    ]
+    assert len(raw_payloads) == 1
+    assert raw_payloads[0]["kind"] == "batch_completion"
+    completion = batch_completion_from_dict(raw_payloads[0]["completion"])
+    assert [(event.id, event.offset, event.status) for event in completion.results] == [
+        ("work-1", 1, CompletionStatus.SUCCESS)
+    ]
+
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    assert [event for event in registry_events if event.get("kind") == "timeout"]
+    assert [
+        event for event in registry_events if event.get("kind") == "not_started"
+    ] == []
+
+
+def test_parent_expands_fatal_route_batch_prefix_batch_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-fatal-parent", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    def timeout_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise TimeoutError("fatal-timeout")
+
+    monkeypatch.setattr(worker_runtime_module.os, "_exit", fake_exit)
+
+    with pytest.raises(SystemExit):
+        _worker_loop(
+            task_source,
+            completion_queue,  # type: ignore[arg-type]
+            registry_event_queue,  # type: ignore[arg-type]
+            timeout_second,
+            0,
+            ExecutionConfig(
+                mode=ExecutionMode.PROCESS,
+                max_retries=1,
+                process_config=ProcessConfig(process_count=1),
+            ),
+        )
+
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine._initialize_runtime_timing_state()
+
+    events = engine._decode_completion_queue_item_events(completion_queue.get_nowait())
+
+    assert [(event.id, event.offset, event.status) for event in events] == [
+        ("work-1", 1, CompletionStatus.SUCCESS)
+    ]
+    assert engine_any._completion_batch_payload_count == 1
+    assert engine_any._completion_item_payload_count == 0
+
+
+def test_worker_runtime_fatal_route_batch_prefix_flush_falls_back_to_item_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingBatchCompletionQueue:
+        def __init__(self) -> None:
+            self.payloads: list[object] = []
+
+        def put(self, payload: object) -> None:
+            decoded = msgpack.unpackb(cast(bytes, payload), raw=False)
+            if decoded.get("kind") == "batch_completion":
+                raise RuntimeError("fatal-batch-wire-down")
+            self.payloads.append(payload)
+
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue = ExplodingBatchCompletionQueue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-fatal-fallback", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    def timeout_second(item: WorkItem) -> None:
+        if item.offset == 2:
+            raise TimeoutError("fatal-timeout")
+
+    monkeypatch.setattr(worker_runtime_module.os, "_exit", fake_exit)
+
+    with pytest.raises(SystemExit):
+        _worker_loop(
+            task_source,
+            cast(Any, completion_queue),
+            registry_event_queue,  # type: ignore[arg-type]
+            timeout_second,
+            0,
+            ExecutionConfig(
+                mode=ExecutionMode.PROCESS,
+                max_retries=1,
+                process_config=ProcessConfig(process_count=1),
+            ),
+        )
+
+    fallback_payloads = [
+        msgpack.unpackb(cast(bytes, payload), raw=False)
+        for payload in completion_queue.payloads
+    ]
+    assert [
+        (payload["id"], payload["offset"], payload["status"])
+        for payload in fallback_payloads
+    ] == [("work-1", 1, "success")]
+    diagnostics = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    assert [
+        event
+        for event in diagnostics
+        if event.get("kind") == "batch_completion_send_failed"
+    ] == [
+        {
+            "kind": "batch_completion_send_failed",
+            "batch_id": "batch-fatal-fallback",
+            "error": "fatal-batch-wire-down",
+        }
+    ]
 
 
 def test_registry_start_event_ignores_older_identity_when_identity_differs() -> None:
@@ -1690,7 +2952,7 @@ def test_shared_queue_transport_declares_no_pending_dispatch_recovery() -> None:
 
 
 def test_shared_queue_requeue_payloads_fails_fast_when_queue_is_full() -> None:
-    task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    task_queue = cast(Any, queue.Queue(maxsize=1))
     task_queue.put_nowait(b"busy")
     transport = SharedQueueProcessTransport(
         task_queue=cast(Any, task_queue),
@@ -2007,7 +3269,7 @@ def test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_fu
     )
     engine_any._completion_queue = queue.Queue()
     engine_any._logger = logging.getLogger(__name__)
-    task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+    task_queue = cast(Any, queue.Queue(maxsize=1))
     task_queue.put(b"occupied")
     engine_any._transport = SharedQueueProcessTransport(
         task_queue=task_queue,
