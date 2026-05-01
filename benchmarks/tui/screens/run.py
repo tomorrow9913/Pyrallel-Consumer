@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import signal
 from importlib import import_module
 from time import monotonic
 
@@ -30,11 +33,15 @@ _PHASE_NAMES = ("baseline", "async", "process")
 _WORKLOAD_NAMES = ("sleep", "cpu", "io")
 _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _DONE_STYLE = "bold bright_green"
+_SLOWER_THAN_BASELINE_STYLE = "bold bright_yellow"
 _RUNNING_STYLE = "bold black on bright_cyan"
 _WAITING_STYLE = "grey62"
 _FAILED_STYLE = "bold bright_red"
 _CANCELLED_STYLE = "bold bright_yellow"
 _ACTIVE_ROW_STYLE = "bold bright_cyan"
+_METRICS_PORT_PID_PATTERN = re.compile(
+    r"Metrics port \d+ is already in use\(PID ([0-9,\s]+)\)"
+)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -123,6 +130,11 @@ class RunScreen(Screen[None]):
                 yield DataTable(id="run-summary")
                 yield Log(id="run-log")
             with Container(id="run-actions"):
+                yield Button(
+                    "Kill PID?",
+                    id="kill-metrics-port-button",
+                    variant="error",
+                )
                 yield Button("Cancel run", id="cancel-button", variant="error")
                 yield Button("Back to settings", id="settings-button")
                 yield Button("Back", id="exit-button")
@@ -153,6 +165,8 @@ class RunScreen(Screen[None]):
         """Handle on button pressed within run."""
         if event.button.id == "cancel-button":
             await self.action_cancel()
+        elif event.button.id == "kill-metrics-port-button":
+            self._kill_metrics_port_processes()
         elif event.button.id == "settings-button":
             await self.action_settings()
         elif event.button.id == "exit-button":
@@ -315,9 +329,11 @@ class RunScreen(Screen[None]):
     def _set_terminal_actions(self, *, show_report: bool) -> None:
         """Install or update terminal actions for run."""
         cancel_button = self.query_one("#cancel-button", Button)
+        kill_button = self.query_one("#kill-metrics-port-button", Button)
         settings_button = self.query_one("#settings-button", Button)
         exit_button = self.query_one("#exit-button", Button)
         is_terminal = self._finished_at is not None or self._cancelled
+        metrics_pids = self._metrics_port_error_pids()
 
         if show_report:
             cancel_button.label = "View results"
@@ -330,9 +346,63 @@ class RunScreen(Screen[None]):
         else:
             cancel_button.display = False
 
+        if is_terminal and not show_report and metrics_pids:
+            kill_button.label = "Kill PID %s?" % self._format_pids(metrics_pids)
+            kill_button.variant = "error"
+            kill_button.display = True
+        else:
+            kill_button.display = False
+
         settings_button.display = is_terminal
         exit_button.display = is_terminal
         exit_button.label = "Exit"
+
+    def _metrics_port_error_pids(self) -> tuple[int, ...]:
+        """Return PIDs from the metrics-port-in-use failure message."""
+        if self._last_error_line is None:
+            return ()
+        match = _METRICS_PORT_PID_PATTERN.search(self._last_error_line)
+        if match is None:
+            return ()
+        pids: list[int] = []
+        for token in match.group(1).split(","):
+            token = token.strip()
+            if token.isdigit():
+                pids.append(int(token))
+        return tuple(dict.fromkeys(pids))
+
+    @staticmethod
+    def _format_pids(pids: tuple[int, ...]) -> str:
+        """Format process ids for terminal action labels."""
+        return ",".join(str(pid) for pid in pids)
+
+    def _kill_metrics_port_processes(self) -> None:
+        """Send SIGTERM to PIDs reported by the metrics port conflict."""
+        pids = self._metrics_port_error_pids()
+        if not pids:
+            return
+        killed: list[str] = []
+        failed: list[str] = []
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                killed.append("%d(already exited)" % pid)
+            except PermissionError:
+                failed.append("%d(permission denied)" % pid)
+            except OSError as exc:
+                failed.append("%d(%s)" % (pid, exc))
+            else:
+                killed.append(str(pid))
+        if failed:
+            self._terminal_reason = "종료 실패: %s | kill 대상: %s" % (
+                ", ".join(failed),
+                ", ".join(str(pid) for pid in pids),
+            )
+        else:
+            self._terminal_reason = "종료 신호 전송: PID %s" % ", ".join(killed)
+            self.query_one("#kill-metrics-port-button", Button).display = False
+        self._render_spotlight(self._last_snapshot)
 
     def _configure_run_summary_table(self) -> None:
         """Handle configure run summary table within run."""
@@ -353,6 +423,7 @@ class RunScreen(Screen[None]):
         table = self.query_one("#run-summary", DataTable)
         active_row_key = self._active_row_key(snapshot)
         active_phase = self._current_phase(snapshot)
+        baseline_averages = self._baseline_averages_by_workload(snapshot)
 
         for workload in self._active_workloads:
             for ordering in self._active_orderings:
@@ -384,10 +455,46 @@ class RunScreen(Screen[None]):
                     elif is_active_row and phase == active_phase:
                         value = self._status_text("RUNNING", _RUNNING_STYLE)
                     elif row.get(phase, "--") != "--":
-                        value = self._status_text("%s TPS" % row[phase], _DONE_STYLE)
+                        value = self._status_text(
+                            "%s TPS" % row[phase],
+                            self._result_style(
+                                row[phase],
+                                baseline_averages.get(workload)
+                                if phase != "baseline"
+                                else None,
+                            ),
+                        )
                     else:
                         value = self._status_text("WAITING", _WAITING_STYLE)
                     table.update_cell(row_key, phase, value, update_width=True)
+
+    def _baseline_averages_by_workload(
+        self, snapshot: BenchmarkProgressSnapshot
+    ) -> dict[str, float]:
+        """Calculate baseline average TPS by workload for result coloring."""
+        averages: dict[str, float] = {}
+        for workload in self._active_workloads:
+            baseline_values: list[float] = []
+            ordering_rows = snapshot.tps_by_workload_ordering.get(workload, {})
+            for ordering in self._active_orderings:
+                value = ordering_rows.get(ordering, {}).get("baseline", "--")
+                parsed_value = self._parse_tps(value)
+                if parsed_value is not None:
+                    baseline_values.append(parsed_value)
+            if baseline_values:
+                averages[workload] = sum(baseline_values) / len(baseline_values)
+        return averages
+
+    def _result_style(self, value: str, baseline_average: float | None) -> str:
+        """Style completed result cells relative to workload baseline average."""
+        parsed_value = self._parse_tps(value)
+        if (
+            baseline_average is not None
+            and parsed_value is not None
+            and parsed_value < baseline_average
+        ):
+            return _SLOWER_THAN_BASELINE_STYLE
+        return _DONE_STYLE
 
     def _build_results_summary(self) -> str:
         """Build results summary for run."""
@@ -572,6 +679,14 @@ class RunScreen(Screen[None]):
     def _status_text(content: str, style: str) -> Text:
         """Handle status text within run."""
         return Text(content, style=style)
+
+    @staticmethod
+    def _parse_tps(value: str) -> float | None:
+        """Parse TPS value for result comparisons."""
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return None
 
     @staticmethod
     def _identity_cell_text(content: str, is_active: bool) -> str | Text:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import socket
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,42 @@ def _normalize_metrics_port(metrics_port: int | None) -> int | None:
     if metrics_port is None or metrics_port <= 0:
         return None
     return metrics_port
+
+
+def _list_listening_pids(port: int) -> tuple[str, ...]:
+    """Return process ids listening on the given TCP port when discoverable."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return ()
+    if result.returncode not in {0, 1}:
+        return ()
+    pids = tuple(
+        line.strip() for line in result.stdout.splitlines() if line.strip().isdigit()
+    )
+    return tuple(dict.fromkeys(pids))
+
+
+def _ensure_metrics_port_available(metrics_port: int | None) -> None:
+    """Fail before benchmark work starts when the metrics port is occupied."""
+    if metrics_port is None:
+        return
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("", metrics_port))
+        except OSError as exc:
+            pids = _list_listening_pids(metrics_port)
+            pid_suffix = "(PID %s)" % ",".join(pids) if pids else ""
+            raise RuntimeError(
+                "Metrics port %s is already in use%s. Stop the process using that "
+                "port, choose another port with --metrics-port, or disable "
+                "benchmark metrics with --metrics-port 0." % (metrics_port, pid_suffix)
+            ) from exc
 
 
 def _run_baseline_round(
@@ -279,6 +317,7 @@ def run_benchmark(
     logging.getLogger("benchmarks").setLevel(log_level)
 
     _check_kafka_connection(args.bootstrap_servers)
+    _ensure_metrics_port_available(metrics_port)
 
     workloads = list(args.workloads)
     orderings = list(args.order)
@@ -538,7 +577,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     parser = build_parser()
     args = parser.parse_args(raw_argv)
-    run_benchmark(args, raw_argv=raw_argv)
+    try:
+        run_benchmark(args, raw_argv=raw_argv)
+    except RuntimeError as exc:
+        raise SystemExit("error: %s" % exc) from None
 
 
 if __name__ == "__main__":

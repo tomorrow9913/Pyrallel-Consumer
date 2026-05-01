@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import socket
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -69,6 +70,7 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "strict_completion_monitor": ["on"],
         "adaptive_concurrency": ["off"],
         "process_transport": "shared_queue",
+        "metrics_port": 0,
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
         "log_level": "WARNING",
@@ -930,6 +932,62 @@ def test_normalize_metrics_port_treats_non_positive_values_as_disabled() -> None
     assert run_parallel_benchmark._normalize_metrics_port(9091) == 9091
 
 
+def test_ensure_metrics_port_available_reports_listening_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        monkeypatch.setattr(
+            run_parallel_benchmark,
+            "_list_listening_pids",
+            lambda _port: ("1234",),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Metrics port \d+ is already in use\(PID 1234\)",
+        ):
+            run_parallel_benchmark._ensure_metrics_port_available(port)
+
+
+def test_run_benchmark_checks_metrics_port_before_running_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_check_kafka_connection",
+        lambda _bootstrap: events.append("kafka"),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_ensure_metrics_port_available",
+        lambda _port: (_ for _ in ()).throw(RuntimeError("port occupied")),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "reset_topics_and_groups",
+        lambda **_kwargs: events.append("reset"),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    with pytest.raises(RuntimeError, match="port occupied"):
+        run_parallel_benchmark.run_benchmark(
+            _build_args(metrics_port=9091), raw_argv=["--metrics-port", "9091"]
+        )
+
+    assert events == ["kafka"]
+
+
 def test_get_or_create_prometheus_exporter_reuses_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1704,6 +1762,35 @@ def test_ordering_validator_reports_key_hash_pass_summary() -> None:
             epoch=0,
             key="key-0",
             payload=b'{"key":"key-0","sequence":1}',
+        )
+    )
+
+    assert validator.summary() == "Ordering validation PASS: key_hash keys=1 checks=2"
+
+
+def test_ordering_validator_allows_nonzero_first_key_hash_sequence() -> None:
+    validator = pyrallel_consumer_test.OrderingValidator(
+        ordering_mode="key_hash", topic_name="demo-topic"
+    )
+
+    validator.observe(
+        WorkItem(
+            id="item-67",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=67,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":67}',
+        )
+    )
+    validator.observe(
+        WorkItem(
+            id="item-68",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=68,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":68}',
         )
     )
 

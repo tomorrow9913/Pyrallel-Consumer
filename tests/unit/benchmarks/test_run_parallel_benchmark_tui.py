@@ -41,6 +41,22 @@ def test_main_runs_cli_when_args_are_supplied(monkeypatch) -> None:
     assert captured["raw_argv"] == ["--num-messages", "42", "--skip-process"]
 
 
+def test_main_reports_runtime_errors_without_traceback(monkeypatch) -> None:
+    def _fake_run_benchmark(_args, raw_argv) -> None:
+        del raw_argv
+        raise RuntimeError("metrics port is busy")
+
+    monkeypatch.setattr(run_parallel_benchmark, "launch_tui", Mock())
+    monkeypatch.setattr(run_parallel_benchmark, "run_benchmark", _fake_run_benchmark)
+
+    try:
+        run_parallel_benchmark.main(["--num-messages", "42", "--skip-process"])
+    except SystemExit as exc:
+        assert exc.code == "error: metrics port is busy"
+    else:
+        raise AssertionError("Expected main to convert RuntimeError to SystemExit")
+
+
 def test_script_path_execution_supports_help() -> None:
     script_path = (
         Path(__file__).resolve().parents[3] / "benchmarks" / "run_parallel_benchmark.py"

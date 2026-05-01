@@ -153,7 +153,7 @@ class OrderingValidator:
             payload = self._decode_ordering_payload(item.payload)
             key = str(payload["key"])
             sequence = int(payload["sequence"])
-            expected_sequence = self._last_sequence_by_key.get(key, -1) + 1
+            expected_sequence = self._last_sequence_by_key.get(key, sequence - 1) + 1
             if sequence != expected_sequence:
                 raise RuntimeError(
                     "Ordering validation failed for key %s on %s: expected sequence %d but got %d"
