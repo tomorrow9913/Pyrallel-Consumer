@@ -108,6 +108,25 @@ class WorkItem:
     poison_key: Any = WORK_ITEM_POISON_KEY_UNSET
 
 
+@dataclass(frozen=True)
+class RouteBatch:
+    """Internal process transport route batch payload."""
+
+    batch_id: str
+    route_identity: tuple[Any, ...]
+    worker_index: Optional[int]
+    items: list[WorkItem]
+
+
+@dataclass(frozen=True)
+class BatchCompletion:
+    """Internal process transport batch completion payload."""
+
+    batch_id: str
+    route_identity: tuple[Any, ...]
+    results: list[CompletionEvent]
+
+
 # --- Process Execution ---
 @dataclass(frozen=True)
 class ProcessTask:

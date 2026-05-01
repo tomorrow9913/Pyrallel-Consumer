@@ -12,13 +12,21 @@ import pytest
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
 from pyrallel_consumer.dto import (
+    BatchCompletion,
     CompletionEvent,
     CompletionStatus,
     EngineRuntimeDiagnostics,
+    RouteBatch,
     TopicPartition,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane import process_engine
+from pyrallel_consumer.execution_plane.process_codec import (
+    batch_completion_from_dict,
+    batch_completion_to_dict,
+    route_batch_from_dict,
+    route_batch_to_dict,
+)
 from pyrallel_consumer.execution_plane.process_engine import (
     ProcessExecutionEngine,
     _BatchAccumulator,
@@ -50,6 +58,67 @@ def _make_work_item(offset: int, partition: int = 0, topic: str = "test") -> Wor
         key=f"key-{offset}".encode(),
         payload=f"payload-{offset}".encode(),
     )
+
+
+def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
+    route_batch = RouteBatch(
+        batch_id="batch-1",
+        route_identity=("topic", 0, b"key-a"),
+        worker_index=2,
+        items=[_make_work_item(0), _make_work_item(1)],
+    )
+
+    decoded = route_batch_from_dict(route_batch_to_dict(route_batch))
+
+    assert decoded.batch_id == "batch-1"
+    assert decoded.route_identity == ("topic", 0, b"key-a")
+    assert decoded.worker_index == 2
+    assert [item.id for item in decoded.items] == ["wi-0", "wi-1"]
+    assert [
+        (item.tp.topic, item.tp.partition, item.offset) for item in decoded.items
+    ] == [
+        ("test", 0, 0),
+        ("test", 0, 1),
+    ]
+
+
+def test_batch_completion_wire_contract_preserves_item_results() -> None:
+    completion = BatchCompletion(
+        batch_id="batch-1",
+        route_identity=("topic", 0, b"key-a"),
+        results=[
+            CompletionEvent(
+                id="wi-0",
+                tp=TopicPartition("test", 0),
+                offset=0,
+                epoch=1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+            CompletionEvent(
+                id="wi-1",
+                tp=TopicPartition("test", 0),
+                offset=1,
+                epoch=1,
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=3,
+            ),
+        ],
+    )
+
+    decoded = batch_completion_from_dict(batch_completion_to_dict(completion))
+
+    assert decoded.batch_id == "batch-1"
+    assert decoded.route_identity == ("topic", 0, b"key-a")
+    assert [event.id for event in decoded.results] == ["wi-0", "wi-1"]
+    assert [event.status for event in decoded.results] == [
+        CompletionStatus.SUCCESS,
+        CompletionStatus.FAILURE,
+    ]
+    assert decoded.results[1].error == "boom"
+    assert decoded.results[1].attempt == 3
 
 
 def _sync_worker(item: WorkItem) -> None:

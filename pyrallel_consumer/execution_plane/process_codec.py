@@ -4,14 +4,16 @@
 # Extend here for wire-format changes shared by process transports and workers.
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.dto import (
     WORK_ITEM_POISON_KEY_UNSET,
+    BatchCompletion,
     CompletionEvent,
     CompletionStatus,
+    RouteBatch,
     TopicPartition,
     WorkItem,
 )
@@ -20,6 +22,8 @@ SerializedWorkItem = dict[str, Any]
 SerializedCompletionEvent = dict[str, Any]
 SerializedRegistryEvent = dict[str, Any]
 SerializedBatchEnvelope = dict[str, Any]
+SerializedRouteBatch = dict[str, Any]
+SerializedBatchCompletion = dict[str, Any]
 
 
 def work_item_to_dict(item: WorkItem) -> SerializedWorkItem:
@@ -140,6 +144,50 @@ def completion_event_from_dict(
     )
 
 
+def route_batch_to_dict(batch: RouteBatch) -> SerializedRouteBatch:
+    """Convert an internal route batch to a process wire payload."""
+    return {
+        "batch_id": batch.batch_id,
+        "route_identity": list(batch.route_identity),
+        "worker_index": batch.worker_index,
+        "items": [work_item_to_dict(item) for item in batch.items],
+    }
+
+
+def route_batch_from_dict(payload: SerializedRouteBatch) -> RouteBatch:
+    """Build an internal route batch from a process wire payload."""
+    return RouteBatch(
+        batch_id=payload["batch_id"],
+        route_identity=tuple(payload["route_identity"]),
+        worker_index=payload.get("worker_index"),
+        items=[work_item_from_dict(item) for item in payload.get("items", [])],
+    )
+
+
+def batch_completion_to_dict(
+    completion: BatchCompletion,
+) -> SerializedBatchCompletion:
+    """Convert an internal batch completion to a process wire payload."""
+    return {
+        "batch_id": completion.batch_id,
+        "route_identity": list(completion.route_identity),
+        "results": [completion_event_to_dict(event) for event in completion.results],
+    }
+
+
+def batch_completion_from_dict(
+    payload: SerializedBatchCompletion,
+) -> BatchCompletion:
+    """Build an internal batch completion from a process wire payload."""
+    return BatchCompletion(
+        batch_id=payload["batch_id"],
+        route_identity=tuple(payload["route_identity"]),
+        results=[
+            completion_event_from_dict(event) for event in payload.get("results", [])
+        ],
+    )
+
+
 def serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> bytes:
     """Serialize batch payload for process payload serialization.
 
@@ -155,7 +203,7 @@ def serialize_batch_payload(batch: list[WorkItem], flush_enqueued_at: float) -> 
         "items": [work_item_to_dict(item) for item in batch],
         "timing": {"flush_enqueued_at": flush_enqueued_at},
     }
-    return msgpack.packb(envelope, use_bin_type=True)
+    return cast(bytes, msgpack.packb(envelope, use_bin_type=True))
 
 
 def normalize_decoded_payloads(
