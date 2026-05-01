@@ -2,6 +2,9 @@
 
 *최종 업데이트: 2026년 4월 24일 금요일*
 
+## 최근 업데이트 (2026-05-01)
+- publish-pypi workflow ref-name injection fix (2026-05-01 UTC): `.github/workflows/publish-pypi.yml`의 branch/tag policy inline Python에서 `${{ github.ref_name }}` 직접 보간을 제거하고 `os.environ["REF_NAME"]`만 사용하도록 수정했습니다. GitHub expression이 Python 소스에 주입되지 않아 branch/tag 이름 기반 코드 실행 경로를 차단합니다.
+
 ## 최근 업데이트 (2026-04-25)
 - Recovered requeue failure DLQ bypass fix (2026-05-01 UTC): `ProcessExecutionEngine._publish_recovered_worker_payloads()`가 recovered payload 재큐잉 실패 시 synthetic FAILURE completion attempt를 payload의 `requeue_attempts` 값(비-terminal 가능)으로 내보내던 경로를 수정했습니다. 이제 해당 failure completion은 항상 `max_retries` attempt로 방출되어 downstream DLQ gate(`event.attempt >= max_retries`)를 확실히 통과하며, 처리되지 않은 메시지가 DLQ 없이 commit 완료되는 data-loss 경로를 차단합니다. 회귀 검증으로 `tests/unit/execution_plane/test_process_execution_engine.py::test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails` 및 `::test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_full`의 기대 attempt를 terminal 값으로 갱신했고 focused pytest에서 통과를 확인했습니다.
 - PR #124 Codex review fix - recovered requeue failures emit completions (2026-04-30 KST): unresolved review threads 3/4가 지적한 dead-worker recovery requeue failure data-loss 경로를 수정했습니다. `ProcessExecutionEngine._publish_recovered_worker_payloads()`는 이제 recovered payload를 payload 단위로 재큐잉하고, shared_queue full 또는 worker_pipes mid-batch send failure처럼 재큐잉 실패한 payload만 `worker_requeue_failed: ...` FAILURE completion으로 변환해 WorkManager in-flight 대기가 고착되지 않도록 했습니다. 회귀 테스트는 `test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails`, `test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_full`, `test_publish_recovered_worker_payloads_emits_only_failed_partial_requeues`를 추가했고 focused RED→GREEN은 해당 테스트들에서 확인했습니다.
