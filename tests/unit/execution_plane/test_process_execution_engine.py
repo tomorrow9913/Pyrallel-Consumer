@@ -1992,7 +1992,7 @@ def test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails(
     assert event.status == CompletionStatus.FAILURE
     assert event.error == "worker_requeue_failed: queue full"
     assert event.offset == 42
-    assert event.attempt == 2
+    assert event.attempt == 3
 
 
 def test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_full() -> (
@@ -2034,7 +2034,7 @@ def test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_fu
         "worker_requeue_failed: shared_queue transport queue is full during requeue"
     )
     assert event.offset == 42
-    assert event.attempt == 2
+    assert event.attempt == 3
 
 
 def test_publish_recovered_worker_payloads_emits_only_failed_partial_requeues(

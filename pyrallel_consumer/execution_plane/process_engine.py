@@ -610,9 +610,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     idx,
                     payload,
                     error="worker_requeue_failed: %s" % requeue_exc,
-                    attempt=int(
-                        payload.get("requeue_attempts", self._config.max_retries)
-                    ),
+                    attempt=self._config.max_retries,
                 )
         if requeued_offsets:
             self._logger.warning(
