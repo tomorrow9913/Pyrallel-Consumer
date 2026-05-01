@@ -17,6 +17,7 @@ ALLOWED_ENGINE_METHODS = {
     "submit",
     "submit_batch",
     "poll_completed_events",
+    "supports_ordered_route_batch",
     "wait_for_completion",
     "get_in_flight_count",
     "get_runtime_metrics",

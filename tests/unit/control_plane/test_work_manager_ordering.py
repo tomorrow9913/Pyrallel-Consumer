@@ -70,6 +70,46 @@ class _PartiallyFailingBatchEngine(BaseExecutionEngine):
         return None
 
 
+class _OrderedRouteBatchEngine(BaseExecutionEngine):
+    def __init__(self) -> None:
+        self.submitted_offsets: list[int] = []
+        self.submitted_batches: list[list[int]] = []
+
+    @property
+    def supports_ordered_route_batch(self) -> bool:
+        return True
+
+    async def submit(self, work_item) -> None:
+        self.submitted_offsets.append(work_item.offset)
+
+    async def submit_batch(self, work_items) -> None:
+        self.submitted_batches.append([item.offset for item in work_items])
+
+    async def poll_completed_events(self, batch_limit: int = 1000):
+        return []
+
+    async def wait_for_completion(self, timeout_seconds=None) -> bool:
+        return True
+
+    def get_in_flight_count(self) -> int:
+        return 0
+
+    async def shutdown(self) -> None:
+        return None
+
+
+class _ScriptedOrderedRouteBatchEngine(_OrderedRouteBatchEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.completion_batches: list[list[CompletionEvent]] = []
+
+    async def poll_completed_events(self, batch_limit: int = 1000):
+        del batch_limit
+        if not self.completion_batches:
+            return []
+        return self.completion_batches.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_key_hash_route_batching_is_deferred_until_engine_batches_are_ordering_safe(
     mock_engine, tp
@@ -94,6 +134,134 @@ async def test_key_hash_route_batching_is_deferred_until_engine_batches_are_orde
     assert submitted_item.offset == 0
     assert wm.get_total_in_flight_count() == 1
     assert wm.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_partition_route_batching_is_deferred_without_engine_capability(
+    mock_engine, tp
+):
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.PARTITION,
+        max_in_flight=10,
+    )
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    assert mock_engine.submit.await_count == 1
+    mock_engine.submit_batch.assert_not_awaited()
+    submitted_item = mock_engine.submit.await_args.args[0]
+    assert submitted_item.offset == 0
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_key_hash_supported_engine_batches_to_route_size_and_capacity(tp):
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=2)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    assert engine.submitted_offsets == []
+    assert engine.submitted_batches == [[0, 1]]
+    assert wm.get_total_in_flight_count() == 2
+    assert wm.get_total_queued_messages() == 1
+
+
+@pytest.mark.asyncio
+async def test_partition_supported_engine_batches_to_route_size_and_capacity(tp):
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.PARTITION, max_in_flight=2)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    await wm.schedule()
+
+    assert engine.submitted_offsets == []
+    assert engine.submitted_batches == [[0, 1]]
+    assert wm.get_total_in_flight_count() == 2
+    assert wm.get_total_queued_messages() == 1
+
+
+@pytest.mark.asyncio
+async def test_key_hash_route_batch_tail_completion_releases_ordering_lock(tp):
+    engine = _ScriptedOrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=3)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+    await wm.submit_message(tp, 3, 1, b"key-A", b"payload-3")
+
+    await wm.schedule()
+    submitted_batch = list(wm._in_flight_work_items.values())
+    by_offset = {item.offset: item for item in submitted_batch}
+
+    engine.completion_batches.append(
+        [
+            CompletionEvent(
+                id=by_offset[0].id,
+                tp=tp,
+                offset=0,
+                epoch=1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+            CompletionEvent(
+                id=by_offset[1].id,
+                tp=tp,
+                offset=1,
+                epoch=1,
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=1,
+            ),
+        ]
+    )
+
+    await wm.poll_completed_events()
+
+    assert engine.submitted_batches == [[0, 1, 2]]
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 1
+
+    engine.completion_batches.append(
+        [
+            CompletionEvent(
+                id=by_offset[2].id,
+                tp=tp,
+                offset=2,
+                epoch=1,
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            )
+        ]
+    )
+
+    await wm.poll_completed_events()
+
+    assert engine.submitted_batches == [[0, 1, 2]]
+    assert engine.submitted_offsets == [3]
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 0
 
 
 @pytest.mark.asyncio

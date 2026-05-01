@@ -390,7 +390,13 @@ class WorkManager:
         if remaining_capacity <= 0:
             return 0
         if self._ordering_mode in {OrderingMode.KEY_HASH, OrderingMode.PARTITION}:
-            return 1
+            supports_ordered_route_batch = getattr(
+                self._execution_engine,
+                "supports_ordered_route_batch",
+                False,
+            )
+            if supports_ordered_route_batch is not True:
+                return 1
         return min(self._route_batch_size, remaining_capacity)
 
     def _select_same_queue_batch(
@@ -766,10 +772,9 @@ class WorkManager:
                         if len(items_to_submit) == 1:
                             await self._execution_engine.submit(items_to_submit[0])
                         else:
-                            # Slice 2A assumes submit_batch is all-or-nothing from the
-                            # control plane perspective. Dequeue/accounting happens only
-                            # after the engine call returns successfully; partial accept
-                            # recovery is handled in later transport-specific slices.
+                            # submit_batch must be atomic or raise BatchSubmitError
+                            # with accepted_count for a partially accepted prefix.
+                            # Generic exceptions are treated as zero accepted.
                             await self._execution_engine.submit_batch(items_to_submit)
                         dequeued_items = self._queue_topology.dequeue_submitted_items(
                             selected_tp, selected_key, len(items_to_submit)

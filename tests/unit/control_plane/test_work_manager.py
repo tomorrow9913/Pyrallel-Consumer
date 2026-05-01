@@ -16,7 +16,7 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
 
 
 @pytest.fixture
@@ -861,6 +861,85 @@ async def test_unordered_route_batch_truncation_does_not_stop_other_routes(
     assert submitted_offsets == [0, 2]
     assert work_manager.get_total_in_flight_count() == 2
     assert work_manager.get_total_queued_messages() == 1
+
+
+@pytest.mark.asyncio
+async def test_work_manager_batch_submit_error_accounts_only_accepted_count(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    mock_execution_engine.submit_batch.side_effect = BatchSubmitError(
+        accepted_count=1,
+        original_error=RuntimeError("partial submit failed"),
+    )
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"key-0"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"key-1"),
+                (2, tracker.get_current_epoch(), b"payload-2", b"key-2"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+
+    assert mock_execution_engine.submit_batch.await_count == 1
+    assert work_manager.get_total_in_flight_count() == 1
+    assert work_manager.get_total_queued_messages() == 2
+    assert len(work_manager._dispatch_timestamps) == 1
+    dispatched_item_id = next(iter(work_manager._dispatch_timestamps))
+    assert work_manager._in_flight_work_items[dispatched_item_id].offset == 0
+
+
+@pytest.mark.asyncio
+async def test_work_manager_generic_submit_batch_exception_counts_zero_accepted(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    mock_execution_engine.submit_batch.side_effect = RuntimeError(
+        "generic submit failed"
+    )
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"key-0"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"key-1"),
+                (2, tracker.get_current_epoch(), b"payload-2", b"key-2"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+
+    assert mock_execution_engine.submit_batch.await_count == 1
+    assert work_manager.get_total_in_flight_count() == 0
+    assert work_manager.get_total_queued_messages() == 3
+    assert work_manager._dispatch_timestamps == {}
 
 
 @pytest.mark.asyncio
