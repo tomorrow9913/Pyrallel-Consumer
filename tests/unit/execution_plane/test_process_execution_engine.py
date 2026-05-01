@@ -4480,6 +4480,40 @@ async def test_wait_for_completion_detects_item_even_when_empty_lies_true() -> N
 
 
 @pytest.mark.asyncio
+async def test_wait_for_completion_ignores_duplicate_only_queue_item() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._prefetched_completion_events = deque()
+    engine_any._drain_registry_events = Mock()
+    engine_any._ensure_workers_alive = Mock()
+    engine_any._completion_queue = queue.Queue()
+
+    completion = CompletionEvent(
+        id="work-42",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    packed_event = msgpack.packb(
+        _completion_event_to_dict(completion),
+        use_bin_type=True,
+    )
+
+    engine_any._completion_queue.put(packed_event)
+    assert await engine.wait_for_completion(timeout_seconds=0) is True
+    assert list(engine_any._prefetched_completion_events) == [completion]
+
+    engine_any._prefetched_completion_events.clear()
+    engine_any._completion_queue.put(packed_event)
+
+    assert await engine.wait_for_completion(timeout_seconds=0) is False
+    assert list(engine_any._prefetched_completion_events) == []
+
+
+@pytest.mark.asyncio
 async def test_submit_checks_worker_liveness_before_transport_dispatch() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)

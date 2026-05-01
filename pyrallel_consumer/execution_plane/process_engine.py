@@ -802,9 +802,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     raw_event = completion_queue.get_nowait()
                 except queue.Empty:
                     return prefetched
-                for event in self._decode_completion_queue_item_events(raw_event):
-                    self._prefetch_completion_event(event)
-                prefetched += 1
+                if self._prefetch_completion_queue_item(raw_event):
+                    prefetched += 1
+
+    def _prefetch_completion_queue_item(self, raw_event: Any) -> bool:
+        """Decode one completion queue item and prefetch any visible events."""
+        accepted = False
+        for event in self._decode_completion_queue_item_events(raw_event):
+            accepted = self._prefetch_completion_event(event) or accepted
+        return accepted
 
     def _prefetch_completion_event(self, event: CompletionEvent) -> bool:
         """Handle prefetch completion event within multiprocessing execution.
@@ -1176,31 +1182,34 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if self._prefetched_completion_events:
             return True
 
-        try:
-            raw_event = self._completion_queue.get_nowait()
-        except queue.Empty:
-            raw_event = None
+        deadline = (
+            None
+            if timeout_seconds is None
+            else time.monotonic() + max(timeout_seconds, 0)
+        )
+        while True:
+            try:
+                raw_event = self._completion_queue.get_nowait()
+            except queue.Empty:
+                if self._prefetched_completion_events:
+                    return True
+                if deadline is None:
+                    remaining_timeout = None
+                else:
+                    remaining_timeout = deadline - time.monotonic()
+                    if remaining_timeout <= 0:
+                        return False
+                try:
+                    raw_event = await asyncio.to_thread(
+                        self._completion_queue.get,
+                        True,
+                        remaining_timeout,
+                    )
+                except queue.Empty:
+                    return bool(self._prefetched_completion_events)
 
-        if raw_event is not None:
-            for event in self._decode_completion_queue_item_events(raw_event):
-                self._prefetch_completion_event(event)
-            return True
-
-        if timeout_seconds is not None and timeout_seconds <= 0:
-            return False
-
-        try:
-            raw_event = await asyncio.to_thread(
-                self._completion_queue.get,
-                True,
-                timeout_seconds,
-            )
-        except queue.Empty:
-            return False
-
-        for event in self._decode_completion_queue_item_events(raw_event):
-            self._prefetch_completion_event(event)
-        return True
+            if self._prefetch_completion_queue_item(raw_event):
+                return True
 
     def _initialize_runtime_timing_state(self) -> None:
         """Handle initialize runtime timing state within multiprocessing execution."""
