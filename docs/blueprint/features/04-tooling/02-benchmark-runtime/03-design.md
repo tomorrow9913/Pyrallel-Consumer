@@ -29,6 +29,7 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `--process-max-batch-wait-ms` | benchmark-only override for process micro-batch wait |
 | `--process-flush-policy` | benchmark-only override for process flush policy |
 | `--process-demand-flush-min-residence-ms` | benchmark-only override for the demand-min-residence guard |
+| `--route-batch-size` | benchmark-only override for same-route WorkManager lease size; distinct from process micro-batch size |
 | `--metrics-port` | exposes Prometheus metrics for Pyrallel runs on the chosen host port; `0` disables benchmark-side exposure |
 | `--profile` and related `--profile-*` flags | wrap each executed round in yappi profiling |
 | `--py-spy` and related `--py-spy-*` flags | relaunch under py-spy to capture process-mode activity, including subprocesses |
@@ -82,6 +83,7 @@ The workload selector changes only the worker function cost model; it does not a
 | Console logs | producer progress, reset notices, optional profiling notices, and the final table |
 | Final table | one row per executed run with run name, type, order, topic, processed message count, TPS, average ms, and p99 ms |
 | JSON summary | structured benchmark results plus the raw option map used for the invocation |
+| Route-batch JSON fields | `route_batch_size` plus nullable IPC fields such as `items_per_input_ipc`, `items_per_completion_ipc`, `route_batch_count`, `route_batch_item_count`, `route_batch_size_avg`, `route_batch_size_max`, `completion_item_payload_count`, and `completion_batch_payload_count` |
 | JSON release-gate evidence | the same JSON payload carries `metrics_observations`, final lag/gap fields, and `performance_improvements` so repeated artifacts can be evaluated by `benchmarks.release_gate` without scraping console output |
 | yappi artifacts | `.prof` files under the configured profile directory |
 | py-spy artifacts | format-specific files under the configured py-spy output directory |
@@ -100,3 +102,11 @@ The workload selector changes only the worker function cost model; it does not a
 - Adaptive backpressure is currently a runtime observability/configuration surface, while `adaptive-concurrency=on|off` is a distinct benchmark matrix axis for the control-plane live-limit policy.
 - Logging above `WARNING` can materially perturb throughput measurements and should be treated as a debugging mode, not a benchmark baseline.
 - Tiny process + partition benchmarks can be dominated by default batching; compare benchmark-only overrides before drawing conclusions about library defaults.
+- `process_batch_size` and `route_batch_size` are separate axes. The former is
+  process payload accumulation; the latter is same-route scheduling/IPC
+  amortization.
+- Route-batch IPC metrics apply to process transport evidence. Baseline and async
+  rows should carry `null` for fields that are not meaningful for those modes.
+- `items_per_input_ipc` and `items_per_completion_ipc` explain whether route
+  batching actually reduced IPC operations; they should be read with TPS and
+  correctness fields, not as standalone success criteria.

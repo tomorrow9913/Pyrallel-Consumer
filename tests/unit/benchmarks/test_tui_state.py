@@ -3,7 +3,7 @@ from __future__ import annotations
 from benchmarks.tui.state import BenchmarkTuiState
 
 
-def test_tui_state_to_argv_uses_cli_defaults() -> None:
+def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
     state = BenchmarkTuiState()
 
     argv = state.to_argv()
@@ -22,6 +22,14 @@ def test_tui_state_to_argv_uses_cli_defaults() -> None:
     assert "sleep" in argv
     assert "--order" in argv
     assert "key_hash" in argv
+    assert "--process-transport" in argv
+    assert "worker_pipes" in argv
+    assert "--route-batch-size" in argv
+    assert "64" in argv
+    assert "--process-count" in argv
+    assert "4" in argv
+    assert "--process-batch-size" in argv
+    assert "--process-max-batch-wait-ms" in argv
     assert "--metrics-port" in argv
     assert "9091" in argv
     assert "--skip-reset" not in argv
@@ -41,6 +49,11 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
         py_spy_native=True,
         py_spy_idle=True,
         skip_process=True,
+        process_count=4,
+        process_transport="worker_pipes",
+        process_batch_size=1,
+        process_max_batch_wait_ms=0,
+        route_batch_size=64,
     )
 
     argv = state.to_argv()
@@ -59,6 +72,14 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
     assert "--py-spy-native" in argv
     assert "--py-spy-idle" in argv
     assert "--skip-process" in argv
+    assert "--process-count" in argv
+    assert "4" in argv
+    assert "--process-transport" in argv
+    assert "worker_pipes" in argv
+    assert "--process-batch-size" in argv
+    assert "--process-max-batch-wait-ms" in argv
+    assert "--route-batch-size" in argv
+    assert "64" in argv
 
 
 def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
@@ -69,6 +90,20 @@ def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
     assert "--metrics-port" in argv
     metrics_index = argv.index("--metrics-port")
     assert argv[metrics_index + 1] == "0"
+
+
+def test_tui_state_to_argv_omits_blank_process_overrides() -> None:
+    state = BenchmarkTuiState(
+        process_count=None,
+        process_batch_size=None,
+        process_max_batch_wait_ms=None,
+    )
+
+    argv = state.to_argv()
+
+    assert "--process-count" not in argv
+    assert "--process-batch-size" not in argv
+    assert "--process-max-batch-wait-ms" not in argv
 
 
 def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -> None:

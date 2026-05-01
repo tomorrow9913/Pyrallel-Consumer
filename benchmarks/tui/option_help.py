@@ -53,6 +53,26 @@ OPTION_HELP = {
         label="Worker IO sleep (ms)",
         description="Delay each simulated IO workload by this many milliseconds.",
     ),
+    "process-count": OptionHelp(
+        label="Process count",
+        description="Override the number of process-mode worker processes.",
+    ),
+    "process-transport": OptionHelp(
+        label="Process transport",
+        description="Select how process-mode work is delivered to workers.",
+    ),
+    "process-batch-size": OptionHelp(
+        label="Process batch size",
+        description="Override process-mode worker micro-batch size.",
+    ),
+    "process-max-batch-wait-ms": OptionHelp(
+        label="Process max batch wait (ms)",
+        description="Maximum time to wait while filling a process micro-batch.",
+    ),
+    "route-batch-size": OptionHelp(
+        label="Route batch size",
+        description="Lease up to this many same-route items per scheduling step.",
+    ),
     "metrics-port": OptionHelp(
         label="Metrics port",
         description="Expose benchmark Prometheus metrics on this host port. Use 0 to disable.",

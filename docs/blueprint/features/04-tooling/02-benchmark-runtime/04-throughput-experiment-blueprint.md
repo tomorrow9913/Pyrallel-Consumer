@@ -11,6 +11,26 @@ baseline under small-workload ordered scenarios. The first optimization slice
 therefore targets the common control-plane path shared by all engines and
 ordering modes, before adding engine-specific parallelism.
 
+## Route-batch follow-up status
+
+The worker-pipe route-batch work is the process-specific follow-up to the
+data-movement bound in this document. It should be read with
+`features/03-execution/02-process-execution-engine/04-worker-pipe-transport-experiment.md`.
+
+Latest acceptance-gate evidence for the explicit
+`process_transport=worker_pipes`, `route_batch_size=64` experiment showed:
+
+- `key_hash`: baseline 784.88 TPS, async 5992.88 TPS (`7.64x`), process 2583.74
+  TPS (`3.29x`), with final lag `0` and final gap `0`.
+- `partition`: baseline 784.96 TPS, async 1607.05 TPS (`2.05x`), process
+  1314.96 TPS (`1.68x`), with final lag `0` and final gap `0`.
+- process IPC evidence: `items_per_input_ipc` and `items_per_completion_ipc`
+  were about `20.87` for `key_hash` and `62.5` for `partition`.
+
+Do not generalize this into a production-default claim. Treat it as evidence
+that the explicit route-batch worker-pipe path can pass the benchmark gates for
+the measured matrix.
+
 ## Research frame
 
 - **Span bound:** reduce the common critical path from completion readiness to

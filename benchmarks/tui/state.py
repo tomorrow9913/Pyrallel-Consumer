@@ -35,6 +35,11 @@ class BenchmarkTuiState:
     worker_sleep_ms: float = 0.5
     worker_cpu_iterations: int = 1000
     worker_io_sleep_ms: float = 0.5
+    process_count: int | None = 4
+    process_transport: str = "worker_pipes"
+    process_batch_size: int | None = 1
+    process_max_batch_wait_ms: int | None = 0
+    route_batch_size: int = 64
     metrics_port: int = 9091
     py_spy: bool = False
     py_spy_format: str = "flamegraph"
@@ -77,9 +82,21 @@ class BenchmarkTuiState:
             str(self.worker_cpu_iterations),
             "--worker-io-sleep-ms",
             str(self.worker_io_sleep_ms),
+            "--process-transport",
+            self.process_transport,
+            "--route-batch-size",
+            str(self.route_batch_size),
         ]
 
         argv.extend(["--metrics-port", str(self.metrics_port)])
+
+        for value, flag in (
+            (self.process_count, "--process-count"),
+            (self.process_batch_size, "--process-batch-size"),
+            (self.process_max_batch_wait_ms, "--process-max-batch-wait-ms"),
+        ):
+            if value is not None:
+                argv.extend([flag, str(value)])
 
         if self.profiling_enabled:
             argv.extend(

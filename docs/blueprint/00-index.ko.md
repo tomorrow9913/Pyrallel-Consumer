@@ -34,14 +34,14 @@
 - [01-async-execution-engine](features/03-execution/01-async-execution-engine/00-index.ko.md)
   `asyncio` task 기반 실행, semaphore, timeout, graceful shutdown
 - [02-process-execution-engine](features/03-execution/02-process-execution-engine/00-index.ko.md)
-  multiprocessing, msgpack micro-batch, picklable worker, worker recycle
+  multiprocessing, worker-pipe route batch, msgpack payload, picklable worker, worker recycle
 
 ### `04-tooling`
 
 - [01-observability-metrics](features/04-tooling/01-observability-metrics/00-index.ko.md)
   `SystemMetrics`, Prometheus exporter, alert/tuning 관측 surface
 - [02-benchmark-runtime](features/04-tooling/02-benchmark-runtime/00-index.ko.md)
-  baseline/async/process 비교 벤치마크, TUI, profiling, 결과 해석
+  baseline/async/process 비교 벤치마크, route-batch 실험 옵션, TUI, profiling, 결과 해석
 
 ## 빠른 읽기 가이드
 

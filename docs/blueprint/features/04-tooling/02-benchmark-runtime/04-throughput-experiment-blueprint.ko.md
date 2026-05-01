@@ -8,6 +8,25 @@
 최근 benchmark에서는 작은 workload의 ordered scenario에서 async와 process가 모두 baseline보다 느려질 수 있다.
 따라서 첫 최적화 slice는 엔진별 병렬성 확장보다 모든 엔진과 ordering mode가 공유하는 control-plane 공통 경로를 먼저 줄인다.
 
+## Route-batch 후속 상태
+
+worker-pipe route-batch 작업은 이 문서의 data-movement 상한에 대한 process-specific
+후속 실험이다. 함께 읽을 문서는
+`features/03-execution/02-process-execution-engine/04-worker-pipe-transport-experiment.md`다.
+
+최신 acceptance-gate evidence에서 명시적
+`process_transport=worker_pipes`, `route_batch_size=64` 실험은 다음 결과를 보였다.
+
+- `key_hash`: baseline 784.88 TPS, async 5992.88 TPS(`7.64x`), process
+  2583.74 TPS(`3.29x`), final lag `0`, final gap `0`.
+- `partition`: baseline 784.96 TPS, async 1607.05 TPS(`2.05x`), process
+  1314.96 TPS(`1.68x`), final lag `0`, final gap `0`.
+- process IPC evidence: `items_per_input_ipc`와 `items_per_completion_ipc`는
+  `key_hash`에서 약 `20.87`, `partition`에서 약 `62.5`였다.
+
+이 결과를 production default 전환 주장으로 일반화하면 안 된다. 측정된 matrix에서
+명시적 route-batch worker-pipe path가 benchmark gate를 통과했다는 증거로 읽는다.
+
 ## 연구 프레임
 
 - **Span 상한:** completion ready부터 다음 refill까지의 공통 critical path를 줄인다. 즉시 의심할 지점은 `WorkManager`의 per-completion scheduling churn과 `BrokerPoller`의 post-drain scheduling pass다.

@@ -70,15 +70,17 @@ WorkManager virtual queues
 
 ```text
 WorkManager virtual queues
-  -> ProcessExecutionEngine.submit()
-  -> transport router
+  -> ProcessExecutionEngine.submit() / submit_batch()
+  -> transport router 또는 RouteBatch route lease
   -> worker-specific input Pipe
-  -> owner worker process
-  -> single completion queue
+  -> owner worker process sequential loop
+  -> item completion 또는 BatchCompletion envelope
+  -> parent-side item completion surface
 ```
 
-1차 실험에서 바꾸는 것은 input transport뿐이다. completion aggregation,
-control-plane commit 판단, worker function 실행 의미는 기존 위치를 유지한다.
+worker-pipe 1차 slice는 input transport를 바꿨다. route-batch slice는 route batch
+정상 경로의 worker-to-parent IPC envelope도 바꾼다. 다만 parent-facing completion
+surface, control-plane commit 판단, worker function 실행 의미는 기존 위치를 유지한다.
 
 ## py-spy / benchmark evidence
 
@@ -113,13 +115,17 @@ process_transport = shared_queue | worker_pipes
 
 기본값은 반드시 `shared_queue`다.
 
-### 1차 실험에 포함
+### 구현된 worker-pipe 범위
 
 - worker별 parent-to-worker 단방향 input pipe
 - `WorkItem` identity 기반 stable routing
+- 명시적으로 켜진 경우 같은 route `WorkItem` 묶음의 route-batch dispatch
+- internal `RouteBatch` / `BatchCompletion` wire envelope
+- parent-side item-level `CompletionEvent` expansion
 - 기존 single completion queue 재사용
 - parent-side registry / in-flight accounting 재사용
 - benchmark에서 transport 선택 가능
+- benchmark에서 `route_batch_size` 선택 가능
 - shared queue와 worker pipes 비교 matrix
 - 지원하지 않는 조합은 startup에서 명시적으로 reject
 
@@ -142,8 +148,9 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
 반드시 유지할 것:
 
 - `BrokerPoller`와 `WorkManager`는 `shared_queue`인지 `worker_pipes`인지 알지 못한다.
-- `BaseExecutionEngine` public surface는 그대로 유지한다.
+- `BaseExecutionEngine` public surface는 명시적이고 안정적으로 유지한다.
   - `submit(work_item)`
+  - `submit_batch(work_items)`
   - `poll_completed_events(batch_limit=1000)`
   - `wait_for_completion(timeout_seconds=None)`
   - `get_in_flight_count()`
@@ -151,6 +158,7 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
   - `shutdown()`
 - 실행 가능한 `WorkItem`을 고르는 책임은 계속 `WorkManager`에 있다.
 - completion aggregation과 offset commit 판단은 parent/control plane에 남는다.
+  `BatchCompletion`은 internal IPC envelope일 뿐 public commit 단위가 아니다.
 - commit clamp용 최소 in-flight offset은 control-plane `WorkManager`
   dispatch ledger에서 계산한다. engine-level `get_min_inflight_offset()`는
   있더라도 compatibility/private recovery state일 뿐 canonical source가 아니다.
@@ -159,7 +167,7 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
 
 ## Routing 계약
 
-1차 prototype은 기존 `WorkItem`이 이미 갖고 있는 logical identity를 재사용한다.
+transport는 기존 `WorkItem`이 이미 갖고 있는 logical identity를 재사용한다.
 
 ```text
 route_identity = (work_item.tp.topic, work_item.tp.partition, work_item.key)
@@ -179,6 +187,8 @@ Routing 규칙:
 - `unordered` mode는 다른 policy를 써도 되지만 문서와 benchmark 해석에 명시해야 한다.
 - crash 이후 ownership migration은 1차 범위가 아니다.
 - ordered mode의 기본 원칙은 stealing이 아니라 affinity preservation이다.
+- `PARTITION` route batch는 `(topic, partition)`을 route로 사용한다.
+- `KEY_HASH` route batch는 `(topic, partition, key)`를 route로 사용한다.
 
 ## Config / CLI 계약
 
@@ -186,6 +196,12 @@ Routing 규칙:
 
 ```python
 transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
+```
+
+`ExecutionConfig`에는 route-batch 크기 selector가 있다.
+
+```python
+route_batch_size: int = 1
 ```
 
 Config 요구사항:
@@ -209,6 +225,7 @@ Benchmark CLI에도 같은 선택지를 노출한다.
 
 ```bash
 --process-transport shared_queue|worker_pipes
+--route-batch-size 1|8|32|64|128
 ```
 
 전달 경로는 명시적으로 유지한다.
@@ -217,37 +234,39 @@ Benchmark CLI에도 같은 선택지를 노출한다.
 benchmark CLI
   -> benchmark config builder
   -> KafkaConfig.parallel_consumer.execution.process_config.transport_mode
+  -> KafkaConfig.parallel_consumer.execution.route_batch_size
   -> ProcessExecutionEngine
 ```
 
-## 1차 실험 지원/비지원 매트릭스
+## 지원/비지원 매트릭스
 
 이 실험은 silent fallback보다 explicit rejection을 선호한다.
 
-| Surface | 1차 규칙 | 이유 |
+| Surface | 규칙 | 이유 |
 | --- | --- | --- |
 | `transport_mode=shared_queue` | fully supported | baseline 유지 |
-| `transport_mode=worker_pipes` + `batch_size=1` | supported | topology만 검증하는 최소 단위 |
-| `worker_pipes` + timer/demand batching | fully 구현 전에는 startup reject | batching 재설계와 transport 검증을 섞지 않기 위해 |
+| `transport_mode=worker_pipes` + `route_batch_size=1` | supported | unbatched worker-affine path |
+| `transport_mode=worker_pipes` + `route_batch_size>1` | engine이 ordered batch capability를 광고할 때 같은 route lease 지원 | IPC amortization 실험 |
+| ordered mode + `supports_ordered_route_batch=False` engine | effective route batch size `1` | fallback `submit_batch()`는 ordered sequential executor가 아님 |
+| `shared_queue` + `route_batch_size>1` | transport-specific 구현 없으면 item semantics fallback | compatibility path는 안전해야 함 |
+| process micro-batch flags | 기존 의미 유지 | `ProcessConfig.batch_size`와 `route_batch_size`를 분리하기 위해 |
 | `worker_pipes` + recycle semantics 미구현 | startup reject | silent disable은 benchmark 해석을 오염시킴 |
 | invalid transport value | config validation failure | 실험 범위 고정 |
 
 지원 범위가 넓어지면 표를 수정해야지, 삭제하면 안 된다.
 
-## Batching 방침
+## Route-batch 방침
 
-이 실험의 1순위는 input topology다. batching sophistication은 후순위다.
+route batching은 process micro-batching과 별도 축이다.
 
-권장 1차 설정:
+- `ProcessConfig.batch_size`는 기존 process payload accumulator 의미를 유지한다.
+- `ExecutionConfig.route_batch_size`는 `WorkManager`가 같은 route에서 한 번에 lease할
+  `WorkItem` 수를 제어한다.
+- `route_batch_size=1`은 compatibility default다.
+- `route_batch_size>1`은 parent-to-worker와 worker-to-parent IPC를 amortize하기
+  위한 명시적 실험 knob다.
 
-```text
-batch_size = 1
-max_batch_wait_ms = 0
-```
-
-이렇게 해야 timer flush나 residence policy 복잡도를 transport 실험과 분리할 수 있다.
-
-`worker_pipes`가 더 넓은 batching을 지원하게 되면 2차 slice로 분리해서 문서화한다. 아래 의미를 암묵적으로 바꾸면 안 된다.
+아래 의미를 route batch 의미로 암묵적으로 바꾸면 안 된다.
 
 - `flush_policy="size_or_timer"`
 - `flush_policy="demand"`
@@ -268,7 +287,9 @@ max_batch_wait_ms = 0
 
 - 각 worker는 자기 input channel에서 blocking receive
 - worker는 자신이 실행할 payload envelope를 decode
-- completion event는 기존 completion queue로 보냄
+- route-batch worker는 batch 내부 item을 순서대로 실행하고 첫 failure에서 멈춤
+- 정상 route-batch completion은 하나의 `BatchCompletion` envelope로 보내고 parent가
+  펼침
 - parent-side registry event는 여전히 in-flight accounting에 의미가 있어야 함
 
 ### Shutdown
@@ -282,6 +303,8 @@ max_batch_wait_ms = 0
 ### Crash / restart / recycle guardrail
 
 - 1차 실험은 ownership migration 없이 구현 가능한 현재 dead-worker recovery만 유지해도 된다.
+- worker start event 또는 live-worker failure 이후에도 아직 start되지 않은
+  route-batch tail은 recoverable해야 한다.
 - worker restart policy는 transport별로 문서화해야 한다.
 - `max_tasks_per_child`, `recycle_jitter_ms`는 의미를 유지하거나 `worker_pipes`에서 명시적으로 reject해야 한다.
 - 구현 증거 없이 “shared_queue와 동일하다”라고 과장하면 안 된다.
@@ -310,6 +333,8 @@ balancing 설계는 이 문서 범위가 아니다.
 - ordering validation evidence
 - release-gate가 같은 correctness 기준으로 GO/NO-GO를 판단했다는 증거
 - transport-specific benchmark metadata
+- `route_batch_size`, `items_per_input_ipc`, `items_per_completion_ipc`,
+  `route_batch_size_avg`, `route_batch_size_max` 같은 route-batch IPC metric
 - reject/skip된 transport-config 조합을 설명할 수 있는 로그나 runtime metadata
 - release-gate summary가 관측된 `process_transport_mode` 목록을 포함해 artifact 비교 시 어떤 transport가 평가되었는지 드러내야 함
 
@@ -335,8 +360,10 @@ Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
 ### Performance gate
 
-- `partition` workload에서 width가 `process_count` 이상이면 `shared_queue` 대비 개선
-- `key_hash` workload에서 active-key width가 `process_count` 이상이면 `shared_queue` 대비 개선
+- `partition` workload는 baseline sequential consumer와 동급 이상이어야 하고,
+  이상적으로는 fixed-cost amortization으로 이를 넘어야 한다.
+- `key_hash` workload는 active-key width가 process count보다 충분히 클 때 baseline
+  sequential consumer를 큰 폭으로 넘어야 한다.
 - `p=1`, `k=1` 같은 narrow workload가 과도하게 악화되지 않음
 - improvement claim은 benchmark artifact를 인용함
 
@@ -346,20 +373,33 @@ Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
 - `transport_mode` config와 benchmark CLI plumbing 추가
 - `shared_queue` path는 그대로 유지
-- `worker_pipes` startup + routing은 `batch_size=1` 기준으로만 구현
+- `worker_pipes` startup + item-level routing으로 unbatched path 구현
 - single completion queue 유지
 - unsupported 조합은 명시적으로 reject
 
 ### Slice 2 — evidence / operational hardening
 
-- benchmark/report metadata에 transport mode 노출
-- release-gate와 benchmark summary에서 transport mode 확인 가능하게 유지
-- restart/recycle limitation이 남으면 문서와 결과에 명시
-- py-spy / benchmark evidence를 문서 본문 또는 결과 요약에 연결
+- `submit_batch()`와 ordered batch capability gate 추가
+- `WorkManager` same-route lease 구현
+- engine capability가 없으면 ordered effective batch size를 `1`로 유지
 
-### Slice 3 — optional expansion
+### Slice 3 — worker-pipes route-batch dispatch
 
-- 1차 증거가 좋을 때만 richer batching, recycle parity, advanced routing을 검토
+- 선택된 worker pipe에 하나의 route-batch payload 전송
+- pending tail recoverability 유지
+- worker 내부 순서 실행 보장
+
+### Slice 4 — batch completion envelope
+
+- executed prefix를 `BatchCompletion`으로 전송
+- parent에서 item completion으로 expansion
+- bounded cache로 legacy/batch completion overlap dedupe
+
+### Slice 5 — benchmark / metric evidence
+
+- `--route-batch-size` 추가
+- benchmark JSON에 nullable route-batch IPC metric 노출
+- performance claim은 저장된 benchmark artifact에 연결
 
 ## Non-goal
 

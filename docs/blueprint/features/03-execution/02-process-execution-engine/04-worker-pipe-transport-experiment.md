@@ -51,16 +51,18 @@ Experimental runtime:
 
 ```text
 WorkManager virtual queues
-  -> ProcessExecutionEngine.submit()
-  -> transport router
+  -> ProcessExecutionEngine.submit() / submit_batch()
+  -> transport router or RouteBatch route lease
   -> worker-specific input Pipe
-  -> owner worker process
-  -> single completion queue
+  -> owner worker process sequential loop
+  -> item completion or BatchCompletion envelope
+  -> parent-side item completion surface
 ```
 
-Only the input transport changes in the first slice. Completion aggregation,
-control-plane commit decisions, and worker function execution stay where they
-already live today.
+The first worker-pipe slice changed input transport. The route-batch slice also
+changes the worker-to-parent IPC envelope for route batches, while preserving the
+parent-facing item completion surface. Control-plane commit decisions and
+worker function semantics stay where they already live today.
 
 ## Evidence behind the experiment
 
@@ -101,13 +103,17 @@ process_transport = shared_queue | worker_pipes
 
 The default must remain `shared_queue`.
 
-### Included in the first slice
+### Implemented worker-pipe scope
 
 - worker-specific parent-to-worker unidirectional input pipes,
 - stable routing from `WorkItem` identity to a worker channel,
+- route-batch dispatch for same-route `WorkItem` groups when explicitly enabled,
+- internal `RouteBatch` and `BatchCompletion` wire envelopes,
+- parent-side expansion back to item-level `CompletionEvent` instances,
 - reuse of the existing single completion queue,
 - reuse of parent-side registry and in-flight accounting,
 - benchmark support for selecting the transport,
+- benchmark support for selecting `route_batch_size`,
 - matrix comparison against the current shared-queue path,
 - explicit startup rejection for unsupported transport/config combinations.
 
@@ -131,8 +137,9 @@ The experiment must preserve these invariants:
 
 - `BrokerPoller` and `WorkManager` do not know whether process mode uses
   `shared_queue` or `worker_pipes`.
-- `BaseExecutionEngine` public surface stays unchanged:
+- `BaseExecutionEngine` public surface remains explicit and stable:
   - `submit(work_item)`
+  - `submit_batch(work_items)`
   - `poll_completed_events(batch_limit=1000)`
   - `wait_for_completion(timeout_seconds=None)`
   - `get_in_flight_count()`
@@ -140,7 +147,8 @@ The experiment must preserve these invariants:
   - `shutdown()`
 - `WorkManager` still decides which `WorkItem` instances are safe to execute.
 - completion aggregation and offset-commit decisions stay in the parent/control
-  plane.
+  plane. `BatchCompletion` is an internal IPC envelope, not a public commit
+  unit.
 - minimum in-flight offset for commit clamping is computed from the
   control-plane `WorkManager` dispatch ledger; any engine-level
   `get_min_inflight_offset()` hook is compatibility-only private state.
@@ -149,8 +157,8 @@ The experiment must preserve these invariants:
 
 ## Routing contract
 
-The first prototype should reuse the existing logical identity already carried
-by `WorkItem`:
+The transport reuses the existing logical identity already carried by
+`WorkItem`:
 
 ```text
 route_identity = (work_item.tp.topic, work_item.tp.partition, work_item.key)
@@ -171,6 +179,8 @@ Routing rules:
   documented and benchmark interpretation must call it out explicitly,
 - crash-time ownership migration is out of scope for the first slice.
 - ordered modes prefer sticky routing and affinity preservation, not stealing.
+- `PARTITION` route batches use `(topic, partition)`.
+- `KEY_HASH` route batches use `(topic, partition, key)`.
 
 ## Configuration and CLI contract
 
@@ -178,6 +188,12 @@ Add a transport selector to `ProcessConfig`:
 
 ```python
 transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
+```
+
+Add a route-batch selector to `ExecutionConfig`:
+
+```python
+route_batch_size: int = 1
 ```
 
 Configuration requirements:
@@ -201,6 +217,7 @@ Benchmark CLI should expose the same choice:
 
 ```bash
 --process-transport shared_queue|worker_pipes
+--route-batch-size 1|8|32|64|128
 ```
 
 The propagation path should remain explicit:
@@ -209,6 +226,7 @@ The propagation path should remain explicit:
 benchmark CLI
   -> benchmark config builder
   -> KafkaConfig.parallel_consumer.execution.process_config.transport_mode
+  -> KafkaConfig.parallel_consumer.execution.route_batch_size
   -> ProcessExecutionEngine
 ```
 
@@ -216,38 +234,38 @@ benchmark CLI
 
 The experiment should prefer explicit rejection over silent fallback.
 
-| Surface | First-slice rule | Why |
+| Surface | Rule | Why |
 | --- | --- | --- |
 | `transport_mode=shared_queue` | fully supported | control baseline |
-| `transport_mode=worker_pipes` + `batch_size=1` | supported | smallest topology-only experiment |
-| `worker_pipes` + timer/demand batching | reject at startup unless fully implemented | avoid mixing batching redesign with transport validation |
+| `transport_mode=worker_pipes` + `route_batch_size=1` | supported | unbatched worker-affine path |
+| `transport_mode=worker_pipes` + `route_batch_size>1` | supported for same-route leases when the engine advertises ordered batch capability | IPC amortization experiment |
+| ordered mode + engine without `supports_ordered_route_batch` | effective route batch size `1` | fallback `submit_batch()` is not an ordered sequential executor |
+| `shared_queue` + `route_batch_size>1` | falls back to item semantics unless a transport-specific implementation exists | compatibility path must remain safe |
+| process micro-batch flags | keep existing meaning; do not reinterpret as route batching | keep `ProcessConfig.batch_size` distinct from `route_batch_size` |
 | `worker_pipes` + recycle semantics not implemented | reject at startup | silent disable would invalidate benchmark interpretation |
 | invalid transport value | config validation failure | keep experiment bounded and observable |
 
 If support widens later, the table should be updated rather than removed.
 
-## Batching stance for the experiment
+## Route-batch stance for the experiment
 
-The experiment is about input topology first, not batching sophistication.
+Route batching is deliberately separate from process micro-batching:
 
-The recommended first slice is:
+- `ProcessConfig.batch_size` controls the existing process payload accumulator
+  semantics.
+- `ExecutionConfig.route_batch_size` controls how many same-route `WorkItem`
+  instances `WorkManager` may lease for one execution-engine call.
+- `route_batch_size=1` is the compatibility default.
+- `route_batch_size>1` is an explicit experiment knob used to amortize
+  parent-to-worker and worker-to-parent IPC.
 
-```text
-batch_size = 1
-max_batch_wait_ms = 0
-```
-
-That choice keeps the transport question isolated from timer-flush and
-residence-policy complexity.
-
-If worker pipes later need richer batching, document it as a second slice. Do
-not quietly reinterpret:
+Do not quietly reinterpret:
 
 - `flush_policy="size_or_timer"`
 - `flush_policy="demand"`
 - `flush_policy="demand_min_residence"`
 
-unless the implementation clearly preserves their existing meaning.
+as route-batch semantics.
 
 ## Worker lifecycle and shutdown contract
 
@@ -265,7 +283,10 @@ process engine.
 
 - each worker blocks on its own input channel,
 - each worker decodes the same payload envelope shape it needs to execute,
-- completion events still flow to the existing completion queue,
+- route-batch workers execute batch items sequentially and stop at the first
+  item failure,
+- normal route-batch completions flow as one `BatchCompletion` envelope and are
+  expanded by the parent,
 - parent-side registry events remain meaningful for in-flight accounting.
 
 ### Shutdown
@@ -306,6 +327,8 @@ derived only from normal completion handling in the control plane.
 
 - the first slice may preserve current dead-worker recovery only when it is
   already implementable without ownership migration,
+- unstarted route-batch tails must remain recoverable after a worker start
+  event or live-worker failure,
 - worker restart policy must be documented per transport,
 - recycle semantics (`max_tasks_per_child`, `recycle_jitter_ms`) must either be
   preserved or rejected explicitly in `worker_pipes` mode,
@@ -334,6 +357,9 @@ At minimum, implementation and evaluation should preserve or produce:
 - release-gate evidence that still treats the run as GO/NO-GO on the same
   final correctness criteria,
 - transport-specific benchmark metadata so results can be grouped by transport,
+- route-batch metadata and IPC ratios (`route_batch_size`,
+  `items_per_input_ipc`, `items_per_completion_ipc`,
+  `route_batch_size_avg`, `route_batch_size_max`),
 - enough runtime metrics or logs to explain rejected/unsupported combinations.
 - release-gate summaries that surface the observed `process_transport_mode`
   values so artifact comparisons remain interpretable.
@@ -360,10 +386,10 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 ### Performance gates
 
-- `partition` workloads with width at least `process_count` improve versus
-  `shared_queue`,
-- `key_hash` workloads with active-key width at least `process_count` improve
-  versus `shared_queue`,
+- `partition` workloads should remain at least comparable to the baseline
+  sequential consumer and ideally exceed it through fixed-cost amortization,
+- `key_hash` workloads with active-key width above process count should exceed
+  the baseline sequential consumer by a large margin,
 - narrow workloads such as `p=1` or `k=1` do not regress severely,
 - improvement claims cite benchmark artifacts rather than anecdotal logs.
 
@@ -373,20 +399,33 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 - add `transport_mode` config and benchmark CLI plumbing,
 - keep `shared_queue` path unchanged,
-- add worker-pipe startup and routing for `batch_size=1`,
+- add worker-pipe startup and item-level routing for the unbatched path,
 - keep single completion queue,
 - reject unsupported combinations explicitly.
 
-### Slice 2 — evidence and operational hardening
+### Slice 2 — route-batch contract and lease
 
-- add benchmark/report metadata for transport selection,
-- ensure release-gate and benchmark summaries surface transport mode,
-- document any restart/recycle limitations that remain.
+- add `submit_batch()` and ordered batch capability gates,
+- lease same-route items from WorkManager when safe,
+- keep ordered modes at effective batch size `1` unless the engine is capable.
 
-### Slice 3 — optional expansion
+### Slice 3 — worker-pipes route-batch dispatch
 
-- only after evidence shows value, evaluate richer batching support, recycle
-  parity, or more advanced routing strategies.
+- send one route-batch payload over the selected worker pipe,
+- keep pending tails recoverable,
+- run batch items sequentially in the worker.
+
+### Slice 4 — batch completion envelope
+
+- emit `BatchCompletion` for the executed prefix,
+- expand to item completions in the parent,
+- dedupe legacy and batch completion overlap with a bounded cache.
+
+### Slice 5 — benchmark and metric evidence
+
+- add `--route-batch-size`,
+- expose nullable route-batch IPC metrics in benchmark JSON,
+- keep performance claims tied to stored benchmark artifacts.
 
 ## Non-goals
 

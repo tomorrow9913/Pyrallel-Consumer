@@ -34,14 +34,14 @@ For the preserved Korean source text, see [00-index.ko.md](./00-index.ko.md).
 - [01-async-execution-engine](./features/03-execution/01-async-execution-engine/00-index.md)
   `asyncio` task execution, semaphores, timeout handling, and graceful shutdown.
 - [02-process-execution-engine](./features/03-execution/02-process-execution-engine/00-index.md)
-  Multiprocessing workers, msgpack micro-batching, picklable workers, and worker recycle controls.
+  Multiprocessing workers, worker-pipe route batching, msgpack payloads, picklable workers, and worker recycle controls.
 
 ### `04-tooling`
 
 - [01-observability-metrics](./features/04-tooling/01-observability-metrics/00-index.md)
   `SystemMetrics`, Prometheus export, alerting signals, and operator-facing telemetry.
 - [02-benchmark-runtime](./features/04-tooling/02-benchmark-runtime/00-index.md)
-  Baseline vs async vs process benchmarking, profiling hooks, and result interpretation.
+  Baseline vs async vs process benchmarking, route-batch experiment knobs, profiling hooks, and result interpretation.
 
 ## Reading guide
 
