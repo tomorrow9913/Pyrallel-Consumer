@@ -39,12 +39,13 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           uv run python - <<'PY'
+          import os
           import tomllib
           from pathlib import Path
 
           from scripts.release_policy import validate_branch_version
 
-          branch = "${{ github.ref_name }}"
+          branch = os.environ["REF_NAME"]
           data = tomllib.loads(Path("pyproject.toml").read_text())
           version = data["project"]["version"]
 
@@ -62,12 +63,13 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           uv run python - <<'PY'
+          import os
           import tomllib
           from pathlib import Path
 
           from scripts.release_policy import validate_tag_version
 
-          ref_name = "${{ github.ref_name }}"
+          ref_name = os.environ["REF_NAME"]
 
           data = tomllib.loads(Path("pyproject.toml").read_text())
           version = data["project"]["version"]
