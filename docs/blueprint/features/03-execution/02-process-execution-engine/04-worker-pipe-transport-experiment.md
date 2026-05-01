@@ -230,7 +230,7 @@ benchmark CLI
   -> ProcessExecutionEngine
 ```
 
-## Supported and unsupported matrix
+## Unsupported matrix for the first slice
 
 The experiment should prefer explicit rejection over silent fallback.
 

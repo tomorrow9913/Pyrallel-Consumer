@@ -25,6 +25,8 @@ replaces, the item-level contract.
 - transport-specific input dispatch
 - internal `RouteBatch` and `BatchCompletion` worker-pipe envelopes
 - parent-side expansion back to item-level `CompletionEvent` instances
+- single completion aggregation remains parent-owned even when worker-pipe
+  route batches amortize worker-to-parent IPC
 - batching semantics and explicit unsupported combinations
 - `wait_for_completion()` parity
 - shutdown, recycle, restart, and runtime metrics semantics
