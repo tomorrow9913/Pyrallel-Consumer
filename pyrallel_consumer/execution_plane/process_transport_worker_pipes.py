@@ -253,7 +253,9 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         batch_id = event.get("batch_id")
         payloads = event.get("payloads")
         if batch_id is None or not isinstance(payloads, list):
+            event["_route_batch_pending_not_started"] = False
             return
+        pending_match = False
         with self._pending_dispatch_lock:
             for pending_key, pending_payload in list(self._pending_dispatch.items()):
                 if (
@@ -261,6 +263,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                     or pending_payload.get("batch_id") != batch_id
                 ):
                     continue
+                pending_match = True
                 for payload in payloads:
                     self._remove_started_item_from_pending_route_batch(
                         pending_payload,
@@ -268,7 +271,8 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                     )
                 if not pending_payload.get("items"):
                     self._pending_dispatch.pop(pending_key, None)
-                return
+                break
+        event["_route_batch_pending_not_started"] = pending_match
 
     def recover_pending_dispatches(self, idx: int) -> list[PendingDispatchRecovery]:
         """Recover pending dispatches for worker-pipe process transport.

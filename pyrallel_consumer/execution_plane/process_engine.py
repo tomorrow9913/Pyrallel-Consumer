@@ -751,6 +751,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """Requeue ordered route-batch tail payloads that a live worker skipped."""
         if event.get("kind") != "not_started":
             return False
+        if event.get("_route_batch_pending_not_started") is False:
+            return True
         payloads = event.get("payloads")
         if not isinstance(payloads, list):
             return True

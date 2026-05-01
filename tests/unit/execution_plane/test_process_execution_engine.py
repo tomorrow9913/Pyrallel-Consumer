@@ -1093,6 +1093,151 @@ def test_process_engine_not_started_requeues_tail_without_new_in_flight_count() 
     assert engine.get_in_flight_count() == 2
 
 
+def test_process_engine_not_started_requeues_tail_still_pending_in_worker_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert requeued == [[tail_payload]]
+    assert transport._pending_dispatch == {}
+
+
+def test_process_engine_ignores_stale_not_started_tail_after_pending_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    first_item = WorkItem(
+        id="work-a",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        key=b"same-key",
+        payload=b"a",
+    )
+    tail_item = WorkItem(
+        id="work-b",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=7,
+        key=b"same-key",
+        payload=b"b",
+    )
+    first_payload = _work_item_to_dict(first_item)
+    tail_payload = _work_item_to_dict(tail_item)
+    transport.dispatch_route_batch(
+        RouteBatch(
+            batch_id="batch-tail",
+            route_identity=("topic", 1, b"same-key"),
+            worker_index=None,
+            items=[first_item, tail_item],
+        ),
+        route_identity=RouteIdentity("topic", 1, b"same-key"),
+        count_in_flight=False,
+    )
+    transport.handle_registry_event(
+        {
+            "kind": "start",
+            "key": (0, "topic", 1, 42),
+            "payload": first_payload,
+        }
+    )
+    recovered = transport.recover_pending_dispatches(0)
+    assert [entry.payload for entry in recovered] == [tail_payload]
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    requeued: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeued.append)
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert requeued == []
+
+
 @pytest.mark.asyncio
 async def test_shared_queue_submit_batch_keeps_base_fallback_behavior() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
