@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import shlex
 import signal
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -136,8 +138,88 @@ async def test_option_blocks_expand_to_show_controls() -> None:
         del pilot
         input_block = app.screen.query_one("#option-block-bootstrap-servers")
         checkbox_block = app.screen.query_one("#option-block-profiling-enabled")
-        assert input_block.region.height > 1
-        assert checkbox_block.region.height > 1
+        input_block_height = input_block.region.height
+        checkbox_block_height = checkbox_block.region.height
+
+    assert input_block_height > 1
+    assert checkbox_block_height > 1
+
+
+@pytest.mark.asyncio
+async def test_options_footer_does_not_overlap_scroll_region() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test(size=(100, 60)) as pilot:
+        await pilot.pause()
+        options_screen = app.screen.query_one("#options-screen")
+        options_footer = app.screen.query_one("#options-footer")
+        options_screen_bottom = options_screen.region.y + options_screen.region.height
+        options_footer_top = options_footer.region.y
+
+    assert options_screen_bottom <= options_footer_top
+
+
+@pytest.mark.asyncio
+async def test_default_workload_option_is_visible_above_options_footer() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test(size=(100, 80)) as pilot:
+        await pilot.pause()
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        options_footer = app.screen.query_one("#options-footer")
+        sleep_option_bottom = sleep_option.region.y + sleep_option.region.height
+        options_footer_top = options_footer.region.y
+
+    assert sleep_option_bottom <= options_footer_top
+
+
+@pytest.mark.asyncio
+async def test_ordering_modes_remain_visible_with_selected_workload_options() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test(size=(100, 80)) as pilot:
+        await pilot.pause()
+        ordering_modes = app.screen.query_one("#ordering-modes", SelectionList)
+        options_footer = app.screen.query_one("#options-footer")
+        ordering_bottom = ordering_modes.region.y + ordering_modes.region.height
+        options_footer_top = options_footer.region.y
+
+    assert ordering_bottom <= options_footer_top
+
+
+@pytest.mark.asyncio
+async def test_workload_option_group_uses_content_height() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test(size=(100, 80)) as pilot:
+        await pilot.pause()
+        group = app.screen.query_one("#workload-options-sleep")
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+
+    assert group.region.height < 6
+    assert sleep_option.region.y + sleep_option.region.height <= (
+        group.region.y + group.region.height
+    )
+
+
+@pytest.mark.asyncio
+async def test_options_screen_hides_empty_field_errors() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        error = app.screen.query_one("#error-num-messages", Static)
+
+        assert error.display is False
+
+        num_messages.value = "oops"
+        await pilot.pause()
+        assert error.display is True
+
+        num_messages.value = "100"
+        await pilot.pause()
+
+    assert error.display is False
 
 
 @pytest.mark.asyncio
@@ -249,6 +331,26 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
 
 
 @pytest.mark.asyncio
+async def test_options_screen_places_workload_matrix_before_detail_knobs() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        workloads = app.screen.query_one("#option-block-workloads")
+        ordering_modes = app.screen.query_one("#option-block-ordering-modes")
+        workload_options = app.screen.query_one("#workload-options")
+        bootstrap = app.screen.query_one("#option-block-bootstrap-servers")
+        positions = (
+            workloads.region.y,
+            ordering_modes.region.y,
+            workload_options.region.y,
+            bootstrap.region.y,
+        )
+
+    assert positions == tuple(sorted(positions))
+
+
+@pytest.mark.asyncio
 async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() -> None:
     app = BenchmarkTuiApp()
 
@@ -259,6 +361,223 @@ async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() 
 
     assert workloads.selected == ["sleep"]
     assert ordering.selected == ["key_hash"]
+
+
+@pytest.mark.asyncio
+async def test_options_screen_renders_selected_workload_option_controls() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        del pilot
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        labels = [str(label.render()) for label in app.screen.query(Label)]
+
+    assert sleep_option.value == "0.5"
+    assert "Sleep per message" in labels
+
+
+@pytest.mark.asyncio
+async def test_options_screen_does_not_render_legacy_builtin_workload_option_inputs() -> (
+    None
+):
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        del pilot
+        dynamic_sleep = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        legacy_sleep = list(app.screen.query("#worker-sleep-ms"))
+        legacy_cpu = list(app.screen.query("#worker-cpu-iterations"))
+        legacy_io = list(app.screen.query("#worker-io-sleep-ms"))
+
+    assert dynamic_sleep.value == "0.5"
+    assert legacy_sleep == []
+    assert legacy_cpu == []
+    assert legacy_io == []
+
+
+@pytest.mark.asyncio
+async def test_options_screen_updates_preview_with_dynamic_workload_option() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        sleep_option.value = "1.25"
+        await pilot.pause()
+
+        preview = app.screen.query_one("#argv-preview", Static)
+
+    assert "--worker-sleep-ms 1.25" in str(preview.content)
+
+
+@pytest.mark.asyncio
+async def test_options_screen_updates_workload_option_controls_when_selection_changes() -> (
+    None
+):
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        workloads = app.screen.query_one("#workloads", SelectionList)
+        workloads.select("cpu")
+        await pilot.pause()
+
+        cpu_option = app.screen.query_one("#workload-option-cpu-iterations", Input)
+
+    assert cpu_option.value == "1000"
+
+
+@pytest.mark.asyncio
+async def test_options_screen_workload_option_refresh_preserves_unrelated_inputs() -> (
+    None
+):
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        num_messages.value = "12345"
+        workloads = app.screen.query_one("#workloads", SelectionList)
+        workloads.select("cpu")
+        await pilot.pause()
+
+        restored_messages = app.screen.query_one("#num-messages", Input)
+        preview = app.screen.query_one("#argv-preview", Static)
+
+    assert restored_messages.value == "12345"
+    assert "--num-messages 12345" in str(preview.content)
+
+
+@pytest.mark.asyncio
+async def test_options_screen_workload_option_refresh_preserves_dynamic_draft_when_form_invalid() -> (
+    None
+):
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        num_messages = app.screen.query_one("#num-messages", Input)
+        num_messages.value = "not-a-number"
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        sleep_option.value = "1.75"
+        workloads = app.screen.query_one("#workloads", SelectionList)
+        workloads.select("cpu")
+        await pilot.pause()
+
+        preserved_sleep_option = app.screen.query_one(
+            "#workload-option-sleep-sleep_ms", Input
+        )
+
+    assert preserved_sleep_option.value == "1.75"
+
+
+@pytest.mark.asyncio
+async def test_options_screen_renders_custom_workload_option_schema(
+    monkeypatch
+) -> None:
+    from benchmarks.workloads.base import WorkloadOptionMetadata
+
+    @dataclass(frozen=True, slots=True)
+    class CustomOptions:
+        retries: int = field(
+            default=3,
+            metadata={
+                "workload_option": WorkloadOptionMetadata(
+                    label="Retry count", description="Attempts per message.", minimum=0
+                )
+            },
+        )
+
+    class CustomWorkload:
+        name = "custom"
+        options_type = CustomOptions
+
+    monkeypatch.setattr(
+        "benchmarks.tui.screens.options.all_records",
+        lambda: (
+            SimpleNamespace(
+                name="custom",
+                available=True,
+                workload_cls=CustomWorkload,
+                error=None,
+            ),
+        ),
+    )
+    monkeypatch.setattr("benchmarks.workloads.available_names", lambda: ("custom",))
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        del pilot
+        custom_option = app.screen.query_one("#workload-option-custom-retries", Input)
+        labels = [str(label.render()) for label in app.screen.query(Label)]
+
+    assert custom_option.value == "3"
+    assert "Retry count" in labels
+
+
+@pytest.mark.asyncio
+async def test_options_screen_invalid_dynamic_workload_option_blocks_run() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        sleep_option = app.screen.query_one("#workload-option-sleep-sleep_ms", Input)
+        sleep_option.value = "nan"
+        await pilot.pause()
+
+        run_button = app.screen.query_one("#run-button", Button)
+        error = app.screen.query_one("#error-workload-option-sleep-sleep_ms", Static)
+
+    assert run_button.disabled is True
+    assert "sleep.sleep_ms" in str(error.content)
+
+
+def test_options_screen_builds_workloads_from_registry(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.screens.options.all_records",
+        lambda: (
+            SimpleNamespace(name="sleep", available=True, error=None),
+            SimpleNamespace(name="custom", available=True, error=None),
+            SimpleNamespace(name="broken", available=False, error="import failed"),
+        ),
+    )
+
+    selections = OptionsScreen._workload_selections(
+        BenchmarkTuiState(workloads=("custom", "broken"))
+    )
+
+    assert selections == [
+        ("sleep", "sleep", False),
+        ("custom", "custom", True),
+        ("broken (unavailable)", "broken", True),
+    ]
+    assert OptionsScreen._unavailable_workload_reasons() == {"broken": "import failed"}
+
+
+def test_options_screen_deduplicates_duplicate_unavailable_workload_records(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.screens.options.all_records",
+        lambda: (
+            SimpleNamespace(name="dupe", available=False, error="duplicate name"),
+            SimpleNamespace(name="dupe", available=False, error="duplicate name"),
+            SimpleNamespace(name="sleep", available=True, error=None),
+        ),
+    )
+
+    selections = OptionsScreen._workload_selections(BenchmarkTuiState(workloads=()))
+
+    assert selections == [
+        ("dupe (unavailable)", "dupe", False),
+        ("sleep", "sleep", False),
+    ]
+    assert OptionsScreen._unavailable_workload_reasons() == {"dupe": "duplicate name"}
+
+
+def test_run_screen_uses_custom_selected_workloads(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.screens.run.available_names",
+        lambda: ("sleep", "custom"),
+    )
+    screen = RunScreen(BenchmarkTuiState(workloads=("custom",)))
+
+    assert screen._active_workloads == ("custom",)
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,12 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from textual.app import ComposeResult
-from textual.containers import Container, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Collapsible,
@@ -24,6 +26,12 @@ from benchmarks.tui.option_help import OPTION_HELP, PROFILING_CONTROL_IDS
 from benchmarks.tui.path_picker import DirectoryPickerScreen
 from benchmarks.tui.screens.run import RunScreen
 from benchmarks.tui.state import BenchmarkTuiState
+from benchmarks.workloads import (
+    all_records,
+    build_workload_options,
+    describe_workload_options,
+)
+from benchmarks.workloads.base import BenchmarkWorkload, WorkloadOptionSchema
 
 
 @dataclass(slots=True)
@@ -47,7 +55,6 @@ class OptionsScreen(Screen[None]):
     }
     _NON_NEGATIVE_INT_FIELDS = {
         "metrics-port": 0,
-        "worker-cpu-iterations": 0,
         "profile-top-n": 0,
     }
     _OPTIONAL_POSITIVE_INT_FIELDS = {
@@ -57,10 +64,7 @@ class OptionsScreen(Screen[None]):
     _OPTIONAL_NON_NEGATIVE_INT_FIELDS = {
         "process-max-batch-wait-ms": 0,
     }
-    _NON_NEGATIVE_FLOAT_FIELDS = {
-        "worker-sleep-ms": 0.0,
-        "worker-io-sleep-ms": 0.0,
-    }
+    _NON_NEGATIVE_FLOAT_FIELDS: dict[str, float] = {}
 
     def __init__(self, initial_state: BenchmarkTuiState | None = None) -> None:
         super().__init__()
@@ -174,6 +178,170 @@ class OptionsScreen(Screen[None]):
             yield SelectionList(*selections, id=widget_id)
             yield Static("", id=cls._error_id(widget_id), classes="field-error")
 
+    @staticmethod
+    def _workload_records() -> tuple[object, ...]:
+        """Return registry workload records for option rendering."""
+        return all_records()
+
+    @classmethod
+    def _workload_selections(
+        cls, state: BenchmarkTuiState
+    ) -> list[tuple[str, str, bool]]:
+        """Build workload selections from registry records."""
+        selections: list[tuple[str, str, bool]] = []
+        seen: set[str] = set()
+        for record in cls._workload_records():
+            name = str(getattr(record, "name", ""))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            label = name
+            if not bool(getattr(record, "available", False)):
+                label = "%s (unavailable)" % name
+            selections.append((label, name, name in state.workloads))
+        return selections
+
+    @classmethod
+    def _unavailable_workload_reasons(cls) -> dict[str, str]:
+        """Return unavailable workload reasons keyed by workload name."""
+        reasons: dict[str, str] = {}
+        for record in cls._workload_records():
+            if bool(getattr(record, "available", False)):
+                continue
+            name = str(getattr(record, "name", ""))
+            if not name:
+                continue
+            reason = getattr(record, "error", None) or "unavailable"
+            reasons[name] = str(reason)
+        return reasons
+
+    @classmethod
+    def _available_workload_classes(
+        cls,
+    ) -> dict[str, type[BenchmarkWorkload[object]]]:
+        """Return available workload classes keyed by workload name."""
+        classes: dict[str, type[BenchmarkWorkload[object]]] = {}
+        for record in cls._workload_records():
+            if not bool(getattr(record, "available", False)):
+                continue
+            workload_cls = getattr(record, "workload_cls", None)
+            name = str(getattr(record, "name", ""))
+            if name and workload_cls is not None:
+                classes[name] = cast(type[BenchmarkWorkload[object]], workload_cls)
+        return classes
+
+    @staticmethod
+    def _workload_option_widget_id(workload: str, field_name: str) -> str:
+        """Return the stable widget id for one workload option field."""
+        return "workload-option-%s-%s" % (workload, field_name)
+
+    @classmethod
+    def _workload_option_controls(cls, state: BenchmarkTuiState) -> ComposeResult:
+        """Render option controls for selected available workloads."""
+        with Container(id="workload-options", classes="option-block"):
+            for group in cls._workload_option_group_widgets(state):
+                yield group
+
+    @classmethod
+    def _workload_option_group_widgets(
+        cls, state: BenchmarkTuiState
+    ) -> list[Container]:
+        """Build workload option group widgets for the selected workloads."""
+        groups: list[Container] = []
+        workload_classes = cls._available_workload_classes()
+        for workload in state.workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            schemas = describe_workload_options(workload_cls)
+            if not schemas:
+                continue
+            children: list[Widget] = [
+                Label(
+                    "%s workload options" % workload,
+                    classes="field-label workload-option-group-title",
+                )
+            ]
+            for schema in schemas:
+                children.extend(cls._workload_option_field_widgets(state, schema))
+            groups.append(
+                Container(
+                    *children,
+                    id="workload-options-%s" % workload,
+                    classes="workload-option-group",
+                )
+            )
+        return groups
+
+    @classmethod
+    def _workload_option_field_widgets(
+        cls, state: BenchmarkTuiState, schema: WorkloadOptionSchema
+    ) -> list[Widget]:
+        """Build widgets for one workload option field from its schema."""
+        widgets: list[Widget] = []
+        widget_id = cls._workload_option_widget_id(
+            schema.workload_name, schema.field_name
+        )
+        value = state.workload_options.get(schema.workload_name, {}).get(
+            schema.field_name, schema.default
+        )
+        control: Widget
+        if schema.annotation is bool:
+            control = Switch(value=bool(value), id=widget_id)
+        elif schema.annotation is str and schema.metadata.choices:
+            control = Select(
+                [(choice, choice) for choice in schema.metadata.choices],
+                value=str(value),
+                id=widget_id,
+                allow_blank=False,
+            )
+        else:
+            control = Input(value=str(value), id=widget_id)
+        widgets.append(
+            Horizontal(
+                cls._field_label(schema.metadata.label),
+                control,
+                classes="workload-option-row",
+            )
+        )
+        widgets.append(Static("", id=cls._error_id(widget_id), classes="field-error"))
+        return widgets
+
+    async def _refresh_workload_option_controls(self) -> None:
+        """Re-render dynamic workload option groups after workload selection changes."""
+        container = self.query_one("#workload-options", Container)
+        workloads = tuple(self.query_one("#workloads", SelectionList).selected)
+        workload_options = self._merged_draft_workload_options(workloads)
+        state = replace(
+            self._last_valid_state,
+            workloads=workloads,
+            workload_options=workload_options,
+        )
+        await container.remove_children()
+        await container.mount_all(self._workload_option_group_widgets(state))
+
+    def _merged_draft_workload_options(
+        self, workloads: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]:
+        """Merge visible workload option drafts into the last valid option state."""
+        merged: dict[str, dict[str, object]] = {
+            workload: dict(options)
+            for workload, options in self._last_valid_state.workload_options.items()
+        }
+        workload_classes = self._available_workload_classes()
+        for workload in workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            for schema in describe_workload_options(workload_cls):
+                widget_id = self._workload_option_widget_id(workload, schema.field_name)
+                if not self.query("#%s" % widget_id):
+                    continue
+                merged.setdefault(workload, {})[
+                    schema.field_name
+                ] = self._raw_workload_option_value(widget_id, schema)
+        return merged
+
     @classmethod
     def _switch_field(
         cls, *, option_id: str, value: bool, widget_id: str
@@ -205,6 +373,33 @@ class OptionsScreen(Screen[None]):
                     yield self._section_description(
                         "Configure the Kafka target and choose the workload shape to run."
                     )
+                    yield from self._labeled_selection_list(
+                        option_id="workloads",
+                        selections=self._workload_selections(state),
+                        widget_id="workloads",
+                    )
+                    yield from self._labeled_selection_list(
+                        option_id="ordering-modes",
+                        selections=[
+                            (
+                                "key_hash",
+                                "key_hash",
+                                "key_hash" in state.ordering_modes,
+                            ),
+                            (
+                                "partition",
+                                "partition",
+                                "partition" in state.ordering_modes,
+                            ),
+                            (
+                                "unordered",
+                                "unordered",
+                                "unordered" in state.ordering_modes,
+                            ),
+                        ],
+                        widget_id="ordering-modes",
+                    )
+                    yield from self._workload_option_controls(state)
                     yield from self._labeled_input(
                         option_id="bootstrap-servers",
                         value=state.bootstrap_servers,
@@ -234,54 +429,6 @@ class OptionsScreen(Screen[None]):
                         value=str(state.timeout_sec),
                         widget_id="timeout-sec",
                         placeholder="60",
-                    )
-                    yield from self._labeled_selection_list(
-                        option_id="workloads",
-                        selections=[
-                            ("sleep", "sleep", "sleep" in state.workloads),
-                            ("cpu", "cpu", "cpu" in state.workloads),
-                            ("io", "io", "io" in state.workloads),
-                        ],
-                        widget_id="workloads",
-                    )
-                    yield from self._labeled_selection_list(
-                        option_id="ordering-modes",
-                        selections=[
-                            (
-                                "key_hash",
-                                "key_hash",
-                                "key_hash" in state.ordering_modes,
-                            ),
-                            (
-                                "partition",
-                                "partition",
-                                "partition" in state.ordering_modes,
-                            ),
-                            (
-                                "unordered",
-                                "unordered",
-                                "unordered" in state.ordering_modes,
-                            ),
-                        ],
-                        widget_id="ordering-modes",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-sleep-ms",
-                        value=str(state.worker_sleep_ms),
-                        widget_id="worker-sleep-ms",
-                        placeholder="0.5",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-cpu-iterations",
-                        value=str(state.worker_cpu_iterations),
-                        widget_id="worker-cpu-iterations",
-                        placeholder="1000",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-io-sleep-ms",
-                        value=str(state.worker_io_sleep_ms),
-                        widget_id="worker-io-sleep-ms",
-                        placeholder="0.5",
                     )
                 with Container(
                     id=self._section_id("output-execution"),
@@ -465,9 +612,9 @@ class OptionsScreen(Screen[None]):
             with Container(id="options-footer"):
                 yield Static("", id="form-error-summary")
                 yield Static(" ".join(state.to_argv()), id="argv-preview")
-                yield Button("Copy CLI command", id="copy-command-button")
                 yield Static("", id="copy-command-status")
                 with Container(id="options-actions"):
+                    yield Button("Copy CLI command", id="copy-command-button")
                     yield Button("Run benchmark", id="run-button", variant="primary")
                     yield Button("Quit", id="quit-button")
         yield Footer()
@@ -491,10 +638,13 @@ class OptionsScreen(Screen[None]):
         """Handle on select changed within options."""
         self._refresh_form_state()
 
-    def on_selection_list_selected_changed(
-        self, _event: SelectionList.SelectedChanged
+    async def on_selection_list_selected_changed(
+        self, event: SelectionList.SelectedChanged
     ) -> None:
         """Handle on selection list selected changed within options."""
+        if event.selection_list.id == "workloads":
+            self._refresh_form_state()
+            await self._refresh_workload_option_controls()
         self._refresh_form_state()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -512,9 +662,10 @@ class OptionsScreen(Screen[None]):
         """Copy the current benchmark command to the clipboard."""
         command = self._cli_command(self._last_valid_state)
         self.app.copy_to_clipboard(command)
-        self.query_one("#copy-command-status", Static).update(
-            "CLI command copied to clipboard."
-        )
+        status = self.query_one("#copy-command-status", Static)
+        status.add_class("has-status")
+        status.display = True
+        status.update("CLI command copied to clipboard.")
 
     def _refresh_form_state(self) -> None:
         """Refresh form state for options."""
@@ -555,9 +706,14 @@ class OptionsScreen(Screen[None]):
         for widget in self.query(Static):
             if "field-error" not in widget.classes:
                 continue
+            widget.remove_class("has-error")
+            widget.display = False
             widget.update("")
         for widget_id, message in errors.items():
-            self.query_one("#%s" % self._error_id(widget_id), Static).update(message)
+            widget = self.query_one("#%s" % self._error_id(widget_id), Static)
+            widget.add_class("has-error")
+            widget.display = True
+            widget.update(message)
 
     def _validate_form(self) -> _ValidationResult:
         """Validate form for options."""
@@ -583,6 +739,18 @@ class OptionsScreen(Screen[None]):
         workloads = tuple(self.query_one("#workloads", SelectionList).selected)
         if not workloads:
             errors["workloads"] = "Select at least one workload."
+        unavailable_workloads = self._unavailable_workload_reasons()
+        selected_unavailable = [
+            workload for workload in workloads if workload in unavailable_workloads
+        ]
+        if selected_unavailable:
+            workload = selected_unavailable[0]
+            errors["workloads"] = "Workload %s is unavailable: %s" % (
+                workload,
+                unavailable_workloads[workload],
+            )
+
+        workload_options = self._validate_workload_option_fields(workloads, errors)
 
         ordering_modes = tuple(
             self.query_one("#ordering-modes", SelectionList).selected
@@ -631,11 +799,94 @@ class OptionsScreen(Screen[None]):
             py_spy_format=str(self.query_one("#py-spy-format", Select).value),
             py_spy_native=self.query_one("#py-spy-native", Switch).value,
             py_spy_idle=self.query_one("#py-spy-idle", Switch).value,
-            worker_sleep_ms=parsed_floats["worker-sleep-ms"],
-            worker_cpu_iterations=parsed_ints["worker-cpu-iterations"],
-            worker_io_sleep_ms=parsed_floats["worker-io-sleep-ms"],
+            worker_sleep_ms=self._float_workload_option_value(
+                workload_options, "sleep", "sleep_ms", base_state.worker_sleep_ms
+            ),
+            worker_cpu_iterations=self._int_workload_option_value(
+                workload_options,
+                "cpu",
+                "iterations",
+                base_state.worker_cpu_iterations,
+            ),
+            worker_io_sleep_ms=self._float_workload_option_value(
+                workload_options, "io", "sleep_ms", base_state.worker_io_sleep_ms
+            ),
+            workload_options=workload_options,
         )
         return _ValidationResult(state=state, errors={})
+
+    @staticmethod
+    def _float_workload_option_value(
+        workload_options: dict[str, dict[str, object]],
+        workload: str,
+        option_name: str,
+        default: float,
+    ) -> float:
+        """Return a validated workload option value as float."""
+        value = workload_options.get(workload, {}).get(option_name, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(
+                "Validated workload option %s.%s is not numeric"
+                % (workload, option_name)
+            )
+        return float(value)
+
+    @staticmethod
+    def _int_workload_option_value(
+        workload_options: dict[str, dict[str, object]],
+        workload: str,
+        option_name: str,
+        default: int,
+    ) -> int:
+        """Return a validated workload option value as int."""
+        value = workload_options.get(workload, {}).get(option_name, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(
+                "Validated workload option %s.%s is not an integer"
+                % (workload, option_name)
+            )
+        return value
+
+    def _validate_workload_option_fields(
+        self, workloads: tuple[str, ...], errors: dict[str, str]
+    ) -> dict[str, dict[str, object]]:
+        """Validate selected dynamic workload option controls."""
+        workload_classes = self._available_workload_classes()
+        workload_options: dict[str, dict[str, object]] = {}
+        for workload in workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            selected_options: dict[str, object] = {}
+            for schema in describe_workload_options(workload_cls):
+                widget_id = self._workload_option_widget_id(workload, schema.field_name)
+                if not self.query("#%s" % widget_id):
+                    continue
+                raw_value = self._raw_workload_option_value(widget_id, schema)
+                try:
+                    options = build_workload_options(
+                        workload_cls,
+                        workload_options={workload: {schema.field_name: raw_value}},
+                    )
+                except ValueError as exc:
+                    errors[widget_id] = str(exc)
+                    continue
+                selected_options[schema.field_name] = getattr(
+                    options, schema.field_name
+                )
+            if selected_options:
+                workload_options[workload] = selected_options
+        return workload_options
+
+    def _raw_workload_option_value(
+        self, widget_id: str, schema: WorkloadOptionSchema
+    ) -> object:
+        """Return raw widget value for a dynamic workload option."""
+        if schema.annotation is bool:
+            return self.query_one("#%s" % widget_id, Switch).value
+        if schema.annotation is str and schema.metadata.choices:
+            return str(self.query_one("#%s" % widget_id, Select).value)
+        return self.query_one("#%s" % widget_id, Input).value
 
     def _validate_int(
         self,

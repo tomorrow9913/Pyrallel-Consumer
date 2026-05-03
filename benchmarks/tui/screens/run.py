@@ -28,9 +28,9 @@ from benchmarks.tui.log_parser import BenchmarkProgressSnapshot
 from benchmarks.tui.results_modal import ResultsSummaryModalScreen
 from benchmarks.tui.results_report import render_results_summary
 from benchmarks.tui.state import BenchmarkTuiState
+from benchmarks.workloads import available_names
 
 _PHASE_NAMES = ("baseline", "async", "process")
-_WORKLOAD_NAMES = ("sleep", "cpu", "io")
 _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _DONE_STYLE = "bold bright_green"
 _SLOWER_THAN_BASELINE_STYLE = "bold bright_yellow"
@@ -706,11 +706,15 @@ class RunScreen(Screen[None]):
 
     def _resolve_workloads(self) -> tuple[str, ...]:
         """Resolve workloads for run."""
-        return tuple(
+        available = set(available_names())
+        workloads = tuple(
             workload
             for workload in self._state.workloads
-            if workload in _WORKLOAD_NAMES
+            if workload and workload in available
         )
+        if workloads:
+            return workloads
+        return ("sleep",)
 
     def _resolve_orderings(self) -> tuple[str, ...]:
         """Resolve orderings for run."""

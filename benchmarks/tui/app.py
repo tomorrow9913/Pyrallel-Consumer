@@ -38,7 +38,6 @@ class BenchmarkTuiApp(App[None]):
         border-top: solid $surface-lighten-1;
         padding: 1 2;
         background: $surface;
-        dock: bottom;
     }
 
     #argv-preview, #form-error-summary {
@@ -47,9 +46,58 @@ class BenchmarkTuiApp(App[None]):
         margin-bottom: 1;
     }
 
+    #argv-preview {
+        padding: 0 1;
+        max-height: 25vh;
+        overflow-y: auto;
+        text-wrap: wrap;
+        text-overflow: clip;
+    }
+
+    .workload-option-group {
+        height: auto;
+    }
+
+    .workload-option-group-title {
+        margin-top: 0;
+        margin-bottom: 0;
+        color: $text-muted;
+    }
+
+    .workload-option-row {
+        layout: horizontal;
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row .field-label {
+        width: 28;
+        margin-top: 0;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row Input, .workload-option-row Select {
+        width: 1fr;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row Switch {
+        margin-bottom: 0;
+    }
+
     #form-error-summary {
         color: $warning;
         display: block;
+    }
+
+    #copy-command-status {
+        display: none;
+        margin-bottom: 0;
+    }
+
+    #copy-command-status.has-status {
+        display: block;
+        margin-bottom: 1;
     }
 
     Input, Select, Switch, Static, Log, Collapsible, ProgressBar, DataTable, LoadingIndicator {
@@ -95,7 +143,15 @@ class BenchmarkTuiApp(App[None]):
 
     .field-error {
         color: $error;
+        display: none;
+        margin-bottom: 0;
+        min-height: 0;
+    }
+
+    .field-error.has-error {
+        display: block;
         margin-top: -1;
+        margin-bottom: 1;
         min-height: 1;
     }
 

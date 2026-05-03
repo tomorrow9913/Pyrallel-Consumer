@@ -35,7 +35,10 @@ OPTION_HELP = {
     ),
     "workloads": OptionHelp(
         label="Workloads",
-        description="Choose one or more workload shapes to benchmark: sleep, cpu, io.",
+        description=(
+            "Choose one or more discovered workload shapes. Unavailable workloads "
+            "are shown for visibility but cannot run."
+        ),
     ),
     "ordering-modes": OptionHelp(
         label="Ordering modes",

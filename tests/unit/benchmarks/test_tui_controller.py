@@ -47,3 +47,30 @@ def test_controller_passes_exact_workload_subset_into_parser() -> None:
 
     assert controller._parser._active_workloads == ("sleep", "cpu")
     assert controller._parser.snapshot.total_runs == 6
+
+
+def test_controller_passes_custom_workload_subset_into_parser() -> None:
+    controller = BenchmarkProcessController(
+        state=BenchmarkTuiState(workloads=("custom",)),
+        on_output=lambda _line, _is_error: None,
+        on_progress=lambda _snapshot: None,
+        on_complete=lambda _code: None,
+    )
+
+    assert controller._parser._active_workloads == ("custom",)
+    assert controller._parser.snapshot.total_runs == 3
+
+
+def test_controller_empty_workload_fallback_uses_registry_default(monkeypatch) -> None:
+    import benchmarks.tui.controller as controller_module
+
+    monkeypatch.setattr(controller_module, "default_workloads", lambda: ("custom",))
+
+    controller = BenchmarkProcessController(
+        state=BenchmarkTuiState(workloads=()),
+        on_output=lambda _line, _is_error: None,
+        on_progress=lambda _snapshot: None,
+        on_complete=lambda _code: None,
+    )
+
+    assert controller._parser._active_workloads == ("custom",)
