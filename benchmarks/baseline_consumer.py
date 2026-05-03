@@ -28,12 +28,6 @@ conf: Dict[str, Any] = {
 topic = "test_topic"
 
 
-def delivery_report(err, msg):
-    """Called once for each message produced to indicate delivery result."""
-    if err is not None:
-        print(f"Message delivery failed: {err}")
-
-
 def create_topic_if_not_exists(admin_conf, topic_name):
     """Ensures the Kafka topic exists using AdminClient."""
     admin_client = AdminClient(admin_conf)
