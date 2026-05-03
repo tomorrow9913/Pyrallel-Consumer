@@ -69,8 +69,8 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "order": ["key_hash"],
         "strict_completion_monitor": ["on"],
         "adaptive_concurrency": ["off"],
-        "process_transport": "shared_queue",
-        "route_batch_size": 1,
+        "process_transport": "worker_pipes",
+        "route_batch_size": 64,
         "metrics_port": 0,
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
@@ -1229,18 +1229,20 @@ def test_build_kafka_config_sets_route_batch_size_without_changing_process_batch
     assert config.parallel_consumer.execution.process_config.batch_size == 1
 
 
-def test_build_kafka_config_defaults_route_batch_size_to_one() -> None:
+def test_build_kafka_config_defaults_route_batch_size_to_worker_pipes_profile() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.route_batch_size == 1
+    assert config.parallel_consumer.execution.route_batch_size == 64
 
 
-def test_build_kafka_config_keeps_shared_queue_default_transport_mode() -> None:
+def test_build_kafka_config_defaults_to_worker_pipes_transport_profile() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
 
     assert config.parallel_consumer.execution.process_config.transport_mode == (
-        "shared_queue"
+        "worker_pipes"
     )
+    assert config.parallel_consumer.execution.process_config.batch_size == 1
+    assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
 
 
 def test_build_kafka_config_sets_process_transport_mode_override() -> None:

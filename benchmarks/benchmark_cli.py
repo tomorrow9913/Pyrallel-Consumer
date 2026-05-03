@@ -470,19 +470,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--process-batch-size",
         type=int,
-        default=None,
+        default=1,
         help="Override process-mode micro-batch size for benchmark runs",
     )
     parser.add_argument(
         "--route-batch-size",
         type=int,
-        default=1,
+        default=64,
         help="Override control-plane same-route batch lease size for benchmark runs",
     )
     parser.add_argument(
         "--process-max-batch-wait-ms",
         type=int,
-        default=None,
+        default=0,
         help="Override process-mode micro-batch wait in milliseconds for benchmark runs",
     )
     parser.add_argument(
@@ -500,7 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--process-transport",
         choices=_PROCESS_TRANSPORT_CHOICES,
-        default="shared_queue",
+        default="worker_pipes",
         help="Select process-mode input transport for benchmark runs",
     )
     parser.add_argument(

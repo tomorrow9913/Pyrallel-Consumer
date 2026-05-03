@@ -411,7 +411,7 @@ def test_process_execution_engine_rejects_unsupported_worker_pipe_slice_combinat
         ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
 
 
-def test_process_execution_engine_defaults_to_shared_queue_transport_seam(
+def test_process_execution_engine_defaults_to_worker_pipes_transport_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
@@ -425,7 +425,7 @@ def test_process_execution_engine_defaults_to_shared_queue_transport_seam(
     )
 
     try:
-        assert isinstance(cast(Any, engine)._transport, SharedQueueProcessTransport)
+        assert isinstance(cast(Any, engine)._transport, WorkerPipesProcessTransport)
     finally:
         asyncio.run(engine.shutdown())
 

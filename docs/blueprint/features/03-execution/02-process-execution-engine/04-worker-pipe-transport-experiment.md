@@ -88,10 +88,9 @@ The first slice validates one narrow hypothesis:
 > key-wide workloads without breaking ordering, final lag, or release-gate
 > correctness.
 
-The experiment does **not** claim that worker pipes are the long-term
-production default. It determines whether `worker_pipes` deserves deeper
-investment as the long-term ordered-parallelism candidate while `shared_queue`
-continues to exist as the compatibility/default path.
+Benchmark evidence has promoted worker pipes from experiment to the default
+process transport profile. `shared_queue` continues to exist as an explicit
+legacy compatibility fallback, not as the performance path to tune.
 
 ## Scope
 
@@ -101,7 +100,7 @@ Implement the experiment behind an explicit transport option:
 process_transport = shared_queue | worker_pipes
 ```
 
-The default must remain `shared_queue`.
+The default is now `worker_pipes`.
 
 ### Implemented worker-pipe scope
 
@@ -126,7 +125,7 @@ The default must remain `shared_queue`.
 - completion ingest threads,
 - shared-memory ring buffers,
 - broker-I/O ownership changes,
-- changing the production default,
+- deleting the legacy `shared_queue` fallback,
 - broad retry, commit, or control-plane redesign.
 
 ## Control-plane invariants
@@ -187,18 +186,18 @@ Routing rules:
 Add a transport selector to `ProcessConfig`:
 
 ```python
-transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
+transport_mode: Literal["shared_queue", "worker_pipes"] = "worker_pipes"
 ```
 
 Add a route-batch selector to `ExecutionConfig`:
 
 ```python
-route_batch_size: int = 1
+route_batch_size: int = 64
 ```
 
 Configuration requirements:
 
-- default remains `shared_queue`,
+- default remains `worker_pipes`,
 - environment override follows the existing `PROCESS_` naming pattern,
 - invalid values fail at config validation time,
 - existing keys keep their meaning:
@@ -255,9 +254,10 @@ Route batching is deliberately separate from process micro-batching:
   semantics.
 - `ExecutionConfig.route_batch_size` controls how many same-route `WorkItem`
   instances `WorkManager` may lease for one execution-engine call.
-- `route_batch_size=1` is the compatibility default.
-- `route_batch_size>1` is an explicit experiment knob used to amortize
+- `route_batch_size=64` is the default process profile used to amortize
   parent-to-worker and worker-to-parent IPC.
+- ordered modes still resolve to an effective batch size of `1` unless the
+  execution engine advertises ordered route-batch capability.
 
 Do not quietly reinterpret:
 

@@ -175,7 +175,7 @@ async def _run_pyrparallel_round(
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
     process_transport_mode: ProcessTransportMode | None = None,
-    route_batch_size: int = 1,
+    route_batch_size: int = 64,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:

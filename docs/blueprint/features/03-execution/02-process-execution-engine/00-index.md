@@ -50,9 +50,8 @@ The evidence direction captured in these docs is:
 
 ## Key principles
 
-- `shared_queue` remains the compatibility/default path.
-- `worker_pipes` is the ordering-preserving parallelism direction and an
-  eventual default candidate, not a mandated immediate default.
+- `worker_pipes` is the default ordering-preserving parallelism path.
+- `shared_queue` remains an explicit legacy compatibility fallback.
 - `WorkManager` and `BrokerPoller` stay transport-agnostic.
 - `BaseExecutionEngine.submit(work_item)` stays unchanged, and
   `submit_batch(work_items)` is an execution-engine contract with item-semantics
@@ -63,11 +62,12 @@ The evidence direction captured in these docs is:
 
 ## Current route-batch status
 
-The implemented experiment keeps `shared_queue` as the default compatibility
-path and adds an explicit route-batch path for `worker_pipes`.
+The implemented route-batch path promotes `worker_pipes` as the default process
+transport while keeping `shared_queue` available as an explicit legacy fallback.
 
-- `ExecutionConfig.route_batch_size` defaults to `1`; values greater than `1`
-  are experimental and benchmark-controlled.
+- `ExecutionConfig.route_batch_size` defaults to `64`; ordered modes still use
+  an effective size of `1` unless the execution engine advertises ordered
+  route-batch capability.
 - `WorkManager` may lease multiple items from one virtual queue, bounded by
   remaining in-flight capacity and poison/force-fail guards.
 - `worker_pipes` can send one route-batch payload to the selected worker, which

@@ -8,8 +8,8 @@ process-execution-engine subfeature. For the preserved Korean source text, see
 
 The process engine must document both:
 
-- `shared_queue` as the compatibility/default path
-- `worker_pipes` as the worker-affine direction
+- `worker_pipes` as the default worker-affine path
+- `shared_queue` as an explicit legacy compatibility fallback
 
 while keeping `BaseExecutionEngine.submit(work_item)` unchanged and keeping the
 control plane transport-agnostic. Batched submission extends, rather than
@@ -40,7 +40,9 @@ process execution hashes it to select the worker input channel.
 
 Route batching is an explicit process-transport optimization:
 
-- `route_batch_size=1` is the default and preserves item-submission behavior.
+- `route_batch_size=64` is the default process profile, but ordered modes still
+  resolve to an effective batch size of `1` unless the engine advertises ordered
+  route-batch support.
 - `route_batch_size>1` may lease multiple items from one WorkManager virtual
   queue only when the execution engine advertises
   `supports_ordered_route_batch=True` for ordered modes.

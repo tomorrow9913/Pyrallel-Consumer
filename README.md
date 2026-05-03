@@ -16,6 +16,7 @@ Inspired by Java's `confluentinc/parallel-consumer`, it is designed to maximize 
 - **Python:** the current package metadata targets Python `>=3.12`, and the published classifiers currently advertise Python `3.12` and `3.13`.
 - **Kafka:** the automated compatibility baseline currently covers the documented Python/client lanes on `confluentinc/cp-kafka:7.6.0` through broker-backed verification. Other broker distributions or older client/broker combinations remain best-effort. See [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md).
 - **Release-line support:** the latest stable minor is the active support target, the previous stable minor is security-fix-only, and prerelease lines remain best-effort.
+- **SemVer rule of thumb:** adding optional config/env knobs or changing defaults without requiring user edits is usually a minor release; forcing users to add/remove/rename required setup is a major release.
 - **Policy detail:** see [`docs/operations/support-policy.md`](./docs/operations/support-policy.md).
 - **Security reporting path:** see [`SECURITY.md`](./SECURITY.md).
 - **Public contract freeze:** see [`docs/operations/public-contract-v1.md`](./docs/operations/public-contract-v1.md) for the v1-stable ordering / rebalance / DLQ / commit contract surface.
@@ -193,7 +194,11 @@ python -m build
 ### Env-based Config (`pydantic-settings`)
 
 Python constructor arguments and attributes use lowercase `snake_case`.
-Environment variables remain uppercase `KAFKA_*` / `PARALLEL_CONSUMER_*`.
+Environment variables remain uppercase and scoped by runtime prefix:
+`KAFKA_*`, `PARALLEL_CONSUMER_*`, `EXECUTION_*`, `PROCESS_*`, and
+`METRICS_*`. The checked-in `.env.sample` lists the benchmark-relevant runtime
+tuning surface, including process transport, route batching, strict completion
+monitoring, adaptive controls, retry/DLQ, and metrics knobs.
 
 ```dotenv
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092

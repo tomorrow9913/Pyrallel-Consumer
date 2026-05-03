@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping
 RELEASE_GATE_MIN_MESSAGES = 10000
 RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
-REQUIRED_PROCESS_TRANSPORT_MODES = ("shared_queue", "worker_pipes")
+REQUIRED_PROCESS_TRANSPORT_MODES = ("worker_pipes",)
 
 Combination = tuple[str, str, str]
 BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
