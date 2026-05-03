@@ -857,20 +857,32 @@ class OptionsScreen(Screen[None]):
             workload_cls = workload_classes.get(workload)
             if workload_cls is None:
                 continue
+            schemas = describe_workload_options(workload_cls)
             selected_options: dict[str, object] = {}
-            for schema in describe_workload_options(workload_cls):
+            raw_options: dict[str, object] = {}
+            visible_schemas: list[WorkloadOptionSchema] = []
+            for schema in schemas:
                 widget_id = self._workload_option_widget_id(workload, schema.field_name)
                 if not self.query("#%s" % widget_id):
                     continue
-                raw_value = self._raw_workload_option_value(widget_id, schema)
-                try:
-                    options = build_workload_options(
-                        workload_cls,
-                        workload_options={workload: {schema.field_name: raw_value}},
-                    )
-                except ValueError as exc:
-                    errors[widget_id] = str(exc)
-                    continue
+                raw_options[schema.field_name] = self._raw_workload_option_value(
+                    widget_id, schema
+                )
+                visible_schemas.append(schema)
+            if not raw_options:
+                continue
+            try:
+                options = build_workload_options(
+                    workload_cls,
+                    workload_options={workload: raw_options},
+                )
+            except ValueError as exc:
+                schema = visible_schemas[0]
+                errors[
+                    self._workload_option_widget_id(workload, schema.field_name)
+                ] = str(exc)
+                continue
+            for schema in visible_schemas:
                 selected_options[schema.field_name] = getattr(
                     options, schema.field_name
                 )

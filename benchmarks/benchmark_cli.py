@@ -31,6 +31,8 @@ class BenchmarkArgumentParser(argparse.ArgumentParser):
     def parse_args(self, args=None, namespace=None):  # noqa: ANN001, ANN201 - argparse API.
         """Parse CLI args and attach validated workload option overrides."""
         parsed = super().parse_args(args, namespace)
+        if not getattr(parsed, "workloads", None):
+            self.error("no available workloads discovered")
         try:
             parsed.workload_options = validate_workload_option_overrides(parsed)
         except argparse.ArgumentTypeError as exc:

@@ -527,6 +527,59 @@ async def test_options_screen_invalid_dynamic_workload_option_blocks_run() -> No
     assert "sleep.sleep_ms" in str(error.content)
 
 
+@pytest.mark.asyncio
+async def test_options_screen_validates_dynamic_workload_options_together(
+    monkeypatch,
+) -> None:
+    from benchmarks.workloads.base import WorkloadOptionMetadata
+
+    @dataclass(frozen=True, slots=True)
+    class RangeOptions:
+        lower: int = field(
+            default=0,
+            metadata={"workload_option": WorkloadOptionMetadata(label="Lower")},
+        )
+        upper: int = field(
+            default=10,
+            metadata={"workload_option": WorkloadOptionMetadata(label="Upper")},
+        )
+
+        def __post_init__(self) -> None:
+            if self.lower > self.upper:
+                raise ValueError("lower must not exceed upper")
+
+    class RangeWorkload:
+        name = "range"
+        options_type = RangeOptions
+
+    monkeypatch.setattr(
+        "benchmarks.tui.screens.options.all_records",
+        lambda: (
+            SimpleNamespace(
+                name="range",
+                available=True,
+                workload_cls=RangeWorkload,
+                error=None,
+            ),
+        ),
+    )
+    monkeypatch.setattr("benchmarks.workloads.available_names", lambda: ("range",))
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        lower = app.screen.query_one("#workload-option-range-lower", Input)
+        upper = app.screen.query_one("#workload-option-range-upper", Input)
+        lower.value = "7"
+        upper.value = "5"
+        await pilot.pause()
+
+        run_button = app.screen.query_one("#run-button", Button)
+        error = app.screen.query_one("#error-workload-option-range-lower", Static)
+
+    assert run_button.disabled is True
+    assert "lower must not exceed upper" in str(error.content)
+
+
 def test_options_screen_builds_workloads_from_registry(monkeypatch) -> None:
     monkeypatch.setattr(
         "benchmarks.tui.screens.options.all_records",

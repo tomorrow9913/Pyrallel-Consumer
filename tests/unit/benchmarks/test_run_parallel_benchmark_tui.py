@@ -287,6 +287,24 @@ def test_build_parser_default_workload_uses_first_registry_available(
     assert args.workloads == ["custom"]
 
 
+def test_build_parser_rejects_empty_implicit_workload_default(monkeypatch) -> None:
+    monkeypatch.setattr(
+        benchmark_cli,
+        "_discover_workload_options",
+        lambda: (
+            SimpleNamespace(name="broken", available=False, reason="invalid class"),
+        ),
+    )
+    parser = run_parallel_benchmark.build_parser()
+
+    try:
+        parser.parse_args([])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected parser to reject empty workload defaults")
+
+
 def test_build_parser_deduplicates_duplicate_unavailable_records(monkeypatch) -> None:
     monkeypatch.setattr(
         benchmark_cli,
