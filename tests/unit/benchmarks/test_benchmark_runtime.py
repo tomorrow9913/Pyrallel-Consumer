@@ -347,6 +347,188 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
     ]
 
 
+def test_build_benchmark_run_plans_expands_selected_workloads_and_orderings() -> None:
+    plans = run_parallel_benchmark._build_benchmark_run_plans(
+        _build_args(
+            workloads=["sleep", "cpu"],
+            order=["key_hash", "partition"],
+            skip_process=False,
+        )
+    )
+
+    assert [
+        (plan.kind, plan.run_name, plan.workload, plan.ordering) for plan in plans
+    ] == [
+        ("baseline", "sleep-key_hash-baseline", "sleep", "key_hash"),
+        ("async", "sleep-key_hash-pyrallel-async", "sleep", "key_hash"),
+        ("process", "sleep-key_hash-pyrallel-process", "sleep", "key_hash"),
+        ("baseline", "sleep-partition-baseline", "sleep", "partition"),
+        ("async", "sleep-partition-pyrallel-async", "sleep", "partition"),
+        ("process", "sleep-partition-pyrallel-process", "sleep", "partition"),
+        ("baseline", "cpu-key_hash-baseline", "cpu", "key_hash"),
+        ("async", "cpu-key_hash-pyrallel-async", "cpu", "key_hash"),
+        ("process", "cpu-key_hash-pyrallel-process", "cpu", "key_hash"),
+        ("baseline", "cpu-partition-baseline", "cpu", "partition"),
+        ("async", "cpu-partition-pyrallel-async", "cpu", "partition"),
+        ("process", "cpu-partition-pyrallel-process", "cpu", "partition"),
+    ]
+
+
+def test_build_benchmark_run_plans_preserves_mode_suffixes_and_options() -> None:
+    plans = run_parallel_benchmark._build_benchmark_run_plans(
+        _build_args(
+            skip_baseline=True,
+            skip_process=False,
+            strict_completion_monitor=["on", "off"],
+            adaptive_concurrency=["off", "on"],
+            workload_options={"sleep": {"sleep_ms": 1.25}},
+        )
+    )
+
+    assert [
+        (
+            plan.kind,
+            plan.run_name,
+            plan.topic_name,
+            plan.group_id,
+            plan.strict_completion_monitor_enabled,
+            plan.adaptive_concurrency_enabled,
+            plan.workload_options,
+        )
+        for plan in plans
+    ] == [
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-on-adaptive-off",
+            "demo-topic-sleep-key_hash-async-strict-on-adaptive-off",
+            "async-group-sleep-key_hash-strict-on-adaptive-off",
+            True,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-on-adaptive-off",
+            "demo-topic-sleep-key_hash-process-strict-on-adaptive-off",
+            "process-group-sleep-key_hash-strict-on-adaptive-off",
+            True,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-on-adaptive-on",
+            "demo-topic-sleep-key_hash-async-strict-on-adaptive-on",
+            "async-group-sleep-key_hash-strict-on-adaptive-on",
+            True,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-on-adaptive-on",
+            "demo-topic-sleep-key_hash-process-strict-on-adaptive-on",
+            "process-group-sleep-key_hash-strict-on-adaptive-on",
+            True,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-off-adaptive-off",
+            "demo-topic-sleep-key_hash-async-strict-off-adaptive-off",
+            "async-group-sleep-key_hash-strict-off-adaptive-off",
+            False,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-off-adaptive-off",
+            "demo-topic-sleep-key_hash-process-strict-off-adaptive-off",
+            "process-group-sleep-key_hash-strict-off-adaptive-off",
+            False,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-off-adaptive-on",
+            "demo-topic-sleep-key_hash-async-strict-off-adaptive-on",
+            "async-group-sleep-key_hash-strict-off-adaptive-on",
+            False,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-off-adaptive-on",
+            "demo-topic-sleep-key_hash-process-strict-off-adaptive-on",
+            "process-group-sleep-key_hash-strict-off-adaptive-on",
+            False,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+    ]
+
+
+def test_run_benchmark_preserves_event_loop_per_workload_ordering(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    loop_runs: list[int] = []
+    real_asyncio_run = asyncio.run
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+
+    async def _async_round(**_kwargs) -> BenchmarkResult:
+        return benchmark_result
+
+    def _record_asyncio_run(coro):
+        loop_runs.append(1)
+        return real_asyncio_run(coro)
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+    monkeypatch.setattr(run_parallel_benchmark.asyncio, "run", _record_asyncio_run)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_baseline=True,
+            skip_process=False,
+            skip_reset=True,
+            workloads=["sleep", "cpu"],
+            order=["key_hash", "partition"],
+        ),
+        raw_argv=[
+            "--skip-baseline",
+            "--skip-reset",
+            "--workloads",
+            "sleep,cpu",
+            "--order",
+            "key_hash,partition",
+        ],
+    )
+
+    assert loop_runs == [1, 1, 1, 1]
+
+
 def test_build_artifact_metadata_prefers_github_environment() -> None:
     metadata = run_parallel_benchmark._build_artifact_metadata(
         output_path="benchmarks/results/release-gate.json",
@@ -918,6 +1100,90 @@ async def test_wait_for_partition_assignment_raises_clear_error_for_topic() -> N
             topic_name="demo-topic",
             timeout_sec=0.0,
         )
+
+
+def test_benchmark_metrics_observer_records_success_and_stops_at_target() -> None:
+    completion_event = asyncio.Event()
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        topic="demo-topic",
+        ordering="key_hash",
+        target_messages=1,
+    )
+    consumption_stats = pyrallel_consumer_test.ConsumptionStats(target=1)
+    completions: list[tuple[TopicPartition, CompletionStatus, float]] = []
+
+    class _FakePrometheusExporter:
+        def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            completions.append((tp, status, duration_seconds))
+
+    observer = pyrallel_consumer_test.BenchmarkMetricsObserver(
+        benchmark_stats=stats,
+        cons_stats=consumption_stats,
+        completion_event=completion_event,
+        prometheus_metrics_exporter=cast(Any, _FakePrometheusExporter()),
+    )
+    tp = TopicPartition(topic="demo-topic", partition=0)
+
+    observer.observe_completion(tp, CompletionStatus.SUCCESS, 0.01)
+
+    assert completions == [(tp, CompletionStatus.SUCCESS, 0.01)]
+    assert consumption_stats.processed == 1
+    assert stats.processed == 1
+    assert completion_event.is_set() is True
+    assert observer.failure_error is None
+
+
+def test_benchmark_metrics_observer_reports_completion_failure() -> None:
+    completion_event = asyncio.Event()
+    observer = pyrallel_consumer_test.BenchmarkMetricsObserver(
+        benchmark_stats=None,
+        cons_stats=pyrallel_consumer_test.ConsumptionStats(target=1),
+        completion_event=completion_event,
+    )
+
+    observer.observe_completion(
+        TopicPartition(topic="demo-topic", partition=0),
+        CompletionStatus.FAILURE,
+        0.01,
+    )
+
+    assert observer.failure_error == (
+        "Benchmark worker failure on demo-topic[0]: completion failed"
+    )
+    assert completion_event.is_set() is True
+
+
+def test_record_release_gate_metrics_from_snapshot_sums_partition_metrics() -> None:
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        topic="demo-topic",
+        ordering="key_hash",
+    )
+    metrics = SimpleNamespace(
+        partitions=[
+            SimpleNamespace(true_lag=3, gap_count=1),
+            SimpleNamespace(true_lag=5, gap_count=2),
+        ]
+    )
+
+    pyrallel_consumer_test._record_release_gate_metrics_from_snapshot(
+        stats,
+        cast(Any, metrics),
+        elapsed_sec=1.25,
+    )
+
+    assert stats._release_gate_observations == [
+        {
+            "elapsed_sec": 1.25,
+            "consumer_parallel_lag": 8,
+            "consumer_gap_count": 3,
+        }
+    ]
 
 
 def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:

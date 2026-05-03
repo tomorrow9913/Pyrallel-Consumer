@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -23,48 +23,28 @@ from textual.widgets import (
 )
 
 from benchmarks.tui.option_help import OPTION_HELP, PROFILING_CONTROL_IDS
+from benchmarks.tui.options_form import (
+    OPTIONAL_NON_NEGATIVE_INT_FIELDS,
+    OPTIONAL_POSITIVE_INT_FIELDS,
+    POSITIVE_INT_FIELDS,
+    OptionsFormDraft,
+    OptionsValidationResult,
+    validate_options_form,
+    workload_option_widget_id,
+)
 from benchmarks.tui.path_picker import DirectoryPickerScreen
 from benchmarks.tui.screens.run import RunScreen
 from benchmarks.tui.state import BenchmarkTuiState
-from benchmarks.workloads import (
-    all_records,
-    build_workload_options,
-    describe_workload_options,
-)
+from benchmarks.workloads import all_records, describe_workload_options
 from benchmarks.workloads.base import BenchmarkWorkload, WorkloadOptionSchema
 
-
-@dataclass(slots=True)
-class _ValidationResult:
-    """Represent validation result data used by options."""
-
-    state: BenchmarkTuiState | None
-    errors: dict[str, str]
+_ValidationResult = OptionsValidationResult
 
 
 class OptionsScreen(Screen[None]):
     """Represent options screen data used by options."""
 
     BINDINGS = [("q", "app.quit", "Quit")]
-    _POSITIVE_INT_FIELDS = {
-        "num-messages": 1,
-        "num-keys": 1,
-        "num-partitions": 1,
-        "timeout-sec": 1,
-        "route-batch-size": 1,
-    }
-    _NON_NEGATIVE_INT_FIELDS = {
-        "metrics-port": 0,
-        "profile-top-n": 0,
-    }
-    _OPTIONAL_POSITIVE_INT_FIELDS = {
-        "process-count": 1,
-        "process-batch-size": 1,
-    }
-    _OPTIONAL_NON_NEGATIVE_INT_FIELDS = {
-        "process-max-batch-wait-ms": 0,
-    }
-    _NON_NEGATIVE_FLOAT_FIELDS: dict[str, float] = {}
 
     def __init__(self, initial_state: BenchmarkTuiState | None = None) -> None:
         super().__init__()
@@ -233,7 +213,7 @@ class OptionsScreen(Screen[None]):
     @staticmethod
     def _workload_option_widget_id(workload: str, field_name: str) -> str:
         """Return the stable widget id for one workload option field."""
-        return "workload-option-%s-%s" % (workload, field_name)
+        return workload_option_widget_id(workload, field_name)
 
     @classmethod
     def _workload_option_controls(cls, state: BenchmarkTuiState) -> ComposeResult:
@@ -715,142 +695,76 @@ class OptionsScreen(Screen[None]):
             widget.display = True
             widget.update(message)
 
-    def _validate_form(self) -> _ValidationResult:
+    def _validate_form(self) -> OptionsValidationResult:
         """Validate form for options."""
-        errors: dict[str, str] = {}
-        parsed_ints: dict[str, int] = {}
-        parsed_floats: dict[str, float] = {}
-
-        profiling_enabled = self.query_one("#profiling-enabled", Switch).value
-
-        for widget_id, minimum in self._POSITIVE_INT_FIELDS.items():
-            self._validate_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum in self._NON_NEGATIVE_INT_FIELDS.items():
-            if widget_id == "profile-top-n" and not profiling_enabled:
-                continue
-            self._validate_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum in self._OPTIONAL_POSITIVE_INT_FIELDS.items():
-            self._validate_optional_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum in self._OPTIONAL_NON_NEGATIVE_INT_FIELDS.items():
-            self._validate_optional_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum_float in self._NON_NEGATIVE_FLOAT_FIELDS.items():
-            self._validate_float(widget_id, minimum_float, parsed_floats, errors)
-
         workloads = tuple(self.query_one("#workloads", SelectionList).selected)
-        if not workloads:
-            errors["workloads"] = "Select at least one workload."
-        unavailable_workloads = self._unavailable_workload_reasons()
-        selected_unavailable = [
-            workload for workload in workloads if workload in unavailable_workloads
-        ]
-        if selected_unavailable:
-            workload = selected_unavailable[0]
-            errors["workloads"] = "Workload %s is unavailable: %s" % (
-                workload,
-                unavailable_workloads[workload],
-            )
-
-        workload_options = self._validate_workload_option_fields(workloads, errors)
-
         ordering_modes = tuple(
             self.query_one("#ordering-modes", SelectionList).selected
         )
-        if not ordering_modes:
-            errors["ordering-modes"] = "Select at least one ordering mode."
-
-        skip_baseline = self.query_one("#skip-baseline", Switch).value
-        skip_async = self.query_one("#skip-async", Switch).value
-        skip_process = self.query_one("#skip-process", Switch).value
-        if skip_baseline and skip_async and skip_process:
-            errors["skip-phase-group"] = "Keep at least one execution mode enabled."
-
-        if errors:
-            return _ValidationResult(state=None, errors=errors)
-
-        base_state = self._last_valid_state
-        state = replace(
-            base_state,
-            bootstrap_servers=self.query_one("#bootstrap-servers", Input).value,
-            json_output=self.query_one("#json-output", Input).value,
-            num_messages=parsed_ints["num-messages"],
-            num_keys=parsed_ints["num-keys"],
-            num_partitions=parsed_ints["num-partitions"],
-            timeout_sec=parsed_ints["timeout-sec"],
-            metrics_port=parsed_ints["metrics-port"],
-            process_count=parsed_ints.get("process-count"),
-            process_transport=str(self.query_one("#process-transport", Select).value),
-            process_batch_size=parsed_ints.get("process-batch-size"),
-            process_max_batch_wait_ms=parsed_ints.get("process-max-batch-wait-ms"),
-            route_batch_size=parsed_ints["route-batch-size"],
-            topic_prefix=self.query_one("#topic-prefix", Input).value,
+        draft = OptionsFormDraft(
+            input_values=self._form_input_values(),
+            switch_values=self._form_switch_values(),
+            select_values=self._form_select_values(),
             workloads=workloads,
             ordering_modes=ordering_modes,
-            log_level=str(self.query_one("#log-level", Select).value),
-            skip_reset=self.query_one("#skip-reset", Switch).value,
-            profiling_enabled=profiling_enabled,
-            profile=self.query_one("#profile", Switch).value,
-            profile_dir=self.query_one("#profile-dir", Input).value,
-            py_spy=self.query_one("#py-spy", Switch).value,
-            py_spy_output=self.query_one("#py-spy-output", Input).value,
-            skip_baseline=skip_baseline,
-            skip_async=skip_async,
-            skip_process=skip_process,
-            profile_top_n=parsed_ints.get("profile-top-n", base_state.profile_top_n),
-            py_spy_format=str(self.query_one("#py-spy-format", Select).value),
-            py_spy_native=self.query_one("#py-spy-native", Switch).value,
-            py_spy_idle=self.query_one("#py-spy-idle", Switch).value,
-            worker_sleep_ms=self._float_workload_option_value(
-                workload_options, "sleep", "sleep_ms", base_state.worker_sleep_ms
-            ),
-            worker_cpu_iterations=self._int_workload_option_value(
-                workload_options,
-                "cpu",
-                "iterations",
-                base_state.worker_cpu_iterations,
-            ),
-            worker_io_sleep_ms=self._float_workload_option_value(
-                workload_options, "io", "sleep_ms", base_state.worker_io_sleep_ms
-            ),
-            workload_options=workload_options,
+            workload_option_values=self._visible_workload_option_values(workloads),
         )
-        return _ValidationResult(state=state, errors={})
+        return validate_options_form(
+            draft,
+            base_state=self._last_valid_state,
+            unavailable_workloads=self._unavailable_workload_reasons(),
+            workload_classes=self._available_workload_classes(),
+        )
 
-    @staticmethod
-    def _float_workload_option_value(
-        workload_options: dict[str, dict[str, object]],
-        workload: str,
-        option_name: str,
-        default: float,
-    ) -> float:
-        """Return a validated workload option value as float."""
-        value = workload_options.get(workload, {}).get(option_name, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise RuntimeError(
-                "Validated workload option %s.%s is not numeric"
-                % (workload, option_name)
-            )
-        return float(value)
+    def _form_input_values(self) -> dict[str, str]:
+        """Collect raw input widget values for form validation."""
+        widget_ids = {
+            "bootstrap-servers",
+            "json-output",
+            "topic-prefix",
+            "profile-dir",
+            "py-spy-output",
+            *POSITIVE_INT_FIELDS,
+            "metrics-port",
+            "profile-top-n",
+            *OPTIONAL_POSITIVE_INT_FIELDS,
+            *OPTIONAL_NON_NEGATIVE_INT_FIELDS,
+        }
+        return {
+            widget_id: self.query_one("#%s" % widget_id, Input).value
+            for widget_id in widget_ids
+        }
 
-    @staticmethod
-    def _int_workload_option_value(
-        workload_options: dict[str, dict[str, object]],
-        workload: str,
-        option_name: str,
-        default: int,
-    ) -> int:
-        """Return a validated workload option value as int."""
-        value = workload_options.get(workload, {}).get(option_name, default)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise RuntimeError(
-                "Validated workload option %s.%s is not an integer"
-                % (workload, option_name)
-            )
-        return value
+    def _form_switch_values(self) -> dict[str, bool]:
+        """Collect switch widget values for form validation."""
+        widget_ids = {
+            "profiling-enabled",
+            "skip-reset",
+            "profile",
+            "py-spy",
+            "skip-baseline",
+            "skip-async",
+            "skip-process",
+            "py-spy-native",
+            "py-spy-idle",
+        }
+        return {
+            widget_id: self.query_one("#%s" % widget_id, Switch).value
+            for widget_id in widget_ids
+        }
 
-    def _validate_workload_option_fields(
-        self, workloads: tuple[str, ...], errors: dict[str, str]
+    def _form_select_values(self) -> dict[str, str]:
+        """Collect select widget values for form validation."""
+        widget_ids = {"process-transport", "log-level", "py-spy-format"}
+        return {
+            widget_id: str(self.query_one("#%s" % widget_id, Select).value)
+            for widget_id in widget_ids
+        }
+
+    def _visible_workload_option_values(
+        self, workloads: tuple[str, ...]
     ) -> dict[str, dict[str, object]]:
-        """Validate selected dynamic workload option controls."""
+        """Collect visible dynamic workload option values from widgets."""
         workload_classes = self._available_workload_classes()
         workload_options: dict[str, dict[str, object]] = {}
         for workload in workloads:
@@ -858,9 +772,7 @@ class OptionsScreen(Screen[None]):
             if workload_cls is None:
                 continue
             schemas = describe_workload_options(workload_cls)
-            selected_options: dict[str, object] = {}
             raw_options: dict[str, object] = {}
-            visible_schemas: list[WorkloadOptionSchema] = []
             for schema in schemas:
                 widget_id = self._workload_option_widget_id(workload, schema.field_name)
                 if not self.query("#%s" % widget_id):
@@ -868,26 +780,9 @@ class OptionsScreen(Screen[None]):
                 raw_options[schema.field_name] = self._raw_workload_option_value(
                     widget_id, schema
                 )
-                visible_schemas.append(schema)
             if not raw_options:
                 continue
-            try:
-                options = build_workload_options(
-                    workload_cls,
-                    workload_options={workload: raw_options},
-                )
-            except ValueError as exc:
-                schema = visible_schemas[0]
-                errors[
-                    self._workload_option_widget_id(workload, schema.field_name)
-                ] = str(exc)
-                continue
-            for schema in visible_schemas:
-                selected_options[schema.field_name] = getattr(
-                    options, schema.field_name
-                )
-            if selected_options:
-                workload_options[workload] = selected_options
+            workload_options[workload] = raw_options
         return workload_options
 
     def _raw_workload_option_value(
@@ -899,66 +794,6 @@ class OptionsScreen(Screen[None]):
         if schema.annotation is str and schema.metadata.choices:
             return str(self.query_one("#%s" % widget_id, Select).value)
         return self.query_one("#%s" % widget_id, Input).value
-
-    def _validate_int(
-        self,
-        widget_id: str,
-        minimum: int,
-        parsed_values: dict[str, int],
-        errors: dict[str, str],
-    ) -> None:
-        """Validate int for options."""
-        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
-        try:
-            value = int(raw_value)
-        except ValueError:
-            errors[widget_id] = "Enter a whole number."
-            return
-        if value < minimum:
-            comparator = ">="
-            errors[widget_id] = "Enter a whole number %s %d." % (comparator, minimum)
-            return
-        parsed_values[widget_id] = value
-
-    def _validate_optional_int(
-        self,
-        widget_id: str,
-        minimum: int,
-        parsed_values: dict[str, int],
-        errors: dict[str, str],
-    ) -> None:
-        """Validate optional int for options."""
-        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
-        if not raw_value:
-            return
-        try:
-            value = int(raw_value)
-        except ValueError:
-            errors[widget_id] = "Enter a whole number or leave blank."
-            return
-        if value < minimum:
-            errors[widget_id] = "Enter a whole number >= %d or leave blank." % minimum
-            return
-        parsed_values[widget_id] = value
-
-    def _validate_float(
-        self,
-        widget_id: str,
-        minimum: float,
-        parsed_values: dict[str, float],
-        errors: dict[str, str],
-    ) -> None:
-        """Validate float for options."""
-        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
-        try:
-            value = float(raw_value)
-        except ValueError:
-            errors[widget_id] = "Enter a number."
-            return
-        if value < minimum:
-            errors[widget_id] = "Enter a number >= %.1f." % minimum
-            return
-        parsed_values[widget_id] = value
 
     def _sync_profiling_controls(self) -> None:
         """Handle sync profiling controls within options."""

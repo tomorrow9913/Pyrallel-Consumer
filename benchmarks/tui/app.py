@@ -3,6 +3,7 @@ from __future__ import annotations
 from textual.app import App
 
 from benchmarks.tui.controller import BenchmarkProcessController
+from benchmarks.tui.options_form import OptionsValidationResult
 from benchmarks.tui.results_modal import ResultsSummaryModalScreen
 from benchmarks.tui.screens.options import OptionsScreen, _ValidationResult
 from benchmarks.tui.screens.run import RunScreen, _format_elapsed
@@ -14,6 +15,7 @@ __all__ = [
     "ResultsSummaryModalScreen",
     "RunScreen",
     "_ValidationResult",
+    "OptionsValidationResult",
     "_format_elapsed",
 ]
 
