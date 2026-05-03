@@ -77,7 +77,7 @@ Use this when a new release rollout causes production-impacting regressions.
 - **CPU bound**: process mode, `process_count=cpu_count`, tune `process_config.batch_size` and `queue_size` for CPU saturation.
 - **Mixed**: start async; if CPU spikes, move hot paths to process workers for those topics.
 
-## Execution Mode Recommendation Matrix (MQU-168)
+## Execution Mode Recommendation Matrix
 
 This matrix is the operator-facing recommendation surface derived from the current
 playbook defaults and release-gate evidence.
@@ -184,14 +184,12 @@ Before treating a run as meaningful evidence for the remaining P1 stability item
 Release gate verdicts (`PASS`/`FAIL`) follow the fixed gate definitions in
 `docs/operations/soak-restart-evidence.md`.
 
-## Release Go/No-Go Threshold (MQU-117)
+## Release Go/No-Go Threshold
 
 The thresholds below are the **fixed performance baselines** used for release review
-before stable promotion. They were finalized in a CTO round based on cumulative
-distribution across `benchmarks/results/*.json` (focused on 10k+ messages,
-8 partitions, strict monitor on). For direct MQU-164 decision quoting, also
-use the one-page summary in
-`docs/operations/mqu-168-execution-mode-release-interpretation.md`.
+before stable promotion. They are based on the repository's retained benchmark
+artifacts in `benchmarks/results/*.json`, focused on 10k+ messages, 8 partitions,
+and strict completion monitoring.
 
 ### Standard Measurement Conditions
 

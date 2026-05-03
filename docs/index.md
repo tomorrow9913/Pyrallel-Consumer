@@ -24,8 +24,6 @@ This group includes:
 - **[operations/stable-operations-evidence.md](./operations/stable-operations-evidence.md)** - release-review reference for soak evidence and performance baselines
 - **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/public-contract-v1.md](./operations/public-contract-v1.md)** - v1 ordering/rebalance/DLQ/commit public contract freeze
-- **[operations/oss-messaging-guardrails.md](./operations/oss-messaging-guardrails.md)** - inbound-only OSS messaging policy guardrails
-- **[operations/wave-2-gate-cadence.md](./operations/wave-2-gate-cadence.md)** - wave-2 resume gate/cadence rules after MQU-4
 - **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness checklist
 - **[operations/support-policy.md](./operations/support-policy.md)** - Python/Kafka support scope and compatibility policy
 - **[operations/secure-kafka-config.md](./operations/secure-kafka-config.md)** - TLS/SASL Kafka client configuration and secret-handling guide

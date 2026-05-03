@@ -1,9 +1,9 @@
 # Stable Operations Evidence Reference
 
-This document is the compact reference surface for the GitHub #37 / MQU-269
-deliverable. Use it during release review when you need the current
-soak/restart evidence package, the fixed performance baseline policy, and the
-scope boundary for what remains P1 versus post-stable hardening.
+This document is the compact reference surface for release-review evidence.
+Use it when you need the current soak/restart evidence package, the fixed
+performance baseline policy, and the scope boundary for what remains P1 versus
+post-stable hardening.
 
 ## What This Reference Covers
 
@@ -107,8 +107,7 @@ Fresh recheck note (2026-04-19):
 Use [`release-readiness.md`](./release-readiness.md) for the stable promotion
 checklist and the explicit scope boundary for this work:
 
-- GitHub #37 closes the baseline policy and one template-aligned evidence
-  package
+- the baseline policy and one template-aligned evidence package are documented
 - repeated long-window coverage remains P1 follow-up
 - soak automation and broader operational hardening remain P2
 
