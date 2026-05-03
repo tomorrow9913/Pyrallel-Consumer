@@ -5,8 +5,8 @@ import logging
 from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock
 
-from confluent_kafka import TopicPartition as KafkaTopicPartition
 import pytest
+from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
@@ -193,8 +193,9 @@ async def test_commit_support_builds_commit_payload_and_advances_tracker() -> No
     assert len(offsets_arg) == 1
     kafka_tp = offsets_arg[0]
     assert isinstance(kafka_tp, KafkaTopicPartition)
-    assert kafka_tp.metadata == support._commit_planner.metadata_encoder.encode_metadata(
-        {3}, 2
+    assert (
+        kafka_tp.metadata
+        == support._commit_planner.metadata_encoder.encode_metadata({3}, 2)
     )
     assert tracker.last_committed_offset == 1
     assert tracker.completed_offsets == {3}
@@ -299,9 +300,7 @@ async def test_drain_support_merges_timeout_events_and_schedules_once() -> None:
     )
 
     assert has_completion is True
-    process_completed_events.assert_awaited_once_with(
-        [completion_event, timeout_event]
-    )
+    process_completed_events.assert_awaited_once_with([completion_event, timeout_event])
     schedule.assert_awaited_once_with()
 
 
