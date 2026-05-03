@@ -23,6 +23,7 @@ Java 생태계의 `confluentinc/parallel-consumer`에서 영감을 받아, 병�
 - **Python:** 현재 패키지 메타데이터 기준 지원 대상은 `>=3.12`이며, 배포 classifier는 Python `3.12`, `3.13`을 명시합니다.
 - **Kafka:** 현재 자동화된 호환성 baseline은 `confluentinc/cp-kafka:7.6.0` 위에서 문서화된 Python/client lane을 broker-backed 검증으로 확인합니다. 그 외 브로커 배포판이나 더 오래된 client/broker 조합은 best-effort이며, 자세한 표는 [`docs/operations/compatibility-matrix.md`](./docs/operations/compatibility-matrix.md)를 참고하세요.
 - **릴리즈 라인 지원:** 최신 stable minor를 active support 대상으로, 직전 stable minor를 security-fix-only 대상으로 운영하며, prerelease 라인은 best-effort입니다.
+- **SemVer 판단 기준:** 선택적 config/env 설정 추가나, 사용자 수정 없이 수용 가능한 기본값 변경은 보통 minor로 보고, 사용자가 필수 설정을 추가/삭제/이름 변경해야 하면 major로 봅니다.
 - **정책 상세:** [`docs/operations/support-policy.md`](./docs/operations/support-policy.md)를 참고하세요.
 - **보안 제보 경로:** [`SECURITY.md`](./SECURITY.md)를 참고하세요.
 - **Public contract freeze:** [`docs/operations/public-contract-v1.md`](./docs/operations/public-contract-v1.md)에서 stable v1 기준의 ordering / rebalance / DLQ / commit contract surface를 확인할 수 있습니다.

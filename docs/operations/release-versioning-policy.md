@@ -139,6 +139,49 @@ Automation boundary:
   while `0.3.x -> 0.4.0` or prerelease -> stable transitions remain
   human decisions.
 
+Stable SemVer interpretation for `main`:
+
+- **PATCH (`z`)**
+  - Bug fixes, security fixes, documentation-only changes, internal refactors,
+    and observability changes that do not alter the supported public contract.
+  - Performance tuning or operational hardening that preserves the same public
+    API, config surface, and required runtime inputs.
+- **MINOR (`y`)**
+  - Backward-compatible feature additions on the public contract.
+  - New optional configuration or environment-variable inputs when existing
+    deployments remain valid without adding them.
+  - New tunables, extension points, or runtime modes that are opt-in.
+  - Default-value changes may still be **minor** when all of the following are
+    true:
+    - existing config/env keys remain valid,
+    - the library still starts and operates without mandatory user edits,
+    - previous behavior can still be selected explicitly through supported
+      configuration,
+    - no stored-data, wire-format, or infrastructure migration is required.
+- **MAJOR (`x`)**
+  - Any change that requires users/operators to modify their existing setup in
+    order to keep a supported deployment working.
+  - Removal or rename of a public API, config key, CLI flag, metric name,
+    documented behavior contract, or environment variable without a compatible
+    transition path.
+  - Introducing a new mandatory input that must be added by users, such as a
+    required env var, required config field, required topic/resource, or
+    required integration dependency.
+  - Removing a previously supported path that users must delete, replace, or
+    migrate away from before upgrading.
+  - Incompatible changes to persisted metadata, wire formats, or operational
+    semantics where old and new versions cannot interoperate safely.
+
+Practical operator rule:
+
+- If upgrading can be completed without mandatory config/code/env edits, the
+  change is usually **not major**.
+- If the release forces users to add, remove, rename, or rewrite something in
+  their setup, treat it as **major**.
+- Even when a default flip is classified as **minor**, call it out prominently
+  in the changelog and upgrade guide because operator-visible behavior still
+  changed.
+
 ### 3.6 `hotfix/x.y.z`
 
 Hotfix branches use stable patch versions only.

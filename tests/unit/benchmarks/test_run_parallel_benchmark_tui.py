@@ -120,12 +120,12 @@ def test_build_parser_accepts_route_batch_size_override() -> None:
     assert args.route_batch_size == 64
 
 
-def test_build_parser_defaults_route_batch_size_to_one() -> None:
+def test_build_parser_defaults_route_batch_size_to_worker_pipes_profile() -> None:
     parser = run_parallel_benchmark.build_parser()
 
     args = parser.parse_args([])
 
-    assert args.route_batch_size == 1
+    assert args.route_batch_size == 64
 
 
 def test_build_parser_accepts_process_flush_policy_overrides() -> None:
@@ -150,6 +150,16 @@ def test_build_parser_accepts_process_transport_override() -> None:
     args = parser.parse_args(["--process-transport", "worker_pipes"])
 
     assert args.process_transport == "worker_pipes"
+
+
+def test_build_parser_defaults_process_transport_to_worker_pipes() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args([])
+
+    assert args.process_transport == "worker_pipes"
+    assert args.process_batch_size == 1
+    assert args.process_max_batch_wait_ms == 0
 
 
 def test_build_parser_accepts_metrics_port() -> None:

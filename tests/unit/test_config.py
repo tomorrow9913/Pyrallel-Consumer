@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from pydantic import ValidationError
@@ -10,6 +12,70 @@ from pyrallel_consumer.config import (
     ProcessConfig,
 )
 from pyrallel_consumer.dto import ExecutionMode, OrderingMode
+
+BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS = {
+    "EXECUTION_ASYNC_CONFIG__SHUTDOWN_GRACE_TIMEOUT_MS",
+    "EXECUTION_ASYNC_CONFIG__TASK_TIMEOUT_MS",
+    "EXECUTION_CONSUMER_TASK_STOP_TIMEOUT_MS",
+    "EXECUTION_MAX_IN_FLIGHT",
+    "EXECUTION_ROUTE_BATCH_SIZE",
+    "EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS",
+    "EXECUTION_SHUTDOWN_POLICY",
+    "KAFKA_DLQ_FLUSH_TIMEOUT_MS",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__COOLDOWN_MS",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__ENABLED",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__HIGH_LATENCY_THRESHOLD_MS",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__LAG_SCALE_UP_THRESHOLD",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__LOW_LATENCY_THRESHOLD_MS",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__MIN_IN_FLIGHT",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__SCALE_DOWN_STEP",
+    "PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__SCALE_UP_STEP",
+    "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__COOLDOWN_MS",
+    "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__ENABLED",
+    "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__MIN_IN_FLIGHT",
+    "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__SCALE_DOWN_STEP",
+    "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__SCALE_UP_STEP",
+    "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD",
+    "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS",
+    "PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS",
+    "PARALLEL_CONSUMER_MESSAGE_CACHE_MAX_BYTES",
+    "PARALLEL_CONSUMER_ORDERING_MODE",
+    "PARALLEL_CONSUMER_POISON_MESSAGE__COOLDOWN_MS",
+    "PARALLEL_CONSUMER_POISON_MESSAGE__ENABLED",
+    "PARALLEL_CONSUMER_POISON_MESSAGE__FAILURE_THRESHOLD",
+    "PARALLEL_CONSUMER_QUEUE_MAX_MESSAGES",
+    "PARALLEL_CONSUMER_REBALANCE_STATE_STRATEGY",
+    "PARALLEL_CONSUMER_STRICT_COMPLETION_MONITOR_ENABLED",
+    "PROCESS_DEMAND_FLUSH_MIN_RESIDENCE_MS",
+    "PROCESS_FLUSH_POLICY",
+    "PROCESS_MAX_BATCH_WAIT_MS",
+    "PROCESS_MAX_TASKS_PER_CHILD",
+    "PROCESS_RECYCLE_JITTER_MS",
+    "PROCESS_SHUTDOWN_DRAIN_TIMEOUT_MS",
+    "PROCESS_TRANSPORT_MODE",
+}
+
+
+def _env_sample_keys() -> set[str]:
+    keys: set[str] = set()
+    for raw_line in Path(".env.sample").read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith("#"):
+            line = line[1:].strip()
+        if "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
+def test_env_sample_documents_benchmark_runtime_tuning_surface() -> None:
+    sample_keys = _env_sample_keys()
+
+    missing_keys = sorted(BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS - sample_keys)
+
+    assert missing_keys == []
 
 
 def test_parallel_consumer_config_defaults():
@@ -108,10 +174,10 @@ def test_execution_config_shutdown_policy_env_override(
     monkeypatch.delenv("EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS", raising=False)
 
 
-def test_execution_config_route_batch_size_defaults_to_one() -> None:
-    config = ExecutionConfig()
+def test_execution_config_route_batch_size_defaults_to_worker_pipes_profile() -> None:
+    config = ExecutionConfig(_env_file=None)
 
-    assert config.route_batch_size == 1
+    assert config.route_batch_size == 64
 
 
 def test_execution_config_route_batch_size_env_override(
@@ -133,20 +199,22 @@ def test_execution_config_rejects_invalid_route_batch_size() -> None:
     assert "route_batch_size" in str(excinfo.value)
 
 
-def test_process_config_transport_mode_defaults_to_shared_queue() -> None:
+def test_process_config_defaults_to_worker_pipes_route_batch_profile() -> None:
+    config = ProcessConfig(_env_file=None)
+
+    assert config.transport_mode == "worker_pipes"
+    assert config.batch_size == 1
+    assert config.max_batch_wait_ms == 0
+
+
+def test_process_config_transport_mode_env_override_keeps_legacy_fallback(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "shared_queue")
+
     config = ProcessConfig()
 
     assert config.transport_mode == "shared_queue"
-
-
-def test_process_config_transport_mode_env_override(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "worker_pipes")
-
-    config = ProcessConfig()
-
-    assert config.transport_mode == "worker_pipes"
 
     monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
 

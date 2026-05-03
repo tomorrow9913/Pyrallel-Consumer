@@ -28,10 +28,10 @@ class ProcessConfig(BaseSettings):
     process_count: int = Field(default=8, gt=0)
     queue_size: int = Field(default=2048, gt=0)
     require_picklable_worker: bool = True
-    batch_size: int = Field(default=64, gt=0)
+    batch_size: int = Field(default=1, gt=0)
     batch_bytes: str = "256KB"
-    transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
-    max_batch_wait_ms: int = 5
+    transport_mode: Literal["shared_queue", "worker_pipes"] = "worker_pipes"
+    max_batch_wait_ms: int = 0
     flush_policy: Literal[
         "size_or_timer", "demand", "demand_min_residence"
     ] = "size_or_timer"
@@ -120,7 +120,7 @@ class ExecutionConfig(BaseSettings):
 
     mode: ExecutionMode = ExecutionMode.ASYNC
     max_in_flight: int = Field(default=1000, gt=0)
-    route_batch_size: int = Field(default=1, gt=0)
+    route_batch_size: int = Field(default=64, gt=0)
     max_revoke_grace_ms: int = 500
     shutdown_policy: Literal["graceful", "abort"] = "graceful"
     consumer_task_stop_timeout_ms: int = Field(default=5000, ge=0)

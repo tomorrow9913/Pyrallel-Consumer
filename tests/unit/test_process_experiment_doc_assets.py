@@ -24,7 +24,7 @@ def test_process_transport_experiment_doc_keeps_bounded_scope_and_invariants() -
     document = EXPERIMENT_DOC.read_text(encoding="utf-8")
 
     assert 'transport_mode: Literal["shared_queue", "worker_pipes"]' in document
-    assert "The default must remain `shared_queue`." in document
+    assert "The default is now `worker_pipes`." in document
     assert "--process-transport shared_queue|worker_pipes" in document
     assert "Control-plane invariants" in document
     assert "WorkManager` dispatch ledger" in document
@@ -51,7 +51,10 @@ def test_process_engine_docs_capture_long_term_transport_direction() -> None:
     design = DESIGN_DOC.read_text(encoding="utf-8")
 
     assert "ordered virtual-queue identity" in index_doc
-    assert "`shared_queue` remains the compatibility/default path" in requirements
+    assert (
+        "`shared_queue` remains an explicit legacy compatibility fallback"
+        in requirements
+    )
     assert (
         "`worker_pipes` becomes the ordering-preserving parallelism direction"
         in requirements

@@ -685,6 +685,7 @@ def small_batch_config() -> ExecutionConfig:
         process_config=ProcessConfig(
             process_count=1,
             queue_size=256,
+            transport_mode="shared_queue",
             batch_size=4,
             max_batch_wait_ms=50,
             worker_join_timeout_ms=5000,
@@ -705,6 +706,7 @@ def retry_config() -> ExecutionConfig:
         process_config=ProcessConfig(
             process_count=1,
             queue_size=256,
+            transport_mode="shared_queue",
             batch_size=2,
             max_batch_wait_ms=10,
             worker_join_timeout_ms=5000,
@@ -728,6 +730,7 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
+                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
             ),
@@ -773,6 +776,7 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
+                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
             ),
@@ -932,6 +936,7 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
+                transport_mode="shared_queue",
                 batch_size=4,
                 max_batch_wait_ms=1000,
             ),
@@ -961,6 +966,7 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
+                transport_mode="shared_queue",
                 batch_size=2,
                 max_batch_wait_ms=1000,
             ),
@@ -999,6 +1005,7 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
+                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
                 worker_join_timeout_ms=5000,
@@ -1228,6 +1235,7 @@ class TestRetryLogic:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=256,
+                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=10,
                 worker_join_timeout_ms=5000,

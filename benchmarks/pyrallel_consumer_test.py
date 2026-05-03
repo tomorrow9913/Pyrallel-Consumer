@@ -434,8 +434,8 @@ def build_kafka_config(
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
-    process_transport_mode: Optional[ProcessTransportMode] = None,
-    route_batch_size: int = 1,
+    process_transport_mode: Optional[ProcessTransportMode] = "worker_pipes",
+    route_batch_size: int = 64,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> KafkaConfig:
@@ -525,7 +525,7 @@ async def run_pyrallel_consumer_test(
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
     process_transport_mode: Optional[ProcessTransportMode] = None,
-    route_batch_size: int = 1,
+    route_batch_size: int = 64,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:

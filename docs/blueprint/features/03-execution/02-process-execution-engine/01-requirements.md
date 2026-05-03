@@ -24,9 +24,9 @@ that `WorkManager` already computes before work crosses the process boundary.
 
 ## Mandatory requirements
 
-- `shared_queue` remains the compatibility/default path.
-- `worker_pipes` becomes the ordering-preserving parallelism direction and a
-  future default candidate.
+- `worker_pipes` is the default ordering-preserving parallelism path.
+- `worker_pipes` becomes the ordering-preserving parallelism direction.
+- `shared_queue` remains an explicit legacy compatibility fallback.
 - `WorkManager` and `BrokerPoller` remain transport-agnostic.
 - `BaseExecutionEngine.submit(work_item)` remains unchanged.
 - `BaseExecutionEngine.submit_batch(work_items)` is part of the engine contract.
@@ -37,8 +37,9 @@ that `WorkManager` already computes before work crosses the process boundary.
 - Ordered route batching is allowed only for engines that advertise
   `supports_ordered_route_batch=True`; otherwise `KEY_HASH` and `PARTITION`
   modes use an effective route batch size of `1`.
-- `ExecutionConfig.route_batch_size` defaults to `1` and is an explicit
-  experiment/benchmark knob rather than a production default change.
+- `ExecutionConfig.route_batch_size` defaults to `64`; ordered modes still use
+  an effective size of `1` unless the execution engine advertises ordered
+  route-batch capability.
 - The process engine chooses a worker channel internally by route identity.
 - Ordered modes favor sticky routing and affinity preservation over stealing.
 - Completion aggregation remains parent-owned. `worker_pipes` may reduce
