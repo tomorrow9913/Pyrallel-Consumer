@@ -570,11 +570,7 @@ def test_options_screen_deduplicates_duplicate_unavailable_workload_records(
     assert OptionsScreen._unavailable_workload_reasons() == {"dupe": "duplicate name"}
 
 
-def test_run_screen_uses_custom_selected_workloads(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "benchmarks.tui.screens.run.available_names",
-        lambda: ("sleep", "custom"),
-    )
+def test_run_screen_uses_custom_selected_workloads() -> None:
     screen = RunScreen(BenchmarkTuiState(workloads=("custom",)))
 
     assert screen._active_workloads == ("custom",)

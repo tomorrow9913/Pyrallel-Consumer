@@ -706,15 +706,10 @@ class RunScreen(Screen[None]):
 
     def _resolve_workloads(self) -> tuple[str, ...]:
         """Resolve workloads for run."""
-        available = set(available_names())
-        workloads = tuple(
-            workload
-            for workload in self._state.workloads
-            if workload and workload in available
-        )
+        workloads = tuple(workload for workload in self._state.workloads if workload)
         if workloads:
             return workloads
-        return ("sleep",)
+        return available_names()[:1]
 
     def _resolve_orderings(self) -> tuple[str, ...]:
         """Resolve orderings for run."""
