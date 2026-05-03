@@ -1,6 +1,6 @@
 # Docs Index
 
-`docs/` is organized into three document groups.
+`docs/` is organized into two document groups.
 
 ## 1. Blueprint
 
@@ -30,12 +30,7 @@ This group includes:
 - **[operations/upgrade-rollback-guide.md](./operations/upgrade-rollback-guide.md)** - upgrade/rollback operations guide
 - **[operations/github-actions-act-local-review.md](./operations/github-actions-act-local-review.md)** - local `act` workflow review guide
 
-## 3. Plans
-
-- **[plans/](./plans/)** - date-based design/implementation plan archive
-
 ## Quick Guide
 
 - For current runtime structure and feature blueprints, start at `blueprint/`.
 - For operations and incident response only, start at `operations/`.
-- For archived plans and design decisions, check `plans/`.

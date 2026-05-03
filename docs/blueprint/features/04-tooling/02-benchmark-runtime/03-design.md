@@ -18,13 +18,14 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `--skip-reset` | skip topic/group deletion-recreation and rely on lazy topic creation during producer/consumer setup |
 | `--timeout-sec` | per-Pyrallel-run timeout guard |
 | `--log-level` | benchmark logger verbosity; `WARNING` is the default for cleaner measurements |
-| `--workloads` | comma-separated subset of `sleep,cpu,io` |
+| `--workloads` | comma-separated subset of discovered available workloads; built-ins are `sleep,cpu,io` |
 | `--order` | comma-separated subset of `key_hash,partition,unordered` |
 | `--strict-completion-monitor` | comma-separated subset of `on,off`; expands the Pyrallel run matrix |
 | `--adaptive-concurrency` | comma-separated subset of `off,on`; expands the Pyrallel run matrix |
 | `--worker-sleep-ms` | blocking sleep used by the `sleep` workload |
 | `--worker-cpu-iterations` | hashing loop iterations used by the `cpu` workload |
 | `--worker-io-sleep-ms` | async-style wait used by the `io` workload |
+| `--workload-option workload.option=value` | generic workload-specific option override used by custom workloads and built-in options without a legacy alias; conflicts with explicit legacy aliases for the same option are rejected |
 | `--process-batch-size` | benchmark-only override for process micro-batch size |
 | `--process-max-batch-wait-ms` | benchmark-only override for process micro-batch wait |
 | `--process-flush-policy` | benchmark-only override for process flush policy |
@@ -53,6 +54,7 @@ These names are part of the artifact contract because they appear in console out
 | `io` | `time.sleep()` for baseline/process and `asyncio.sleep()` for async | async-friendly I/O wait | highlights async mode's ability to overlap wait-heavy work |
 
 The workload selector changes only the worker function cost model; it does not alter ordering or offset semantics.
+Custom workload modules may define typed option dataclasses discovered by the registry. CLI and TUI adapters derive controls from that schema, validate values before execution, and pass the coerced dataclass through `WorkloadContext.options`.
 
 ## 4. Round execution details
 

@@ -168,7 +168,10 @@ class PyrallelConsumer:
             metrics = replace(metrics, resource_signal=resource_signal)
         except TypeError:
             setattr(metrics, "resource_signal", resource_signal)
-        self._metrics_exporter.update_from_system_metrics(metrics)
+        try:
+            self._metrics_exporter.update_from_system_metrics(metrics)
+        except Exception:
+            self._logger.exception("Metrics exporter update failed")
 
     def _set_poller_metrics_exporter(
         self, metrics_exporter: Optional[PrometheusMetricsExporter]

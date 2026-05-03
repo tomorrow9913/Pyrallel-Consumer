@@ -158,6 +158,70 @@ def test_log_parser_preserves_partial_workload_subset_in_total_runs() -> None:
     assert snapshot.progress_value == 0.5
 
 
+def test_log_parser_extracts_custom_active_workload() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_workloads=("custom",),
+    )
+
+    parser.consume(
+        "custom-baseline | baseline | demo-custom-baseline | 100 | 12.34 | 1.000 | 1.000"
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.total_runs == 3
+    assert snapshot.current_workload == "custom"
+    assert snapshot.tps_by_workload["custom"]["baseline"] == "12.34"
+
+
+def test_log_parser_keeps_separator_aware_custom_workload_matching() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_workloads=("io", "custom"),
+    )
+
+    parser.consume(
+        "customize-baseline | baseline | demo-customize-baseline | 100 | 12.34 | 1.000 | 1.000"
+    )
+
+    assert parser.snapshot.current_workload is None
+    assert parser.snapshot.completed_runs == 0
+
+
+def test_log_parser_ignores_workload_names_in_topic_prefix() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_workloads=("cpu", "sleep"),
+        active_orderings=("key_hash",),
+    )
+
+    parser.consume(
+        "Starting baseline consumer for topic 'demo-cpu-sleep-key_hash-baseline'."
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.current_workload == "sleep"
+    assert snapshot.workload_statuses["sleep"] == "running"
+    assert snapshot.workload_statuses["cpu"] == "pending"
+
+
+def test_log_parser_uses_suffix_workload_when_prefix_contains_later_workload() -> None:
+    parser = BenchmarkLogParser(
+        workload_mode="all",
+        active_workloads=("cpu", "sleep"),
+        active_orderings=("key_hash",),
+    )
+
+    parser.consume(
+        "Starting PyrallelConsumer test for topic 'demo-sleep-cpu-key_hash-async'."
+    )
+
+    snapshot = parser.snapshot
+    assert snapshot.current_workload == "cpu"
+    assert snapshot.phase_statuses["async"] == "running"
+    assert snapshot.workload_statuses["sleep"] == "pending"
+
+
 def test_log_parser_counts_ordering_modes_in_total_runs() -> None:
     parser = BenchmarkLogParser(
         workload_mode="all",

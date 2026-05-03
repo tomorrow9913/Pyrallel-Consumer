@@ -80,6 +80,16 @@ def _wait_until(description: str, timeout_sec: float, predicate) -> None:
     raise RuntimeError(f"{description} did not become ready: {last_error}")
 
 
+def _prometheus_target_health() -> dict[str, str]:
+    """Return Prometheus active target health keyed by job name."""
+    return {
+        item["labels"].get("job"): item["health"]
+        for item in _fetch_json("http://127.0.0.1:9090/api/v1/targets")["data"][
+            "activeTargets"
+        ]
+    }
+
+
 def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
     tmp_path: Path,
 ) -> None:
@@ -102,6 +112,19 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
                 == "ok"
             ),
         )
+        try:
+            _wait_until(
+                "Prometheus kafka-exporter target",
+                timeout_sec=90,
+                predicate=lambda: (
+                    _prometheus_target_health().get("kafka-exporter") == "up"
+                ),
+            )
+        except RuntimeError as exc:
+            _skip_or_fail(
+                "Monitoring stack Prometheus kafka-exporter target is not healthy: "
+                f"{exc}"
+            )
     except Exception as exc:
         _skip_or_fail(f"Monitoring stack not available for e2e smoke test: {exc}")
 
@@ -151,26 +174,20 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
                 in _fetch_text("http://127.0.0.1:9091/metrics")
             ),
         )
-        _wait_until(
-            "Prometheus targets",
-            timeout_sec=180,
-            predicate=lambda: (
-                {
-                    item["labels"].get("job"): item["health"]
-                    for item in _fetch_json("http://127.0.0.1:9090/api/v1/targets")[
-                        "data"
-                    ]["activeTargets"]
-                }.get("kafka-exporter")
-                == "up"
-                and {
-                    item["labels"].get("job"): item["health"]
-                    for item in _fetch_json("http://127.0.0.1:9090/api/v1/targets")[
-                        "data"
-                    ]["activeTargets"]
-                }.get("pyrallel-consumer")
-                == "up"
-            ),
-        )
+        try:
+            _wait_until(
+                "Prometheus targets",
+                timeout_sec=180,
+                predicate=lambda: (
+                    _prometheus_target_health().get("kafka-exporter") == "up"
+                    and _prometheus_target_health().get("pyrallel-consumer") == "up"
+                ),
+            )
+        except RuntimeError as exc:
+            _skip_or_fail(
+                "Monitoring stack Prometheus targets not healthy for e2e smoke "
+                f"test: {exc}"
+            )
         _wait_until(
             "Grafana provisioning",
             timeout_sec=60,

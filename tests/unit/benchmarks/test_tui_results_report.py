@@ -213,6 +213,72 @@ def test_results_modal_renders_ordering_grouped_winner_sections(tmp_path: Path) 
     assert "async" in partition_text
 
 
+def test_results_modal_preserves_registry_workload_display_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.results_modal.available_names",
+        lambda: ("sleep", "cpu", "io"),
+    )
+    results_path = tmp_path / "benchmark-results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "options": {},
+                "results": [
+                    {
+                        "run_name": "cpu-pyrallel-process",
+                        "run_type": "process",
+                        "workload": "cpu",
+                        "ordering": "key_hash",
+                        "topic": "demo-cpu-process",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.2,
+                        "throughput_tps": 80.0,
+                        "avg_processing_ms": 0.8,
+                        "p99_processing_ms": 1.2,
+                    },
+                    {
+                        "run_name": "io-pyrallel-async",
+                        "run_type": "async",
+                        "workload": "io",
+                        "ordering": "key_hash",
+                        "topic": "demo-io-async",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.7,
+                        "throughput_tps": 55.0,
+                        "avg_processing_ms": 1.1,
+                        "p99_processing_ms": 2.1,
+                    },
+                    {
+                        "run_name": "sleep-pyrallel-async",
+                        "run_type": "async",
+                        "workload": "sleep",
+                        "ordering": "key_hash",
+                        "topic": "demo-sleep-async",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.5,
+                        "throughput_tps": 66.0,
+                        "avg_processing_ms": 1.0,
+                        "p99_processing_ms": 2.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    modal = ResultsSummaryModalScreen(
+        summary_text="unused", output_path=str(results_path)
+    )
+
+    text = modal._winner_section_text("key_hash")
+    assert text.index("sleep") < text.index("cpu") < text.index("io")
+
+    overview_text = modal._overview_text()
+    assert "workload: sleep, cpu, io" in overview_text
+
+
 @pytest.mark.asyncio
 async def test_results_modal_compresses_ordering_summary_with_tabs(
     tmp_path: Path,
@@ -322,6 +388,39 @@ def test_results_modal_hides_unselected_workload_winner_cards(tmp_path: Path) ->
     assert "sleep" in modal._winner_section_text("key_hash")
     assert "cpu" not in modal._winner_section_text("key_hash")
     assert "io" not in modal._winner_section_text("key_hash")
+
+
+def test_results_modal_displays_custom_workload_winners(tmp_path: Path) -> None:
+    results_path = tmp_path / "custom-results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "options": {},
+                "results": [
+                    {
+                        "run_name": "custom-pyrallel-async",
+                        "run_type": "async",
+                        "workload": "custom",
+                        "ordering": "key_hash",
+                        "topic": "demo-custom-async",
+                        "messages_processed": 100,
+                        "total_time_sec": 1.5,
+                        "throughput_tps": 66.0,
+                        "avg_processing_ms": 1.0,
+                        "p99_processing_ms": 2.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    modal = ResultsSummaryModalScreen(
+        summary_text="unused", output_path=str(results_path)
+    )
+
+    assert "custom" in modal._winner_section_text("key_hash")
+    assert "async" in modal._winner_section_text("key_hash")
 
 
 def test_results_modal_infers_default_ordering_from_legacy_results_json(

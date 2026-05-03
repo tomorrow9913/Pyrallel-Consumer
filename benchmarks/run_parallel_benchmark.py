@@ -245,7 +245,7 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
         return
     if "partition" not in args.order:
         return
-    if args.worker_sleep_ms > 0.5:
+    if _effective_sleep_ms(args) > 0.5:
         return
     if args.process_batch_size is not None:
         return
@@ -282,7 +282,7 @@ def _resolve_effective_process_batching(
         strict_completion_monitor_enabled = "on" in args.strict_completion_monitor
     if not strict_completion_monitor_enabled:
         return process_batch_size, process_max_batch_wait_ms
-    if args.worker_sleep_ms > 0.5:
+    if _effective_sleep_ms(args) > 0.5:
         return process_batch_size, process_max_batch_wait_ms
     if process_batch_size is not None:
         return process_batch_size, process_max_batch_wait_ms
@@ -299,6 +299,16 @@ def _resolve_effective_process_batching(
         flush=True,
     )
     return 1, 0
+
+
+def _effective_sleep_ms(args: argparse.Namespace) -> float:
+    """Return the selected sleep workload cost for benchmark heuristics."""
+    workload_options = getattr(args, "workload_options", {}) or {}
+    sleep_options = workload_options.get("sleep", {})
+    raw_sleep_ms = sleep_options.get("sleep_ms", args.worker_sleep_ms)
+    if raw_sleep_ms is None:
+        return 0.5
+    return float(raw_sleep_ms)
 
 
 def run_benchmark(
@@ -345,6 +355,8 @@ def run_benchmark(
             sleep_ms=args.worker_sleep_ms,
             cpu_iterations=args.worker_cpu_iterations,
             io_sleep_ms=args.worker_io_sleep_ms,
+            workload_options=_workload_options_for(args.workload_options, workload),
+            validate_process_worker=not args.skip_process,
         )
 
         for ordering in orderings:
@@ -574,6 +586,18 @@ def run_benchmark(
         artifact_metadata=artifact_metadata,
     )
     print(f"\nJSON summary written to {output_path}")
+
+
+def _workload_options_for(
+    workload_options: dict[str, dict[str, object]] | None, workload: str
+) -> dict[str, dict[str, object]] | None:
+    """Return only generic options for the workload currently being built."""
+    if workload_options is None:
+        return None
+    selected_options = workload_options.get(workload)
+    if not selected_options:
+        return None
+    return {workload: selected_options}
 
 
 def main(argv: Sequence[str] | None = None) -> None:

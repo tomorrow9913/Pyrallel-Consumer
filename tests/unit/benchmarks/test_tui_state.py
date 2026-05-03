@@ -36,6 +36,17 @@ def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
     assert "--py-spy" not in argv
 
 
+def test_tui_state_default_workload_uses_first_registry_available(monkeypatch) -> None:
+    import benchmarks.workloads as workloads
+
+    monkeypatch.setattr(workloads, "available_names", lambda: ("custom", "sleep"))
+
+    state = BenchmarkTuiState()
+
+    assert state.workloads == ("custom",)
+    assert "custom" in state.to_argv()
+
+
 def test_tui_state_to_argv_includes_advanced_flags() -> None:
     state = BenchmarkTuiState(
         workloads=("sleep", "cpu"),
@@ -80,6 +91,32 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
     assert "--process-max-batch-wait-ms" in argv
     assert "--route-batch-size" in argv
     assert "64" in argv
+
+
+def test_tui_state_to_argv_emits_custom_workload_options_as_generic_flags() -> None:
+    state = BenchmarkTuiState(
+        workloads=("custom",),
+        workload_options={"custom": {"decode_utf8": False, "endpoint": "http://a=b"}},
+    )
+
+    argv = state.to_argv()
+
+    assert "--workload-option" in argv
+    assert "custom.decode_utf8=false" in argv
+    assert "custom.endpoint=http://a=b" in argv
+
+
+def test_tui_state_to_argv_emits_selected_builtin_options_as_legacy_flags() -> None:
+    state = BenchmarkTuiState(
+        workloads=("sleep",),
+        workload_options={"sleep": {"sleep_ms": 1.25}, "cpu": {"iterations": 2000}},
+    )
+
+    argv = state.to_argv()
+
+    sleep_index = argv.index("--worker-sleep-ms")
+    assert argv[sleep_index + 1] == "1.25"
+    assert "cpu.iterations=2000" not in argv
 
 
 def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
