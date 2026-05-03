@@ -2016,6 +2016,48 @@ def test_run_benchmark_filters_workload_options_per_selected_workload(
     ]
 
 
+def test_run_benchmark_skips_process_worker_validation_when_process_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    validate_process_flags: list[bool] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+
+    def _select_workers(**kwargs):
+        validate_process_flags.append(kwargs["validate_process_worker"])
+        return (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        )
+
+    monkeypatch.setattr(run_parallel_benchmark, "_select_workers", _select_workers)
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(skip_async=True, skip_process=True),
+        raw_argv=["--skip-async", "--skip-process"],
+    )
+
+    assert validate_process_flags == [False]
+
+
 def test_ordering_validator_reports_key_hash_pass_summary() -> None:
     validator = pyrallel_consumer_test.OrderingValidator(
         ordering_mode="key_hash", topic_name="demo-topic"

@@ -73,6 +73,7 @@ def select_workers(
     cpu_iterations: int | None = None,
     io_sleep_ms: float | None = None,
     workload_options: dict[str, dict[str, object]] | None = None,
+    validate_process_worker: bool = True,
 ) -> tuple[
     Callable[[bytes], None],
     Callable[[WorkItem], Awaitable[None]],
@@ -98,6 +99,7 @@ def select_workers(
             ("async_worker", workload_instance.async_worker(context)),
             ("process_worker", workload_instance.process_worker(context)),
         ),
+        validate_process_worker=validate_process_worker,
     )
 
 
@@ -108,6 +110,8 @@ def _validated_worker_tuple(
         tuple[str, object],
         tuple[str, object],
     ],
+    *,
+    validate_process_worker: bool = True,
 ) -> tuple[
     Callable[[bytes], None],
     Callable[[WorkItem], Awaitable[None]],
@@ -119,14 +123,15 @@ def _validated_worker_tuple(
             raise ValueError(
                 f"Workload {workload!r} {method_name} returned a non-callable worker"
             )
-    process_worker = workers[2][1]
-    try:
-        pickle.dumps(process_worker)
-    except Exception as exc:  # noqa: BLE001 - expose contract failure clearly.
-        raise ValueError(
-            f"Workload {workload!r} process_worker returned a non-picklable worker: "
-            f"{exc.__class__.__name__}: {exc}"
-        ) from exc
+    if validate_process_worker:
+        process_worker = workers[2][1]
+        try:
+            pickle.dumps(process_worker)
+        except Exception as exc:  # noqa: BLE001 - expose contract failure clearly.
+            raise ValueError(
+                f"Workload {workload!r} process_worker returned a non-picklable "
+                f"worker: {exc.__class__.__name__}: {exc}"
+            ) from exc
 
     baseline_worker, async_worker, process_worker = (worker for _, worker in workers)
     return (

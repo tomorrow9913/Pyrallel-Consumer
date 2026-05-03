@@ -356,6 +356,7 @@ def run_benchmark(
             cpu_iterations=args.worker_cpu_iterations,
             io_sleep_ms=args.worker_io_sleep_ms,
             workload_options=_workload_options_for(args.workload_options, workload),
+            validate_process_worker=not args.skip_process,
         )
 
         for ordering in orderings:

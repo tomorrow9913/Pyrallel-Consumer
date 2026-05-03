@@ -240,6 +240,47 @@ def test_select_workers_rejects_non_picklable_worker_before_execution(
         )
 
 
+def test_select_workers_can_skip_process_picklability_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import benchmarks.workloads as workloads
+    from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext
+
+    class BaselineOnlyWorkload(BenchmarkWorkload):
+        name = "baseline_only"
+        label = "Baseline Only"
+        description = "Uses a non-picklable process worker when process runs are off"
+
+        def baseline_worker(self, context: WorkloadContext):
+            return lambda payload: None
+
+        def async_worker(self, context: WorkloadContext):
+            async def run(item) -> None:
+                return None
+
+            return run
+
+        def process_worker(self, context: WorkloadContext):
+            def run(item) -> None:
+                return None
+
+            return run
+
+    monkeypatch.setattr(workloads, "get_available", lambda name: BaselineOnlyWorkload)
+
+    baseline_worker, async_worker, process_worker = workloads.select_workers(
+        workload="baseline_only",
+        sleep_ms=0,
+        cpu_iterations=1,
+        io_sleep_ms=0,
+        validate_process_worker=False,
+    )
+
+    assert callable(baseline_worker)
+    assert callable(async_worker)
+    assert callable(process_worker)
+
+
 def test_select_workers_allows_non_picklable_in_process_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
