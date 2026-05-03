@@ -93,7 +93,7 @@ def validate_workload_options_type(
     """Return a validation error for an invalid workload option model."""
     try:
         _describe_option_type(workload_name, option_type)
-    except (NameError, SyntaxError, TypeError, ValueError) as exc:
+    except Exception as exc:
         return "invalid options_type: %s: %s" % (
             exc.__class__.__name__,
             exc,
