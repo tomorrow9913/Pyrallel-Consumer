@@ -1956,6 +1956,66 @@ def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     assert "Tiny process partition benchmark detected" not in output
 
 
+def test_run_benchmark_filters_workload_options_per_selected_workload(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    selected_options: list[tuple[str, dict[str, dict[str, object]] | None]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+
+    def _select_workers(**kwargs):
+        selected_options.append((kwargs["workload"], kwargs["workload_options"]))
+        return (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        )
+
+    monkeypatch.setattr(run_parallel_benchmark, "_select_workers", _select_workers)
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_async=True,
+            workloads=["sleep", "cpu"],
+            workload_options={
+                "sleep": {"sleep_ms": 1.25},
+                "cpu": {"iterations": 2000},
+            },
+        ),
+        raw_argv=[
+            "--skip-async",
+            "--workloads",
+            "sleep,cpu",
+            "--workload-option",
+            "sleep.sleep_ms=1.25",
+            "--workload-option",
+            "cpu.iterations=2000",
+        ],
+    )
+
+    assert selected_options == [
+        ("sleep", {"sleep": {"sleep_ms": 1.25}}),
+        ("cpu", {"cpu": {"iterations": 2000}}),
+    ]
+
+
 def test_ordering_validator_reports_key_hash_pass_summary() -> None:
     validator = pyrallel_consumer_test.OrderingValidator(
         ordering_mode="key_hash", topic_name="demo-topic"
