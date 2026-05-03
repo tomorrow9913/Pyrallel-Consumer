@@ -649,6 +649,61 @@ def test_option_schema_rejects_unsupported_field_type(
     assert "unsupported type" in record.error
 
 
+def test_option_schema_marks_unresolved_forward_refs_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.workloads.registry import discover_workloads
+
+    package_dir, package_name = _make_workload_package(tmp_path)
+    _write_module(
+        package_dir,
+        "unresolved_option",
+        """
+        from __future__ import annotations
+
+        from dataclasses import dataclass, field
+
+        from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext, WorkloadOptionMetadata
+
+        @dataclass(frozen=True, slots=True)
+        class UnresolvedOptions:
+            value: MissingOptionType = field(default=1, metadata={"workload_option": WorkloadOptionMetadata(label="Value")})
+
+        def baseline(payload: bytes) -> None:
+            return None
+
+        async def async_worker(item) -> None:
+            return None
+
+        def process_worker(item) -> None:
+            return None
+
+        class UnresolvedOptionWorkload(BenchmarkWorkload):
+            name = "unresolved_option"
+            label = "Unresolved Option"
+            description = "Unresolved option workload"
+            options_type = UnresolvedOptions
+
+            def baseline_worker(self, context: WorkloadContext):
+                return baseline
+
+            def async_worker(self, context: WorkloadContext):
+                return async_worker
+
+            def process_worker(self, context: WorkloadContext):
+                return process_worker
+        """,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = discover_workloads(package_dir=package_dir, package_name=package_name)
+
+    [record] = registry.all_records()
+    assert record.available is False
+    assert record.error is not None
+    assert "NameError" in record.error
+
+
 def test_option_schema_rejects_default_factory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
