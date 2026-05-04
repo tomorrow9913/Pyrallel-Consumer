@@ -59,6 +59,7 @@ uv sync --group dev
   - `--process-max-batch-wait-ms`: override process-mode micro-batch wait for benchmark runs only.
   - `--process-flush-policy`: override process-mode flush policy (`size_or_timer`, `demand`, `demand_min_residence`) for benchmark runs only.
   - `--process-demand-flush-min-residence-ms`: minimum residence time before demand flush is allowed when using `demand_min_residence`.
+  - `--process-route-batch-size`: override process-mode same-route WorkManager lease size; the deprecated `--route-batch-size` alias is still accepted for compatibility.
 - Profiling (yappi):
   - `--profile`: enable profiling (baseline/async only; process mode profiling is disabled by default).
   - `--profile-dir`: directory to write `.prof` files (default `benchmarks/results/profiles`).

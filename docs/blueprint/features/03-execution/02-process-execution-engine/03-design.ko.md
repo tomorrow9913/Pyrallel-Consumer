@@ -2,10 +2,10 @@
 
 ## 1. 문서 역할
 
-이 문서는 process execution engine의 구현 계약을 고정한다. 특히
-`shared_queue` compatibility path와 `worker_pipes` target direction을 함께
-다루면서도, `WorkManager` / `BrokerPoller`가 transport 세부사항을 몰라야 한다는
-원칙을 지킨다.
+이 문서는 process execution engine의 구현 계약을 고정한다. 특히 #129 이후
+`shared_queue`를 live runtime path에서 제거하고 `worker_pipes`를 process execution
+단일 topology로 두면서도, `WorkManager` / `BrokerPoller`가 transport 세부사항을
+몰라야 한다는 원칙을 지킨다.
 
 ## 2. 핵심 설정 키
 
@@ -15,10 +15,10 @@
 | `PROCESS_PROCESS_COUNT` | worker process 수 | `8` |
 | `PROCESS_QUEUE_SIZE` | shared queue 또는 transport capacity 예산 | `2048` |
 | `PROCESS_REQUIRE_PICKLABLE_WORKER` | picklable worker 강제 여부 | `true` |
-| `PROCESS_BATCH_SIZE` | micro-batch item 수 | `64` |
+| `PROCESS_BATCH_SIZE` | worker-pipes 호환 item batch size | `1` |
 | `PROCESS_BATCH_BYTES` | batch byte 예산 | `256KB` |
-| `PROCESS_TRANSPORT_MODE` | process input transport (`shared_queue`/`worker_pipes`) | `shared_queue` |
-| `PROCESS_MAX_BATCH_WAIT_MS` | batch flush 최대 대기 | `5` |
+| `PROCESS_ROUTE_BATCH_SIZE` | process worker-pipe route-batch 전송/admission 크기 | `64` |
+| `PROCESS_MAX_BATCH_WAIT_MS` | batch flush 최대 대기 | `0` |
 | `PROCESS_FLUSH_POLICY` | batch flush policy | `size_or_timer` |
 | `PROCESS_DEMAND_FLUSH_MIN_RESIDENCE_MS` | demand flush 최소 residence | `0` |
 | `PROCESS_SHUTDOWN_DRAIN_TIMEOUT_MS` | shutdown drain timeout | `5000` |
@@ -27,15 +27,15 @@
 | `PROCESS_MSGPACK_MAX_BYTES` | decode safety limit | `1000000` |
 | `PROCESS_MAX_TASKS_PER_CHILD` | worker recycle threshold | `0` |
 | `PROCESS_RECYCLE_JITTER_MS` | recycle jitter | `0` |
-| `EXECUTION_ROUTE_BATCH_SIZE` | 같은 route에서 한 번에 lease할 item 수 | `1` |
 
 설계 원칙:
 
-- `transport_mode=shared_queue`는 기본값이다.
-- `transport_mode=worker_pipes`는 ordered affinity-preserving path다.
-- `route_batch_size=1`은 기존 item submission 의미를 유지한다.
-- `route_batch_size>1`은 명시적 실험/benchmark 옵션이다.
-- invalid transport 값은 config validation에서 즉시 실패해야 한다.
+- process execution은 selectable transport mode를 갖지 않는다.
+- `worker_pipes`는 ordered affinity-preserving path이자 단일 live topology다.
+- `ProcessConfig.route_batch_size=64`는 process worker-pipe route-batch
+  전송/admission profile이다.
+- async/common execution은 item-level WorkManager lease를 유지하며 별도의
+  execution-level route-batch config surface를 갖지 않는다.
 
 ## 3. worker 계약
 
@@ -72,11 +72,10 @@ routing에 쓰지 않고 `create_task()`로 바로 실행한다.
 
 ## 5. input dispatch / completion aggregation
 
-### 5.1 shared_queue
+### 5.1 historical shared_queue
 
-- msgpack batch payload를 shared `multiprocessing.Queue`에 넣는다.
-- 모든 worker가 같은 queue에서 `get()` 경쟁한다.
-- 기본값과 compatibility path 역할을 한다.
+- `shared_queue`는 #129 이후 live runtime path가 아니다.
+- 문서에서는 과거 병목과 migration/release-note 맥락으로만 언급한다.
 
 ### 5.2 worker_pipes
 
@@ -94,15 +93,11 @@ completion/retry/commit correctness 단위는 item으로 유지한다.
 
 batching은 correctness layer가 아니라 IPC 비용 절감 수단이다.
 
-### shared_queue
-
-- 기존 `batch_size`, `batch_bytes`, `max_batch_wait_ms`, `flush_policy`,
-  `demand_flush_min_residence_ms` 의미를 유지한다.
-
 ### worker_pipes
 
-- `ProcessConfig.batch_size`와 `ExecutionConfig.route_batch_size`는 별도 축이다.
-- `worker_pipes`의 ordered route batching은 `route_batch_size`로 제어한다.
+- `ProcessConfig.batch_size`와 `ProcessConfig.route_batch_size`는 별도 축이다.
+- `worker_pipes`의 ordered route batching은 `ProcessConfig.route_batch_size`로
+  제어한다.
 - `KEY_HASH`/`PARTITION` ordered route batch는 engine이
   `supports_ordered_route_batch=True`를 명시할 때만 활성화한다.
 - batch payload는 같은 route의 item만 포함해야 하며, worker는 batch 내부 item을
@@ -157,7 +152,8 @@ transport가 달라도 다음 의미를 유지해야 한다.
 문서가 구현보다 얕아지지 않으려면 metrics surface를 명시해야 한다.
 
 - `get_runtime_metrics()`는 transport별 runtime 해석이 가능해야 한다.
-- benchmark metadata는 transport mode를 포함해야 한다.
+- benchmark metadata는 `process_transport_mode`를 생략하거나 deprecated
+  compatibility field로 `"worker_pipes"`만 포함할 수 있다.
 - route-batch path는 `items_per_input_ipc`, `items_per_completion_ipc`,
   `route_batch_count`, `route_batch_item_count`, `route_batch_size_avg`,
   `route_batch_size_max`, `completion_item_payload_count`,
@@ -172,8 +168,8 @@ transport가 달라도 다음 의미를 유지해야 한다.
 다음은 design 원칙이다.
 
 - unsupported 조합은 startup reject가 우선이다.
-- `shared_queue`는 compatibility path로 유지한다.
-- `worker_pipes`는 ordered throughput 개선을 위한 direction path로 다룬다.
+- `shared_queue`는 historical context로만 유지한다.
+- `worker_pipes`는 process execution의 live path로 다룬다.
 - completion queue 분리, broker I/O bridge, work stealing, shared memory transport는
   이 design 범위에 포함하지 않는다.
 

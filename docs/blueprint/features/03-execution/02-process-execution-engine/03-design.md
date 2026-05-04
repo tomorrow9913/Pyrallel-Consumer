@@ -6,10 +6,10 @@ process-execution-engine subfeature. For the preserved Korean source text, see
 
 ## Design contract
 
-The process engine must document both:
+The process engine documents:
 
-- `worker_pipes` as the default worker-affine path
-- `shared_queue` as an explicit legacy compatibility fallback
+- `worker_pipes` as the live worker-affine path
+- `shared_queue` as historical context only
 
 while keeping `BaseExecutionEngine.submit(work_item)` unchanged and keeping the
 control plane transport-agnostic. Batched submission extends, rather than
@@ -17,8 +17,9 @@ replaces, the item-level contract.
 
 ## Key design surfaces
 
-- `ProcessConfig.transport_mode`
-- `ExecutionConfig.route_batch_size`
+- `ProcessConfig.route_batch_size`
+- `resolve_work_manager_route_batch_size()` for execution-mode-specific
+  WorkManager wiring
 - `BaseExecutionEngine.submit_batch(work_items)`
 - `BaseExecutionEngine.supports_ordered_route_batch`
 - route identity based on `(topic, partition, key)`
@@ -40,9 +41,12 @@ process execution hashes it to select the worker input channel.
 
 Route batching is an explicit process-transport optimization:
 
-- `route_batch_size=64` is the default process profile, but ordered modes still
-  resolve to an effective batch size of `1` unless the engine advertises ordered
-  route-batch support.
+- `ProcessConfig.route_batch_size=64` is the default process profile.
+- Async/common execution keeps item-level WorkManager leasing and has no
+  execution-level route-batch config surface.
+- The WorkManager effective batch size is selected by execution mode before
+  construction; ordered modes still resolve to `1` unless the engine advertises
+  ordered route-batch support.
 - `route_batch_size>1` may lease multiple items from one WorkManager virtual
   queue only when the execution engine advertises
   `supports_ordered_route_batch=True` for ordered modes.

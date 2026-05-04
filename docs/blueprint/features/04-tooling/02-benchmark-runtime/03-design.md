@@ -30,7 +30,7 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `--process-max-batch-wait-ms` | benchmark-only override for process micro-batch wait |
 | `--process-flush-policy` | benchmark-only override for process flush policy |
 | `--process-demand-flush-min-residence-ms` | benchmark-only override for the demand-min-residence guard |
-| `--route-batch-size` | benchmark-only override for same-route WorkManager lease size; distinct from process micro-batch size |
+| `--process-route-batch-size` | benchmark-only override for process same-route WorkManager lease size; distinct from process micro-batch size |
 | `--metrics-port` | exposes Prometheus metrics for Pyrallel runs on the chosen host port; `0` disables benchmark-side exposure |
 | `--profile` and related `--profile-*` flags | wrap each executed round in yappi profiling |
 | `--py-spy` and related `--py-spy-*` flags | relaunch under py-spy to capture process-mode activity, including subprocesses |

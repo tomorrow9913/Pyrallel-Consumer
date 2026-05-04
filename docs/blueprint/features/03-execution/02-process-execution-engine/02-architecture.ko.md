@@ -2,7 +2,7 @@
 
 ## 1. 문서 목적
 
-이 문서는 `ProcessExecutionEngine`의 현재 topology와 목표 topology를 비교해
+이 문서는 `ProcessExecutionEngine`의 제거된 historical topology와 live target topology를 비교해
 설명한다. 핵심은 process mode가 단지 worker process를 띄우는 계층이 아니라,
 `WorkManager`의 ordered virtual queue identity를 process boundary 너머에서도
 가능한 한 보존해야 한다는 점이다.
@@ -23,9 +23,9 @@
 - `WorkManager`는 transport mode를 몰라야 하고,
 - process engine은 `submit(work_item)` 안에서 내부 topology를 선택해야 한다.
 
-## 3. 현재 topology: shared queue compatibility path
+## 3. 제거된 historical topology: shared queue compatibility path
 
-현재 process runtime은 아래와 같다.
+제거된 shared-queue process runtime은 아래와 같았다.
 
 ```text
 WorkManager virtual queues
@@ -64,8 +64,8 @@ WorkManager virtual queues
 
 핵심 차이:
 
-- current topology는 “submit된 item을 한 input queue로 모은 뒤 경쟁”한다.
-- target topology는 “submit 순간 적절한 worker channel을 선택”한다.
+- historical topology는 “submit된 item을 한 input queue로 모은 뒤 경쟁”했다.
+- live target topology는 “submit 순간 적절한 worker channel을 선택”한다.
 - channel 선택에 쓰는 identity는 새로 만든 process-only hint가 아니라,
   async path에서도 `WorkManager`가 safe-to-run queue를 고를 때 쓰는 같은
   logical queue identity다.
@@ -92,19 +92,20 @@ payload 수신/경쟁**에 더 가깝다는 뜻이다.
 1. completion aggregation을 먼저 분산하는 것보다
 2. input dispatch topology를 affinity-preserving 형태로 바꾸는 것이 더 높다.
 
-## 6. transport mode architecture
+## 6. process topology architecture
 
-### 6.1 shared_queue
+### 6.1 historical shared_queue
 
-- 역할: 기본값, 호환성, fallback path
+- 역할: #129 이전 비교 대상과 migration/release-note 맥락
 - input: single shared queue
 - completion: single aggregator
 - 장점: 단순성, 기존 경로 유지
 - 약점: ordered workload에서 logical queue를 다시 하나로 합침
+- 상태: 더 이상 live runtime selector나 fallback path가 아님
 
 ### 6.2 worker_pipes
 
-- 역할: ordered parallelism 검증과 장기 방향의 first-class path
+- 역할: process execution의 단일 live topology
 - input: worker별 parent-to-worker channel
 - routing: `WorkItem` route identity 또는 같은 route의 `RouteBatch` 기반 sticky dispatch
 - completion: 정상 route-batch path에서는 internal `BatchCompletion` envelope를 쓰고,
