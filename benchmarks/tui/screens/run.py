@@ -555,7 +555,24 @@ class RunScreen(Screen[None]):
         self._spinner_frame_index = (self._spinner_frame_index + 1) % len(
             _SPINNER_FRAMES
         )
-        self._update_run_summary_table(self._last_snapshot)
+        self._update_active_spinner_cell()
+
+    def _update_active_spinner_cell(self) -> None:
+        """Update only the active running summary cell."""
+        active_row_key = self._active_row_key(self._last_snapshot)
+        active_phase = self._current_phase(self._last_snapshot)
+        if active_row_key is None or active_phase is None:
+            return
+        table = self.query_one("#run-summary", DataTable)
+        table.update_cell(
+            active_row_key,
+            active_phase,
+            self._status_text(
+                "%s RUNNING" % self._current_spinner_frame(),
+                _RUNNING_STYLE,
+            ),
+            update_width=False,
+        )
 
     def _current_spinner_frame(self) -> str:
         """Return the active spinner frame."""

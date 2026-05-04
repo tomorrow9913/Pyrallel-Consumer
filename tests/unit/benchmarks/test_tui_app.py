@@ -6,7 +6,7 @@ import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from rich.text import Text
@@ -1655,6 +1655,60 @@ async def test_run_screen_animates_running_summary_cell_without_loading_widget(
     assert first_cell.plain == "⠋ RUNNING"
     assert second_cell.plain == "⠙ RUNNING"
     assert not list(run_screen.query("#run-loading"))
+
+
+@pytest.mark.asyncio
+async def test_run_screen_spinner_refresh_updates_only_active_summary_cell(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "benchmarks.tui.app.BenchmarkProcessController", _FakeController
+    )
+    _FakeController.instances.clear()
+
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        app.push_screen(
+            RunScreen(
+                BenchmarkTuiState(
+                    workloads=("sleep", "cpu", "io"),
+                    ordering_modes=("key_hash", "partition"),
+                )
+            )
+        )
+        await pilot.pause()
+
+        run_screen = _run_screen(app)
+        run_screen._render_snapshot(
+            BenchmarkProgressSnapshot(
+                completed_runs=1,
+                current_workload="cpu",
+                current_ordering="partition",
+                phase_statuses={"async": "running"},
+                total_runs=18,
+            )
+        )
+        table = run_screen.query_one("#run-summary", DataTable)
+        calls: list[tuple[object, object, object, object]] = []
+        original_update_cell = table.update_cell
+
+        def _record_update_cell(*args: Any, **kwargs: Any) -> object:
+            if len(args) != 3:
+                raise AssertionError("Expected row key, column key, and value")
+            calls.append((args[0], args[1], args[2], kwargs.get("update_width")))
+            return original_update_cell(*args, **kwargs)
+
+        monkeypatch.setattr(table, "update_cell", _record_update_cell)
+        run_screen._advance_running_spinner()
+
+    assert len(calls) == 1
+    row_key, column_key, value, update_width = calls[0]
+    assert row_key == "cpu-partition"
+    assert column_key == "async"
+    assert isinstance(value, Text)
+    assert value.plain == "⠙ RUNNING"
+    assert update_width is False
 
 
 @pytest.mark.asyncio
