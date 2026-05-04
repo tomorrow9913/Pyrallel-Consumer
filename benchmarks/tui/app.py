@@ -102,7 +102,7 @@ class BenchmarkTuiApp(App[None]):
         margin-bottom: 1;
     }
 
-    Input, Select, Switch, Static, Log, Collapsible, ProgressBar, DataTable, LoadingIndicator {
+    Input, Select, Switch, Static, Log, Collapsible, ProgressBar, DataTable {
         margin-bottom: 1;
     }
 
@@ -175,6 +175,18 @@ class BenchmarkTuiApp(App[None]):
         border: round $accent;
         padding: 0 1;
         margin-bottom: 1;
+        height: auto;
+    }
+
+    #run-dashboard-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #run-current-panel {
+        width: 5fr;
+        min-width: 44;
+        margin-right: 1;
         height: auto;
     }
 
@@ -271,11 +283,14 @@ class BenchmarkTuiApp(App[None]):
     }
 
     #run-summary {
+        width: 7fr;
         height: auto;
+        margin-bottom: 0;
     }
 
     #run-log {
-        height: 16;
+        height: 1fr;
+        min-height: 22;
     }
 
     #run-actions, #options-actions {

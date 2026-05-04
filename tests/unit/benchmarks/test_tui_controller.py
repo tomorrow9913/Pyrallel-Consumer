@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from benchmarks.tui.controller import BenchmarkProcessController
 from benchmarks.tui.state import BenchmarkTuiState
 
@@ -74,3 +78,47 @@ def test_controller_empty_workload_fallback_uses_registry_default(monkeypatch) -
     )
 
     assert controller._parser._active_workloads == ("custom",)
+
+
+@pytest.mark.asyncio
+async def test_controller_marks_child_cli_process_as_tui_runner(monkeypatch) -> None:
+    import benchmarks.tui.controller as controller_module
+
+    captured: dict[str, object] = {}
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.returncode = 0
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _create_subprocess_exec(*argv: str, **kwargs: object) -> _Process:
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _Process()
+
+    monkeypatch.setattr(
+        controller_module.asyncio,
+        "create_subprocess_exec",
+        _create_subprocess_exec,
+    )
+
+    completed: list[int] = []
+    controller = BenchmarkProcessController(
+        state=BenchmarkTuiState(workloads=("sleep",)),
+        on_output=lambda _line, _is_error: None,
+        on_progress=lambda _snapshot: None,
+        on_complete=completed.append,
+    )
+
+    await controller.run()
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PYRALLEL_BENCHMARK_RUNNER_INTERFACE"] == "tui"
+    assert completed == [0]
