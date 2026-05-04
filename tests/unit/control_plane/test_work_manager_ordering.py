@@ -181,7 +181,7 @@ async def test_key_hash_supported_engine_batches_to_route_size_and_capacity(tp):
 
 
 @pytest.mark.asyncio
-async def test_partition_supported_engine_batches_to_route_size_and_capacity(tp):
+async def test_partition_supported_engine_keeps_item_level_leasing(tp):
     engine = _OrderedRouteBatchEngine()
     wm, tracker = _setup_wm(engine, tp, OrderingMode.PARTITION, max_in_flight=2)
     wm._route_batch_size = 3
@@ -192,10 +192,28 @@ async def test_partition_supported_engine_batches_to_route_size_and_capacity(tp)
 
     await wm.schedule()
 
-    assert engine.submitted_offsets == []
-    assert engine.submitted_batches == [[0, 1]]
-    assert wm.get_total_in_flight_count() == 2
-    assert wm.get_total_queued_messages() == 1
+    assert engine.submitted_offsets == [0]
+    assert engine.submitted_batches == []
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_partition_route_batch_does_not_skip_lower_offset_on_another_key(tp):
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.PARTITION, max_in_flight=10)
+    wm._route_batch_size = 3
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+    await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+
+    await wm.schedule()
+
+    assert engine.submitted_offsets == [0]
+    assert engine.submitted_batches == []
+    assert wm.get_total_in_flight_count() == 1
+    assert wm.get_total_queued_messages() == 2
 
 
 @pytest.mark.asyncio

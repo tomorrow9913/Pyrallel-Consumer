@@ -389,7 +389,9 @@ class WorkManager:
         )
         if remaining_capacity <= 0:
             return 0
-        if self._ordering_mode in {OrderingMode.KEY_HASH, OrderingMode.PARTITION}:
+        if self._ordering_mode == OrderingMode.PARTITION:
+            return 1
+        if self._ordering_mode == OrderingMode.KEY_HASH:
             supports_ordered_route_batch = getattr(
                 self._execution_engine,
                 "supports_ordered_route_batch",
