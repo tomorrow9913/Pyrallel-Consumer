@@ -4,9 +4,10 @@ from typing import cast
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.config import KafkaConfig, ParallelConsumerConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import (
+    ExecutionMode,
     OrderingMode,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
@@ -51,6 +52,7 @@ class _DummyWorkManager:
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        route_batch_size=None,
     ):
         self.execution_engine = execution_engine
         self.max_in_flight_messages = max_in_flight_messages
@@ -58,6 +60,7 @@ class _DummyWorkManager:
         self.ordering_mode = ordering_mode
         self.max_revoke_grace_ms = max_revoke_grace_ms
         self.poison_message_circuit = poison_message_circuit
+        self.route_batch_size = route_batch_size
 
     def set_metrics_exporter(self, metrics_exporter) -> None:
         self.metrics_exporter = metrics_exporter
@@ -153,6 +156,7 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -231,6 +235,7 @@ def test_pyrallel_consumer_wires_poison_message_circuit(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -273,6 +278,108 @@ def test_pyrallel_consumer_wires_poison_message_circuit(
     assert circuit.cooldown_ms == 7500
 
 
+def test_pyrallel_consumer_wires_process_route_batch_size_to_work_manager(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    created_work_managers: list[_DummyWorkManager] = []
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        metrics_exporter=None,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        poison_message_circuit=None,
+        route_batch_size=None,
+    ):
+        work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+            route_batch_size=route_batch_size,
+        )
+        created_work_managers.append(work_manager)
+        return work_manager
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _DummyPoller)
+
+    parallel_config = ParallelConsumerConfig()
+    parallel_config.execution.mode = ExecutionMode.PROCESS
+    parallel_config.execution.process_config.route_batch_size = 11
+    config = cast(
+        KafkaConfig,
+        cast(object, SimpleNamespace(parallel_consumer=parallel_config)),
+    )
+
+    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    assert created_work_managers[0].route_batch_size == 11
+
+
+def test_pyrallel_consumer_keeps_async_route_batch_size_item_level(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    created_work_managers: list[_DummyWorkManager] = []
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        metrics_exporter=None,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        poison_message_circuit=None,
+        route_batch_size=None,
+    ):
+        work_manager = _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+            route_batch_size=route_batch_size,
+        )
+        created_work_managers.append(work_manager)
+        return work_manager
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _DummyPoller)
+
+    parallel_config = ParallelConsumerConfig()
+    parallel_config.execution.mode = ExecutionMode.ASYNC
+    parallel_config.execution.process_config.route_batch_size = 11
+    config = cast(
+        KafkaConfig,
+        cast(object, SimpleNamespace(parallel_consumer=parallel_config)),
+    )
+
+    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    assert created_work_managers[0].route_batch_size == 1
+
+
 @pytest.mark.asyncio
 async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
     monkeypatch: MonkeyPatch,
@@ -292,6 +399,7 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -368,6 +476,7 @@ async def test_pyrallel_consumer_publishes_resource_signal_snapshot(
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         return _DummyWorkManager(
             execution_engine=execution_engine,
@@ -436,6 +545,7 @@ async def test_pyrallel_consumer_fails_open_when_resource_signal_provider_raises
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         return _DummyWorkManager(
             execution_engine=execution_engine,
@@ -508,6 +618,7 @@ async def test_pyrallel_consumer_creates_exporter_on_start_not_init(
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         return _DummyWorkManager(
             execution_engine=execution_engine,
@@ -571,6 +682,7 @@ async def test_pyrallel_consumer_metrics_cleanup_on_start_failure(
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         manager = _DummyWorkManager(
             execution_engine=execution_engine,
@@ -634,6 +746,7 @@ async def test_pyrallel_consumer_stop_updates_metrics_even_when_poller_stop_fail
         max_revoke_grace_ms=None,
         metrics_exporter=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -701,6 +814,7 @@ async def test_pyrallel_consumer_uses_configured_ordering_mode(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -754,6 +868,7 @@ async def test_pyrallel_consumer_stop_still_shuts_down_engine_on_poller_failure(
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(
@@ -809,6 +924,7 @@ async def test_pyrallel_consumer_wait_closed_is_passive(monkeypatch: MonkeyPatch
         ordering_mode=None,
         max_revoke_grace_ms=None,
         poison_message_circuit=None,
+        **_kwargs,
     ):
         nonlocal dummy_work_manager
         dummy_work_manager = _DummyWorkManager(

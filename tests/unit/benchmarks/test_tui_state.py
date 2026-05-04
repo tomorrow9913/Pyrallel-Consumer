@@ -3,7 +3,7 @@ from __future__ import annotations
 from benchmarks.tui.state import BenchmarkTuiState
 
 
-def test_tui_state_to_argv_uses_cli_defaults() -> None:
+def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
     state = BenchmarkTuiState()
 
     argv = state.to_argv()
@@ -22,10 +22,28 @@ def test_tui_state_to_argv_uses_cli_defaults() -> None:
     assert "sleep" in argv
     assert "--order" in argv
     assert "key_hash" in argv
+    assert "--process-transport" not in argv
+    assert "--process-route-batch-size" in argv
+    assert "64" in argv
+    assert "--process-count" in argv
+    assert "4" in argv
+    assert "--process-batch-size" in argv
+    assert "--process-max-batch-wait-ms" in argv
     assert "--metrics-port" in argv
     assert "9091" in argv
     assert "--skip-reset" not in argv
     assert "--py-spy" not in argv
+
+
+def test_tui_state_default_workload_uses_first_registry_available(monkeypatch) -> None:
+    import benchmarks.workloads as workloads
+
+    monkeypatch.setattr(workloads, "available_names", lambda: ("custom", "sleep"))
+
+    state = BenchmarkTuiState()
+
+    assert state.workloads == ("custom",)
+    assert "custom" in state.to_argv()
 
 
 def test_tui_state_to_argv_includes_advanced_flags() -> None:
@@ -41,6 +59,10 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
         py_spy_native=True,
         py_spy_idle=True,
         skip_process=True,
+        process_count=4,
+        process_batch_size=1,
+        process_max_batch_wait_ms=0,
+        route_batch_size=64,
     )
 
     argv = state.to_argv()
@@ -59,6 +81,38 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
     assert "--py-spy-native" in argv
     assert "--py-spy-idle" in argv
     assert "--skip-process" in argv
+    assert "--process-count" in argv
+    assert "4" in argv
+    assert "--process-batch-size" in argv
+    assert "--process-max-batch-wait-ms" in argv
+    assert "--process-route-batch-size" in argv
+    assert "64" in argv
+
+
+def test_tui_state_to_argv_emits_custom_workload_options_as_generic_flags() -> None:
+    state = BenchmarkTuiState(
+        workloads=("custom",),
+        workload_options={"custom": {"decode_utf8": False, "endpoint": "http://a=b"}},
+    )
+
+    argv = state.to_argv()
+
+    assert "--workload-option" in argv
+    assert "custom.decode_utf8=false" in argv
+    assert "custom.endpoint=http://a=b" in argv
+
+
+def test_tui_state_to_argv_emits_selected_builtin_options_as_legacy_flags() -> None:
+    state = BenchmarkTuiState(
+        workloads=("sleep",),
+        workload_options={"sleep": {"sleep_ms": 1.25}, "cpu": {"iterations": 2000}},
+    )
+
+    argv = state.to_argv()
+
+    sleep_index = argv.index("--worker-sleep-ms")
+    assert argv[sleep_index + 1] == "1.25"
+    assert "cpu.iterations=2000" not in argv
 
 
 def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
@@ -69,6 +123,20 @@ def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
     assert "--metrics-port" in argv
     metrics_index = argv.index("--metrics-port")
     assert argv[metrics_index + 1] == "0"
+
+
+def test_tui_state_to_argv_omits_blank_process_overrides() -> None:
+    state = BenchmarkTuiState(
+        process_count=None,
+        process_batch_size=None,
+        process_max_batch_wait_ms=None,
+    )
+
+    argv = state.to_argv()
+
+    assert "--process-count" not in argv
+    assert "--process-batch-size" not in argv
+    assert "--process-max-batch-wait-ms" not in argv
 
 
 def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -> None:

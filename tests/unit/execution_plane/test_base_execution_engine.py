@@ -3,12 +3,15 @@ from typing import List
 import pytest
 
 from pyrallel_consumer.dto import CompletionEvent, TopicPartition, WorkItem
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
 
 
 class ConcreteExecutionEngine(BaseExecutionEngine):
+    def __init__(self) -> None:
+        self.submitted_work_items: list[WorkItem] = []
+
     async def submit(self, work_item: WorkItem) -> None:
-        pass
+        self.submitted_work_items.append(work_item)
 
     async def poll_completed_events(
         self, batch_limit: int = 1000
@@ -23,6 +26,17 @@ class ConcreteExecutionEngine(BaseExecutionEngine):
 
     async def shutdown(self) -> None:
         pass
+
+
+class FailingSecondSubmitEngine(ConcreteExecutionEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.original_error = RuntimeError("submit-two-failed")
+
+    async def submit(self, work_item: WorkItem) -> None:
+        if len(self.submitted_work_items) == 1:
+            raise self.original_error
+        await super().submit(work_item)
 
 
 class IncompleteExecutionEngine(BaseExecutionEngine):
@@ -40,9 +54,13 @@ class IncompleteExecutionEngine(BaseExecutionEngine):
     # get_in_flight_count and shutdown are intentionally not implemented
 
 
+def _instantiate_engine(engine_type: type[object]) -> object:
+    return engine_type()
+
+
 def test_incomplete_execution_engine_raises_type_error():
     with pytest.raises(TypeError) as excinfo:
-        IncompleteExecutionEngine()
+        _instantiate_engine(IncompleteExecutionEngine)
     assert (
         "Can't instantiate abstract class IncompleteExecutionEngine without an "
         "implementation for abstract methods 'get_in_flight_count', 'shutdown'"
@@ -65,3 +83,93 @@ def test_base_execution_engine_min_inflight_offset_defaults_to_none():
         engine.get_min_inflight_offset(TopicPartition(topic="test", partition=0))
         is None
     )
+
+
+def test_base_execution_engine_ordered_route_batch_capability_defaults_to_false():
+    engine = ConcreteExecutionEngine()
+
+    assert engine.supports_ordered_route_batch is False
+
+
+@pytest.mark.asyncio
+async def test_submit_batch_fallback_submits_each_work_item_in_order():
+    engine = ConcreteExecutionEngine()
+    first = WorkItem(
+        id="work-1",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=1,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-1",
+    )
+    second = WorkItem(
+        id="work-2",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=2,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-2",
+    )
+
+    await engine.submit_batch([first, second])
+
+    assert engine.submitted_work_items == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_submit_batch_fallback_atomic_or_batch_submit_error_reports_accepted_prefix():
+    engine = FailingSecondSubmitEngine()
+    first = WorkItem(
+        id="work-1",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=1,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-1",
+    )
+    second = WorkItem(
+        id="work-2",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=2,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-2",
+    )
+
+    with pytest.raises(BatchSubmitError) as excinfo:
+        await engine.submit_batch([first, second])
+
+    assert excinfo.value.accepted_count == 1
+    assert engine.submitted_work_items == [first]
+
+
+@pytest.mark.asyncio
+async def test_batch_submit_error_preserves_original_exception():
+    engine = FailingSecondSubmitEngine()
+    first = WorkItem(
+        id="work-1",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=1,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-1",
+    )
+    second = WorkItem(
+        id="work-2",
+        tp=TopicPartition(topic="test", partition=0),
+        offset=2,
+        epoch=0,
+        key="key-1",
+        payload=b"payload-2",
+    )
+
+    with pytest.raises(BatchSubmitError) as excinfo:
+        await engine.submit_batch([first, second])
+
+    assert excinfo.value.original_error is engine.original_error
+
+
+def test_submit_batch_docstring_names_atomic_or_batch_submit_error_contract():
+    assert BaseExecutionEngine.submit_batch.__doc__ is not None
+    assert "atomic" in BaseExecutionEngine.submit_batch.__doc__
+    assert "BatchSubmitError" in BaseExecutionEngine.submit_batch.__doc__

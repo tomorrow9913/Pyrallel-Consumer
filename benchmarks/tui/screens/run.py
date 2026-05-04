@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import signal
 from importlib import import_module
 from time import monotonic
 
@@ -9,32 +12,29 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import (
-    Button,
-    DataTable,
-    Footer,
-    Header,
-    LoadingIndicator,
-    Log,
-    ProgressBar,
-    Static,
-)
+from textual.widgets import Button, DataTable, Footer, Header, Log, ProgressBar, Static
 
 from benchmarks.tui.controller import BenchmarkProcessController
 from benchmarks.tui.log_parser import BenchmarkProgressSnapshot
 from benchmarks.tui.results_modal import ResultsSummaryModalScreen
 from benchmarks.tui.results_report import render_results_summary
 from benchmarks.tui.state import BenchmarkTuiState
+from benchmarks.workloads import available_names
 
 _PHASE_NAMES = ("baseline", "async", "process")
-_WORKLOAD_NAMES = ("sleep", "cpu", "io")
 _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _DONE_STYLE = "bold bright_green"
+_SLOWER_THAN_BASELINE_STYLE = "bold bright_yellow"
 _RUNNING_STYLE = "bold black on bright_cyan"
 _WAITING_STYLE = "grey62"
 _FAILED_STYLE = "bold bright_red"
 _CANCELLED_STYLE = "bold bright_yellow"
 _ACTIVE_ROW_STYLE = "bold bright_cyan"
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_INTERVAL_SECONDS = 0.12
+_METRICS_PORT_PID_PATTERN = re.compile(
+    r"Metrics port \d+ is already in use\(PID ([0-9,\s]+)\)"
+)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -60,8 +60,12 @@ class RunScreen(Screen[None]):
         self._controller: BenchmarkProcessController | None = None
         self._run_task: asyncio.Task[None] | None = None
         self._elapsed_timer: Timer | None = None
+        self._spinner_timer: Timer | None = None
         self._cancelled = False
         self._closed = False
+        self._is_running = False
+        self._spinner_frame_index = 0
+        self._spinner_interval_seconds = _SPINNER_INTERVAL_SECONDS
         self._completed_successfully = False
         self._last_error_line: str | None = None
         self._terminal_reason = ""
@@ -88,41 +92,61 @@ class RunScreen(Screen[None]):
             with VerticalScroll(id="run-screen"):
                 yield Static("벤치마크 실행 준비 중", id="run-status")
                 with Container(id="run-spotlight-card"):
-                    yield Static("", id="run-spotlight")
-                    with Horizontal(id="run-chip-row"):
-                        yield Static("", id="run-chip-workload", classes="status-chip")
-                        yield Static("", id="run-chip-ordering", classes="status-chip")
-                        yield Static("", id="run-chip-phase", classes="status-chip")
-                    with Horizontal(id="run-phase-meta"):
-                        yield Static(
-                            "", id="phase-progress-badge", classes="status-badge"
-                        )
-                        yield Static(
-                            "", id="current-run-elapsed", classes="status-badge"
-                        )
-                    yield ProgressBar(
-                        total=None,
-                        show_percentage=False,
-                        show_eta=True,
-                        id="phase-progress",
-                    )
-                    with Horizontal(id="run-overall-meta"):
-                        yield Static("", id="progress-badge", classes="status-badge")
-                        yield Static("", id="run-elapsed", classes="status-badge")
-                    yield ProgressBar(
-                        total=max(self._total_runs, 1),
-                        show_percentage=False,
-                        show_eta=True,
-                        id="run-progress",
-                    )
-                    yield Static("", id="run-terminal-reason")
+                    with Horizontal(id="run-dashboard-row"):
+                        with Container(id="run-current-panel"):
+                            yield Static("", id="run-spotlight")
+                            with Horizontal(id="run-chip-row"):
+                                yield Static(
+                                    "", id="run-chip-workload", classes="status-chip"
+                                )
+                                yield Static(
+                                    "", id="run-chip-ordering", classes="status-chip"
+                                )
+                                yield Static(
+                                    "", id="run-chip-phase", classes="status-chip"
+                                )
+                            with Horizontal(id="run-phase-meta"):
+                                yield Static(
+                                    "",
+                                    id="phase-progress-badge",
+                                    classes="status-badge",
+                                )
+                                yield Static(
+                                    "",
+                                    id="current-run-elapsed",
+                                    classes="status-badge",
+                                )
+                            yield ProgressBar(
+                                total=None,
+                                show_percentage=False,
+                                show_eta=True,
+                                id="phase-progress",
+                            )
+                            with Horizontal(id="run-overall-meta"):
+                                yield Static(
+                                    "", id="progress-badge", classes="status-badge"
+                                )
+                                yield Static(
+                                    "", id="run-elapsed", classes="status-badge"
+                                )
+                            yield ProgressBar(
+                                total=max(self._total_runs, 1),
+                                show_percentage=False,
+                                show_eta=True,
+                                id="run-progress",
+                            )
+                            yield Static("", id="run-terminal-reason")
+                        yield DataTable(id="run-summary")
                 yield Static("", id="run-output-path")
                 with Horizontal(id="run-log-header"):
                     yield Static("실행 로그", id="run-log-title")
-                    yield LoadingIndicator(id="run-loading")
-                yield DataTable(id="run-summary")
                 yield Log(id="run-log")
             with Container(id="run-actions"):
+                yield Button(
+                    "Kill PID?",
+                    id="kill-metrics-port-button",
+                    variant="error",
+                )
                 yield Button("Cancel run", id="cancel-button", variant="error")
                 yield Button("Back to settings", id="settings-button")
                 yield Button("Back", id="exit-button")
@@ -133,8 +157,12 @@ class RunScreen(Screen[None]):
         self._configure_run_summary_table()
         self._set_terminal_actions(show_report=False)
         self._render_snapshot(BenchmarkProgressSnapshot(total_runs=self._total_runs))
-        self._set_loading(True)
+        self._set_running(True)
         self._elapsed_timer = self.set_interval(0.5, self._refresh_elapsed)
+        self._spinner_timer = self.set_interval(
+            self._spinner_interval_seconds,
+            self._advance_running_spinner,
+        )
         app_module = import_module("benchmarks.tui.app")
         controller_cls = getattr(
             app_module,
@@ -153,6 +181,8 @@ class RunScreen(Screen[None]):
         """Handle on button pressed within run."""
         if event.button.id == "cancel-button":
             await self.action_cancel()
+        elif event.button.id == "kill-metrics-port-button":
+            self._kill_metrics_port_processes()
         elif event.button.id == "settings-button":
             await self.action_settings()
         elif event.button.id == "exit-button":
@@ -192,6 +222,8 @@ class RunScreen(Screen[None]):
         self._closed = True
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
 
     def _append_log(self, line: str, is_error: bool) -> None:
         """Handle append log within run."""
@@ -271,7 +303,7 @@ class RunScreen(Screen[None]):
         if self._closed:
             return
         self._finished_at = monotonic()
-        self._set_loading(False)
+        self._set_running(False)
 
         if self._cancelled:
             self.query_one("#run-status", Static).update("벤치마크가 취소되었습니다")
@@ -315,9 +347,11 @@ class RunScreen(Screen[None]):
     def _set_terminal_actions(self, *, show_report: bool) -> None:
         """Install or update terminal actions for run."""
         cancel_button = self.query_one("#cancel-button", Button)
+        kill_button = self.query_one("#kill-metrics-port-button", Button)
         settings_button = self.query_one("#settings-button", Button)
         exit_button = self.query_one("#exit-button", Button)
         is_terminal = self._finished_at is not None or self._cancelled
+        metrics_pids = self._metrics_port_error_pids()
 
         if show_report:
             cancel_button.label = "View results"
@@ -330,9 +364,63 @@ class RunScreen(Screen[None]):
         else:
             cancel_button.display = False
 
+        if is_terminal and not show_report and metrics_pids:
+            kill_button.label = "Kill PID %s?" % self._format_pids(metrics_pids)
+            kill_button.variant = "error"
+            kill_button.display = True
+        else:
+            kill_button.display = False
+
         settings_button.display = is_terminal
         exit_button.display = is_terminal
         exit_button.label = "Exit"
+
+    def _metrics_port_error_pids(self) -> tuple[int, ...]:
+        """Return PIDs from the metrics-port-in-use failure message."""
+        if self._last_error_line is None:
+            return ()
+        match = _METRICS_PORT_PID_PATTERN.search(self._last_error_line)
+        if match is None:
+            return ()
+        pids: list[int] = []
+        for token in match.group(1).split(","):
+            token = token.strip()
+            if token.isdigit():
+                pids.append(int(token))
+        return tuple(dict.fromkeys(pids))
+
+    @staticmethod
+    def _format_pids(pids: tuple[int, ...]) -> str:
+        """Format process ids for terminal action labels."""
+        return ",".join(str(pid) for pid in pids)
+
+    def _kill_metrics_port_processes(self) -> None:
+        """Send SIGTERM to PIDs reported by the metrics port conflict."""
+        pids = self._metrics_port_error_pids()
+        if not pids:
+            return
+        killed: list[str] = []
+        failed: list[str] = []
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                killed.append("%d(already exited)" % pid)
+            except PermissionError:
+                failed.append("%d(permission denied)" % pid)
+            except OSError as exc:
+                failed.append("%d(%s)" % (pid, exc))
+            else:
+                killed.append(str(pid))
+        if failed:
+            self._terminal_reason = "종료 실패: %s | kill 대상: %s" % (
+                ", ".join(failed),
+                ", ".join(str(pid) for pid in pids),
+            )
+        else:
+            self._terminal_reason = "종료 신호 전송: PID %s" % ", ".join(killed)
+            self.query_one("#kill-metrics-port-button", Button).display = False
+        self._render_spotlight(self._last_snapshot)
 
     def _configure_run_summary_table(self) -> None:
         """Handle configure run summary table within run."""
@@ -353,6 +441,7 @@ class RunScreen(Screen[None]):
         table = self.query_one("#run-summary", DataTable)
         active_row_key = self._active_row_key(snapshot)
         active_phase = self._current_phase(snapshot)
+        baseline_averages = self._baseline_averages_by_workload(snapshot)
 
         for workload in self._active_workloads:
             for ordering in self._active_orderings:
@@ -382,12 +471,51 @@ class RunScreen(Screen[None]):
                             self._terminal_style(self._terminal_cells[phase_key]),
                         )
                     elif is_active_row and phase == active_phase:
-                        value = self._status_text("RUNNING", _RUNNING_STYLE)
+                        value = self._status_text(
+                            "%s RUNNING" % self._current_spinner_frame(),
+                            _RUNNING_STYLE,
+                        )
                     elif row.get(phase, "--") != "--":
-                        value = self._status_text("%s TPS" % row[phase], _DONE_STYLE)
+                        value = self._status_text(
+                            "%s TPS" % row[phase],
+                            self._result_style(
+                                row[phase],
+                                baseline_averages.get(workload)
+                                if phase != "baseline"
+                                else None,
+                            ),
+                        )
                     else:
                         value = self._status_text("WAITING", _WAITING_STYLE)
                     table.update_cell(row_key, phase, value, update_width=True)
+
+    def _baseline_averages_by_workload(
+        self, snapshot: BenchmarkProgressSnapshot
+    ) -> dict[str, float]:
+        """Calculate baseline average TPS by workload for result coloring."""
+        averages: dict[str, float] = {}
+        for workload in self._active_workloads:
+            baseline_values: list[float] = []
+            ordering_rows = snapshot.tps_by_workload_ordering.get(workload, {})
+            for ordering in self._active_orderings:
+                value = ordering_rows.get(ordering, {}).get("baseline", "--")
+                parsed_value = self._parse_tps(value)
+                if parsed_value is not None:
+                    baseline_values.append(parsed_value)
+            if baseline_values:
+                averages[workload] = sum(baseline_values) / len(baseline_values)
+        return averages
+
+    def _result_style(self, value: str, baseline_average: float | None) -> str:
+        """Style completed result cells relative to workload baseline average."""
+        parsed_value = self._parse_tps(value)
+        if (
+            baseline_average is not None
+            and parsed_value is not None
+            and parsed_value < baseline_average
+        ):
+            return _SLOWER_THAN_BASELINE_STYLE
+        return _DONE_STYLE
 
     def _build_results_summary(self) -> str:
         """Build results summary for run."""
@@ -416,9 +544,39 @@ class RunScreen(Screen[None]):
                 return phase
         return None
 
-    def _set_loading(self, is_running: bool) -> None:
-        """Install or update loading for run."""
-        self.query_one("#run-loading", LoadingIndicator).display = is_running
+    def _set_running(self, is_running: bool) -> None:
+        """Track whether the run spinner should animate."""
+        self._is_running = is_running
+
+    def _advance_running_spinner(self) -> None:
+        """Advance the compact running spinner in the active summary cell."""
+        if self._closed or not self._is_running:
+            return
+        self._spinner_frame_index = (self._spinner_frame_index + 1) % len(
+            _SPINNER_FRAMES
+        )
+        self._update_active_spinner_cell()
+
+    def _update_active_spinner_cell(self) -> None:
+        """Update only the active running summary cell."""
+        active_row_key = self._active_row_key(self._last_snapshot)
+        active_phase = self._current_phase(self._last_snapshot)
+        if active_row_key is None or active_phase is None:
+            return
+        table = self.query_one("#run-summary", DataTable)
+        table.update_cell(
+            active_row_key,
+            active_phase,
+            self._status_text(
+                "%s RUNNING" % self._current_spinner_frame(),
+                _RUNNING_STYLE,
+            ),
+            update_width=False,
+        )
+
+    def _current_spinner_frame(self) -> str:
+        """Return the active spinner frame."""
+        return _SPINNER_FRAMES[self._spinner_frame_index]
 
     def _force_completion_progress(self) -> None:
         """Force completion progress in run."""
@@ -567,11 +725,20 @@ class RunScreen(Screen[None]):
         if identity != self._current_run_identity:
             self._current_run_identity = identity
             self._current_run_started_at = monotonic()
+            self._spinner_frame_index = 0
 
     @staticmethod
     def _status_text(content: str, style: str) -> Text:
         """Handle status text within run."""
         return Text(content, style=style)
+
+    @staticmethod
+    def _parse_tps(value: str) -> float | None:
+        """Parse TPS value for result comparisons."""
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return None
 
     @staticmethod
     def _identity_cell_text(content: str, is_active: bool) -> str | Text:
@@ -591,11 +758,10 @@ class RunScreen(Screen[None]):
 
     def _resolve_workloads(self) -> tuple[str, ...]:
         """Resolve workloads for run."""
-        return tuple(
-            workload
-            for workload in self._state.workloads
-            if workload in _WORKLOAD_NAMES
-        )
+        workloads = tuple(workload for workload in self._state.workloads if workload)
+        if workloads:
+            return workloads
+        return available_names()[:1]
 
     def _resolve_orderings(self) -> tuple[str, ...]:
         """Resolve orderings for run."""

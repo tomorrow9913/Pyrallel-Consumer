@@ -1,11 +1,24 @@
 """Tests for WorkManager queue topology extraction."""
 
 
+import asyncio
+
 import pytest
 
 from pyrallel_consumer.dto import OffsetRange
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
+
+
+class _FailingAfterLimitQueue:
+    def __init__(self, items: list[WorkItem], limit: int) -> None:
+        self._items = items
+        self._limit = limit
+
+    def __getitem__(self, index: int) -> WorkItem:
+        if index >= self._limit:
+            raise AssertionError("peek_queue_batch should not read past limit")
+        return self._items[index]
 
 
 def _make_item(tp: DtoTopicPartition, offset: int, key: object) -> WorkItem:
@@ -41,6 +54,23 @@ async def test_topology_enqueue_batch_tracks_head_and_active_queue_key() -> None
     assert topology.head_queue_keys_by_offset[(tp, 7)] == queue_key
     assert queue_key in topology.active_runnable_queue_keys
     assert topology.runnable_queue_keys.count(queue_key) == 1
+
+
+def test_topology_peek_queue_batch_only_reads_to_limit() -> None:
+    from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    items = [
+        _make_item(tp, 1, b"key-a"),
+        _make_item(tp, 2, b"key-a"),
+        _make_item(tp, 3, b"key-a"),
+    ]
+    queue = object.__new__(asyncio.Queue)
+    queue._queue = _FailingAfterLimitQueue(items, limit=2)  # type: ignore[attr-defined]
+
+    batch = WorkQueueTopology.peek_queue_batch(queue, 2)
+
+    assert [item.offset for item in batch] == [1, 2]
 
 
 @pytest.mark.asyncio

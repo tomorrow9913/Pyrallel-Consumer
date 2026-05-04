@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_poller.py
+# Role: Owns Kafka consumer runtime orchestration, polling, dispatch, completion, commits, and shutdown.
+# Extend here for broker-level coordination; split focused helpers when support logic grows.
 """BrokerPoller - polls Kafka and drives the WorkManager."""
 
 import asyncio
@@ -24,7 +27,6 @@ from ..dto import (
 )
 from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
-from .broker_dlq_publisher import publish_to_dlq
 from .adaptive_backpressure import AdaptiveBackpressureController
 from .adaptive_concurrency import (
     AdaptiveConcurrencyController,
@@ -32,6 +34,7 @@ from .adaptive_concurrency import (
 )
 from .broker_completion_support import BrokerCompletionSupport
 from .broker_dispatch_support import BrokerDispatchSupport
+from .broker_dlq_publisher import publish_to_dlq
 from .broker_rebalance_support import BrokerRebalanceSupport
 from .broker_runtime_support import BrokerRuntimeSupport
 from .broker_support import BrokerCommitPlanner, DlqCacheSupport
@@ -56,7 +59,19 @@ class BrokerPoller:
         kafka_config: KafkaConfig,
         execution_engine: BaseExecutionEngine,
         work_manager: Optional[WorkManager] = None,
+        work_manager_route_batch_size: int | None = None,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            consume_topic: Consume topic value used to initialize this component.
+            kafka_config: Kafka and parallel-consumer configuration.
+            execution_engine: Execution engine used to process scheduled work.
+            work_manager: Work manager used for scheduling and accounting.
+            work_manager_route_batch_size: Pre-resolved route-batch lease size used
+                only when constructing the fallback work manager.
+
+        """
         self._consume_topic = consume_topic
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
@@ -143,14 +158,24 @@ class BrokerPoller:
                 cooldown_ms=int(getattr(self._poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=pc_conf.execution.max_retries,
             )
-        self._work_manager = work_manager or WorkManager(
-            execution_engine=self._execution_engine,
-            max_in_flight_messages=configured_max_in_flight,
-            ordering_mode=self.ORDERING_MODE,
-            blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
-            max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
-            poison_message_circuit=poison_message_circuit,
-        )
+        if work_manager is None:
+            if work_manager_route_batch_size is None:
+                raise ValueError(
+                    "work_manager_route_batch_size is required when BrokerPoller "
+                    "constructs a fallback WorkManager"
+                )
+
+            work_manager = WorkManager(
+                execution_engine=self._execution_engine,
+                max_in_flight_messages=configured_max_in_flight,
+                ordering_mode=self.ORDERING_MODE,
+                blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
+                max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
+                poison_message_circuit=poison_message_circuit,
+                route_batch_size=work_manager_route_batch_size,
+            )
+
+        self._work_manager = work_manager
 
         self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
         self._diag_events_since_log = 0
@@ -187,11 +212,15 @@ class BrokerPoller:
             log_change=False,
         )
 
-        self._message_cache: "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]" = OrderedDict()
+        self._message_cache: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
+        ) = OrderedDict()
         # BrokerPoller owns pending terminal DLQ failures across transient
         # BrokerCompletionSupport instances; support mutates this ledger while
         # retrying DLQ publication before offsets may be marked complete.
-        self._pending_dlq_events: "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]" = OrderedDict()
+        self._pending_dlq_events: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]"
+        ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
         self._dirty_commit_partitions: set[DtoTopicPartition] = set()
@@ -214,12 +243,25 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def set_metrics_exporter(self, metrics_exporter: Optional[Any]) -> None:
-        """Install or update metrics exporter for Kafka polling and control-plane orchestration."""
+        """Install or update metrics exporter for Kafka polling and control-plane orchestration.
+
+        Args:
+            metrics_exporter: Optional metrics exporter receiving runtime observations.
+
+        """
         self._metrics_exporter = metrics_exporter
 
     @staticmethod
     def _resolve_commit_debounce_completion_threshold(pc_conf: Any) -> int:
-        """Resolve commit debounce completion threshold for Kafka polling and control-plane orchestration."""
+        """Resolve commit debounce completion threshold for Kafka polling and control-plane orchestration.
+
+        Args:
+            pc_conf: Parallel-consumer configuration object.
+
+        Returns:
+            Computed integer value.
+
+        """
         raw_value = getattr(pc_conf, "commit_debounce_completion_threshold", 100)
         if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             return 100
@@ -227,14 +269,27 @@ class BrokerPoller:
 
     @staticmethod
     def _resolve_commit_debounce_interval_seconds(pc_conf: Any) -> float:
-        """Resolve commit debounce interval seconds for Kafka polling and control-plane orchestration."""
+        """Resolve commit debounce interval seconds for Kafka polling and control-plane orchestration.
+
+        Args:
+            pc_conf: Parallel-consumer configuration object.
+
+        Returns:
+            Computed floating-point value.
+
+        """
         raw_value = getattr(pc_conf, "commit_debounce_interval_ms", 100)
         if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             return 0.1
         return max(0.0, float(raw_value) / 1000.0)
 
     def _rebalance_state_strategy(self) -> str:
-        """Handle rebalance state strategy within Kafka polling and control-plane orchestration."""
+        """Handle rebalance state strategy within Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed string value.
+
+        """
         return str(
             getattr(
                 self._kafka_config.parallel_consumer,
@@ -249,7 +304,17 @@ class BrokerPoller:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
-        """Decode assignment completed offsets for Kafka polling and control-plane orchestration."""
+        """Decode assignment completed offsets for Kafka polling and control-plane orchestration.
+
+        Args:
+            partition: Kafka topic-partition object being inspected.
+            committed_partition: Committed Kafka partition metadata, when available.
+            last_committed: Last committed offset used as the decode baseline.
+
+        Returns:
+            set[int] result produced by this method.
+
+        """
         return self._commit_planner.decode_assignment_completed_offsets(
             strategy=self._rebalance_state_strategy(),
             partition=partition,
@@ -258,7 +323,16 @@ class BrokerPoller:
         )
 
     def _encode_revoke_metadata(self, tracker: OffsetTracker, base_offset: int) -> str:
-        """Encode revoke metadata for Kafka polling and control-plane orchestration."""
+        """Encode revoke metadata for Kafka polling and control-plane orchestration.
+
+        Args:
+            tracker: Offset tracker whose state is being read or updated.
+            base_offset: Base offset used for relative metadata encoding.
+
+        Returns:
+            Computed string value.
+
+        """
         return self._commit_planner.encode_revoke_metadata(
             strategy=self._rebalance_state_strategy(),
             tracker=tracker,
@@ -267,7 +341,12 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def _shutdown_policy(self) -> str:
-        """Handle shutdown policy within Kafka polling and control-plane orchestration."""
+        """Handle shutdown policy within Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed string value.
+
+        """
         return str(
             getattr(
                 self._kafka_config.parallel_consumer.execution,
@@ -277,7 +356,12 @@ class BrokerPoller:
         )
 
     def _shutdown_drain_timeout_seconds(self) -> float:
-        """Handle shutdown drain timeout seconds within Kafka polling and control-plane orchestration."""
+        """Handle shutdown drain timeout seconds within Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed floating-point value.
+
+        """
         execution_config = self._kafka_config.parallel_consumer.execution
         resolve_timeout = getattr(
             execution_config, "resolve_shutdown_drain_timeout_ms", None
@@ -291,15 +375,41 @@ class BrokerPoller:
     def _coerce_adaptive_backpressure_config(
         raw_config: object,
     ) -> AdaptiveBackpressureConfig:
-        """Handle coerce adaptive backpressure config within Kafka polling and control-plane orchestration."""
+        """Handle coerce adaptive backpressure config within Kafka polling and control-plane orchestration.
+
+        Args:
+            raw_config: Raw adaptive configuration value to coerce.
+
+        Returns:
+            AdaptiveBackpressureConfig result produced by this method.
+
+        """
 
         def _bool(name: str, default: bool) -> bool:
-            """Handle bool within Kafka polling and control-plane orchestration."""
+            """Coerce a boolean adaptive backpressure setting.
+
+            Args:
+                name: Setting attribute name to read from the raw config.
+                default: Fallback value when the setting is absent or invalid.
+
+            Returns:
+                Coerced boolean setting value.
+
+            """
             value = getattr(raw_config, name, default)
             return value if isinstance(value, bool) else default
 
         def _int(name: str, default: int) -> int:
-            """Handle int within Kafka polling and control-plane orchestration."""
+            """Coerce an integer adaptive backpressure setting.
+
+            Args:
+                name: Setting attribute name to read from the raw config.
+                default: Fallback value when the setting is absent or invalid.
+
+            Returns:
+                Coerced integer setting value.
+
+            """
             value = getattr(raw_config, name, default)
             if isinstance(value, bool):
                 return default
@@ -308,7 +418,16 @@ class BrokerPoller:
             return default
 
         def _float(name: str, default: float) -> float:
-            """Handle float within Kafka polling and control-plane orchestration."""
+            """Coerce a floating-point adaptive backpressure setting.
+
+            Args:
+                name: Setting attribute name to read from the raw config.
+                default: Fallback value when the setting is absent or invalid.
+
+            Returns:
+                Coerced floating-point setting value.
+
+            """
             value = getattr(raw_config, name, default)
             if isinstance(value, bool):
                 return default
@@ -332,16 +451,43 @@ class BrokerPoller:
         raw_parent: object,
         attribute_name: str,
     ) -> AdaptiveConcurrencyConfig:
-        """Handle coerce adaptive concurrency config within Kafka polling and control-plane orchestration."""
+        """Handle coerce adaptive concurrency config within Kafka polling and control-plane orchestration.
+
+        Args:
+            raw_parent: Parent configuration object containing an adaptive config attribute.
+            attribute_name: Attribute name to read from the parent configuration.
+
+        Returns:
+            AdaptiveConcurrencyConfig result produced by this method.
+
+        """
         raw_config = getattr(raw_parent, attribute_name, None)
 
         def _bool(name: str, default: bool) -> bool:
-            """Handle bool within Kafka polling and control-plane orchestration."""
+            """Coerce a boolean adaptive concurrency setting.
+
+            Args:
+                name: Setting attribute name to read from the raw config.
+                default: Fallback value when the setting is absent or invalid.
+
+            Returns:
+                Coerced boolean setting value.
+
+            """
             value = getattr(raw_config, name, default)
             return value if isinstance(value, bool) else default
 
         def _int(name: str, default: int) -> int:
-            """Handle int within Kafka polling and control-plane orchestration."""
+            """Coerce an integer adaptive concurrency setting.
+
+            Args:
+                name: Setting attribute name to read from the raw config.
+                default: Fallback value when the setting is absent or invalid.
+
+            Returns:
+                Coerced integer setting value.
+
+            """
             value = getattr(raw_config, name, default)
             if isinstance(value, bool):
                 return default
@@ -358,7 +504,12 @@ class BrokerPoller:
         )
 
     async def _get_consume_timeout_seconds(self) -> float:
-        """Return consume timeout seconds for Kafka polling and control-plane orchestration."""
+        """Return consume timeout seconds for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed floating-point value.
+
+        """
         total_in_flight = self._work_manager.get_total_in_flight_count()
         total_queued = await self._get_total_queued_messages()
         if total_in_flight > 0 or total_queued > 0:
@@ -366,7 +517,12 @@ class BrokerPoller:
         return self._idle_consume_timeout_seconds
 
     def _should_cache_message_payloads(self) -> bool:
-        """Return whether cache message payloads should run in Kafka polling and control-plane orchestration."""
+        """Return whether cache message payloads should run in Kafka polling and control-plane orchestration.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        """
         dlq_enabled = bool(getattr(self._kafka_config, "dlq_enabled", False))
         payload_mode = getattr(
             self._kafka_config, "dlq_payload_mode", DLQPayloadMode.FULL
@@ -379,7 +535,15 @@ class BrokerPoller:
 
     @staticmethod
     def _estimate_cached_payload_bytes(payload: Any) -> int:
-        """Handle estimate cached payload bytes within Kafka polling and control-plane orchestration."""
+        """Handle estimate cached payload bytes within Kafka polling and control-plane orchestration.
+
+        Args:
+            payload: Serialized or decoded payload handled by this function.
+
+        Returns:
+            Computed integer value.
+
+        """
         if payload is None:
             return 0
         if isinstance(payload, memoryview):
@@ -391,13 +555,30 @@ class BrokerPoller:
         return 0
 
     def _get_cached_message_size(self, key: Any, value: Any) -> int:
-        """Return cached message size for Kafka polling and control-plane orchestration."""
+        """Return cached message size for Kafka polling and control-plane orchestration.
+
+        Args:
+            key: Kafka record key or virtual queue key.
+            value: Kafka record value.
+
+        Returns:
+            Computed integer value.
+
+        """
         return self._dlq_cache_support.get_cached_message_size(key, value)
 
     def _pop_cached_message(
         self, cache_key: Tuple[DtoTopicPartition, int]
     ) -> Optional[Tuple[Any, Any]]:
-        """Pop cached message from Kafka polling and control-plane orchestration."""
+        """Pop cached message from Kafka polling and control-plane orchestration.
+
+        Args:
+            cache_key: Cache key identifying a cached message.
+
+        Returns:
+            Optional[Tuple[Any, Any]] result produced by this method.
+
+        """
         (
             cached_message,
             self._message_cache_size_bytes,
@@ -411,7 +592,15 @@ class BrokerPoller:
     def _cache_message_for_dlq(
         self, tp: DtoTopicPartition, offset: int, key: Any, value: Any
     ) -> None:
-        """Handle cache message for dlq within Kafka polling and control-plane orchestration."""
+        """Handle cache message for dlq within Kafka polling and control-plane orchestration.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+            offset: Kafka record offset.
+            key: Kafka record key or virtual queue key.
+            value: Kafka record value.
+
+        """
         self._message_cache_size_bytes = self._dlq_cache_support.cache_message_for_dlq(
             message_cache=self._message_cache,
             size_bytes=self._message_cache_size_bytes,
@@ -425,7 +614,12 @@ class BrokerPoller:
         )
 
     def _drop_cached_partition_messages(self, tp: DtoTopicPartition) -> None:
-        """Drop cached partition messages from Kafka polling and control-plane orchestration."""
+        """Drop cached partition messages from Kafka polling and control-plane orchestration.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+
+        """
         self._message_cache_size_bytes = (
             self._dlq_cache_support.drop_partition_messages(
                 message_cache=self._message_cache,
@@ -445,7 +639,24 @@ class BrokerPoller:
         error: str,
         attempt: int,
     ) -> bool:
-        """Convert publish to dlq."""
+        """Convert publish to dlq.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+            offset: Kafka record offset.
+            epoch: Partition ownership epoch associated with the work item.
+            key: Kafka record key or virtual queue key.
+            value: Kafka record value.
+            error: Error reason to attach to the completion or DLQ record.
+            attempt: Current retry attempt number.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        Raises:
+            RuntimeError: If the broker runtime has failed.
+
+        """
         if self.producer is None:
             raise RuntimeError("Producer must be initialized for DLQ publishing")
 
@@ -465,7 +676,12 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     async def _run_consumer(self) -> None:
-        """Run consumer for Kafka polling and control-plane orchestration."""
+        """Run consumer for Kafka polling and control-plane orchestration.
+
+        Raises:
+            RuntimeError: If the broker runtime has failed.
+
+        """
         logger.debug("Starting consumer loop")
         if self.consumer is None:
             raise RuntimeError("Kafka consumer must be initialized")
@@ -533,7 +749,12 @@ class BrokerPoller:
             self._consumer_task = None
 
     async def _drain_completion_events_once(self) -> bool:
-        """Drain completion events once for Kafka polling and control-plane orchestration."""
+        """Drain completion events once for Kafka polling and control-plane orchestration.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        """
         completed_events = await self._work_manager.poll_completed_events()
         timeout_events = await self._handle_blocking_timeouts()
         if timeout_events:
@@ -546,7 +767,13 @@ class BrokerPoller:
         return True
 
     async def _run_completion_monitor(self) -> None:
-        """Run completion monitor for Kafka polling and control-plane orchestration."""
+        """Run completion monitor for Kafka polling and control-plane orchestration.
+
+        Raises:
+            asyncio.CancelledError: Propagated when the monitor task is cancelled.
+            Exception: Propagates unexpected monitor failures after storing them.
+
+        """
         timeout_seconds = self._idle_consume_timeout_seconds
         if self._max_blocking_duration_ms > 0:
             timeout_seconds = min(
@@ -592,7 +819,13 @@ class BrokerPoller:
     async def _maybe_commit_ready_offsets(
         self, *, had_pending_dlq_events: bool = False, source: str = "unknown"
     ) -> None:
-        """Handle maybe commit ready offsets within Kafka polling and control-plane orchestration."""
+        """Handle maybe commit ready offsets within Kafka polling and control-plane orchestration.
+
+        Args:
+            had_pending_dlq_events: Whether pending DLQ events existed before the commit attempt.
+            source: Diagnostic source label for the commit attempt.
+
+        """
         force = await self._should_force_idle_commit()
         if had_pending_dlq_events or force or self._should_attempt_ready_commit():
             await self._commit_ready_offsets(
@@ -603,7 +836,13 @@ class BrokerPoller:
     async def _commit_ready_offsets(
         self, *, force: bool = False, source: str = "unknown"
     ) -> None:
-        """Commit ready offsets for Kafka polling and control-plane orchestration."""
+        """Commit ready offsets for Kafka polling and control-plane orchestration.
+
+        Args:
+            force: Whether to force the operation regardless of cadence checks.
+            source: Diagnostic source label for the commit attempt.
+
+        """
         self._commit_ready_invocations_total += 1
         self._commit_ready_invocations_by_source[source] = (
             self._commit_ready_invocations_by_source.get(source, 0) + 1
@@ -651,7 +890,12 @@ class BrokerPoller:
             self._last_commit_attempt_monotonic = time.monotonic()
 
     def get_commit_cadence_stats(self) -> Dict[str, Any]:
-        """Return commit cadence stats for Kafka polling and control-plane orchestration."""
+        """Return commit cadence stats for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Commit cadence statistics.
+
+        """
         return {
             "invocations_total": self._commit_ready_invocations_total,
             "empty_candidate_scans_total": self._commit_ready_empty_candidate_scans_total,
@@ -668,7 +912,12 @@ class BrokerPoller:
         }
 
     def _should_attempt_ready_commit(self) -> bool:
-        """Return whether attempt ready commit should run in Kafka polling and control-plane orchestration."""
+        """Return whether attempt ready commit should run in Kafka polling and control-plane orchestration.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        """
         if not self._dirty_commit_partitions:
             return False
         if (
@@ -682,7 +931,12 @@ class BrokerPoller:
         return elapsed >= self._commit_debounce_interval_seconds
 
     async def _should_force_idle_commit(self) -> bool:
-        """Return whether force idle commit should run in Kafka polling and control-plane orchestration."""
+        """Return whether force idle commit should run in Kafka polling and control-plane orchestration.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        """
         if not self._dirty_commit_partitions:
             return False
         if self._pending_dlq_events:
@@ -694,17 +948,35 @@ class BrokerPoller:
     def _clear_committed_dirty_partitions(
         self, commits_to_make: list[tuple[DtoTopicPartition, int]]
     ) -> None:
-        """Clear committed dirty partitions for Kafka polling and control-plane orchestration."""
+        """Clear committed dirty partitions for Kafka polling and control-plane orchestration.
+
+        Args:
+            commits_to_make: Commit candidates keyed by topic-partition.
+
+        """
         for tp, _ in commits_to_make:
             self._dirty_commit_partitions.discard(tp)
         if not self._dirty_commit_partitions:
             self._completions_since_last_commit = 0
 
     def _make_completion_support(self) -> BrokerCompletionSupport:
-        """Create completion support for Kafka polling and control-plane orchestration."""
+        """Create completion support for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Completion support helper bound to this poller.
+
+        """
 
         async def _publish_to_dlq_proxy(**kwargs: Any) -> bool:
-            """Convert publish to dlq proxy."""
+            """Forward DLQ publishing through the poller instance.
+
+            Args:
+                **kwargs: Keyword arguments accepted by the poller's DLQ publisher.
+
+            Returns:
+                True when the DLQ publish operation succeeds; otherwise False.
+
+            """
             return await self._publish_to_dlq(**kwargs)
 
         return BrokerCompletionSupport(
@@ -721,7 +993,12 @@ class BrokerPoller:
         )
 
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
-        """Handle blocking timeouts for Kafka polling and control-plane orchestration."""
+        """Handle blocking timeouts for Kafka polling and control-plane orchestration.
+
+        Returns:
+            list[CompletionEvent] result produced by this method.
+
+        """
         return await self._make_completion_support().handle_blocking_timeouts(
             max_blocking_duration_ms=self._max_blocking_duration_ms
         )
@@ -729,7 +1006,12 @@ class BrokerPoller:
     async def _process_completed_events(
         self, completed_events: list[CompletionEvent]
     ) -> None:
-        """Handle process completed events within Kafka polling and control-plane orchestration."""
+        """Handle process completed events within Kafka polling and control-plane orchestration.
+
+        Args:
+            completed_events: Completed events value used by this method.
+
+        """
         managed_partitions = set(self._offset_trackers)
         pending_retry_partitions = {
             tp for tp, _ in self._pending_dlq_events.keys() if tp in managed_partitions
@@ -760,6 +1042,13 @@ class BrokerPoller:
 
         On success, advances each tracker's high water mark.
         On failure after retry, logs a warning and continues without crashing.
+
+        Args:
+            commits_to_make: Commit candidates keyed by topic-partition.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
         """
         if self.consumer is None:
             return False
@@ -827,7 +1116,13 @@ class BrokerPoller:
         tracked_commits: list[tuple[DtoTopicPartition, int]],
         reason: str,
     ) -> None:
-        """Record commit failure for Kafka polling and control-plane orchestration."""
+        """Record commit failure for Kafka polling and control-plane orchestration.
+
+        Args:
+            tracked_commits: Commit candidates being tracked for failure accounting.
+            reason: Reason string recorded for diagnostics.
+
+        """
         metrics_exporter = self._metrics_exporter
         if metrics_exporter is None:
             metrics_exporter = getattr(self._work_manager, "_metrics_exporter", None)
@@ -848,22 +1143,50 @@ class BrokerPoller:
     def _record_commit_failure_for_partition(
         self, tp: DtoTopicPartition, reason: str
     ) -> None:
-        """Record commit failure for partition for Kafka polling and control-plane orchestration."""
+        """Record commit failure for partition for Kafka polling and control-plane orchestration.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+            reason: Reason string recorded for diagnostics.
+
+        """
         self._record_commit_failure([(tp, 0)], reason)
 
     def _get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
     ) -> set[int]:
-        """Return commit metadata offsets for Kafka polling and control-plane orchestration."""
+        """Return commit metadata offsets for Kafka polling and control-plane orchestration.
+
+        Args:
+            tracker: Offset tracker whose state is being read or updated.
+            base_offset: Base offset used for relative metadata encoding.
+
+        Returns:
+            set[int] result produced by this method.
+
+        """
         return self._commit_planner.get_commit_metadata_offsets(tracker, base_offset)
 
     # ------------------------------------------------------------------
     def _get_partition_index(self, msg: Message) -> int:
-        """Return partition index for Kafka polling and control-plane orchestration."""
+        """Return partition index for Kafka polling and control-plane orchestration.
+
+        Args:
+            msg: Kafka message associated with the callback or lookup.
+
+        Returns:
+            Computed integer value.
+
+        """
         return hash(cast(bytes, msg.key() or b"")) % self._worker_pool_size
 
     async def _get_total_queued_messages(self) -> int:
-        """Return total queued messages for Kafka polling and control-plane orchestration."""
+        """Return total queued messages for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed integer value.
+
+        """
         get_total_queued_messages = getattr(
             self._work_manager, "get_total_queued_messages", None
         )
@@ -879,7 +1202,15 @@ class BrokerPoller:
         return total
 
     def _get_min_inflight_offset(self, tp: DtoTopicPartition) -> Optional[int]:
-        """Return min inflight offset for Kafka polling and control-plane orchestration."""
+        """Return min inflight offset for Kafka polling and control-plane orchestration.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+
+        Returns:
+            Computed integer value, or None when no value is available.
+
+        """
         min_inflight = self._work_manager.get_min_in_flight_offset(tp)
         return min_inflight if isinstance(min_inflight, int) else None
 
@@ -888,7 +1219,12 @@ class BrokerPoller:
         self._make_runtime_support().log_partition_diagnostics()
 
     def _get_total_true_lag(self) -> int:
-        """Return total true lag for Kafka polling and control-plane orchestration."""
+        """Return total true lag for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Computed integer value.
+
+        """
         total_true_lag = 0
         for tracker in self._offset_trackers.values():
             last_fetched_offset = int(getattr(tracker, "last_fetched_offset", -1))
@@ -902,7 +1238,13 @@ class BrokerPoller:
         *,
         log_change: bool = True,
     ) -> None:
-        """Install or update runtime max in flight for Kafka polling and control-plane orchestration."""
+        """Install or update runtime max in flight for Kafka polling and control-plane orchestration.
+
+        Args:
+            value: Kafka record value.
+            log_change: Whether to log an observed runtime limit change.
+
+        """
         new_value = max(
             1,
             min(self._configured_max_in_flight_messages, int(value)),
@@ -926,7 +1268,12 @@ class BrokerPoller:
             )
 
     def _maybe_adjust_adaptive_backpressure(self, total_queued: int) -> None:
-        """Handle maybe adjust adaptive backpressure within Kafka polling and control-plane orchestration."""
+        """Handle maybe adjust adaptive backpressure within Kafka polling and control-plane orchestration.
+
+        Args:
+            total_queued: Total number of queued messages.
+
+        """
         if not self._adaptive_backpressure_controller.enabled:
             return
         get_latency = getattr(
@@ -944,7 +1291,12 @@ class BrokerPoller:
         self._set_runtime_max_in_flight(new_limit)
 
     def _maybe_adjust_adaptive_concurrency(self, total_queued: int) -> None:
-        """Handle maybe adjust adaptive concurrency within Kafka polling and control-plane orchestration."""
+        """Handle maybe adjust adaptive concurrency within Kafka polling and control-plane orchestration.
+
+        Args:
+            total_queued: Total number of queued messages.
+
+        """
         new_limit = self._adaptive_concurrency_controller.evaluate(
             AdaptiveConcurrencySample(
                 current_limit=self.MAX_IN_FLIGHT_MESSAGES,
@@ -960,7 +1312,12 @@ class BrokerPoller:
         self._set_runtime_max_in_flight(new_limit)
 
     async def _check_backpressure(self) -> None:
-        """Handle check backpressure within Kafka polling and control-plane orchestration."""
+        """Handle check backpressure within Kafka polling and control-plane orchestration.
+
+        Raises:
+            RuntimeError: If the broker runtime has failed.
+
+        """
         if self.consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
@@ -986,7 +1343,13 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def _delivery_report(self, err: Optional[KafkaException], msg: Message) -> None:
-        """Handle delivery report within Kafka polling and control-plane orchestration."""
+        """Handle delivery report within Kafka polling and control-plane orchestration.
+
+        Args:
+            err: Kafka delivery error, if any.
+            msg: Kafka message associated with the callback or lookup.
+
+        """
         if err is not None:
             logger.error("Delivery failed: %s", err)
 
@@ -1001,7 +1364,12 @@ class BrokerPoller:
         self._message_cache_size_bytes = 0
 
     def _raise_if_failed(self) -> None:
-        """Handle raise if failed within Kafka polling and control-plane orchestration."""
+        """Handle raise if failed within Kafka polling and control-plane orchestration.
+
+        Raises:
+            error: If this exception is raised by the operation.
+
+        """
         if self._fatal_error is None:
             return
 
@@ -1015,7 +1383,12 @@ class BrokerPoller:
             tuple[DtoTopicPartition, Any], list[tuple[int, int, Any, Any]]
         ],
     ) -> None:
-        """Submit grouped messages for Kafka polling and control-plane orchestration."""
+        """Submit grouped messages for Kafka polling and control-plane orchestration.
+
+        Args:
+            grouped_messages: Messages grouped by topic-partition and ordering key.
+
+        """
         if not grouped_messages:
             return
 
@@ -1035,7 +1408,12 @@ class BrokerPoller:
                 )
 
     def _make_dispatch_support(self) -> BrokerDispatchSupport:
-        """Create dispatch support for Kafka polling and control-plane orchestration."""
+        """Create dispatch support for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Dispatch support helper bound to this poller.
+
+        """
         return BrokerDispatchSupport(
             ordering_mode=self.ORDERING_MODE,
             offset_trackers=self._offset_trackers,
@@ -1050,7 +1428,13 @@ class BrokerPoller:
     def _on_assign(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
     ) -> None:
-        """Handle on assign within Kafka polling and control-plane orchestration."""
+        """Handle on assign within Kafka polling and control-plane orchestration.
+
+        Args:
+            consumer: Kafka consumer instance.
+            partitions: Kafka topic partitions passed by the rebalance callback.
+
+        """
         logger.debug(
             "Partitions assigned: %s",
             ", ".join(f"{tp.topic}-{tp.partition}@{tp.offset}" for tp in partitions),
@@ -1069,7 +1453,13 @@ class BrokerPoller:
     def _on_revoke(
         self, consumer: Consumer, partitions: List[KafkaTopicPartition]
     ) -> None:
-        """Handle on revoke within Kafka polling and control-plane orchestration."""
+        """Handle on revoke within Kafka polling and control-plane orchestration.
+
+        Args:
+            consumer: Kafka consumer instance.
+            partitions: Kafka topic partitions passed by the rebalance callback.
+
+        """
         logger.warning(
             "Partitions revoked: %s",
             ", ".join(f"{tp.topic}-{tp.partition}" for tp in partitions),
@@ -1095,7 +1485,12 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
-        """Handle start within Kafka polling and control-plane orchestration."""
+        """Handle start within Kafka polling and control-plane orchestration.
+
+        Raises:
+            Exception: Propagates startup failures after logging them.
+
+        """
         try:
             if self._running:
                 return
@@ -1176,7 +1571,15 @@ class BrokerPoller:
             logger.debug("BrokerPoller stopped")
 
     async def _drain_shutdown_work(self, *, timeout_seconds: float) -> bool:
-        """Drain shutdown work for Kafka polling and control-plane orchestration."""
+        """Drain shutdown work for Kafka polling and control-plane orchestration.
+
+        Args:
+            timeout_seconds: Maximum time to wait, in seconds; None waits indefinitely.
+
+        Returns:
+            True when the condition is met; otherwise False.
+
+        """
         deadline = time.monotonic() + max(0.0, timeout_seconds)
 
         while True:
@@ -1241,7 +1644,12 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     def get_metrics(self) -> SystemMetrics:
-        """Return metrics for Kafka polling and control-plane orchestration."""
+        """Return metrics for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Current system metrics snapshot.
+
+        """
         metrics = self._make_runtime_support().build_system_metrics()
         runtime_metrics = self._execution_engine.get_runtime_metrics()
         return SystemMetrics(
@@ -1256,11 +1664,21 @@ class BrokerPoller:
         )
 
     def get_runtime_snapshot(self) -> RuntimeSnapshot:
-        """Return runtime snapshot for Kafka polling and control-plane orchestration."""
+        """Return runtime snapshot for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Current runtime snapshot.
+
+        """
         return self._make_runtime_support().build_runtime_snapshot()
 
     def _make_runtime_support(self) -> BrokerRuntimeSupport:
-        """Create runtime support for Kafka polling and control-plane orchestration."""
+        """Create runtime support for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Runtime support helper bound to this poller.
+
+        """
         adaptive_backpressure_snapshot = None
         if self._adaptive_backpressure_controller.enabled:
             get_latency = getattr(
@@ -1326,12 +1744,26 @@ class BrokerPoller:
         )
 
     def _make_task_lifecycle_support(self) -> BrokerTaskLifecycleSupport:
-        """Create task lifecycle support for Kafka polling and control-plane orchestration."""
+        """Create task lifecycle support for Kafka polling and control-plane orchestration.
+
+        Returns:
+            Task lifecycle support helper bound to this poller.
+
+        """
 
         def create_task_with_name(
             coro: Any, name: str | None = None
         ) -> asyncio.Task[Any]:
-            """Create task with name for Kafka polling and control-plane orchestration."""
+            """Create an asyncio task with an optional task name.
+
+            Args:
+                coro: Awaitable object to schedule as an asyncio task.
+                name: Optional name assigned to the created task.
+
+            Returns:
+                Created asyncio task.
+
+            """
             return asyncio.create_task(coro, name=name)
 
         return BrokerTaskLifecycleSupport(

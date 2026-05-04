@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from asyncio.subprocess import PIPE
 from collections.abc import Callable
 
 from benchmarks.tui.log_parser import BenchmarkLogParser, BenchmarkProgressSnapshot
-from benchmarks.tui.state import BenchmarkTuiState
+from benchmarks.tui.state import BenchmarkTuiState, default_workloads
 
 
 class BenchmarkProcessController:
@@ -36,21 +37,20 @@ class BenchmarkProcessController:
     @staticmethod
     def _workload_mode(state: BenchmarkTuiState) -> str:
         """Handle workload mode within controller."""
-        if len(state.workloads) > 1:
+        workloads = BenchmarkProcessController._active_workloads(state)
+        if len(workloads) > 1:
             return "all"
-        return state.workloads[0]
+        if workloads:
+            return workloads[0]
+        return "all"
 
     @staticmethod
     def _active_workloads(state: BenchmarkTuiState) -> tuple[str, ...]:
         """Handle active workloads within controller."""
-        workloads = tuple(
-            workload
-            for workload in state.workloads
-            if workload in ("sleep", "cpu", "io")
-        )
+        workloads = tuple(workload for workload in state.workloads if workload)
         if workloads:
             return workloads
-        return ("sleep",)
+        return default_workloads()
 
     @staticmethod
     def _active_phases(state: BenchmarkTuiState) -> tuple[str, ...]:
@@ -78,6 +78,7 @@ class BenchmarkProcessController:
             *argv,
             stdout=PIPE,
             stderr=PIPE,
+            env=self._child_environment(),
         )
         if self._cancel_requested:
             await self.cancel()
@@ -116,3 +117,11 @@ class BenchmarkProcessController:
             self._on_output(decoded, is_error)
             snapshot = self._parser.consume(decoded)
             self._on_progress(snapshot)
+
+    @staticmethod
+    def _child_environment() -> dict[str, str]:
+        """Return environment for the benchmark child process."""
+        return {
+            **os.environ,
+            "PYRALLEL_BENCHMARK_RUNNER_INTERFACE": "tui",
+        }

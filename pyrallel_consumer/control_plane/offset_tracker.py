@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/offset_tracker.py
+# Role: Tracks fetched, completed, committed, in-flight, and blocking offsets for one topic partition.
+# Extend here for per-partition offset state rules; keep scheduling in work_manager.py.
 import logging
 import time
 from typing import Dict, Optional, Set
@@ -9,8 +13,7 @@ from pyrallel_consumer.dto import OffsetRange, TopicPartition
 
 
 class OffsetTracker:
-    """
-    특정 토픽 파티션에 대한 오프셋 추적기입니다.
+    """특정 토픽 파티션에 대한 오프셋 추적기입니다.
 
     Attributes:
         topic_partition (TopicPartition): 토픽 파티션 정보
@@ -19,6 +22,7 @@ class OffsetTracker:
         in_flight_offsets (Set[int]): 현재 처리 중인 오프셋들의 집합
         last_fetched_offset (int): 마지막으로 가져온 오프셋
         epoch (int): 현재 파티션 소유권의 세대 번호
+
     """
 
     def __init__(
@@ -28,14 +32,14 @@ class OffsetTracker:
         max_revoke_grace_ms: int,
         initial_completed_offsets: Optional[Set[int]] = None,
     ):
-        """
-        초기화 메서드입니다.
+        """초기화 메서드입니다.
 
         Args:
             topic_partition (TopicPartition): 토픽 파티션 정보
             starting_offset (int): 시작 오프셋
             max_revoke_grace_ms (int): 최대 리보크 유예 시간 (밀리초)
             initial_completed_offsets (Set[int], optional): 초기 완료된 오프셋 집합. Defaults to None.
+
         """
         self.topic_partition = topic_partition
         self.last_committed_offset = starting_offset - 1
@@ -65,7 +69,12 @@ class OffsetTracker:
         self._first_gap_head = self._calculate_first_gap_head()
 
     def _calculate_first_gap_head(self) -> Optional[int]:
-        """Handle calculate first gap head within offset tracker."""
+        """Handle calculate first gap head within offset tracker.
+
+        Returns:
+            Computed integer value, or None when no value is available.
+
+        """
         current = self.last_committed_offset + 1
         while current <= self.last_fetched_offset and current in self.completed_offsets:
             current += 1
@@ -75,11 +84,11 @@ class OffsetTracker:
 
     @property
     def in_flight_offsets(self) -> Set[int]:
-        """
+        """현재 처리 중인 오프셋들의 집합을 반환합니다.
 
-        현재 처리 중인 오프셋들의 집합을 반환합니다.
         Returns:
             Set[int]: 현재 처리 중인 오프셋들의 집합
+
         """
         return self.completed_offsets.symmetric_difference(
             set(range(self.last_committed_offset + 1, self.last_fetched_offset + 1))
@@ -90,11 +99,21 @@ class OffsetTracker:
         self.epoch += 1
 
     def get_current_epoch(self) -> int:
-        """현재 epoch을 반환합니다."""
+        """현재 epoch을 반환합니다.
+
+        Returns:
+            Computed integer value.
+
+        """
         return self.epoch
 
     def get_first_gap_head(self) -> Optional[int]:
-        """Return the current lowest missing offset after the committed HWM."""
+        """Return the current lowest missing offset after the committed HWM.
+
+        Returns:
+            Computed integer value, or None when no value is available.
+
+        """
         return self._first_gap_head
 
     def rehydrate_assignment_state(
@@ -103,7 +122,16 @@ class OffsetTracker:
         last_committed_offset: int,
         last_fetched_offset: int,
     ) -> None:
-        """Restore assignment offsets and refresh derived gap/cache state."""
+        """Restore assignment offsets and refresh derived gap/cache state.
+
+        Args:
+            last_committed_offset: Last committed offset value used by this function.
+            last_fetched_offset: Last fetched offset value used by this function.
+
+        Raises:
+            ValueError: If the provided configuration or state is invalid.
+
+        """
         if last_fetched_offset < last_committed_offset:
             raise ValueError(
                 "last_fetched_offset must be greater than or equal to "
@@ -115,8 +143,8 @@ class OffsetTracker:
         self._bump_version()
 
     def mark_complete(self, offset: int) -> None:
-        """
-        marks the given offset as complete.
+        """Mark the given offset as complete.
+
         오프셋을 완료로 표시합니다.
 
         Args:
@@ -124,6 +152,7 @@ class OffsetTracker:
 
         Returns:
             None
+
         """
         if offset > self.last_committed_offset:
             before_size = len(self.completed_offsets)
@@ -134,8 +163,7 @@ class OffsetTracker:
     def get_committable_high_water_mark(
         self, min_inflight_offset: Optional[int] = None
     ) -> int:
-        """
-        Return the highest contiguous offset that is safe to commit.
+        """Return the highest contiguous offset that is safe to commit.
 
         Args:
             min_inflight_offset (Optional[int]): Lowest still in-flight offset for the
@@ -144,6 +172,7 @@ class OffsetTracker:
 
         Returns:
             int: Highest contiguous offset safe to commit.
+
         """
         potential_hwm = self.last_committed_offset
         for offset in self.completed_offsets:
@@ -158,12 +187,12 @@ class OffsetTracker:
         return potential_hwm
 
     def commit_through(self, committed_offset: int) -> None:
-        """
-        Advance the committed offset to a known contiguous-safe value.
+        """Advance the committed offset to a known contiguous-safe value.
 
         Args:
             committed_offset (int): Highest contiguous-safe offset that has been
                 durably committed.
+
         """
         if committed_offset <= self.last_committed_offset:
             return
@@ -189,22 +218,23 @@ class OffsetTracker:
             )
 
     def advance_high_water_mark(self) -> None:
-        """
-        Advances the last committed offset based on completed offsets.
+        """Advance the last committed offset based on completed offsets.
+
         완료된 오프셋을 기준으로 마지막 커밋된 오프셋을 갱신합니다.
 
         Returns:
             None
+
         """
         new_hwm = self.get_committable_high_water_mark()
         self.commit_through(new_hwm)
 
     def get_gaps(self) -> list[OffsetRange]:
-        """
-        완료되지 않은 오프셋 범위를 반환합니다.
+        """완료되지 않은 오프셋 범위를 반환합니다.
 
         Returns:
             list[OffsetRange]: 완료되지 않은 오프셋 범위 리스트
+
         """
         cache_key = (
             self.last_committed_offset,
@@ -270,26 +300,29 @@ class OffsetTracker:
         return gaps
 
     def update_last_fetched_offset(self, offset: int) -> None:
-        """
-        Updates the last fetched offset.
+        """Update the last fetched offset.
+
         마지막으로 가져온 오프셋을 갱신합니다.
 
         Args:
             offset (int): 갱신할 오프셋
+
         Returns:
             None
+
         """
         if offset > self.last_fetched_offset:
             self.last_fetched_offset = offset
             self._bump_version()
 
     def get_blocking_offset_durations(self) -> Dict[int, float]:
-        """
-        Returns the duration (in seconds) for each current blocking gap head offset.
+        """Return the duration for each current blocking gap head offset.
+
         현재 블로킹 gap의 시작 오프셋별 블로킹 시간을 초 단위로 반환합니다.
 
         Returns:
             Dict[int, float]: 오프셋과 해당 블로킹 시간(초) 딕셔너리
+
         """
         durations: Dict[int, float] = {}
         current_time = time.time()

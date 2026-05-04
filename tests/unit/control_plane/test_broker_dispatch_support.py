@@ -90,6 +90,50 @@ async def test_dispatch_messages_groups_ordered_messages_and_uses_bulk_submit() 
 
 
 @pytest.mark.asyncio
+async def test_dispatch_messages_partition_mode_groups_by_partition_not_key() -> None:
+    from pyrallel_consumer.control_plane.broker_dispatch_support import (
+        BrokerDispatchSupport,
+    )
+
+    tp_0 = DtoTopicPartition(topic="test-topic", partition=0)
+    tp_1 = DtoTopicPartition(topic="test-topic", partition=1)
+    tracker_0 = _make_tracker(epoch=4)
+    tracker_1 = _make_tracker(epoch=5)
+    submit_message = AsyncMock()
+    submit_grouped_messages = AsyncMock()
+
+    support = BrokerDispatchSupport(
+        ordering_mode=OrderingMode.PARTITION,
+        offset_trackers={tp_0: tracker_0, tp_1: tracker_1},
+        cache_message_for_dlq=MagicMock(),
+        submit_message=submit_message,
+        submit_grouped_messages=submit_grouped_messages,
+        get_min_inflight_offset=lambda _tp: None,
+        logger=MagicMock(),
+    )
+
+    await support.dispatch_messages(
+        [
+            _make_message(partition=0, offset=0, key=b"key-a", value=b"payload-a"),
+            _make_message(partition=0, offset=1, key=b"key-b", value=b"payload-b"),
+            _make_message(partition=1, offset=0, key=b"key-a", value=b"payload-c"),
+        ]
+    )
+
+    submit_message.assert_not_awaited()
+    submit_grouped_messages.assert_awaited_once()
+    assert submit_grouped_messages.await_args is not None
+    grouped_messages = submit_grouped_messages.await_args.args[0]
+    assert grouped_messages == {
+        (tp_0, 0): [
+            (0, 4, b"payload-a", b"key-a"),
+            (1, 4, b"payload-b", b"key-b"),
+        ],
+        (tp_1, 1): [(0, 5, b"payload-c", b"key-a")],
+    }
+
+
+@pytest.mark.asyncio
 async def test_dispatch_messages_unordered_submits_directly_and_skips_invalid_messages() -> (
     None
 ):

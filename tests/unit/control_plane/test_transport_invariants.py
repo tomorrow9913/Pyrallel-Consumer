@@ -15,7 +15,9 @@ FORBIDDEN_TRANSPORT_TERMS = (
 )
 ALLOWED_ENGINE_METHODS = {
     "submit",
+    "submit_batch",
     "poll_completed_events",
+    "supports_ordered_route_batch",
     "wait_for_completion",
     "get_in_flight_count",
     "get_runtime_metrics",
@@ -127,21 +129,3 @@ def test_worker_pipe_blueprint_documents_shutdown_diagnostic_interpretation() ->
     ]
 
     assert [phrase for phrase in required_phrases if phrase not in blueprint] == []
-
-
-def test_worker_pipe_target_doc_defers_registry_key_and_timeout_migrations() -> None:
-    target_doc = (
-        REPO_ROOT
-        / "docs"
-        / "plans"
-        / "2026-04-27-process-worker-pipes-target-algorithm.md"
-    ).read_text(encoding="utf-8")
-
-    required_phrases = [
-        "V2.8: Registry key full identity migration review",
-        "do not widen the in-flight registry key yet",
-        "V2.9: Timeout policy convergence / e2e boundary",
-        "separate PR",
-    ]
-
-    assert [phrase for phrase in required_phrases if phrase not in target_doc] == []

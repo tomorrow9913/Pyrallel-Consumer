@@ -25,8 +25,8 @@ operations-facing copy lives in
 
 ## Explicit Exemptions
 
-- `GEMINI.md` is an in-repo handoff and working-log document. It is exempt from
-  the filename-language rule.
+- `GEMINI.md` is a local handoff and working-log document. It is exempt from
+  the filename-language rule and may be ignored by Git.
 - `docs/plans/**` is an archival design and execution record tree. It is exempt
   from the filename-language rule and may retain mixed-language historical
   content.

@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/poison_message.py
+# Role: Detects repeated poison-message failures and decides when to force-fail matching work.
+# Extend here for poison-message circuit policy; keep DLQ publication elsewhere.
 from __future__ import annotations
 
 import time
@@ -35,6 +39,19 @@ class PoisonMessageCircuitBreaker:
         forced_failure_attempt: int,
         clock: Any = None,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            enabled: Whether the feature is enabled.
+            failure_threshold: Failures needed before opening the circuit.
+            cooldown_ms: Circuit cooldown in milliseconds.
+            forced_failure_attempt: Attempt number from which forced failure may be emitted.
+            clock: Clock callable used for deterministic tests.
+
+        Raises:
+            ValueError: If initialization receives invalid configuration.
+
+        """
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be >= 1")
         if cooldown_ms < 0:
@@ -48,7 +65,13 @@ class PoisonMessageCircuitBreaker:
         self._states: dict[CircuitKey, _CircuitState] = {}
 
     def record_completion(self, event: CompletionEvent, work_item: WorkItem) -> None:
-        """Record completion for poison-message protection."""
+        """Record completion for poison-message protection.
+
+        Args:
+            event: Completion or registry event being processed.
+            work_item: Work item being scheduled or processed.
+
+        """
         if not self.enabled:
             return
 
@@ -66,7 +89,15 @@ class PoisonMessageCircuitBreaker:
             state.open_until = self._clock() + self._cooldown_seconds
 
     def should_force_fail(self, work_item: WorkItem) -> bool:
-        """Return whether force fail should run in poison-message protection."""
+        """Return whether force fail should run in poison-message protection.
+
+        Args:
+            work_item: Work item being scheduled or processed.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         if not self.enabled:
             return False
 
@@ -83,7 +114,15 @@ class PoisonMessageCircuitBreaker:
         return False
 
     def build_forced_failure_event(self, work_item: WorkItem) -> CompletionEvent:
-        """Build forced failure event for poison-message protection."""
+        """Build forced failure event for poison-message protection.
+
+        Args:
+            work_item: Work item being scheduled or processed.
+
+        Returns:
+            Completion event produced by the operation.
+
+        """
         state = self._states.get(self._circuit_key(work_item))
         failure_count = state.failure_count if state is not None else 0
         error = "Poison message circuit open for %s@%d key after %d failure(s)" % (
@@ -102,21 +141,39 @@ class PoisonMessageCircuitBreaker:
         )
 
     def clear_partition(self, tp: DtoTopicPartition) -> None:
-        """Clear partition for poison-message protection."""
+        """Clear partition for poison-message protection.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+
+        """
         for circuit_key in list(self._states):
             if circuit_key[0] == tp:
                 self._states.pop(circuit_key, None)
 
     @staticmethod
     def _circuit_key(work_item: WorkItem) -> CircuitKey:
-        """Handle circuit key within poison-message protection."""
+        """Handle circuit key within poison-message protection.
+
+        Args:
+            work_item: Work item being scheduled or processed.
+
+        Returns:
+            CircuitKey result produced by this function.
+
+        """
         poison_key = work_item.poison_key
         if poison_key is WORK_ITEM_POISON_KEY_UNSET:
             poison_key = work_item.key
         return (work_item.tp, poison_key)
 
     def get_open_circuit_count(self) -> int:
-        """Return open circuit count for poison-message protection."""
+        """Return open circuit count for poison-message protection.
+
+        Returns:
+            Computed integer value.
+
+        """
         if not self.enabled:
             return 0
 

@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_completion_support.py
+# Role: Processes completion events, DLQ fallbacks, and partition completion outcomes.
+# Extend here for completion-event accounting; keep polling and dispatch loops in broker_poller.py.
 from __future__ import annotations
 
 import logging
@@ -15,7 +19,12 @@ class DlqFailureMetricsExporter(Protocol):
     """Export observations for completion event processing."""
 
     def record_dlq_publish_failure(self, tp: DtoTopicPartition) -> None:
-        """Record dlq publish failure for completion event processing."""
+        """Record dlq publish failure for completion event processing.
+
+        Args:
+            tp: Topic-partition affected by the operation.
+
+        """
         ...
 
 
@@ -48,6 +57,21 @@ class BrokerCompletionSupport:
         ] = None,
         metrics_exporter: Optional[DlqFailureMetricsExporter] = None,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            kafka_config: Kafka and parallel-consumer configuration.
+            work_manager: Work manager used for scheduling and accounting.
+            offset_trackers: Offset trackers value used to initialize this component.
+            message_cache: Message cache value used to initialize this component.
+            should_cache_message_payloads: Should cache message payloads value used to initialize this component.
+            pop_cached_message: Pop cached message value used to initialize this component.
+            publish_to_dlq: Publish to dlq value used to initialize this component.
+            logger: Logger used for diagnostics.
+            pending_dlq_events: Pending dlq events value used to initialize this component.
+            metrics_exporter: Optional metrics exporter.
+
+        """
         self._kafka_config = kafka_config
         self._work_manager = work_manager
         self._offset_trackers = offset_trackers
@@ -66,7 +90,15 @@ class BrokerCompletionSupport:
         *,
         max_blocking_duration_ms: int,
     ) -> list[CompletionEvent]:
-        """Handle blocking timeouts for completion event processing."""
+        """Handle blocking timeouts for completion event processing.
+
+        Args:
+            max_blocking_duration_ms: Maximum allowed blocking duration before forced failure events are emitted.
+
+        Returns:
+            list[CompletionEvent] result produced by this function.
+
+        """
         if max_blocking_duration_ms <= 0:
             return []
 
@@ -103,7 +135,15 @@ class BrokerCompletionSupport:
         self,
         completed_events: list[CompletionEvent],
     ) -> CompletionProcessingResult:
-        """Handle process completed events within completion event processing."""
+        """Handle process completed events within completion event processing.
+
+        Args:
+            completed_events: Completion events to process.
+
+        Returns:
+            CompletionProcessingResult result produced by this function.
+
+        """
         pending_events = [(event, True) for event in self._pending_dlq_events.values()]
         fresh_events = [(event, False) for event in completed_events]
         events_to_process = pending_events + fresh_events

@@ -3,6 +3,7 @@ from __future__ import annotations
 from textual.app import App
 
 from benchmarks.tui.controller import BenchmarkProcessController
+from benchmarks.tui.options_form import OptionsValidationResult
 from benchmarks.tui.results_modal import ResultsSummaryModalScreen
 from benchmarks.tui.screens.options import OptionsScreen, _ValidationResult
 from benchmarks.tui.screens.run import RunScreen, _format_elapsed
@@ -14,6 +15,7 @@ __all__ = [
     "ResultsSummaryModalScreen",
     "RunScreen",
     "_ValidationResult",
+    "OptionsValidationResult",
     "_format_elapsed",
 ]
 
@@ -38,7 +40,6 @@ class BenchmarkTuiApp(App[None]):
         border-top: solid $surface-lighten-1;
         padding: 1 2;
         background: $surface;
-        dock: bottom;
     }
 
     #argv-preview, #form-error-summary {
@@ -47,12 +48,61 @@ class BenchmarkTuiApp(App[None]):
         margin-bottom: 1;
     }
 
+    #argv-preview {
+        padding: 0 1;
+        max-height: 25vh;
+        overflow-y: auto;
+        text-wrap: wrap;
+        text-overflow: clip;
+    }
+
+    .workload-option-group {
+        height: auto;
+    }
+
+    .workload-option-group-title {
+        margin-top: 0;
+        margin-bottom: 0;
+        color: $text-muted;
+    }
+
+    .workload-option-row {
+        layout: horizontal;
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row .field-label {
+        width: 28;
+        margin-top: 0;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row Input, .workload-option-row Select {
+        width: 1fr;
+        margin-bottom: 0;
+    }
+
+    .workload-option-row Switch {
+        margin-bottom: 0;
+    }
+
     #form-error-summary {
         color: $warning;
         display: block;
     }
 
-    Input, Select, Switch, Static, Log, Collapsible, ProgressBar, DataTable, LoadingIndicator {
+    #copy-command-status {
+        display: none;
+        margin-bottom: 0;
+    }
+
+    #copy-command-status.has-status {
+        display: block;
+        margin-bottom: 1;
+    }
+
+    Input, Select, Switch, Static, Log, Collapsible, ProgressBar, DataTable {
         margin-bottom: 1;
     }
 
@@ -95,7 +145,15 @@ class BenchmarkTuiApp(App[None]):
 
     .field-error {
         color: $error;
+        display: none;
+        margin-bottom: 0;
+        min-height: 0;
+    }
+
+    .field-error.has-error {
+        display: block;
         margin-top: -1;
+        margin-bottom: 1;
         min-height: 1;
     }
 
@@ -117,6 +175,18 @@ class BenchmarkTuiApp(App[None]):
         border: round $accent;
         padding: 0 1;
         margin-bottom: 1;
+        height: auto;
+    }
+
+    #run-dashboard-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #run-current-panel {
+        width: 5fr;
+        min-width: 44;
+        margin-right: 1;
         height: auto;
     }
 
@@ -213,11 +283,14 @@ class BenchmarkTuiApp(App[None]):
     }
 
     #run-summary {
+        width: 7fr;
         height: auto;
+        margin-bottom: 0;
     }
 
     #run-log {
-        height: 16;
+        height: 1fr;
+        min-height: 22;
     }
 
     #run-actions, #options-actions {

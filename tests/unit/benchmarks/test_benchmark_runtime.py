@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import socket
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -68,7 +69,9 @@ def _build_args(**overrides: Any) -> argparse.Namespace:
         "order": ["key_hash"],
         "strict_completion_monitor": ["on"],
         "adaptive_concurrency": ["off"],
-        "process_transport": "shared_queue",
+        "process_transport": "worker_pipes",
+        "route_batch_size": 64,
+        "metrics_port": 0,
         "profile": False,
         "json_output": "benchmarks/results/test-runtime.json",
         "log_level": "WARNING",
@@ -344,6 +347,188 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
     ]
 
 
+def test_build_benchmark_run_plans_expands_selected_workloads_and_orderings() -> None:
+    plans = run_parallel_benchmark._build_benchmark_run_plans(
+        _build_args(
+            workloads=["sleep", "cpu"],
+            order=["key_hash", "partition"],
+            skip_process=False,
+        )
+    )
+
+    assert [
+        (plan.kind, plan.run_name, plan.workload, plan.ordering) for plan in plans
+    ] == [
+        ("baseline", "sleep-key_hash-baseline", "sleep", "key_hash"),
+        ("async", "sleep-key_hash-pyrallel-async", "sleep", "key_hash"),
+        ("process", "sleep-key_hash-pyrallel-process", "sleep", "key_hash"),
+        ("baseline", "sleep-partition-baseline", "sleep", "partition"),
+        ("async", "sleep-partition-pyrallel-async", "sleep", "partition"),
+        ("process", "sleep-partition-pyrallel-process", "sleep", "partition"),
+        ("baseline", "cpu-key_hash-baseline", "cpu", "key_hash"),
+        ("async", "cpu-key_hash-pyrallel-async", "cpu", "key_hash"),
+        ("process", "cpu-key_hash-pyrallel-process", "cpu", "key_hash"),
+        ("baseline", "cpu-partition-baseline", "cpu", "partition"),
+        ("async", "cpu-partition-pyrallel-async", "cpu", "partition"),
+        ("process", "cpu-partition-pyrallel-process", "cpu", "partition"),
+    ]
+
+
+def test_build_benchmark_run_plans_preserves_mode_suffixes_and_options() -> None:
+    plans = run_parallel_benchmark._build_benchmark_run_plans(
+        _build_args(
+            skip_baseline=True,
+            skip_process=False,
+            strict_completion_monitor=["on", "off"],
+            adaptive_concurrency=["off", "on"],
+            workload_options={"sleep": {"sleep_ms": 1.25}},
+        )
+    )
+
+    assert [
+        (
+            plan.kind,
+            plan.run_name,
+            plan.topic_name,
+            plan.group_id,
+            plan.strict_completion_monitor_enabled,
+            plan.adaptive_concurrency_enabled,
+            plan.workload_options,
+        )
+        for plan in plans
+    ] == [
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-on-adaptive-off",
+            "demo-topic-sleep-key_hash-async-strict-on-adaptive-off",
+            "async-group-sleep-key_hash-strict-on-adaptive-off",
+            True,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-on-adaptive-off",
+            "demo-topic-sleep-key_hash-process-strict-on-adaptive-off",
+            "process-group-sleep-key_hash-strict-on-adaptive-off",
+            True,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-on-adaptive-on",
+            "demo-topic-sleep-key_hash-async-strict-on-adaptive-on",
+            "async-group-sleep-key_hash-strict-on-adaptive-on",
+            True,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-on-adaptive-on",
+            "demo-topic-sleep-key_hash-process-strict-on-adaptive-on",
+            "process-group-sleep-key_hash-strict-on-adaptive-on",
+            True,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-off-adaptive-off",
+            "demo-topic-sleep-key_hash-async-strict-off-adaptive-off",
+            "async-group-sleep-key_hash-strict-off-adaptive-off",
+            False,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-off-adaptive-off",
+            "demo-topic-sleep-key_hash-process-strict-off-adaptive-off",
+            "process-group-sleep-key_hash-strict-off-adaptive-off",
+            False,
+            False,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "async",
+            "sleep-key_hash-pyrallel-async-strict-off-adaptive-on",
+            "demo-topic-sleep-key_hash-async-strict-off-adaptive-on",
+            "async-group-sleep-key_hash-strict-off-adaptive-on",
+            False,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+        (
+            "process",
+            "sleep-key_hash-pyrallel-process-strict-off-adaptive-on",
+            "demo-topic-sleep-key_hash-process-strict-off-adaptive-on",
+            "process-group-sleep-key_hash-strict-off-adaptive-on",
+            False,
+            True,
+            {"sleep": {"sleep_ms": 1.25}},
+        ),
+    ]
+
+
+def test_run_benchmark_preserves_event_loop_per_workload_ordering(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    loop_runs: list[int] = []
+    real_asyncio_run = asyncio.run
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+
+    async def _async_round(**_kwargs) -> BenchmarkResult:
+        return benchmark_result
+
+    def _record_asyncio_run(coro):
+        loop_runs.append(1)
+        return real_asyncio_run(coro)
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+    monkeypatch.setattr(run_parallel_benchmark.asyncio, "run", _record_asyncio_run)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_baseline=True,
+            skip_process=False,
+            skip_reset=True,
+            workloads=["sleep", "cpu"],
+            order=["key_hash", "partition"],
+        ),
+        raw_argv=[
+            "--skip-baseline",
+            "--skip-reset",
+            "--workloads",
+            "sleep,cpu",
+            "--order",
+            "key_hash,partition",
+        ],
+    )
+
+    assert loop_runs == [1, 1, 1, 1]
+
+
 def test_build_artifact_metadata_prefers_github_environment() -> None:
     metadata = run_parallel_benchmark._build_artifact_metadata(
         output_path="benchmarks/results/release-gate.json",
@@ -386,7 +571,17 @@ def test_build_artifact_metadata_prefers_github_environment() -> None:
             "tomorrow9913/Pyrallel-Consumer/.github/workflows/benchmarks.yml"
             "@refs/heads/develop"
         ),
+        "runner_interface": "cli",
     }
+
+
+def test_build_artifact_metadata_records_tui_runner_interface() -> None:
+    metadata = run_parallel_benchmark._build_artifact_metadata(
+        output_path="benchmarks/results/tui.json",
+        environ={"PYRALLEL_BENCHMARK_RUNNER_INTERFACE": "tui"},
+    )
+
+    assert metadata["runner_interface"] == "tui"
 
 
 def test_run_benchmark_writes_artifact_metadata(
@@ -524,7 +719,7 @@ def test_run_baseline_round_preserves_workload_specific_run_name(
 
 
 @pytest.mark.asyncio
-async def test_run_pyrparallel_round_does_not_forward_process_transport_to_async_helper(
+async def test_run_pyrparallel_round_omits_process_transport_helper_argument(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
@@ -558,11 +753,10 @@ async def test_run_pyrparallel_round_does_not_forward_process_transport_to_async
         process_worker_fn=lambda _item: None,
         workload="sleep",
         ordering="key_hash",
-        process_transport_mode="worker_pipes",
     )
 
     assert result is benchmark_result
-    assert captured["process_transport_mode"] is None
+    assert "process_transport_mode" not in captured
 
 
 def test_benchmark_stats_summary_carries_process_transport_mode() -> None:
@@ -584,6 +778,70 @@ def test_benchmark_stats_summary_carries_process_transport_mode() -> None:
     summary = stats.summary()
 
     assert summary.process_transport_mode == "worker_pipes"
+
+
+def test_benchmark_stats_summary_carries_route_batch_size() -> None:
+    stats = run_parallel_benchmark.BenchmarkStats(
+        run_name="process-run",
+        run_type="process",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        route_batch_size=64,
+        target_messages=1,
+    )
+
+    stats.start()
+    assert stats._start_time is not None
+    stats.record(0.001, completed_at=stats._start_time + 0.001)
+    stats.stop()
+
+    summary = stats.summary()
+
+    assert summary.route_batch_size == 64
+
+
+def test_benchmark_stats_summary_carries_runtime_ipc_metrics() -> None:
+    stats = run_parallel_benchmark.BenchmarkStats(
+        run_name="process-run",
+        run_type="process",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        process_transport_mode="worker_pipes",
+        route_batch_size=64,
+        process_batch_size=1,
+        target_messages=1,
+    )
+    process_metrics = SimpleNamespace(
+        items_per_input_ipc=2.0,
+        items_per_completion_ipc=2.0,
+        route_batch_count=1,
+        route_batch_item_count=2,
+        route_batch_size_avg=2.0,
+        route_batch_size_max=2,
+        completion_item_payload_count=0,
+        completion_batch_payload_count=1,
+    )
+
+    stats.start()
+    assert stats._start_time is not None
+    stats.record(0.001, completed_at=stats._start_time + 0.001)
+    stats.record_process_batch_metrics(process_metrics)
+    stats.stop()
+
+    summary = stats.summary()
+
+    assert summary.process_batch_size == 1
+    assert summary.route_batch_size == 64
+    assert summary.items_per_input_ipc == 2.0
+    assert summary.items_per_completion_ipc == 2.0
+    assert summary.route_batch_count == 1
+    assert summary.route_batch_item_count == 2
+    assert summary.route_batch_size_avg == 2.0
+    assert summary.route_batch_size_max == 2
+    assert summary.completion_item_payload_count == 0
+    assert summary.completion_batch_payload_count == 1
 
 
 def test_baseline_consumer_logs_effective_topic_name(
@@ -853,6 +1111,90 @@ async def test_wait_for_partition_assignment_raises_clear_error_for_topic() -> N
         )
 
 
+def test_benchmark_metrics_observer_records_success_and_stops_at_target() -> None:
+    completion_event = asyncio.Event()
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        topic="demo-topic",
+        ordering="key_hash",
+        target_messages=1,
+    )
+    consumption_stats = pyrallel_consumer_test.ConsumptionStats(target=1)
+    completions: list[tuple[TopicPartition, CompletionStatus, float]] = []
+
+    class _FakePrometheusExporter:
+        def observe_completion(self, tp, status, duration_seconds: float) -> None:
+            completions.append((tp, status, duration_seconds))
+
+    observer = pyrallel_consumer_test.BenchmarkMetricsObserver(
+        benchmark_stats=stats,
+        cons_stats=consumption_stats,
+        completion_event=completion_event,
+        prometheus_metrics_exporter=cast(Any, _FakePrometheusExporter()),
+    )
+    tp = TopicPartition(topic="demo-topic", partition=0)
+
+    observer.observe_completion(tp, CompletionStatus.SUCCESS, 0.01)
+
+    assert completions == [(tp, CompletionStatus.SUCCESS, 0.01)]
+    assert consumption_stats.processed == 1
+    assert stats.processed == 1
+    assert completion_event.is_set() is True
+    assert observer.failure_error is None
+
+
+def test_benchmark_metrics_observer_reports_completion_failure() -> None:
+    completion_event = asyncio.Event()
+    observer = pyrallel_consumer_test.BenchmarkMetricsObserver(
+        benchmark_stats=None,
+        cons_stats=pyrallel_consumer_test.ConsumptionStats(target=1),
+        completion_event=completion_event,
+    )
+
+    observer.observe_completion(
+        TopicPartition(topic="demo-topic", partition=0),
+        CompletionStatus.FAILURE,
+        0.01,
+    )
+
+    assert observer.failure_error == (
+        "Benchmark worker failure on demo-topic[0]: completion failed"
+    )
+    assert completion_event.is_set() is True
+
+
+def test_record_release_gate_metrics_from_snapshot_sums_partition_metrics() -> None:
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="async",
+        workload="sleep",
+        topic="demo-topic",
+        ordering="key_hash",
+    )
+    metrics = SimpleNamespace(
+        partitions=[
+            SimpleNamespace(true_lag=3, gap_count=1),
+            SimpleNamespace(true_lag=5, gap_count=2),
+        ]
+    )
+
+    pyrallel_consumer_test._record_release_gate_metrics_from_snapshot(
+        stats,
+        cast(Any, metrics),
+        elapsed_sec=1.25,
+    )
+
+    assert stats._release_gate_observations == [
+        {
+            "elapsed_sec": 1.25,
+            "consumer_parallel_lag": 8,
+            "consumer_gap_count": 3,
+        }
+    ]
+
+
 def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:
     config = pyrallel_consumer_test.build_kafka_config(
         strict_completion_monitor_enabled=False
@@ -883,21 +1225,41 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
     )
 
 
-def test_build_kafka_config_keeps_shared_queue_default_transport_mode() -> None:
+def test_build_kafka_config_sets_route_batch_size_without_changing_process_batching() -> (
+    None
+):
+    config = pyrallel_consumer_test.build_kafka_config(
+        process_batch_size=1,
+        route_batch_size=64,
+    )
+
+    assert not hasattr(config.parallel_consumer.execution, "route_batch_size")
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 64
+    assert config.parallel_consumer.execution.process_config.batch_size == 1
+
+
+def test_build_kafka_config_defaults_route_batch_size_to_worker_pipes_profile() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.process_config.transport_mode == (
-        "shared_queue"
+    assert not hasattr(config.parallel_consumer.execution, "route_batch_size")
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 64
+
+
+def test_build_kafka_config_defaults_to_worker_pipes_transport_profile() -> None:
+    config = pyrallel_consumer_test.build_kafka_config()
+
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config, "transport_mode"
     )
+    assert config.parallel_consumer.execution.process_config.batch_size == 1
+    assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
 
 
-def test_build_kafka_config_sets_process_transport_mode_override() -> None:
-    config = pyrallel_consumer_test.build_kafka_config(
-        process_transport_mode="worker_pipes"
-    )
+def test_build_kafka_config_has_single_worker_pipes_topology() -> None:
+    config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.process_config.transport_mode == (
-        "worker_pipes"
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config, "transport_mode"
     )
     assert config.parallel_consumer.execution.process_config.batch_size == 1
     assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
@@ -928,6 +1290,62 @@ def test_normalize_metrics_port_treats_non_positive_values_as_disabled() -> None
     assert run_parallel_benchmark._normalize_metrics_port(0) is None
     assert run_parallel_benchmark._normalize_metrics_port(-1) is None
     assert run_parallel_benchmark._normalize_metrics_port(9091) == 9091
+
+
+def test_ensure_metrics_port_available_reports_listening_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        monkeypatch.setattr(
+            run_parallel_benchmark,
+            "_list_listening_pids",
+            lambda _port: ("1234",),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Metrics port \d+ is already in use\(PID 1234\)",
+        ):
+            run_parallel_benchmark._ensure_metrics_port_available(port)
+
+
+def test_run_benchmark_checks_metrics_port_before_running_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_check_kafka_connection",
+        lambda _bootstrap: events.append("kafka"),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_ensure_metrics_port_available",
+        lambda _port: (_ for _ in ()).throw(RuntimeError("port occupied")),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "reset_topics_and_groups",
+        lambda **_kwargs: events.append("reset"),
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    with pytest.raises(RuntimeError, match="port occupied"):
+        run_parallel_benchmark.run_benchmark(
+            _build_args(metrics_port=9091), raw_argv=["--metrics-port", "9091"]
+        )
+
+    assert events == ["kafka"]
 
 
 def test_get_or_create_prometheus_exporter_reuses_port(
@@ -1030,7 +1448,7 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
 
 
 @pytest.mark.asyncio
-async def test_run_pyrallel_consumer_test_passes_process_transport_mode_to_build_kafka_config(
+async def test_run_pyrallel_consumer_test_does_not_pass_process_transport_mode_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -1089,10 +1507,87 @@ async def test_run_pyrallel_consumer_test_passes_process_transport_mode_to_build
         timeout_sec=0,
         execution_mode="process",
         process_worker_fn=lambda _item: None,
-        process_transport_mode="worker_pipes",
     )
 
-    assert captured["process_transport_mode"] == "worker_pipes"
+    assert "process_transport_mode" not in captured
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_passes_route_batch_size_to_config_and_work_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_config: dict[str, Any] = {}
+    captured_work_manager: dict[str, Any] = {}
+
+    class _FakePoller:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(
+                partitions=[SimpleNamespace(tp=TopicPartition("demo", 0))]
+            )
+
+    class _FakeConsumer:
+        async def shutdown(self) -> None:
+            return None
+
+    def _fake_build_kafka_config(**kwargs):
+        captured_config.update(kwargs)
+        config = pyrallel_consumer_test.KafkaConfig()
+        config.parallel_consumer.execution.process_config.route_batch_size = kwargs[
+            "route_batch_size"
+        ]
+        return config
+
+    def _capture_work_manager(**kwargs):
+        captured_work_manager.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "build_kafka_config", _fake_build_kafka_config
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "ProcessExecutionEngine",
+        lambda **_kwargs: _FakeConsumer(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "WorkManager",
+        _capture_work_manager,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "BrokerPoller",
+        lambda **_kwargs: _FakePoller(),
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+
+    await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=0,
+        timeout_sec=0,
+        execution_mode="process",
+        process_worker_fn=lambda _item: None,
+        process_batch_size=1,
+        route_batch_size=64,
+    )
+
+    assert captured_config["route_batch_size"] == 64
+    assert captured_config["process_batch_size"] == 1
+    assert captured_work_manager["route_batch_size"] == 64
 
 
 @pytest.mark.asyncio
@@ -1313,11 +1808,11 @@ def test_run_benchmark_passes_process_overrides_to_process_round(
     assert process_calls == [(1, 0, 2, "demand_min_residence", 2)]
 
 
-def test_run_benchmark_passes_process_transport_mode_to_process_round(
+def test_run_benchmark_does_not_pass_process_transport_mode_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
-    process_calls: list[str | None] = []
+    process_calls: list[bool] = []
 
     monkeypatch.setattr(
         run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
@@ -1348,7 +1843,7 @@ def test_run_benchmark_passes_process_transport_mode_to_process_round(
 
     async def _async_round(**kwargs) -> BenchmarkResult:
         if kwargs["mode"].value == "process":
-            process_calls.append(kwargs.get("process_transport_mode"))
+            process_calls.append("process_transport_mode" in kwargs)
         return benchmark_result
 
     monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
@@ -1357,16 +1852,69 @@ def test_run_benchmark_passes_process_transport_mode_to_process_round(
         _build_args(
             skip_async=True,
             skip_process=False,
-            process_transport="worker_pipes",
         ),
         raw_argv=[
             "--skip-async",
-            "--process-transport",
-            "worker_pipes",
         ],
     )
 
-    assert process_calls == ["worker_pipes"]
+    assert process_calls == [False]
+
+
+def test_run_benchmark_passes_route_batch_size_to_process_round(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    process_calls: list[int] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        if kwargs["mode"].value == "process":
+            process_calls.append(kwargs["route_batch_size"])
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_async=True,
+            skip_process=False,
+            route_batch_size=64,
+        ),
+        raw_argv=[
+            "--skip-async",
+            "--process-route-batch-size",
+            "64",
+        ],
+    )
+
+    assert process_calls == [64]
 
 
 def test_run_benchmark_does_not_forward_process_transport_mode_to_async_round(
@@ -1413,12 +1961,9 @@ def test_run_benchmark_does_not_forward_process_transport_mode_to_async_round(
         _build_args(
             skip_async=False,
             skip_process=True,
-            process_transport="worker_pipes",
         ),
         raw_argv=[
             "--skip-process",
-            "--process-transport",
-            "worker_pipes",
         ],
     )
 
@@ -1681,6 +2226,108 @@ def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     assert "Tiny process partition benchmark detected" not in output
 
 
+def test_run_benchmark_filters_workload_options_per_selected_workload(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    selected_options: list[tuple[str, dict[str, dict[str, object]] | None]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+
+    def _select_workers(**kwargs):
+        selected_options.append((kwargs["workload"], kwargs["workload_options"]))
+        return (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        )
+
+    monkeypatch.setattr(run_parallel_benchmark, "_select_workers", _select_workers)
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_async=True,
+            workloads=["sleep", "cpu"],
+            workload_options={
+                "sleep": {"sleep_ms": 1.25},
+                "cpu": {"iterations": 2000},
+            },
+        ),
+        raw_argv=[
+            "--skip-async",
+            "--workloads",
+            "sleep,cpu",
+            "--workload-option",
+            "sleep.sleep_ms=1.25",
+            "--workload-option",
+            "cpu.iterations=2000",
+        ],
+    )
+
+    assert selected_options == [
+        ("sleep", {"sleep": {"sleep_ms": 1.25}}),
+        ("cpu", {"cpu": {"iterations": 2000}}),
+    ]
+
+
+def test_run_benchmark_skips_process_worker_validation_when_process_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    validate_process_flags: list[bool] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+
+    def _select_workers(**kwargs):
+        validate_process_flags.append(kwargs["validate_process_worker"])
+        return (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        )
+
+    monkeypatch.setattr(run_parallel_benchmark, "_select_workers", _select_workers)
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_run_baseline_round",
+        lambda **_kwargs: benchmark_result,
+    )
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(skip_async=True, skip_process=True),
+        raw_argv=["--skip-async", "--skip-process"],
+    )
+
+    assert validate_process_flags == [False]
+
+
 def test_ordering_validator_reports_key_hash_pass_summary() -> None:
     validator = pyrallel_consumer_test.OrderingValidator(
         ordering_mode="key_hash", topic_name="demo-topic"
@@ -1704,6 +2351,35 @@ def test_ordering_validator_reports_key_hash_pass_summary() -> None:
             epoch=0,
             key="key-0",
             payload=b'{"key":"key-0","sequence":1}',
+        )
+    )
+
+    assert validator.summary() == "Ordering validation PASS: key_hash keys=1 checks=2"
+
+
+def test_ordering_validator_allows_nonzero_first_key_hash_sequence() -> None:
+    validator = pyrallel_consumer_test.OrderingValidator(
+        ordering_mode="key_hash", topic_name="demo-topic"
+    )
+
+    validator.observe(
+        WorkItem(
+            id="item-67",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=67,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":67}',
+        )
+    )
+    validator.observe(
+        WorkItem(
+            id="item-68",
+            tp=TopicPartition(topic="demo-topic", partition=0),
+            offset=68,
+            epoch=0,
+            key="key-0",
+            payload=b'{"key":"key-0","sequence":68}',
         )
     )
 

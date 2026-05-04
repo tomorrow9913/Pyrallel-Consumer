@@ -77,7 +77,7 @@ Use this when a new release rollout causes production-impacting regressions.
 - **CPU bound**: process mode, `process_count=cpu_count`, tune `process_config.batch_size` and `queue_size` for CPU saturation.
 - **Mixed**: start async; if CPU spikes, move hot paths to process workers for those topics.
 
-## Execution Mode Recommendation Matrix (MQU-168)
+## Execution Mode Recommendation Matrix
 
 This matrix is the operator-facing recommendation surface derived from the current
 playbook defaults and release-gate evidence.
@@ -184,26 +184,23 @@ Before treating a run as meaningful evidence for the remaining P1 stability item
 Release gate verdicts (`PASS`/`FAIL`) follow the fixed gate definitions in
 `docs/operations/soak-restart-evidence.md`.
 
-## Release Go/No-Go Threshold (MQU-117)
+## Release Go/No-Go Threshold
 
 The thresholds below are the **fixed performance baselines** used for release review
-before stable promotion. They were finalized in a CTO round based on cumulative
-distribution across `benchmarks/results/*.json` (focused on 10k+ messages,
-8 partitions, strict monitor on). For direct MQU-164 decision quoting, also
-use the one-page summary in
-`docs/operations/mqu-168-execution-mode-release-interpretation.md`.
+before stable promotion. They are based on the repository's retained benchmark
+artifacts in `benchmarks/results/*.json`, focused on 10k+ messages, 8 partitions,
+and strict completion monitoring.
 
 ### Standard Measurement Conditions
 
 - Command:
-  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --process-transport shared_queue --json-output benchmarks/results/release-gate-shared-queue-<UTC>.json`
-  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --process-transport worker_pipes --json-output benchmarks/results/release-gate-worker-pipes-<UTC>.json`
+  - `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.run_parallel_benchmark --skip-baseline --workloads sleep,cpu,io --order key_hash,partition --strict-completion-monitor on --num-messages 10000 --num-partitions 8 --log-level WARNING --metrics-port 9091 --process-route-batch-size 64 --json-output benchmarks/results/release-gate-worker-pipes-<UTC>.json`
 - Compare only with profiling disabled (`--profile`/`--py-spy` not used).
-- Run at least twice per process transport under identical conditions and judge
+- Run at least twice under identical process-route-batch conditions and judge
   by worst-case values per combination (`TPS` minimum, `p99` maximum).
 - Evaluate the repeated JSON artifacts with the machine gate before approving a
   release-candidate performance verdict:
-  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-shared-queue-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-shared-queue-<UTC-2>.json --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-2>.json`.
+  `UV_CACHE_DIR=.uv-cache uv run python -m benchmarks.release_gate --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-1>.json --benchmark-json benchmarks/results/release-gate-worker-pipes-<UTC-2>.json`.
   The evaluator emits JSON with `verdict: PASS|NO-GO`; any `NO-GO` is
   release-blocking.
 

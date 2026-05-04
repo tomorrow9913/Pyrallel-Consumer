@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/execution_plane/process_worker_runtime.py
+# Role: Runs child-process worker loops, task decoding, retries, and completion emission.
+# Extend here for worker-process runtime behavior; keep parent orchestration in process_engine.py.
 from __future__ import annotations
 
 import logging
@@ -13,6 +17,7 @@ import msgpack  # type: ignore[import-untyped]
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
+    BatchCompletion,
     CompletionEvent,
     CompletionStatus,
     TopicPartition,
@@ -23,6 +28,9 @@ from pyrallel_consumer.execution_plane.process_codec import (
 )
 from pyrallel_consumer.execution_plane.process_codec import (
     decode_incoming_payloads as _decode_incoming_payloads,
+)
+from pyrallel_consumer.execution_plane.process_codec import (
+    serialize_batch_completion_payload as _serialize_batch_completion_payload,
 )
 from pyrallel_consumer.execution_plane.process_codec import (
     work_item_from_dict as _work_item_from_dict,
@@ -37,7 +45,15 @@ _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
 
 
 def _receive_task_payload(task_source: Any) -> Any:
-    """Handle receive task payload within process worker runtime."""
+    """Handle receive task payload within process worker runtime.
+
+    Args:
+        task_source: Queue or pipe endpoint from which the worker receives tasks.
+
+    Returns:
+        Any result produced by this function.
+
+    """
     recv_bytes = getattr(task_source, "recv_bytes", None)
     if callable(recv_bytes):
         return recv_bytes()
@@ -51,8 +67,19 @@ def _calculate_backoff(
     max_retry_backoff_ms: int,
     retry_jitter_ms: int,
 ) -> float:
-    """Calculate backoff delay in seconds with optional exponential scaling and jitter."""
+    """Calculate backoff delay in seconds with optional exponential scaling and jitter.
 
+    Args:
+        attempt: Current retry attempt number.
+        retry_backoff_ms: Base retry backoff in milliseconds.
+        exponential_backoff: Whether to apply exponential retry backoff.
+        max_retry_backoff_ms: Maximum retry backoff in milliseconds.
+        retry_jitter_ms: Maximum retry jitter in milliseconds.
+
+    Returns:
+        Computed floating-point value.
+
+    """
     if exponential_backoff:
         backoff_ms = retry_backoff_ms * (2 ** (attempt - 1))
     else:
@@ -64,6 +91,65 @@ def _calculate_backoff(
     return total_delay_ms / 1000.0
 
 
+def _flush_route_batch_completion(
+    *,
+    completion_queue: Queue,
+    registry_event_queue: Queue,
+    worker_logger: logging.Logger,
+    process_idx: int,
+    route_batch_id: object,
+    route_identity: tuple[Any, ...] | None,
+    batch_completion_results: list[CompletionEvent],
+) -> None:
+    """Flush executed route-batch prefix results to the parent completion queue."""
+    if not batch_completion_results:
+        return
+    batch_completion = BatchCompletion(
+        batch_id=str(route_batch_id),
+        route_identity=route_identity if route_identity is not None else (),
+        results=batch_completion_results,
+    )
+    try:
+        completion_queue.put(  # type: ignore[arg-type]
+            _serialize_batch_completion_payload(
+                batch_completion,
+                completion_enqueued_at=time.monotonic(),
+            )
+        )
+    except Exception as put_exc:
+        registry_event_queue.put(
+            {
+                "kind": "batch_completion_send_failed",
+                "batch_id": str(route_batch_id),
+                "error": str(put_exc),
+            }
+        )
+        worker_logger.error(
+            "Failed to enqueue batch completion for batch_id=%s in ProcessWorker[%d]: %s",
+            route_batch_id,
+            process_idx,
+            put_exc,
+        )
+        for completion_event in batch_completion_results:
+            try:
+                completion_queue.put(
+                    msgpack.packb(
+                        _completion_event_to_dict(
+                            completion_event,
+                            extra_fields={"completion_enqueued_at": time.monotonic()},
+                        ),
+                        use_bin_type=True,
+                    )
+                )
+            except Exception as fallback_exc:
+                worker_logger.error(
+                    "Failed to enqueue fallback completion for offset=%d in ProcessWorker[%d]: %s",
+                    completion_event.offset,
+                    process_idx,
+                    fallback_exc,
+                )
+
+
 def _worker_loop(
     task_source: Any,
     completion_queue: Queue,
@@ -73,7 +159,21 @@ def _worker_loop(
     execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
 ):
-    """Handle worker loop within process worker runtime."""
+    """Handle worker loop within process worker runtime.
+
+    Args:
+        task_source: Queue or pipe endpoint from which the worker receives tasks.
+        completion_queue: Queue used to send completion events to the parent process.
+        registry_event_queue: Queue containing worker registry events.
+        worker_fn: User worker callable invoked for each work item.
+        process_idx: Index of the worker process running this loop.
+        execution_config: Execution configuration used by the worker loop.
+        log_queue: Optional logging queue configured by the parent process.
+
+    Raises:
+        TimeoutError: If the worker task exceeds its configured timeout.
+
+    """
     if log_queue is not None:
         LogManager.setup_worker_logging(log_queue)
 
@@ -138,6 +238,8 @@ def _worker_loop(
             continue
 
         flush_enqueued_at = timing_metadata.get("flush_enqueued_at")
+        route_batch_id = timing_metadata.get("route_batch_id")
+        route_identity = timing_metadata.get("route_identity")
         if flush_enqueued_at is not None:
             registry_event_queue.put(
                 {
@@ -150,6 +252,8 @@ def _worker_loop(
 
         batch_run_started_at: Optional[float] = None
         batch_completed_sent = False
+        batch_completion_results: list[CompletionEvent] = []
+        deferred_done_events: list[dict[str, Any]] = []
 
         for idx, payload in enumerate(payloads):
             work_item = _work_item_from_dict(payload)
@@ -187,7 +291,16 @@ def _worker_loop(
                     if timeout_sec > 0:
 
                         def _handle_timeout(signum, frame):
-                            """Handle timeout for process worker runtime."""
+                            """Handle timeout for process worker runtime.
+
+                            Args:
+                                signum: Signal number received by the worker timeout handler.
+                                frame: Interpreter frame supplied by the signal handler.
+
+                            Raises:
+                                TimeoutError: If the worker task exceeds its configured timeout.
+
+                            """
                             raise TimeoutError(
                                 "Task offset=%d exceeded %.3fs"
                                 % (work_item.offset, timeout_sec)
@@ -271,6 +384,8 @@ def _worker_loop(
                     error=error,
                     attempt=attempt,
                 )
+                if route_batch_id is not None:
+                    batch_completion_results.append(completion_event)
                 if (
                     not batch_completed_sent
                     and batch_run_started_at is not None
@@ -285,30 +400,45 @@ def _worker_loop(
                         }
                     )
                     batch_completed_sent = True
-                packed_completion = msgpack.packb(
-                    _completion_event_to_dict(
-                        completion_event,
-                        extra_fields={"completion_enqueued_at": time.monotonic()},
-                    ),
-                    use_bin_type=True,
-                )
-                try:
-                    completion_queue.put(packed_completion)
-                except Exception as put_exc:
-                    worker_logger.error(
-                        "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
-                        work_item.offset,
-                        process_idx,
-                        put_exc,
+                if route_batch_id is None:
+                    packed_completion = msgpack.packb(
+                        _completion_event_to_dict(
+                            completion_event,
+                            extra_fields={"completion_enqueued_at": time.monotonic()},
+                        ),
+                        use_bin_type=True,
                     )
-                finally:
-                    registry_event_queue.put(
-                        {
-                            "kind": "done",
-                            "key": in_flight_key,
-                            "payload": _work_item_identity_payload(payload),
-                        }
-                    )
+                    try:
+                        completion_queue.put(packed_completion)
+                    except Exception as put_exc:
+                        worker_logger.error(
+                            "Failed to enqueue completion for offset=%d in ProcessWorker[%d]: %s",
+                            work_item.offset,
+                            process_idx,
+                            put_exc,
+                        )
+                done_event = {
+                    "kind": "done",
+                    "key": in_flight_key,
+                    "payload": _work_item_identity_payload(payload),
+                }
+                if route_batch_id is None:
+                    registry_event_queue.put(done_event)
+                else:
+                    deferred_done_events.append(done_event)
+
+                if status == CompletionStatus.FAILURE and route_batch_id is not None:
+                    remaining_payloads = [dict(entry) for entry in payloads[idx + 1 :]]
+                    if remaining_payloads:
+                        registry_event_queue.put(
+                            {
+                                "kind": "not_started",
+                                "reason": "ordered_batch_failure",
+                                "batch_id": route_batch_id,
+                                "payloads": remaining_payloads,
+                            }
+                        )
+                    break
 
             # Check worker recycling after task completion
             if recycle_limit is not None:
@@ -332,6 +462,18 @@ def _worker_loop(
                     should_exit_after_batch = True
 
             if fatal_timeout:
+                if route_batch_id is not None:
+                    _flush_route_batch_completion(
+                        completion_queue=completion_queue,
+                        registry_event_queue=registry_event_queue,
+                        worker_logger=worker_logger,
+                        process_idx=process_idx,
+                        route_batch_id=route_batch_id,
+                        route_identity=route_identity,
+                        batch_completion_results=batch_completion_results,
+                    )
+                    for done_event in deferred_done_events:
+                        registry_event_queue.put(done_event)
                 worker_logger.error(
                     "ProcessWorker[%d] exiting due to task timeout; parent will respawn",
                     process_idx,
@@ -350,6 +492,19 @@ def _worker_loop(
                     ),
                 }
             )
+
+        if route_batch_id is not None and batch_completion_results:
+            _flush_route_batch_completion(
+                completion_queue=completion_queue,
+                registry_event_queue=registry_event_queue,
+                worker_logger=worker_logger,
+                process_idx=process_idx,
+                route_batch_id=route_batch_id,
+                route_identity=route_identity,
+                batch_completion_results=batch_completion_results,
+            )
+            for done_event in deferred_done_events:
+                registry_event_queue.put(done_event)
 
         if should_exit_after_batch:
             break

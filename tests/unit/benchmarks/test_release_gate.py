@@ -21,7 +21,7 @@ def _result(
     ordering: str,
     throughput_tps: float,
     p99_processing_ms: float,
-    process_transport_mode: str = "shared_queue",
+    process_transport_mode: str = "worker_pipes",
     messages_processed: int = 10000,
     final_lag: int = 0,
     final_gap_count: int = 0,
@@ -60,7 +60,7 @@ def _passing_summary() -> dict[str, object]:
                     run_type=run_type,
                     workload=workload,
                     ordering=ordering,
-                    process_transport_mode=process_transport_mode or "shared_queue",
+                    process_transport_mode=process_transport_mode or "worker_pipes",
                     throughput_tps=threshold.tps_floor + 1,
                     p99_processing_ms=threshold.p99_ceiling_ms - 0.1,
                 )
@@ -382,13 +382,10 @@ def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(
     report = release_gate.evaluate_release_gate(paths)
 
     assert report["verdict"] == "PASS"
-    assert report["summary"]["process_transport_modes"] == [
-        "shared_queue",
-        "worker_pipes",
-    ]
+    assert report["summary"]["process_transport_modes"] == ["worker_pipes"]
 
 
-def test_evaluate_release_gate_requires_each_process_transport_mode(
+def test_evaluate_release_gate_requires_worker_pipes_transport_mode(
     tmp_path: Path,
 ) -> None:
     summary = _passing_summary()
@@ -416,7 +413,7 @@ def test_evaluate_release_gate_requires_each_process_transport_mode(
     assert "process/sleep/key_hash/worker_pipes" in failed_combinations
 
 
-def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
+def test_evaluate_release_gate_accepts_process_results_missing_transport_mode(
     tmp_path: Path,
 ) -> None:
     bad = _passing_summary()
@@ -433,11 +430,8 @@ def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
 
     report = release_gate.evaluate_release_gate(paths)
 
-    assert report["verdict"] == "NO-GO"
-    failed_codes = {
-        check["code"] for check in report["checks"] if check["status"] == "FAIL"
-    }
-    assert "measurement_conditions" in failed_codes
+    assert report["verdict"] == "PASS"
+    assert report["summary"]["process_transport_modes"] == ["worker_pipes"]
 
 
 def test_evaluate_release_gate_rejects_unknown_process_transport_mode(

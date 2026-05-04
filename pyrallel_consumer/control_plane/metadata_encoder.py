@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/metadata_encoder.py
+# Role: Encodes completed-offset snapshots into compact Kafka commit metadata and decodes them back.
+# Extend here for metadata formats; keep rebalance usage in broker_rebalance_support.py.
 import logging
 from typing import Set
 
@@ -5,32 +9,33 @@ logger = logging.getLogger(__name__)
 
 
 class MetadataEncoder:
-    """
-    MetadataEncoder는 오프셋 집합을 효율적으로 인코딩하고 디코딩하는 기능을 제공합니다.
+    """MetadataEncoder는 오프셋 집합을 효율적으로 인코딩하고 디코딩하는 기능을 제공합니다.
 
     Attributes:
         max_metadata_size (int): 인코딩된 메타데이터의 최대 크기 (바이트 단위)
+
     """
 
     def __init__(self, max_metadata_size: int = 4000):
-        """
-        초기화 메서드입니다.
+        """초기화 메서드입니다.
 
         Args:
             max_metadata_size (int, optional): 인코딩된 메타데이터의 최대 크기 (바이트 단위). Defaults to 4000.
+
         """
         self.max_metadata_size = max_metadata_size
 
     def _rle_encode_offsets(self, offsets: Set[int]) -> str:
-        """
-        오프셋 집합을 run-length encoding (RLE) 방식으로 인코딩합니다.
-        ex) {1,2,3,5,6,8} -> "1-3,5-6,8"
+        """오프셋 집합을 run-length encoding (RLE) 방식으로 인코딩합니다.
+
+        ex) {1,2,3,5,6,8} -> "1-3,5-6,8".
 
         Args:
             offsets (Set[int]): 인코딩할 오프셋 집합
 
         Returns:
             str: run-length encoded 오프셋 문자열
+
         """
         if not offsets:
             return ""
@@ -65,7 +70,8 @@ class MetadataEncoder:
 
     def _bitset_encode_offsets(self, offsets: Set[int], base_offset: int) -> str:
         """bitset으로 인코딩된 오프셋을 반환합니다.
-        ex) {1,2,3,5} with base_offset 1 -> "1:17" (hex)
+
+        ex) {1,2,3,5} with base_offset 1 -> "1:17" (hex).
 
         Args:
             offsets (Set[int]): 인코딩할 오프셋 집합
@@ -73,6 +79,7 @@ class MetadataEncoder:
 
         Returns:
             str: bitset 인코딩 문자열 (hex payload)
+
         """
         if not offsets:
             return f"{base_offset}:"
@@ -99,8 +106,7 @@ class MetadataEncoder:
         return f"{base_offset}:{bit_hex}"
 
     def encode_metadata(self, offsets: Set[int], base_offset: int) -> str:
-        """
-        오프셋 집합을 RLE 또는 Bitset 방식 중 짧은 것을 인코딩하여 반환합니다.
+        """오프셋 집합을 RLE 또는 Bitset 방식 중 짧은 것을 인코딩하여 반환합니다.
 
         Args:
             offsets (Set[int]): 인코딩할 오프셋 집합
@@ -108,6 +114,7 @@ class MetadataEncoder:
 
         Returns:
             str: 인코딩된 메타데이터 문자열
+
         """
         rle_encoded = self._rle_encode_offsets(offsets)
         bitset_encoded = self._bitset_encode_offsets(offsets, base_offset)
@@ -131,9 +138,16 @@ class MetadataEncoder:
         return bitset_payload
 
     def _rle_decode_offsets(self, encoded_str: str) -> Set[int]:
-        """
-        Run-length encoded 문자열을 오프셋 집합으로 디코딩합니다.
-        ex) "1-3,5-6,8" -> {1,2,3,5,6,8}
+        """Run-length encoded 문자열을 오프셋 집합으로 디코딩합니다.
+
+        ex) "1-3,5-6,8" -> {1,2,3,5,6,8}.
+
+        Args:
+            encoded_str (str): RLE payload 문자열입니다.
+
+        Returns:
+            Set[int]: 디코딩된 offset 집합입니다.
+
         """
         offsets: Set[int] = set()
         if not encoded_str:
@@ -149,9 +163,16 @@ class MetadataEncoder:
         return offsets
 
     def _bitset_decode_offsets(self, encoded_str: str) -> Set[int]:
-        """
-        Bitset으로 인코딩된 문자열을 오프셋 집합으로 디코딩합니다.
-        ex) "1:17" -> {1,2,3,5}
+        """Bitset으로 인코딩된 문자열을 오프셋 집합으로 디코딩합니다.
+
+        ex) "1:17" -> {1,2,3,5}.
+
+        Args:
+            encoded_str (str): bitset payload 문자열입니다.
+
+        Returns:
+            Set[int]: 디코딩된 offset 집합입니다.
+
         """
         offsets: Set[int] = set()
         if ":" not in encoded_str:
@@ -174,8 +195,14 @@ class MetadataEncoder:
         return offsets
 
     def decode_metadata(self, metadata: str) -> Set[int]:
-        """
-        인코딩된 메타데이터 문자열을 오프셋 집합으로 디코딩합니다.
+        """인코딩된 메타데이터 문자열을 오프셋 집합으로 디코딩합니다.
+
+        Args:
+            metadata (str): strategy prefix가 포함된 commit metadata 문자열입니다.
+
+        Returns:
+            Set[int]: 디코딩된 offset 집합입니다. 알 수 없는 형식이면 빈 집합입니다.
+
         """
         if not metadata:
             return set()

@@ -10,8 +10,20 @@ from benchmarks.tui.results_report import (
     summarize_results_overview,
     summarize_workload_winners,
 )
+from benchmarks.workloads import available_names
 
-_WORKLOAD_NAMES = ("sleep", "cpu", "io")
+
+def _workload_display_key(workload: str) -> tuple[int, int | str]:
+    """Preserve registry order before sorting unknown custom workloads by name."""
+    workload_order = {name: index for index, name in enumerate(available_names())}
+    if workload in workload_order:
+        return (0, workload_order[workload])
+    return (1, workload)
+
+
+def _ordered_workloads(workloads: tuple[str, ...]) -> tuple[str, ...]:
+    """Return workloads in registry display order for modal text."""
+    return tuple(sorted(workloads, key=_workload_display_key))
 
 
 class ResultsSummaryModalScreen(ModalScreen[str | None]):
@@ -113,10 +125,9 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
         """Handle winner section text within results modal."""
         winners = self._winners.get(ordering, {})
         lines = ["정렬: %s" % ordering]
-        for workload in _WORKLOAD_NAMES:
-            winner = winners.get(workload)
-            if winner is None:
-                continue
+        for workload, winner in sorted(
+            winners.items(), key=lambda item: _workload_display_key(item[0])
+        ):
             lines.append(
                 "%s · %s · %s TPS · 평균 %sms · P99 %sms"
                 % (
@@ -141,7 +152,7 @@ class ResultsSummaryModalScreen(ModalScreen[str | None]):
             return "요약을 만들 수 없습니다."
         return "실행 %d건 | workload: %s | 최고 TPS: %s (%s TPS)" % (
             self._overview.total_runs,
-            ", ".join(self._overview.workloads) or "unknown",
+            ", ".join(_ordered_workloads(self._overview.workloads)) or "unknown",
             self._overview.best_run_name,
             self._overview.best_tps,
         )

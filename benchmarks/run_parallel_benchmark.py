@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import socket
+import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, List, Sequence, cast
+from typing import Awaitable, Callable, List, Literal, Sequence
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -21,7 +24,6 @@ from benchmarks.benchmark_artifacts import (
 )
 from benchmarks.benchmark_cli import build_parser
 from benchmarks.benchmark_output import print_table as _print_table
-from benchmarks.benchmark_rounds import ProcessTransportMode
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
 from benchmarks.profiling import profile_session as _profile_session
@@ -39,12 +41,70 @@ from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
 from benchmarks.workloads import select_workers as _select_workers
 from pyrallel_consumer.dto import WorkItem
 
+BenchmarkRunKind = Literal["baseline", "async", "process"]
+BenchmarkWorkerBundle = tuple[
+    Callable[[bytes], None],
+    Callable[[WorkItem], Awaitable[None]],
+    Callable[[WorkItem], None],
+]
+
+
+@dataclass(frozen=True)
+class BenchmarkRunPlan:
+    """Describe one benchmark run identity before side-effectful execution."""
+
+    kind: BenchmarkRunKind
+    workload: str
+    ordering: str
+    topic_name: str
+    run_name: str
+    group_id: str
+    strict_completion_monitor_enabled: bool
+    adaptive_concurrency_enabled: bool
+    workload_options: dict[str, dict[str, object]] | None
+
 
 def _normalize_metrics_port(metrics_port: int | None) -> int | None:
     """Normalize metrics port for benchmark orchestration."""
     if metrics_port is None or metrics_port <= 0:
         return None
     return metrics_port
+
+
+def _list_listening_pids(port: int) -> tuple[str, ...]:
+    """Return process ids listening on the given TCP port when discoverable."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return ()
+    if result.returncode not in {0, 1}:
+        return ()
+    pids = tuple(
+        line.strip() for line in result.stdout.splitlines() if line.strip().isdigit()
+    )
+    return tuple(dict.fromkeys(pids))
+
+
+def _ensure_metrics_port_available(metrics_port: int | None) -> None:
+    """Fail before benchmark work starts when the metrics port is occupied."""
+    if metrics_port is None:
+        return
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", metrics_port))
+        except OSError as exc:
+            pids = _list_listening_pids(metrics_port)
+            pid_suffix = "(PID %s)" % ",".join(pids) if pids else ""
+            raise RuntimeError(
+                "Metrics port %s is already in use%s. Stop the process using that "
+                "port, choose another port with --metrics-port, or disable "
+                "benchmark metrics with --metrics-port 0." % (metrics_port, pid_suffix)
+            ) from exc
 
 
 def _run_baseline_round(
@@ -113,14 +173,11 @@ async def _run_pyrparallel_round(
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
-    process_transport_mode: ProcessTransportMode | None = None,
+    route_batch_size: int = 64,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
     """Run pyrparallel round for benchmark orchestration."""
-    effective_process_transport_mode = (
-        process_transport_mode if mode == ExecutionMode.PROCESS else None
-    )
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -135,7 +192,10 @@ async def _run_pyrparallel_round(
         workload=workload,
         ordering=ordering,
         topic=topic_name,
-        process_transport_mode=effective_process_transport_mode,
+        route_batch_size=route_batch_size,
+        process_batch_size=process_batch_size
+        if mode == ExecutionMode.PROCESS
+        else None,
         target_messages=num_messages,
     )
     timed_out, _, summary = await run_pyrallel_consumer_test(
@@ -157,7 +217,7 @@ async def _run_pyrparallel_round(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
-        process_transport_mode=effective_process_transport_mode,
+        route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
     )
@@ -201,7 +261,7 @@ def _warn_on_tiny_partition_process_defaults(args: argparse.Namespace) -> None:
         return
     if "partition" not in args.order:
         return
-    if args.worker_sleep_ms > 0.5:
+    if _effective_sleep_ms(args) > 0.5:
         return
     if args.process_batch_size is not None:
         return
@@ -238,7 +298,7 @@ def _resolve_effective_process_batching(
         strict_completion_monitor_enabled = "on" in args.strict_completion_monitor
     if not strict_completion_monitor_enabled:
         return process_batch_size, process_max_batch_wait_ms
-    if args.worker_sleep_ms > 0.5:
+    if _effective_sleep_ms(args) > 0.5:
         return process_batch_size, process_max_batch_wait_ms
     if process_batch_size is not None:
         return process_batch_size, process_max_batch_wait_ms
@@ -255,6 +315,385 @@ def _resolve_effective_process_batching(
         flush=True,
     )
     return 1, 0
+
+
+def _effective_sleep_ms(args: argparse.Namespace) -> float:
+    """Return the selected sleep workload cost for benchmark heuristics."""
+    workload_options = getattr(args, "workload_options", {}) or {}
+    sleep_options = workload_options.get("sleep", {})
+    raw_sleep_ms = sleep_options.get("sleep_ms", args.worker_sleep_ms)
+    if raw_sleep_ms is None:
+        return 0.5
+    return float(raw_sleep_ms)
+
+
+def _build_benchmark_run_plans(args: argparse.Namespace) -> list[BenchmarkRunPlan]:
+    """Build the benchmark run matrix without executing any benchmark work."""
+    plans: list[BenchmarkRunPlan] = []
+    workloads = list(args.workloads)
+    orderings = list(args.order)
+    strict_monitor_modes = list(args.strict_completion_monitor)
+    adaptive_concurrency_modes = list(args.adaptive_concurrency)
+
+    for workload in workloads:
+        workload_options = _workload_options_for(args.workload_options, workload)
+        for ordering in orderings:
+            suffix = "-%s-%s" % (workload, ordering)
+            run_prefix = "%s-%s" % (workload, ordering)
+
+            if not args.skip_baseline:
+                plans.append(
+                    BenchmarkRunPlan(
+                        kind="baseline",
+                        workload=workload,
+                        ordering=ordering,
+                        topic_name="%s%s-baseline" % (args.topic_prefix, suffix),
+                        run_name="%s-baseline" % run_prefix,
+                        group_id="%s%s" % (args.baseline_group, suffix),
+                        strict_completion_monitor_enabled=True,
+                        adaptive_concurrency_enabled=False,
+                        workload_options=workload_options,
+                    )
+                )
+
+            for strict_monitor_mode in strict_monitor_modes:
+                strict_completion_monitor_enabled = strict_monitor_mode == "on"
+                strict_suffix = ""
+                if len(strict_monitor_modes) > 1 or strict_monitor_mode != "on":
+                    strict_suffix = "-strict-%s" % strict_monitor_mode
+
+                for adaptive_concurrency_mode in adaptive_concurrency_modes:
+                    adaptive_concurrency_enabled = adaptive_concurrency_mode == "on"
+                    adaptive_suffix = ""
+                    if (
+                        len(adaptive_concurrency_modes) > 1
+                        or adaptive_concurrency_mode != "off"
+                    ):
+                        adaptive_suffix = "-adaptive-%s" % adaptive_concurrency_mode
+                    mode_suffix = "%s%s" % (strict_suffix, adaptive_suffix)
+
+                    if not args.skip_async:
+                        plans.append(
+                            BenchmarkRunPlan(
+                                kind="async",
+                                workload=workload,
+                                ordering=ordering,
+                                topic_name="%s%s-async%s"
+                                % (args.topic_prefix, suffix, mode_suffix),
+                                run_name="%s-pyrallel-async%s"
+                                % (run_prefix, mode_suffix),
+                                group_id="%s%s%s"
+                                % (args.async_group, suffix, mode_suffix),
+                                strict_completion_monitor_enabled=(
+                                    strict_completion_monitor_enabled
+                                ),
+                                adaptive_concurrency_enabled=(
+                                    adaptive_concurrency_enabled
+                                ),
+                                workload_options=workload_options,
+                            )
+                        )
+
+                    if not args.skip_process:
+                        plans.append(
+                            BenchmarkRunPlan(
+                                kind="process",
+                                workload=workload,
+                                ordering=ordering,
+                                topic_name="%s%s-process%s"
+                                % (args.topic_prefix, suffix, mode_suffix),
+                                run_name="%s-pyrallel-process%s"
+                                % (run_prefix, mode_suffix),
+                                group_id="%s%s%s"
+                                % (args.process_group, suffix, mode_suffix),
+                                strict_completion_monitor_enabled=(
+                                    strict_completion_monitor_enabled
+                                ),
+                                adaptive_concurrency_enabled=(
+                                    adaptive_concurrency_enabled
+                                ),
+                                workload_options=workload_options,
+                            )
+                        )
+    return plans
+
+
+def _group_benchmark_run_plans(
+    plans: Sequence[BenchmarkRunPlan],
+) -> list[list[BenchmarkRunPlan]]:
+    """Group prepared plans by the event-loop isolation boundary."""
+    grouped_plans: list[list[BenchmarkRunPlan]] = []
+    current_group: list[BenchmarkRunPlan] = []
+    current_key: tuple[str, str] | None = None
+
+    for plan in plans:
+        plan_key = (plan.workload, plan.ordering)
+        if current_key is not None and plan_key != current_key:
+            grouped_plans.append(current_group)
+            current_group = []
+        current_key = plan_key
+        current_group.append(plan)
+
+    if current_group:
+        grouped_plans.append(current_group)
+    return grouped_plans
+
+
+def _workers_for_plan(
+    args: argparse.Namespace,
+    *,
+    plan: BenchmarkRunPlan,
+    worker_bundles: dict[str, BenchmarkWorkerBundle],
+) -> BenchmarkWorkerBundle:
+    """Return cached workers for a workload plan."""
+    if plan.workload not in worker_bundles:
+        worker_bundles[plan.workload] = _select_workers(
+            workload=plan.workload,
+            sleep_ms=args.worker_sleep_ms,
+            cpu_iterations=args.worker_cpu_iterations,
+            io_sleep_ms=args.worker_io_sleep_ms,
+            workload_options=plan.workload_options,
+            validate_process_worker=not args.skip_process,
+        )
+    return worker_bundles[plan.workload]
+
+
+def _process_batching_for_plan(
+    args: argparse.Namespace,
+    *,
+    plan: BenchmarkRunPlan,
+    process_batching: dict[tuple[str, str, bool], tuple[int | None, int | None]],
+) -> tuple[int | None, int | None]:
+    """Resolve process batching once per workload/order/strict variant."""
+    key = (
+        plan.workload,
+        plan.ordering,
+        plan.strict_completion_monitor_enabled,
+    )
+    if key not in process_batching:
+        process_batching[key] = _resolve_effective_process_batching(
+            args,
+            strict_completion_monitor_enabled=(plan.strict_completion_monitor_enabled),
+        )
+    return process_batching[key]
+
+
+def _execute_baseline_run_plan(
+    args: argparse.Namespace,
+    *,
+    plan: BenchmarkRunPlan,
+    profile_dir: Path,
+    baseline_worker: Callable[[bytes], None],
+) -> BenchmarkResult:
+    """Execute one baseline benchmark plan."""
+    with _profile_session(
+        enabled=args.profile,
+        run_name=plan.run_name,
+        output_dir=profile_dir,
+        clock=args.profile_clock,
+        profile_threads=args.profile_threads,
+        profile_greenlets=args.profile_greenlets,
+        top_n=args.profile_top_n,
+    ):
+        if not args.skip_reset:
+            _reset_run_targets(
+                bootstrap_servers=args.bootstrap_servers,
+                topic_name=plan.topic_name,
+                group_id=plan.group_id,
+                num_partitions=args.num_partitions,
+            )
+        return _run_baseline_round(
+            run_name=plan.run_name,
+            topic_name=plan.topic_name,
+            num_messages=args.num_messages,
+            bootstrap_servers=args.bootstrap_servers,
+            num_partitions=args.num_partitions,
+            num_keys=args.num_keys,
+            group_id=plan.group_id,
+            worker_fn=baseline_worker,
+            workload=plan.workload,
+            ordering=plan.ordering,
+            ensure_topic_exists=args.skip_reset,
+        )
+
+
+async def _execute_async_benchmark_run_plans(
+    args: argparse.Namespace,
+    *,
+    plans: Sequence[BenchmarkRunPlan],
+    metrics_port: int | None,
+    profile_dir: Path,
+    worker_bundles: dict[str, BenchmarkWorkerBundle],
+    process_batching: dict[tuple[str, str, bool], tuple[int | None, int | None]],
+) -> List[BenchmarkResult]:
+    """Execute one workload/order async+process plan group."""
+    results: List[BenchmarkResult] = []
+
+    for plan in plans:
+        _, async_worker_fn, process_worker_fn = _workers_for_plan(
+            args,
+            plan=plan,
+            worker_bundles=worker_bundles,
+        )
+        (
+            effective_process_batch_size,
+            effective_process_max_batch_wait_ms,
+        ) = _process_batching_for_plan(
+            args,
+            plan=plan,
+            process_batching=process_batching,
+        )
+        if not args.skip_reset:
+            _reset_run_targets(
+                bootstrap_servers=args.bootstrap_servers,
+                topic_name=plan.topic_name,
+                group_id=plan.group_id,
+                num_partitions=args.num_partitions,
+            )
+
+        if plan.kind == "async":
+            with _profile_session(
+                enabled=args.profile,
+                run_name=plan.run_name,
+                output_dir=profile_dir,
+                clock=args.profile_clock,
+                profile_threads=args.profile_threads,
+                profile_greenlets=args.profile_greenlets,
+                top_n=args.profile_top_n,
+            ):
+                results.append(
+                    await _run_pyrparallel_round(
+                        topic_name=plan.topic_name,
+                        run_name=plan.run_name,
+                        mode=ExecutionMode.ASYNC,
+                        num_messages=args.num_messages,
+                        bootstrap_servers=args.bootstrap_servers,
+                        num_partitions=args.num_partitions,
+                        num_keys=args.num_keys,
+                        group_id=plan.group_id,
+                        timeout_sec=args.timeout_sec,
+                        async_worker_fn=async_worker_fn,
+                        process_worker_fn=process_worker_fn,
+                        workload=plan.workload,
+                        ordering=plan.ordering,
+                        ensure_topic_exists=args.skip_reset,
+                        strict_completion_monitor_enabled=(
+                            plan.strict_completion_monitor_enabled
+                        ),
+                        process_count=None,
+                        process_batch_size=effective_process_batch_size,
+                        process_max_batch_wait_ms=(effective_process_max_batch_wait_ms),
+                        process_flush_policy=args.process_flush_policy,
+                        process_demand_flush_min_residence_ms=(
+                            args.process_demand_flush_min_residence_ms
+                        ),
+                        route_batch_size=1,
+                        metrics_port=metrics_port,
+                        adaptive_concurrency_enabled=(
+                            plan.adaptive_concurrency_enabled
+                        ),
+                    )
+                )
+            continue
+
+        prof_process_worker = process_worker_fn
+        if args.profile and args.profile_process_workers:
+            prof_process_worker = _wrap_process_worker_for_profile(
+                process_worker_fn,
+                output_dir=profile_dir,
+                run_name=plan.run_name,
+                clock=args.profile_clock,
+                profile_threads=args.profile_threads,
+                profile_greenlets=args.profile_greenlets,
+            )
+        results.append(
+            await _run_pyrparallel_round(
+                topic_name=plan.topic_name,
+                run_name=plan.run_name,
+                mode=ExecutionMode.PROCESS,
+                num_messages=args.num_messages,
+                bootstrap_servers=args.bootstrap_servers,
+                num_partitions=args.num_partitions,
+                num_keys=args.num_keys,
+                group_id=plan.group_id,
+                timeout_sec=args.timeout_sec,
+                async_worker_fn=async_worker_fn,
+                process_worker_fn=prof_process_worker,
+                workload=plan.workload,
+                ordering=plan.ordering,
+                ensure_topic_exists=args.skip_reset,
+                strict_completion_monitor_enabled=(
+                    plan.strict_completion_monitor_enabled
+                ),
+                process_count=args.process_count,
+                process_batch_size=effective_process_batch_size,
+                process_max_batch_wait_ms=effective_process_max_batch_wait_ms,
+                process_flush_policy=args.process_flush_policy,
+                process_demand_flush_min_residence_ms=(
+                    args.process_demand_flush_min_residence_ms
+                ),
+                route_batch_size=args.process_route_batch_size,
+                metrics_port=metrics_port,
+                adaptive_concurrency_enabled=plan.adaptive_concurrency_enabled,
+            )
+        )
+        if args.profile and args.profile_process_workers:
+            _summarize_worker_profiles(
+                plan.run_name,
+                profile_dir=profile_dir,
+                top_n=args.profile_top_n,
+                clock=args.profile_clock,
+            )
+    return results
+
+
+def _execute_benchmark_run_plans(
+    args: argparse.Namespace,
+    *,
+    plans: Sequence[BenchmarkRunPlan],
+    metrics_port: int | None,
+    profile_dir: Path,
+) -> List[BenchmarkResult]:
+    """Execute prepared benchmark plans while preserving loop isolation."""
+    results: List[BenchmarkResult] = []
+    worker_bundles: dict[str, BenchmarkWorkerBundle] = {}
+    process_batching: dict[tuple[str, str, bool], tuple[int | None, int | None]] = {}
+
+    for plan_group in _group_benchmark_run_plans(plans):
+        async_plans: list[BenchmarkRunPlan] = []
+        for plan in plan_group:
+            if plan.kind != "baseline":
+                async_plans.append(plan)
+                continue
+            baseline_worker, _, _ = _workers_for_plan(
+                args,
+                plan=plan,
+                worker_bundles=worker_bundles,
+            )
+            results.append(
+                _execute_baseline_run_plan(
+                    args,
+                    plan=plan,
+                    profile_dir=profile_dir,
+                    baseline_worker=baseline_worker,
+                )
+            )
+
+        if async_plans:
+            results.extend(
+                asyncio.run(
+                    _execute_async_benchmark_run_plans(
+                        args,
+                        plans=async_plans,
+                        metrics_port=metrics_port,
+                        profile_dir=profile_dir,
+                        worker_bundles=worker_bundles,
+                        process_batching=process_batching,
+                    )
+                )
+            )
+
+    return results
 
 
 def run_benchmark(
@@ -279,239 +718,21 @@ def run_benchmark(
     logging.getLogger("benchmarks").setLevel(log_level)
 
     _check_kafka_connection(args.bootstrap_servers)
-
-    workloads = list(args.workloads)
-    orderings = list(args.order)
-    strict_monitor_modes = list(args.strict_completion_monitor)
-    adaptive_concurrency_modes = list(args.adaptive_concurrency)
+    _ensure_metrics_port_available(metrics_port)
     profile_dir = Path(args.profile_dir)
 
     _warn_on_tiny_partition_process_defaults(args)
 
-    results: List[BenchmarkResult] = []
-
-    has_runs = not (args.skip_baseline and args.skip_async and args.skip_process)
-    if not has_runs:
+    plans = _build_benchmark_run_plans(args)
+    if not plans:
         raise RuntimeError("All benchmark runs are skipped; nothing to execute")
 
-    for workload in workloads:
-        baseline_worker, async_worker_fn, process_worker_fn = _select_workers(
-            workload=workload,
-            sleep_ms=args.worker_sleep_ms,
-            cpu_iterations=args.worker_cpu_iterations,
-            io_sleep_ms=args.worker_io_sleep_ms,
-        )
-
-        for ordering in orderings:
-            suffix = "-%s-%s" % (workload, ordering)
-            run_prefix = "%s-%s" % (workload, ordering)
-
-            if not args.skip_baseline:
-                topic_name = f"{args.topic_prefix}{suffix}-baseline"
-                run_name = f"{run_prefix}-baseline"
-                group_id = f"{args.baseline_group}{suffix}"
-                with _profile_session(
-                    enabled=args.profile,
-                    run_name=run_name,
-                    output_dir=profile_dir,
-                    clock=args.profile_clock,
-                    profile_threads=args.profile_threads,
-                    profile_greenlets=args.profile_greenlets,
-                    top_n=args.profile_top_n,
-                ):
-                    if not args.skip_reset:
-                        _reset_run_targets(
-                            bootstrap_servers=args.bootstrap_servers,
-                            topic_name=topic_name,
-                            group_id=group_id,
-                            num_partitions=args.num_partitions,
-                        )
-                    results.append(
-                        _run_baseline_round(
-                            run_name=run_name,
-                            topic_name=topic_name,
-                            num_messages=args.num_messages,
-                            bootstrap_servers=args.bootstrap_servers,
-                            num_partitions=args.num_partitions,
-                            num_keys=args.num_keys,
-                            group_id=group_id,
-                            worker_fn=baseline_worker,
-                            workload=workload,
-                            ordering=ordering,
-                            ensure_topic_exists=args.skip_reset,
-                        )
-                    )
-
-            async def run_async_rounds() -> List[BenchmarkResult]:
-                """Run async rounds for benchmark orchestration."""
-                async_results: List[BenchmarkResult] = []
-                for strict_monitor_mode in strict_monitor_modes:
-                    strict_completion_monitor_enabled = strict_monitor_mode == "on"
-                    (
-                        effective_process_batch_size,
-                        effective_process_max_batch_wait_ms,
-                    ) = _resolve_effective_process_batching(
-                        args,
-                        strict_completion_monitor_enabled=(
-                            strict_completion_monitor_enabled
-                        ),
-                    )
-                    strict_suffix = ""
-                    if len(strict_monitor_modes) > 1 or strict_monitor_mode != "on":
-                        strict_suffix = "-strict-%s" % strict_monitor_mode
-
-                    for adaptive_concurrency_mode in adaptive_concurrency_modes:
-                        adaptive_concurrency_enabled = adaptive_concurrency_mode == "on"
-                        adaptive_suffix = ""
-                        if (
-                            len(adaptive_concurrency_modes) > 1
-                            or adaptive_concurrency_mode != "off"
-                        ):
-                            adaptive_suffix = "-adaptive-%s" % adaptive_concurrency_mode
-
-                        if not args.skip_async:
-                            topic_name = (
-                                f"{args.topic_prefix}{suffix}-async"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            run_name = (
-                                f"{run_prefix}-pyrallel-async"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            group_id = (
-                                f"{args.async_group}{suffix}"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            if not args.skip_reset:
-                                _reset_run_targets(
-                                    bootstrap_servers=args.bootstrap_servers,
-                                    topic_name=topic_name,
-                                    group_id=group_id,
-                                    num_partitions=args.num_partitions,
-                                )
-                            with _profile_session(
-                                enabled=args.profile,
-                                run_name=run_name,
-                                output_dir=profile_dir,
-                                clock=args.profile_clock,
-                                profile_threads=args.profile_threads,
-                                profile_greenlets=args.profile_greenlets,
-                                top_n=args.profile_top_n,
-                            ):
-                                async_results.append(
-                                    await _run_pyrparallel_round(
-                                        topic_name=topic_name,
-                                        run_name=run_name,
-                                        mode=ExecutionMode.ASYNC,
-                                        num_messages=args.num_messages,
-                                        bootstrap_servers=args.bootstrap_servers,
-                                        num_partitions=args.num_partitions,
-                                        num_keys=args.num_keys,
-                                        group_id=group_id,
-                                        timeout_sec=args.timeout_sec,
-                                        async_worker_fn=async_worker_fn,
-                                        process_worker_fn=process_worker_fn,
-                                        workload=workload,
-                                        ordering=ordering,
-                                        ensure_topic_exists=args.skip_reset,
-                                        strict_completion_monitor_enabled=(
-                                            strict_completion_monitor_enabled
-                                        ),
-                                        process_count=None,
-                                        process_batch_size=(
-                                            effective_process_batch_size
-                                        ),
-                                        process_max_batch_wait_ms=(
-                                            effective_process_max_batch_wait_ms
-                                        ),
-                                        process_flush_policy=args.process_flush_policy,
-                                        process_demand_flush_min_residence_ms=(
-                                            args.process_demand_flush_min_residence_ms
-                                        ),
-                                        process_transport_mode=None,
-                                        metrics_port=metrics_port,
-                                        adaptive_concurrency_enabled=(
-                                            adaptive_concurrency_enabled
-                                        ),
-                                    )
-                                )
-                        if not args.skip_process:
-                            topic_name = (
-                                f"{args.topic_prefix}{suffix}-process"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            run_name = (
-                                f"{run_prefix}-pyrallel-process"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            group_id = (
-                                f"{args.process_group}{suffix}"
-                                f"{strict_suffix}{adaptive_suffix}"
-                            )
-                            if not args.skip_reset:
-                                _reset_run_targets(
-                                    bootstrap_servers=args.bootstrap_servers,
-                                    topic_name=topic_name,
-                                    group_id=group_id,
-                                    num_partitions=args.num_partitions,
-                                )
-                            prof_process_worker = process_worker_fn
-                            if args.profile and args.profile_process_workers:
-                                prof_process_worker = _wrap_process_worker_for_profile(
-                                    process_worker_fn,
-                                    output_dir=profile_dir,
-                                    run_name=run_name,
-                                    clock=args.profile_clock,
-                                    profile_threads=args.profile_threads,
-                                    profile_greenlets=args.profile_greenlets,
-                                )
-                            async_results.append(
-                                await _run_pyrparallel_round(
-                                    topic_name=topic_name,
-                                    run_name=run_name,
-                                    mode=ExecutionMode.PROCESS,
-                                    num_messages=args.num_messages,
-                                    bootstrap_servers=args.bootstrap_servers,
-                                    num_partitions=args.num_partitions,
-                                    num_keys=args.num_keys,
-                                    group_id=group_id,
-                                    timeout_sec=args.timeout_sec,
-                                    async_worker_fn=async_worker_fn,
-                                    process_worker_fn=prof_process_worker,
-                                    workload=workload,
-                                    ordering=ordering,
-                                    ensure_topic_exists=args.skip_reset,
-                                    strict_completion_monitor_enabled=(
-                                        strict_completion_monitor_enabled
-                                    ),
-                                    process_count=args.process_count,
-                                    process_batch_size=effective_process_batch_size,
-                                    process_max_batch_wait_ms=(
-                                        effective_process_max_batch_wait_ms
-                                    ),
-                                    process_flush_policy=args.process_flush_policy,
-                                    process_demand_flush_min_residence_ms=(
-                                        args.process_demand_flush_min_residence_ms
-                                    ),
-                                    process_transport_mode=cast(
-                                        ProcessTransportMode, args.process_transport
-                                    ),
-                                    metrics_port=metrics_port,
-                                    adaptive_concurrency_enabled=(
-                                        adaptive_concurrency_enabled
-                                    ),
-                                )
-                            )
-                            if args.profile and args.profile_process_workers:
-                                _summarize_worker_profiles(
-                                    run_name,
-                                    profile_dir=profile_dir,
-                                    top_n=args.profile_top_n,
-                                    clock=args.profile_clock,
-                                )
-                return async_results
-
-            results.extend(asyncio.run(run_async_rounds()))
+    results = _execute_benchmark_run_plans(
+        args,
+        plans=plans,
+        metrics_port=metrics_port,
+        profile_dir=profile_dir,
+    )
 
     _print_table(results)
     output_path = args.json_output
@@ -529,6 +750,18 @@ def run_benchmark(
     print(f"\nJSON summary written to {output_path}")
 
 
+def _workload_options_for(
+    workload_options: dict[str, dict[str, object]] | None, workload: str
+) -> dict[str, dict[str, object]] | None:
+    """Return only generic options for the workload currently being built."""
+    if workload_options is None:
+        return None
+    selected_options = workload_options.get(workload)
+    if not selected_options:
+        return None
+    return {workload: selected_options}
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run the command-line entrypoint."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -538,7 +771,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     parser = build_parser()
     args = parser.parse_args(raw_argv)
-    run_benchmark(args, raw_argv=raw_argv)
+    try:
+        run_benchmark(args, raw_argv=raw_argv)
+    except RuntimeError as exc:
+        raise SystemExit("error: %s" % exc) from None
 
 
 if __name__ == "__main__":

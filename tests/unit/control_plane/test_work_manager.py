@@ -16,7 +16,7 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
 
 
 @pytest.fixture
@@ -56,6 +56,34 @@ def mock_dto_topic_partition_1():
     return DtoTopicPartition(topic="test-topic", partition=1)
 
 
+def _open_poison_circuit_for_key(
+    circuit: PoisonMessageCircuitBreaker,
+    tp: DtoTopicPartition,
+    poison_key: bytes,
+) -> None:
+    failed_item = WorkItem(
+        id=str(uuid.uuid4()),
+        tp=tp,
+        offset=999,
+        epoch=1,
+        key=b"route-key",
+        payload=b"failed-payload",
+        poison_key=poison_key,
+    )
+    circuit.record_completion(
+        CompletionEvent(
+            id=failed_item.id,
+            tp=failed_item.tp,
+            offset=failed_item.offset,
+            epoch=failed_item.epoch,
+            status=CompletionStatus.FAILURE,
+            error="permanent failure",
+            attempt=3,
+        ),
+        failed_item,
+    )
+
+
 @pytest.mark.asyncio
 async def test_work_manager_initialization(work_manager):
     assert isinstance(work_manager, WorkManager)
@@ -65,6 +93,22 @@ async def test_work_manager_initialization(work_manager):
     assert work_manager._in_flight_work_items == {}
     assert work_manager._current_in_flight_count == 0
     assert work_manager.get_total_queued_messages() == 0
+
+
+def test_work_manager_route_batch_size_defaults_to_one(mock_execution_engine):
+    work_manager = WorkManager(execution_engine=mock_execution_engine)
+
+    assert work_manager.get_route_batch_size() == 1
+
+
+def test_work_manager_rejects_invalid_route_batch_size(mock_execution_engine):
+    with pytest.raises(ValueError, match="route_batch_size must be >= 1"):
+        WorkManager(execution_engine=mock_execution_engine, route_batch_size=0)
+
+
+def test_work_manager_rejects_bool_route_batch_size(mock_execution_engine):
+    with pytest.raises(ValueError, match="route_batch_size must be >= 1"):
+        WorkManager(execution_engine=mock_execution_engine, route_batch_size=True)
 
 
 @pytest.mark.asyncio
@@ -729,6 +773,225 @@ async def test_poison_message_circuit_uses_original_key_under_partition_ordering
     assert [
         call.args[0].offset for call in mock_execution_engine.submit.await_args_list
     ] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_unordered_route_batch_truncates_before_poison_force_fail_candidate(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    poison_circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=60000,
+        forced_failure_attempt=3,
+    )
+    _open_poison_circuit_for_key(poison_circuit, mock_dto_topic_partition, b"bad-key")
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        poison_message_circuit=poison_circuit,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"good-key"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"bad-key"),
+                (2, tracker.get_current_epoch(), b"payload-2", b"later-key"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+
+    submitted_offsets = [
+        call.args[0].offset for call in mock_execution_engine.submit.await_args_list
+    ]
+    assert submitted_offsets == [0]
+    mock_execution_engine.submit_batch.assert_not_awaited()
+    assert work_manager.get_total_in_flight_count() == 1
+    assert work_manager.get_total_queued_messages() == 2
+
+
+@pytest.mark.asyncio
+async def test_unordered_route_batch_truncation_does_not_stop_other_routes(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    poison_circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=60000,
+        forced_failure_attempt=3,
+    )
+    _open_poison_circuit_for_key(poison_circuit, mock_dto_topic_partition, b"bad-key")
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        poison_message_circuit=poison_circuit,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"good-key"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"bad-key"),
+            ],
+            (mock_dto_topic_partition, b"other-route"): [
+                (2, tracker.get_current_epoch(), b"payload-2", b"other-key"),
+            ],
+        }
+    )
+
+    await work_manager.schedule()
+
+    submitted_offsets = [
+        call.args[0].offset for call in mock_execution_engine.submit.await_args_list
+    ]
+    assert submitted_offsets == [0, 2]
+    assert work_manager.get_total_in_flight_count() == 2
+    assert work_manager.get_total_queued_messages() == 1
+
+
+@pytest.mark.asyncio
+async def test_work_manager_batch_submit_error_accounts_only_accepted_count(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    mock_execution_engine.submit_batch.side_effect = BatchSubmitError(
+        accepted_count=1,
+        original_error=RuntimeError("partial submit failed"),
+    )
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"key-0"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"key-1"),
+                (2, tracker.get_current_epoch(), b"payload-2", b"key-2"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+
+    assert mock_execution_engine.submit_batch.await_count == 1
+    assert work_manager.get_total_in_flight_count() == 1
+    assert work_manager.get_total_queued_messages() == 2
+    assert len(work_manager._dispatch_timestamps) == 1
+    dispatched_item_id = next(iter(work_manager._dispatch_timestamps))
+    assert work_manager._in_flight_work_items[dispatched_item_id].offset == 0
+
+
+@pytest.mark.asyncio
+async def test_work_manager_generic_submit_batch_exception_counts_zero_accepted(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    mock_execution_engine.submit_batch.side_effect = RuntimeError(
+        "generic submit failed"
+    )
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"key-0"),
+                (1, tracker.get_current_epoch(), b"payload-1", b"key-1"),
+                (2, tracker.get_current_epoch(), b"payload-2", b"key-2"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+
+    assert mock_execution_engine.submit_batch.await_count == 1
+    assert work_manager.get_total_in_flight_count() == 0
+    assert work_manager.get_total_queued_messages() == 3
+    assert work_manager._dispatch_timestamps == {}
+
+
+@pytest.mark.asyncio
+async def test_unordered_route_batch_first_poison_candidate_uses_forced_failure_path(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    poison_circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=60000,
+        forced_failure_attempt=3,
+    )
+    _open_poison_circuit_for_key(poison_circuit, mock_dto_topic_partition, b"bad-key")
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.UNORDERED,
+        max_in_flight_messages=10,
+        poison_message_circuit=poison_circuit,
+        route_batch_size=3,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+
+    await work_manager.submit_message_batch(
+        {
+            (mock_dto_topic_partition, b"route-key"): [
+                (0, tracker.get_current_epoch(), b"payload-0", b"bad-key"),
+            ]
+        }
+    )
+
+    await work_manager.schedule()
+    completed_events = await work_manager.poll_completed_events(
+        schedule_after_release=False
+    )
+
+    mock_execution_engine.submit.assert_not_awaited()
+    mock_execution_engine.submit_batch.assert_not_awaited()
+    assert [event.offset for event in completed_events] == [0]
+    forced_event = completed_events[0]
+    assert forced_event.status == CompletionStatus.FAILURE
+    assert forced_event.attempt == 3
+    assert "Poison message circuit open" in str(forced_event.error)
 
 
 @pytest.mark.asyncio
@@ -1682,8 +1945,8 @@ async def test_on_revoke_cleans_revoked_in_flight_state(
     )
     await work_manager.schedule()
 
-    revoked_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
-    kept_item = work_manager._execution_engine.submit.await_args_list[1].args[0]
+    revoked_item = mock_execution_engine.submit.await_args_list[0].args[0]
+    kept_item = mock_execution_engine.submit.await_args_list[1].args[0]
     assert work_manager._current_in_flight_count == 2
     assert (
         work_manager.get_min_in_flight_offset(mock_dto_topic_partition)
@@ -1773,7 +2036,7 @@ async def test_poll_completed_events_cleans_stale_epoch_in_flight_state(
     )
     await work_manager.schedule()
 
-    submitted_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+    submitted_item = mock_execution_engine.submit.await_args_list[0].args[0]
     assert work_manager._current_in_flight_count == 1
     assert (
         work_manager.get_min_in_flight_offset(mock_dto_topic_partition)
@@ -1826,7 +2089,7 @@ async def test_poll_completed_events_cleans_any_stale_epoch_for_tracked_work_ite
     )
     await work_manager.schedule()
 
-    submitted_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+    submitted_item = mock_execution_engine.submit.await_args_list[0].args[0]
 
     stale_completion = CompletionEvent(
         id=submitted_item.id,
@@ -1869,7 +2132,7 @@ async def test_stale_completion_after_reassign_does_not_touch_new_epoch_state(
         mock_dto_topic_partition, 10, old_tracker.get_current_epoch(), b"key-A", b"v1"
     )
     await work_manager.schedule()
-    old_item = work_manager._execution_engine.submit.await_args_list[0].args[0]
+    old_item = mock_execution_engine.submit.await_args_list[0].args[0]
 
     work_manager.on_revoke([mock_dto_topic_partition])
 
@@ -1886,7 +2149,7 @@ async def test_stale_completion_after_reassign_does_not_touch_new_epoch_state(
         mock_dto_topic_partition, 11, new_tracker.get_current_epoch(), b"key-A", b"v2"
     )
     await work_manager.schedule()
-    new_item = work_manager._execution_engine.submit.await_args_list[1].args[0]
+    new_item = mock_execution_engine.submit.await_args_list[1].args[0]
 
     stale_completion = CompletionEvent(
         id=old_item.id,

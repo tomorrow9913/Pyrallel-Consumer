@@ -4,8 +4,10 @@ import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
+from benchmarks.workloads import available_names
+
 _PHASE_NAMES = ("baseline", "async", "process")
-_WORKLOAD_NAMES = ("sleep", "cpu", "io")
+_FALLBACK_WORKLOAD_NAMES = ("sleep", "cpu", "io")
 _ORDERING_NAMES = ("key_hash", "partition", "unordered")
 _TOPIC_PATTERN = re.compile(r"topic '([^']+)'")
 _JSON_OUTPUT_PATTERN = re.compile(r"JSON summary written to (.+)$")
@@ -21,22 +23,33 @@ _TOTAL_MESSAGES_PROCESSED_PATTERN = re.compile(
 RunIdentity = tuple[str, str, str, str]
 
 
-def _empty_tps_table() -> dict[str, dict[str, str]]:
+def _default_workload_names() -> tuple[str, ...]:
+    """Return registry available workloads with a stable built-in fallback."""
+    names = available_names()
+    return names or _FALLBACK_WORKLOAD_NAMES
+
+
+def _empty_tps_table(
+    workloads: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, str]]:
     """Handle empty tps table within log parser."""
+    workload_names = workloads or _default_workload_names()
     return {
-        workload: {phase: "--" for phase in _PHASE_NAMES}
-        for workload in _WORKLOAD_NAMES
+        workload: {phase: "--" for phase in _PHASE_NAMES} for workload in workload_names
     }
 
 
-def _empty_ordering_tps_table() -> dict[str, dict[str, dict[str, str]]]:
+def _empty_ordering_tps_table(
+    workloads: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, dict[str, str]]]:
     """Handle empty ordering tps table within log parser."""
+    workload_names = workloads or _default_workload_names()
     return {
         workload: {
             ordering: {phase: "--" for phase in _PHASE_NAMES}
             for ordering in _ORDERING_NAMES
         }
-        for workload in _WORKLOAD_NAMES
+        for workload in workload_names
     }
 
 
@@ -49,7 +62,9 @@ class BenchmarkProgressSnapshot:
         default_factory=lambda: {phase: "pending" for phase in _PHASE_NAMES}
     )
     workload_statuses: dict[str, str] = field(
-        default_factory=lambda: {workload: "pending" for workload in _WORKLOAD_NAMES}
+        default_factory=lambda: {
+            workload: "pending" for workload in _default_workload_names()
+        }
     )
     current_workload: str | None = None
     current_ordering: str | None = None
@@ -88,10 +103,17 @@ class BenchmarkLogParser:
             * len(self._active_orderings)
             * len(self._active_phases)
         )
-        self._strict_variants_by_base: dict[tuple[str, str, str], set[str]] = (
-            defaultdict(set)
+        self._strict_variants_by_base: dict[
+            tuple[str, str, str], set[str]
+        ] = defaultdict(set)
+        self.snapshot = BenchmarkProgressSnapshot(
+            total_runs=self._base_total_runs,
+            workload_statuses={
+                workload: "pending" for workload in self._active_workloads
+            },
+            tps_by_workload=_empty_tps_table(self._active_workloads),
+            tps_by_workload_ordering=_empty_ordering_tps_table(self._active_workloads),
         )
-        self.snapshot = BenchmarkProgressSnapshot(total_runs=self._base_total_runs)
 
     def consume(self, line: str) -> BenchmarkProgressSnapshot:
         """Handle consume within log parser."""
@@ -345,12 +367,33 @@ class BenchmarkLogParser:
         return strict_mode_match.group(1)
 
     def _extract_workload(self, value: str) -> str | None:
-        """Handle extract workload within log parser."""
+        """Extract the workload from a run or topic name.
+
+        Topic names can include arbitrary prefixes. Match the workload by its
+        position immediately before the ordering/phase suffix instead of the
+        first workload-looking token in the prefix.
+        """
         if self._workload_mode != "all":
             return self._workload_mode
-        for workload in _WORKLOAD_NAMES:
-            if f"-{workload}-" in value or value.startswith(f"{workload}-"):
-                return workload
+
+        candidate = self._extract_workload_candidate(value)
+        if candidate in self._active_workloads:
+            return candidate
+        return None
+
+    def _extract_workload_candidate(self, value: str) -> str | None:
+        """Return the suffix-position workload token from a topic/run name."""
+        parts = value.split("-")
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index] not in _PHASE_NAMES:
+                continue
+            prefix_parts = parts[:index]
+            if prefix_parts and prefix_parts[-1] == "pyrallel":
+                prefix_parts = prefix_parts[:-1]
+            if prefix_parts and prefix_parts[-1] in self._active_orderings:
+                prefix_parts = prefix_parts[:-1]
+            if prefix_parts:
+                return prefix_parts[-1]
         return None
 
     def _extract_ordering(self, value: str) -> str | None:
@@ -370,5 +413,5 @@ class BenchmarkLogParser:
     def _resolve_active_workloads(self) -> tuple[str, ...]:
         """Resolve active workloads for log parser."""
         if self._workload_mode == "all":
-            return _WORKLOAD_NAMES
+            return _default_workload_names()
         return (self._workload_mode,)

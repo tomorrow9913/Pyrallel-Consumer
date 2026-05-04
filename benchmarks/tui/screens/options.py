@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import shlex
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from textual.app import ComposeResult
-from textual.containers import Container, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Collapsible,
@@ -20,38 +23,28 @@ from textual.widgets import (
 )
 
 from benchmarks.tui.option_help import OPTION_HELP, PROFILING_CONTROL_IDS
+from benchmarks.tui.options_form import (
+    OPTIONAL_NON_NEGATIVE_INT_FIELDS,
+    OPTIONAL_POSITIVE_INT_FIELDS,
+    POSITIVE_INT_FIELDS,
+    OptionsFormDraft,
+    OptionsValidationResult,
+    validate_options_form,
+    workload_option_widget_id,
+)
 from benchmarks.tui.path_picker import DirectoryPickerScreen
 from benchmarks.tui.screens.run import RunScreen
 from benchmarks.tui.state import BenchmarkTuiState
+from benchmarks.workloads import all_records, describe_workload_options
+from benchmarks.workloads.base import BenchmarkWorkload, WorkloadOptionSchema
 
-
-@dataclass(slots=True)
-class _ValidationResult:
-    """Represent validation result data used by options."""
-
-    state: BenchmarkTuiState | None
-    errors: dict[str, str]
+_ValidationResult = OptionsValidationResult
 
 
 class OptionsScreen(Screen[None]):
     """Represent options screen data used by options."""
 
     BINDINGS = [("q", "app.quit", "Quit")]
-    _POSITIVE_INT_FIELDS = {
-        "num-messages": 1,
-        "num-keys": 1,
-        "num-partitions": 1,
-        "timeout-sec": 1,
-    }
-    _NON_NEGATIVE_INT_FIELDS = {
-        "metrics-port": 0,
-        "worker-cpu-iterations": 0,
-        "profile-top-n": 0,
-    }
-    _NON_NEGATIVE_FLOAT_FIELDS = {
-        "worker-sleep-ms": 0.0,
-        "worker-io-sleep-ms": 0.0,
-    }
 
     def __init__(self, initial_state: BenchmarkTuiState | None = None) -> None:
         super().__init__()
@@ -165,6 +158,170 @@ class OptionsScreen(Screen[None]):
             yield SelectionList(*selections, id=widget_id)
             yield Static("", id=cls._error_id(widget_id), classes="field-error")
 
+    @staticmethod
+    def _workload_records() -> tuple[object, ...]:
+        """Return registry workload records for option rendering."""
+        return all_records()
+
+    @classmethod
+    def _workload_selections(
+        cls, state: BenchmarkTuiState
+    ) -> list[tuple[str, str, bool]]:
+        """Build workload selections from registry records."""
+        selections: list[tuple[str, str, bool]] = []
+        seen: set[str] = set()
+        for record in cls._workload_records():
+            name = str(getattr(record, "name", ""))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            label = name
+            if not bool(getattr(record, "available", False)):
+                label = "%s (unavailable)" % name
+            selections.append((label, name, name in state.workloads))
+        return selections
+
+    @classmethod
+    def _unavailable_workload_reasons(cls) -> dict[str, str]:
+        """Return unavailable workload reasons keyed by workload name."""
+        reasons: dict[str, str] = {}
+        for record in cls._workload_records():
+            if bool(getattr(record, "available", False)):
+                continue
+            name = str(getattr(record, "name", ""))
+            if not name:
+                continue
+            reason = getattr(record, "error", None) or "unavailable"
+            reasons[name] = str(reason)
+        return reasons
+
+    @classmethod
+    def _available_workload_classes(
+        cls,
+    ) -> dict[str, type[BenchmarkWorkload[object]]]:
+        """Return available workload classes keyed by workload name."""
+        classes: dict[str, type[BenchmarkWorkload[object]]] = {}
+        for record in cls._workload_records():
+            if not bool(getattr(record, "available", False)):
+                continue
+            workload_cls = getattr(record, "workload_cls", None)
+            name = str(getattr(record, "name", ""))
+            if name and workload_cls is not None:
+                classes[name] = cast(type[BenchmarkWorkload[object]], workload_cls)
+        return classes
+
+    @staticmethod
+    def _workload_option_widget_id(workload: str, field_name: str) -> str:
+        """Return the stable widget id for one workload option field."""
+        return workload_option_widget_id(workload, field_name)
+
+    @classmethod
+    def _workload_option_controls(cls, state: BenchmarkTuiState) -> ComposeResult:
+        """Render option controls for selected available workloads."""
+        with Container(id="workload-options", classes="option-block"):
+            for group in cls._workload_option_group_widgets(state):
+                yield group
+
+    @classmethod
+    def _workload_option_group_widgets(
+        cls, state: BenchmarkTuiState
+    ) -> list[Container]:
+        """Build workload option group widgets for the selected workloads."""
+        groups: list[Container] = []
+        workload_classes = cls._available_workload_classes()
+        for workload in state.workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            schemas = describe_workload_options(workload_cls)
+            if not schemas:
+                continue
+            children: list[Widget] = [
+                Label(
+                    "%s workload options" % workload,
+                    classes="field-label workload-option-group-title",
+                )
+            ]
+            for schema in schemas:
+                children.extend(cls._workload_option_field_widgets(state, schema))
+            groups.append(
+                Container(
+                    *children,
+                    id="workload-options-%s" % workload,
+                    classes="workload-option-group",
+                )
+            )
+        return groups
+
+    @classmethod
+    def _workload_option_field_widgets(
+        cls, state: BenchmarkTuiState, schema: WorkloadOptionSchema
+    ) -> list[Widget]:
+        """Build widgets for one workload option field from its schema."""
+        widgets: list[Widget] = []
+        widget_id = cls._workload_option_widget_id(
+            schema.workload_name, schema.field_name
+        )
+        value = state.workload_options.get(schema.workload_name, {}).get(
+            schema.field_name, schema.default
+        )
+        control: Widget
+        if schema.annotation is bool:
+            control = Switch(value=bool(value), id=widget_id)
+        elif schema.annotation is str and schema.metadata.choices:
+            control = Select(
+                [(choice, choice) for choice in schema.metadata.choices],
+                value=str(value),
+                id=widget_id,
+                allow_blank=False,
+            )
+        else:
+            control = Input(value=str(value), id=widget_id)
+        widgets.append(
+            Horizontal(
+                cls._field_label(schema.metadata.label),
+                control,
+                classes="workload-option-row",
+            )
+        )
+        widgets.append(Static("", id=cls._error_id(widget_id), classes="field-error"))
+        return widgets
+
+    async def _refresh_workload_option_controls(self) -> None:
+        """Re-render dynamic workload option groups after workload selection changes."""
+        container = self.query_one("#workload-options", Container)
+        workloads = tuple(self.query_one("#workloads", SelectionList).selected)
+        workload_options = self._merged_draft_workload_options(workloads)
+        state = replace(
+            self._last_valid_state,
+            workloads=workloads,
+            workload_options=workload_options,
+        )
+        await container.remove_children()
+        await container.mount_all(self._workload_option_group_widgets(state))
+
+    def _merged_draft_workload_options(
+        self, workloads: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]:
+        """Merge visible workload option drafts into the last valid option state."""
+        merged: dict[str, dict[str, object]] = {
+            workload: dict(options)
+            for workload, options in self._last_valid_state.workload_options.items()
+        }
+        workload_classes = self._available_workload_classes()
+        for workload in workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            for schema in describe_workload_options(workload_cls):
+                widget_id = self._workload_option_widget_id(workload, schema.field_name)
+                if not self.query("#%s" % widget_id):
+                    continue
+                merged.setdefault(workload, {})[
+                    schema.field_name
+                ] = self._raw_workload_option_value(widget_id, schema)
+        return merged
+
     @classmethod
     def _switch_field(
         cls, *, option_id: str, value: bool, widget_id: str
@@ -196,6 +353,33 @@ class OptionsScreen(Screen[None]):
                     yield self._section_description(
                         "Configure the Kafka target and choose the workload shape to run."
                     )
+                    yield from self._labeled_selection_list(
+                        option_id="workloads",
+                        selections=self._workload_selections(state),
+                        widget_id="workloads",
+                    )
+                    yield from self._labeled_selection_list(
+                        option_id="ordering-modes",
+                        selections=[
+                            (
+                                "key_hash",
+                                "key_hash",
+                                "key_hash" in state.ordering_modes,
+                            ),
+                            (
+                                "partition",
+                                "partition",
+                                "partition" in state.ordering_modes,
+                            ),
+                            (
+                                "unordered",
+                                "unordered",
+                                "unordered" in state.ordering_modes,
+                            ),
+                        ],
+                        widget_id="ordering-modes",
+                    )
+                    yield from self._workload_option_controls(state)
                     yield from self._labeled_input(
                         option_id="bootstrap-servers",
                         value=state.bootstrap_servers,
@@ -226,54 +410,6 @@ class OptionsScreen(Screen[None]):
                         widget_id="timeout-sec",
                         placeholder="60",
                     )
-                    yield from self._labeled_selection_list(
-                        option_id="workloads",
-                        selections=[
-                            ("sleep", "sleep", "sleep" in state.workloads),
-                            ("cpu", "cpu", "cpu" in state.workloads),
-                            ("io", "io", "io" in state.workloads),
-                        ],
-                        widget_id="workloads",
-                    )
-                    yield from self._labeled_selection_list(
-                        option_id="ordering-modes",
-                        selections=[
-                            (
-                                "key_hash",
-                                "key_hash",
-                                "key_hash" in state.ordering_modes,
-                            ),
-                            (
-                                "partition",
-                                "partition",
-                                "partition" in state.ordering_modes,
-                            ),
-                            (
-                                "unordered",
-                                "unordered",
-                                "unordered" in state.ordering_modes,
-                            ),
-                        ],
-                        widget_id="ordering-modes",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-sleep-ms",
-                        value=str(state.worker_sleep_ms),
-                        widget_id="worker-sleep-ms",
-                        placeholder="0.5",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-cpu-iterations",
-                        value=str(state.worker_cpu_iterations),
-                        widget_id="worker-cpu-iterations",
-                        placeholder="1000",
-                    )
-                    yield from self._labeled_input(
-                        option_id="worker-io-sleep-ms",
-                        value=str(state.worker_io_sleep_ms),
-                        widget_id="worker-io-sleep-ms",
-                        placeholder="0.5",
-                    )
                 with Container(
                     id=self._section_id("output-execution"),
                     classes="option-section",
@@ -293,6 +429,42 @@ class OptionsScreen(Screen[None]):
                         value=str(state.metrics_port),
                         widget_id="metrics-port",
                         placeholder="9091",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-count",
+                        value=(
+                            ""
+                            if state.process_count is None
+                            else str(state.process_count)
+                        ),
+                        widget_id="process-count",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-batch-size",
+                        value=(
+                            ""
+                            if state.process_batch_size is None
+                            else str(state.process_batch_size)
+                        ),
+                        widget_id="process-batch-size",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-max-batch-wait-ms",
+                        value=(
+                            ""
+                            if state.process_max_batch_wait_ms is None
+                            else str(state.process_max_batch_wait_ms)
+                        ),
+                        widget_id="process-max-batch-wait-ms",
+                        placeholder="default",
+                    )
+                    yield from self._labeled_input(
+                        option_id="process-route-batch-size",
+                        value=str(state.route_batch_size),
+                        widget_id="process-route-batch-size",
+                        placeholder="1",
                     )
                     yield from self._switch_field(
                         option_id="skip-reset",
@@ -411,7 +583,9 @@ class OptionsScreen(Screen[None]):
             with Container(id="options-footer"):
                 yield Static("", id="form-error-summary")
                 yield Static(" ".join(state.to_argv()), id="argv-preview")
+                yield Static("", id="copy-command-status")
                 with Container(id="options-actions"):
+                    yield Button("Copy CLI command", id="copy-command-button")
                     yield Button("Run benchmark", id="run-button", variant="primary")
                     yield Button("Quit", id="quit-button")
         yield Footer()
@@ -435,20 +609,34 @@ class OptionsScreen(Screen[None]):
         """Handle on select changed within options."""
         self._refresh_form_state()
 
-    def on_selection_list_selected_changed(
-        self, _event: SelectionList.SelectedChanged
+    async def on_selection_list_selected_changed(
+        self, event: SelectionList.SelectedChanged
     ) -> None:
         """Handle on selection list selected changed within options."""
+        if event.selection_list.id == "workloads":
+            self._refresh_form_state()
+            await self._refresh_workload_option_controls()
         self._refresh_form_state()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle on button pressed within options."""
         if event.button.id == "run-button" and not event.button.disabled:
             self.app.push_screen(RunScreen(self._last_valid_state))
+        elif event.button.id == "copy-command-button":
+            self._copy_cli_command()
         elif event.button.id == "quit-button":
             self.app.exit()
         elif event.button.id is not None and event.button.id.startswith("browse-"):
             self._open_directory_picker(event.button.id.removeprefix("browse-"))
+
+    def _copy_cli_command(self) -> None:
+        """Copy the current benchmark command to the clipboard."""
+        command = self._cli_command(self._last_valid_state)
+        self.app.copy_to_clipboard(command)
+        status = self.query_one("#copy-command-status", Static)
+        status.add_class("has-status")
+        status.display = True
+        status.update("CLI command copied to clipboard.")
 
     def _refresh_form_state(self) -> None:
         """Refresh form state for options."""
@@ -470,122 +658,133 @@ class OptionsScreen(Screen[None]):
                 " ".join(validation.state.to_argv())
             )
 
+    @staticmethod
+    def _cli_command(state: BenchmarkTuiState) -> str:
+        """Build the full CLI command for the current TUI state."""
+        return shlex.join(
+            [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "benchmarks.run_parallel_benchmark",
+                *state.to_argv(),
+            ]
+        )
+
     def _render_errors(self, errors: dict[str, str]) -> None:
         """Handle render errors within options."""
         for widget in self.query(Static):
             if "field-error" not in widget.classes:
                 continue
+            widget.remove_class("has-error")
+            widget.display = False
             widget.update("")
         for widget_id, message in errors.items():
-            self.query_one("#%s" % self._error_id(widget_id), Static).update(message)
+            widget = self.query_one("#%s" % self._error_id(widget_id), Static)
+            widget.add_class("has-error")
+            widget.display = True
+            widget.update(message)
 
-    def _validate_form(self) -> _ValidationResult:
+    def _validate_form(self) -> OptionsValidationResult:
         """Validate form for options."""
-        errors: dict[str, str] = {}
-        parsed_ints: dict[str, int] = {}
-        parsed_floats: dict[str, float] = {}
-
-        profiling_enabled = self.query_one("#profiling-enabled", Switch).value
-
-        for widget_id, minimum in self._POSITIVE_INT_FIELDS.items():
-            self._validate_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum in self._NON_NEGATIVE_INT_FIELDS.items():
-            if widget_id == "profile-top-n" and not profiling_enabled:
-                continue
-            self._validate_int(widget_id, minimum, parsed_ints, errors)
-        for widget_id, minimum_float in self._NON_NEGATIVE_FLOAT_FIELDS.items():
-            self._validate_float(widget_id, minimum_float, parsed_floats, errors)
-
         workloads = tuple(self.query_one("#workloads", SelectionList).selected)
-        if not workloads:
-            errors["workloads"] = "Select at least one workload."
-
         ordering_modes = tuple(
             self.query_one("#ordering-modes", SelectionList).selected
         )
-        if not ordering_modes:
-            errors["ordering-modes"] = "Select at least one ordering mode."
-
-        skip_baseline = self.query_one("#skip-baseline", Switch).value
-        skip_async = self.query_one("#skip-async", Switch).value
-        skip_process = self.query_one("#skip-process", Switch).value
-        if skip_baseline and skip_async and skip_process:
-            errors["skip-phase-group"] = "Keep at least one execution mode enabled."
-
-        if errors:
-            return _ValidationResult(state=None, errors=errors)
-
-        base_state = self._last_valid_state
-        state = replace(
-            base_state,
-            bootstrap_servers=self.query_one("#bootstrap-servers", Input).value,
-            json_output=self.query_one("#json-output", Input).value,
-            num_messages=parsed_ints["num-messages"],
-            num_keys=parsed_ints["num-keys"],
-            num_partitions=parsed_ints["num-partitions"],
-            timeout_sec=parsed_ints["timeout-sec"],
-            metrics_port=parsed_ints["metrics-port"],
-            topic_prefix=self.query_one("#topic-prefix", Input).value,
+        draft = OptionsFormDraft(
+            input_values=self._form_input_values(),
+            switch_values=self._form_switch_values(),
+            select_values=self._form_select_values(),
             workloads=workloads,
             ordering_modes=ordering_modes,
-            log_level=str(self.query_one("#log-level", Select).value),
-            skip_reset=self.query_one("#skip-reset", Switch).value,
-            profiling_enabled=profiling_enabled,
-            profile=self.query_one("#profile", Switch).value,
-            profile_dir=self.query_one("#profile-dir", Input).value,
-            py_spy=self.query_one("#py-spy", Switch).value,
-            py_spy_output=self.query_one("#py-spy-output", Input).value,
-            skip_baseline=skip_baseline,
-            skip_async=skip_async,
-            skip_process=skip_process,
-            profile_top_n=parsed_ints.get("profile-top-n", base_state.profile_top_n),
-            py_spy_format=str(self.query_one("#py-spy-format", Select).value),
-            py_spy_native=self.query_one("#py-spy-native", Switch).value,
-            py_spy_idle=self.query_one("#py-spy-idle", Switch).value,
-            worker_sleep_ms=parsed_floats["worker-sleep-ms"],
-            worker_cpu_iterations=parsed_ints["worker-cpu-iterations"],
-            worker_io_sleep_ms=parsed_floats["worker-io-sleep-ms"],
+            workload_option_values=self._visible_workload_option_values(workloads),
         )
-        return _ValidationResult(state=state, errors={})
+        return validate_options_form(
+            draft,
+            base_state=self._last_valid_state,
+            unavailable_workloads=self._unavailable_workload_reasons(),
+            workload_classes=self._available_workload_classes(),
+        )
 
-    def _validate_int(
-        self,
-        widget_id: str,
-        minimum: int,
-        parsed_values: dict[str, int],
-        errors: dict[str, str],
-    ) -> None:
-        """Validate int for options."""
-        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
-        try:
-            value = int(raw_value)
-        except ValueError:
-            errors[widget_id] = "Enter a whole number."
-            return
-        if value < minimum:
-            comparator = ">="
-            errors[widget_id] = "Enter a whole number %s %d." % (comparator, minimum)
-            return
-        parsed_values[widget_id] = value
+    def _form_input_values(self) -> dict[str, str]:
+        """Collect raw input widget values for form validation."""
+        widget_ids = {
+            "bootstrap-servers",
+            "json-output",
+            "topic-prefix",
+            "profile-dir",
+            "py-spy-output",
+            *POSITIVE_INT_FIELDS,
+            "metrics-port",
+            "profile-top-n",
+            *OPTIONAL_POSITIVE_INT_FIELDS,
+            *OPTIONAL_NON_NEGATIVE_INT_FIELDS,
+        }
+        return {
+            widget_id: self.query_one("#%s" % widget_id, Input).value
+            for widget_id in widget_ids
+        }
 
-    def _validate_float(
-        self,
-        widget_id: str,
-        minimum: float,
-        parsed_values: dict[str, float],
-        errors: dict[str, str],
-    ) -> None:
-        """Validate float for options."""
-        raw_value = self.query_one("#%s" % widget_id, Input).value.strip()
-        try:
-            value = float(raw_value)
-        except ValueError:
-            errors[widget_id] = "Enter a number."
-            return
-        if value < minimum:
-            errors[widget_id] = "Enter a number >= %.1f." % minimum
-            return
-        parsed_values[widget_id] = value
+    def _form_switch_values(self) -> dict[str, bool]:
+        """Collect switch widget values for form validation."""
+        widget_ids = {
+            "profiling-enabled",
+            "skip-reset",
+            "profile",
+            "py-spy",
+            "skip-baseline",
+            "skip-async",
+            "skip-process",
+            "py-spy-native",
+            "py-spy-idle",
+        }
+        return {
+            widget_id: self.query_one("#%s" % widget_id, Switch).value
+            for widget_id in widget_ids
+        }
+
+    def _form_select_values(self) -> dict[str, str]:
+        """Collect select widget values for form validation."""
+        widget_ids = {"log-level", "py-spy-format"}
+        return {
+            widget_id: str(self.query_one("#%s" % widget_id, Select).value)
+            for widget_id in widget_ids
+        }
+
+    def _visible_workload_option_values(
+        self, workloads: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]:
+        """Collect visible dynamic workload option values from widgets."""
+        workload_classes = self._available_workload_classes()
+        workload_options: dict[str, dict[str, object]] = {}
+        for workload in workloads:
+            workload_cls = workload_classes.get(workload)
+            if workload_cls is None:
+                continue
+            schemas = describe_workload_options(workload_cls)
+            raw_options: dict[str, object] = {}
+            for schema in schemas:
+                widget_id = self._workload_option_widget_id(workload, schema.field_name)
+                if not self.query("#%s" % widget_id):
+                    continue
+                raw_options[schema.field_name] = self._raw_workload_option_value(
+                    widget_id, schema
+                )
+            if not raw_options:
+                continue
+            workload_options[workload] = raw_options
+        return workload_options
+
+    def _raw_workload_option_value(
+        self, widget_id: str, schema: WorkloadOptionSchema
+    ) -> object:
+        """Return raw widget value for a dynamic workload option."""
+        if schema.annotation is bool:
+            return self.query_one("#%s" % widget_id, Switch).value
+        if schema.annotation is str and schema.metadata.choices:
+            return str(self.query_one("#%s" % widget_id, Select).value)
+        return self.query_one("#%s" % widget_id, Input).value
 
     def _sync_profiling_controls(self) -> None:
         """Handle sync profiling controls within options."""

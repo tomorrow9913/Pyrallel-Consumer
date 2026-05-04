@@ -35,7 +35,10 @@ OPTION_HELP = {
     ),
     "workloads": OptionHelp(
         label="Workloads",
-        description="Choose one or more workload shapes to benchmark: sleep, cpu, io.",
+        description=(
+            "Choose one or more discovered workload shapes. Unavailable workloads "
+            "are shown for visibility but cannot run."
+        ),
     ),
     "ordering-modes": OptionHelp(
         label="Ordering modes",
@@ -52,6 +55,26 @@ OPTION_HELP = {
     "worker-io-sleep-ms": OptionHelp(
         label="Worker IO sleep (ms)",
         description="Delay each simulated IO workload by this many milliseconds.",
+    ),
+    "process-count": OptionHelp(
+        label="Process count",
+        description="Override the number of process-mode worker processes.",
+    ),
+    "process-route-batch-size": OptionHelp(
+        label="Process route batch size",
+        description="Override process worker-pipe route-batch size.",
+    ),
+    "process-batch-size": OptionHelp(
+        label="Process batch size",
+        description="Override process-mode worker micro-batch size.",
+    ),
+    "process-max-batch-wait-ms": OptionHelp(
+        label="Process max batch wait (ms)",
+        description="Maximum time to wait while filling a process micro-batch.",
+    ),
+    "route-batch-size": OptionHelp(
+        label="Route batch size",
+        description="Lease up to this many same-route items per scheduling step.",
     ),
     "metrics-port": OptionHelp(
         label="Metrics port",

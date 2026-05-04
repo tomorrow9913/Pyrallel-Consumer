@@ -46,7 +46,7 @@ uv sync --group dev
 - No arguments: launches the Textual TUI so you can configure and start the benchmark interactively.
 - General: `--bootstrap-servers`, `--num-messages`, `--num-keys`, `--num-partitions`, `--topic-prefix`, `--timeout-sec`, `--skip-{baseline,async,process}`, `--skip-reset`.
 - Workload / ordering selection:
-  - `--workloads sleep,cpu,io` (comma-separated subset; defaults to `sleep` when omitted).
+  - `--workloads sleep,cpu,io` (comma-separated subset of discovered workloads; defaults to `sleep` when omitted). Built-ins are `sleep`, `cpu`, and `io`; custom workloads are discovered from `benchmarks/workloads/*.py` when they define valid `BenchmarkWorkload` subclasses.
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
   - `--adaptive-concurrency off,on` (comma-separated subset for Pyrallel adaptive concurrency A/B comparison; defaults to `off`).
@@ -54,10 +54,12 @@ uv sync --group dev
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
   - `--worker-io-sleep-ms`: per-message sleep for `io` workload (default 0.5ms).
+  - `--workload-option workload.option=value`: generic override for workload-specific options. Use this for custom workload options and built-in options without a legacy alias. Explicit legacy flags and generic overrides for the same option are rejected together.
   - `--process-batch-size`: override process-mode micro-batch size for benchmark runs only.
   - `--process-max-batch-wait-ms`: override process-mode micro-batch wait for benchmark runs only.
   - `--process-flush-policy`: override process-mode flush policy (`size_or_timer`, `demand`, `demand_min_residence`) for benchmark runs only.
   - `--process-demand-flush-min-residence-ms`: minimum residence time before demand flush is allowed when using `demand_min_residence`.
+  - `--process-route-batch-size`: override process-mode same-route WorkManager lease size; the deprecated `--route-batch-size` alias is still accepted for compatibility.
 - Profiling (yappi):
   - `--profile`: enable profiling (baseline/async only; process mode profiling is disabled by default).
   - `--profile-dir`: directory to write `.prof` files (default `benchmarks/results/profiles`).
@@ -73,6 +75,93 @@ uv sync --group dev
   - `--py-spy-native`: include native C extension frames.
   - `--py-spy-idle`: include idle thread stacks.
   - `--py-spy-top`: use live `top` view instead of `record` mode.
+
+## Custom workloads
+
+Benchmark workloads are discovered from Python modules in `benchmarks/workloads/`.
+Each workload class must subclass `BenchmarkWorkload`, define non-empty `name`,
+`label`, and `description` class attributes, and implement `baseline_worker`,
+`async_worker`, and `process_worker`. Infrastructure modules such as `base.py`,
+`registry.py`, and `__init__.py` are ignored. Broken modules or invalid classes are
+reported as unavailable in CLI/TUI help instead of being silently hidden.
+
+Minimal shape:
+
+```python
+from dataclasses import dataclass, field
+from functools import partial
+
+from pyrallel_consumer.dto import WorkItem
+
+from benchmarks.workloads.base import (
+    BenchmarkWorkload,
+    WorkloadContext,
+    WorkloadOptionMetadata,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CustomOptions:
+    decode_utf8: bool = field(
+        default=True,
+        metadata={
+            "workload_option": WorkloadOptionMetadata(
+                label="Decode UTF-8",
+                description="Decode each payload before completing the message.",
+            )
+        },
+    )
+
+
+def custom_baseline(payload: bytes, decode_utf8: bool) -> None:
+    if decode_utf8:
+        payload.decode("utf-8")
+
+
+async def custom_async(item: WorkItem, decode_utf8: bool) -> None:
+    if decode_utf8:
+        (item.payload or b"").decode("utf-8")
+
+
+def custom_process(item: WorkItem, decode_utf8: bool) -> None:
+    if decode_utf8:
+        (item.payload or b"").decode("utf-8")
+
+
+class CustomWorkload(BenchmarkWorkload[CustomOptions]):
+    name = "custom"
+    label = "Custom"
+    description = "Custom benchmark workload"
+    options_type = CustomOptions
+
+    def baseline_worker(self, context: WorkloadContext[CustomOptions]):
+        return partial(custom_baseline, decode_utf8=context.options.decode_utf8)
+
+    def async_worker(self, context: WorkloadContext[CustomOptions]):
+        return partial(custom_async, decode_utf8=context.options.decode_utf8)
+
+    def process_worker(self, context: WorkloadContext[CustomOptions]):
+        return partial(custom_process, decode_utf8=context.options.decode_utf8)
+```
+
+Run a custom workload option with the generic override form:
+
+```bash
+uv run python -m benchmarks.run_parallel_benchmark \
+  --workloads custom \
+  --workload-option custom.decode_utf8=false
+```
+
+Supported option dataclass field types are `bool`, `int`, `float`, and `str`.
+Every field must have an explicit default and `metadata={"workload_option":
+WorkloadOptionMetadata(...)}`. String choices and numeric bounds are surfaced to
+CLI/TUI validation; unsupported types or duplicate legacy aliases make the
+workload unavailable instead of silently accepting an invalid schema.
+
+Keep process workers picklable for multiprocessing by returning module-level
+functions or `functools.partial` of module-level functions. The compatibility API
+`from benchmarks.workloads import select_workers` still returns the existing
+three-callable tuple used by `run_parallel_benchmark.py`.
 
 
 ## Outputs

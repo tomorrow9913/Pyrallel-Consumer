@@ -24,6 +24,16 @@ class BenchmarkResult:
     avg_processing_ms: float
     p99_processing_ms: float
     process_transport_mode: str | None = None
+    route_batch_size: int = 1
+    process_batch_size: int | None = None
+    items_per_input_ipc: float | None = None
+    items_per_completion_ipc: float | None = None
+    route_batch_count: int | None = None
+    route_batch_item_count: int | None = None
+    route_batch_size_avg: float | None = None
+    route_batch_size_max: int | None = None
+    completion_item_payload_count: int | None = None
+    completion_batch_payload_count: int | None = None
     window_size_messages: int | None = None
     tps_p50_window: float | None = None
     tps_p10_window: float | None = None
@@ -48,6 +58,8 @@ class BenchmarkStats:
         ordering: str,
         topic: str,
         process_transport_mode: str | None = None,
+        route_batch_size: int = 1,
+        process_batch_size: int | None = None,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
@@ -56,6 +68,8 @@ class BenchmarkStats:
         self.ordering = ordering
         self.topic = topic
         self.process_transport_mode = process_transport_mode
+        self.route_batch_size = route_batch_size
+        self.process_batch_size = process_batch_size
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
         self._end_time: Optional[float] = None
@@ -64,6 +78,7 @@ class BenchmarkStats:
         self._processed = 0
         self._window_size_messages = 100
         self._release_gate_observations: list[dict[str, Any]] = []
+        self._process_batch_metrics: Any = None
 
     def start(self) -> None:
         """Handle start within stats."""
@@ -103,6 +118,10 @@ class BenchmarkStats:
             }
         )
 
+    def record_process_batch_metrics(self, metrics: Any) -> None:
+        """Record latest process runtime metrics for benchmark summary."""
+        self._process_batch_metrics = metrics
+
     @property
     def processed(self) -> int:
         """Handle processed within stats."""
@@ -136,6 +155,40 @@ class BenchmarkStats:
             ordering=self.ordering,
             topic=self.topic,
             process_transport_mode=self.process_transport_mode,
+            route_batch_size=self.route_batch_size,
+            process_batch_size=self.process_batch_size,
+            items_per_input_ipc=_metric_value(
+                self._process_batch_metrics,
+                "items_per_input_ipc",
+            ),
+            items_per_completion_ipc=_metric_value(
+                self._process_batch_metrics,
+                "items_per_completion_ipc",
+            ),
+            route_batch_count=_metric_value(
+                self._process_batch_metrics,
+                "route_batch_count",
+            ),
+            route_batch_item_count=_metric_value(
+                self._process_batch_metrics,
+                "route_batch_item_count",
+            ),
+            route_batch_size_avg=_metric_value(
+                self._process_batch_metrics,
+                "route_batch_size_avg",
+            ),
+            route_batch_size_max=_metric_value(
+                self._process_batch_metrics,
+                "route_batch_size_max",
+            ),
+            completion_item_payload_count=_metric_value(
+                self._process_batch_metrics,
+                "completion_item_payload_count",
+            ),
+            completion_batch_payload_count=_metric_value(
+                self._process_batch_metrics,
+                "completion_batch_payload_count",
+            ),
             messages_processed=self._processed,
             total_time_sec=total_time,
             throughput_tps=throughput,
@@ -208,6 +261,13 @@ def _optional_percentile(values: list[float], percentile: float) -> float | None
     if not values:
         return None
     return _percentile(values, percentile)
+
+
+def _metric_value(metrics: Any, field_name: str) -> Any:
+    """Return a runtime metric value or None when unavailable."""
+    if metrics is None:
+        return None
+    return getattr(metrics, field_name, None)
 
 
 def write_results_json(

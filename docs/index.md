@@ -1,6 +1,6 @@
 # Docs Index
 
-`docs/` is organized into three document groups.
+`docs/` is organized into two document groups.
 
 ## 1. Blueprint
 
@@ -24,20 +24,13 @@ This group includes:
 - **[operations/stable-operations-evidence.md](./operations/stable-operations-evidence.md)** - release-review reference for soak evidence and performance baselines
 - **[operations/compatibility-matrix.md](./operations/compatibility-matrix.md)** - automated Kafka/Python/client verification combinations
 - **[operations/public-contract-v1.md](./operations/public-contract-v1.md)** - v1 ordering/rebalance/DLQ/commit public contract freeze
-- **[operations/oss-messaging-guardrails.md](./operations/oss-messaging-guardrails.md)** - inbound-only OSS messaging policy guardrails
-- **[operations/wave-2-gate-cadence.md](./operations/wave-2-gate-cadence.md)** - wave-2 resume gate/cadence rules after MQU-4
 - **[operations/release-readiness.md](./operations/release-readiness.md)** - stable release readiness checklist
 - **[operations/support-policy.md](./operations/support-policy.md)** - Python/Kafka support scope and compatibility policy
 - **[operations/secure-kafka-config.md](./operations/secure-kafka-config.md)** - TLS/SASL Kafka client configuration and secret-handling guide
 - **[operations/upgrade-rollback-guide.md](./operations/upgrade-rollback-guide.md)** - upgrade/rollback operations guide
 - **[operations/github-actions-act-local-review.md](./operations/github-actions-act-local-review.md)** - local `act` workflow review guide
 
-## 3. Plans
-
-- **[plans/](./plans/)** - date-based design/implementation plan archive
-
 ## Quick Guide
 
 - For current runtime structure and feature blueprints, start at `blueprint/`.
 - For operations and incident response only, start at `operations/`.
-- For archived plans and design decisions, check `plans/`.

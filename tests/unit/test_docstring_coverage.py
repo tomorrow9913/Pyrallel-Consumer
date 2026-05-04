@@ -1,7 +1,6 @@
 import ast
 from pathlib import Path
 
-
 DOCSTRING_ROOTS = (Path("pyrallel_consumer"), Path("benchmarks"))
 
 

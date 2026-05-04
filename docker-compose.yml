@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   kafka-1:
-    image: confluentinc/cp-kafka@sha256:8fc15a671986983b83beecae14e013a91adcd3999f687de8b6b8153fd47e8f67
+    image: confluentinc/cp-kafka:7.6.0
     hostname: kafka-1
     container_name: kafka-1
     ports:
@@ -27,12 +25,12 @@ services:
       # --- End Single Broker Settings ---
       # 로그 경로를 가상 볼륨 마운트 포인트와 일치시킵니다.
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qg
     networks:
-      - yamong_network
+      - pyrallel_network
 
   kafka-ui:
-    image: provectuslabs/kafka-ui@sha256:4346a0af1450f52286e671a6b49f701d069d7306a802f7cf6743bd27ac4dbcd1
+    image: provectuslabs/kafka-ui:v0.7.2
     container_name: kafka-ui
     ports:
       - "8080:8080"
@@ -42,7 +40,7 @@ services:
     depends_on:
       - kafka-1
     networks:
-      - yamong_network
+      - pyrallel_network
 
   kafka-exporter:
     image: danielqsj/kafka-exporter@sha256:bfae1aa15e873268c75899d02fcb5479418d3cde69d5d0b424511e067caf6f22
@@ -51,10 +49,11 @@ services:
       - "--kafka.server=kafka-1:29092"
     ports:
       - "9308:9308"
+    restart: unless-stopped
     depends_on:
       - kafka-1
     networks:
-      - yamong_network
+      - pyrallel_network
 
   prometheus:
     image: prom/prometheus@sha256:b1935d181b6dd8e9c827705e89438815337e1b10ae35605126f05f44e5c6940f
@@ -66,11 +65,14 @@ services:
     depends_on:
       - kafka-exporter
     networks:
-      - yamong_network
+      - pyrallel_network
 
   grafana:
     image: grafana/grafana@sha256:3aa2a03d88ad9628485f78e89adcd5b18bcde1aced3e6146bbbd7a718b82b797
     container_name: grafana
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
     ports:
       - "3000:3000"
     environment:
@@ -78,10 +80,10 @@ services:
     depends_on:
       - prometheus
     networks:
-      - yamong_network
+      - pyrallel_network
 
 networks:
-  yamong_network:
+  pyrallel_network:
     driver: bridge
 
 # 하단에 사용할 가상 볼륨들을 정의합니다.

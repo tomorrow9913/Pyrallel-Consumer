@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_support.py
+# Role: Provides broker commit planning and raw-message DLQ cache helpers.
+# Extend here for commit/cache support; keep event processing in broker_completion_support.py.
 from __future__ import annotations
 
 import asyncio
@@ -6,8 +10,8 @@ from collections import OrderedDict
 from itertools import islice
 from typing import Any, Awaitable, Callable, Optional, Tuple, cast
 
-from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka import KafkaException
+from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from pyrallel_consumer.control_plane.metadata_encoder import MetadataEncoder
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
@@ -19,7 +23,15 @@ class DlqCacheSupport:
 
     @staticmethod
     def estimate_cached_payload_bytes(payload: Any) -> int:
-        """Handle estimate cached payload bytes within broker commit and DLQ support."""
+        """Handle estimate cached payload bytes within broker commit and DLQ support.
+
+        Args:
+            payload: Serialized or decoded payload handled by this function.
+
+        Returns:
+            Computed integer value.
+
+        """
         if payload is None:
             return 0
         if isinstance(payload, memoryview):
@@ -31,7 +43,16 @@ class DlqCacheSupport:
         return 0
 
     def get_cached_message_size(self, key: Any, value: Any) -> int:
-        """Return cached message size for broker commit and DLQ support."""
+        """Return cached message size for broker commit and DLQ support.
+
+        Args:
+            key: Kafka record key or virtual queue key.
+            value: Kafka record value.
+
+        Returns:
+            Computed integer value.
+
+        """
         return self.estimate_cached_payload_bytes(
             key
         ) + self.estimate_cached_payload_bytes(value)
@@ -42,7 +63,17 @@ class DlqCacheSupport:
         size_bytes: int,
         cache_key: Tuple[DtoTopicPartition, int],
     ) -> tuple[Optional[Tuple[Any, Any]], int]:
-        """Pop cached message from broker commit and DLQ support."""
+        """Pop cached message from broker commit and DLQ support.
+
+        Args:
+            message_cache: Raw-message cache used for DLQ publication.
+            size_bytes: Current cache size in bytes.
+            cache_key: Cache key identifying a cached message.
+
+        Returns:
+            tuple[Optional[Tuple[Any, Any]], int] result produced by this function.
+
+        """
         cached_message = message_cache.pop(cache_key, None)
         if cached_message is None:
             return None, size_bytes
@@ -63,7 +94,23 @@ class DlqCacheSupport:
         value: Any,
         logger: logging.Logger,
     ) -> int:
-        """Handle cache message for dlq within broker commit and DLQ support."""
+        """Handle cache message for dlq within broker commit and DLQ support.
+
+        Args:
+            message_cache: Raw-message cache used for DLQ publication.
+            size_bytes: Current cache size in bytes.
+            should_cache: Whether payload caching is enabled for this message.
+            max_bytes: Maximum allowed cache size in bytes.
+            tp: Topic-partition affected by the operation.
+            offset: Kafka record offset.
+            key: Kafka record key or virtual queue key.
+            value: Kafka record value.
+            logger: Logger used to report operational details.
+
+        Returns:
+            Computed integer value.
+
+        """
         cache_key = (tp, offset)
         if not should_cache:
             _, size_bytes = self.pop_cached_message(
@@ -107,7 +154,17 @@ class DlqCacheSupport:
         size_bytes: int,
         tp: DtoTopicPartition,
     ) -> int:
-        """Drop partition messages from broker commit and DLQ support."""
+        """Drop partition messages from broker commit and DLQ support.
+
+        Args:
+            message_cache: Raw-message cache used for DLQ publication.
+            size_bytes: Current cache size in bytes.
+            tp: Topic-partition affected by the operation.
+
+        Returns:
+            Computed integer value.
+
+        """
         cache_keys_to_remove = [
             cache_key for cache_key in message_cache if cache_key[0] == tp
         ]
@@ -126,6 +183,13 @@ class BrokerCommitPlanner:
         metadata_encoder: MetadataEncoder,
         max_completed_offsets: int,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            metadata_encoder: Metadata encoder used for commit state handoff.
+            max_completed_offsets: Max completed offsets value used to initialize this component.
+
+        """
         self.metadata_encoder = metadata_encoder
         self._max_completed_offsets = max_completed_offsets
 
@@ -137,7 +201,18 @@ class BrokerCommitPlanner:
         committed_partition: Optional[KafkaTopicPartition],
         last_committed: int,
     ) -> set[int]:
-        """Decode assignment completed offsets for broker commit and DLQ support."""
+        """Decode assignment completed offsets for broker commit and DLQ support.
+
+        Args:
+            strategy: Rebalance metadata strategy to use.
+            partition: Kafka topic-partition object being inspected.
+            committed_partition: Committed Kafka partition metadata, when available.
+            last_committed: Last committed offset used as the decode baseline.
+
+        Returns:
+            set[int] result produced by this function.
+
+        """
         if strategy != "metadata_snapshot":
             return set()
 
@@ -153,7 +228,16 @@ class BrokerCommitPlanner:
     def get_commit_metadata_offsets(
         self, tracker: OffsetTracker, base_offset: int
     ) -> set[int]:
-        """Return commit metadata offsets for broker commit and DLQ support."""
+        """Return commit metadata offsets for broker commit and DLQ support.
+
+        Args:
+            tracker: Offset tracker whose state is being read or updated.
+            base_offset: Base offset used for relative metadata encoding.
+
+        Returns:
+            set[int] result produced by this function.
+
+        """
         if hasattr(tracker.completed_offsets, "irange"):
             return set(
                 islice(
@@ -171,7 +255,17 @@ class BrokerCommitPlanner:
         tracker: OffsetTracker,
         base_offset: int,
     ) -> str:
-        """Encode revoke metadata for broker commit and DLQ support."""
+        """Encode revoke metadata for broker commit and DLQ support.
+
+        Args:
+            strategy: Rebalance metadata strategy to use.
+            tracker: Offset tracker whose state is being read or updated.
+            base_offset: Base offset used for relative metadata encoding.
+
+        Returns:
+            Computed string value.
+
+        """
         if strategy != "metadata_snapshot":
             return ""
         metadata_offsets = self.get_commit_metadata_offsets(tracker, base_offset)
@@ -189,7 +283,17 @@ class BrokerCommitPlanner:
         trackers: dict[DtoTopicPartition, OffsetTracker],
         strategy: str,
     ) -> list[KafkaTopicPartition]:
-        """Convert build offsets to commit."""
+        """Convert build offsets to commit.
+
+        Args:
+            commits_to_make: Commit candidates keyed by topic-partition.
+            trackers: Offset trackers keyed by topic-partition.
+            strategy: Rebalance metadata strategy to use.
+
+        Returns:
+            list[KafkaTopicPartition] result produced by this function.
+
+        """
         offsets_to_commit: list[KafkaTopicPartition] = []
         for tp, safe_offset in commits_to_make:
             tracker = trackers[tp]
@@ -230,6 +334,13 @@ class BrokerCommitSupport:
         commit_planner: BrokerCommitPlanner,
         logger: logging.Logger,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            commit_planner: Commit planner value used to initialize this component.
+            logger: Logger used for diagnostics.
+
+        """
         self._commit_planner = commit_planner
         self._logger = logger
 
@@ -243,7 +354,15 @@ class BrokerCommitSupport:
             [list[tuple[DtoTopicPartition, int]]], Awaitable[None]
         ],
     ) -> None:
-        """Commit ready offsets for broker commit and DLQ support."""
+        """Commit ready offsets for broker commit and DLQ support.
+
+        Args:
+            commit_lock: Commit lock value used by this function.
+            control_lock: Control lock value used by this function.
+            build_commit_candidates: Build commit candidates value used by this function.
+            commit_offsets: Commit offsets value used by this function.
+
+        """
         async with commit_lock:
             async with control_lock:
                 commits_to_make = build_commit_candidates()
@@ -260,7 +379,17 @@ class BrokerCommitSupport:
         strategy: str,
         to_thread: Callable[..., Awaitable[Any]],
     ) -> None:
-        """Commit offsets for broker commit and DLQ support."""
+        """Commit offsets for broker commit and DLQ support.
+
+        Args:
+            consumer: Kafka consumer instance.
+            offset_trackers: Offset trackers keyed by topic-partition.
+            control_lock: Control lock value used by this function.
+            commits_to_make: Commit candidates keyed by topic-partition.
+            strategy: Rebalance metadata strategy to use.
+            to_thread: To thread value used by this function.
+
+        """
         async with control_lock:
             tracked_commits: list[tuple[DtoTopicPartition, int]] = []
             tracker_snapshot: dict[DtoTopicPartition, OffsetTracker] = {}
@@ -325,7 +454,18 @@ class BrokerDrainSupport:
         process_completed_events: Callable[[list[Any]], Awaitable[None]],
         schedule: Callable[[], Awaitable[None]],
     ) -> bool:
-        """Drain completion events once for broker commit and DLQ support."""
+        """Drain completion events once for broker commit and DLQ support.
+
+        Args:
+            poll_completed_events: Poll completed events value used by this function.
+            handle_blocking_timeouts: Handle blocking timeouts value used by this function.
+            process_completed_events: Process completed events value used by this function.
+            schedule: Schedule value used by this function.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         completed_events = await poll_completed_events()
         timeout_events = await handle_blocking_timeouts()
         if timeout_events:

@@ -23,8 +23,8 @@ legacy markdown surfaces.
 
 ## Explicit Exemptions
 
-- `GEMINI.md` is a handoff and working-log artifact. It is intentionally exempt
-  from the filename-language rule.
+- `GEMINI.md` is a local handoff and working-log artifact. It is intentionally
+  exempt from the filename-language rule and may be ignored by Git.
 - `docs/plans/**` is an archival plan tree. It is intentionally exempt from the
   filename-language rule and may retain historical mixed-language content.
 

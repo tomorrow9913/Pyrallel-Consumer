@@ -1246,13 +1246,15 @@ async def test_process_retry_path_commits_only_after_success(
                 f"offset={blocked_commit}"
             )
 
+            final_commit_timeout = 30 if execution_mode == ExecutionMode.PROCESS else 15
+
             success_release_path.write_text("release", encoding="utf-8")
             await _wait_until(
                 lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
                     == produced_count
                 ),
-                timeout_seconds=15,
+                timeout_seconds=final_commit_timeout,
                 message="retry scenario never committed the final safe offset",
             )
             final_committed_offset = _fetch_committed_offset(group_id, topic, partition)

@@ -44,21 +44,19 @@ process execution engine의 목표 모델은 다음과 같다.
 - route identity는 async와 다른 별도 scheduling hint가 아니라, `WorkManager`가
   partition/key virtual queue에서 이미 사용한 logical queue identity다.
 - ordered mode에서는 sticky routing / affinity preservation이 기본 원칙이다.
-- `shared_queue`는 default compatibility path로 남는다.
-- `worker_pipes`는 ordering-preserving parallelism을 검증하고, 장기적으로는 기본
-  후보가 될 수 있는 path다.
+- #129 이후 `shared_queue`는 live compatibility path가 아니라 역사적 비교 대상이다.
+- `worker_pipes`는 process execution의 단일 live topology이며, route-batch
+  profile을 소유한다.
 
-이 문서는 `worker_pipes`를 production default로 즉시 전환하라고 요구하지는 않는다.
-하지만 process engine이 장기적으로 worker-affine input channel topology를 지원해야
-한다는 점은 명시적으로 요구한다.
+이 문서는 process engine이 worker-affine input channel topology를 기본 책임으로
+가져야 한다는 점을 명시한다.
 
 ## 4. 책임
 
 - sync worker를 별도 프로세스에서 실행해야 한다.
-- process transport mode를 통해 compatibility path와 target direction을 함께
-  지원해야 한다.
-- `shared_queue`와 `worker_pipes` 모두에서 `BaseExecutionEngine` 공개 계약을
-  유지해야 한다.
+- process execution은 selectable transport mode가 아니라 worker-pipes 단일
+  topology로 동작해야 한다.
+- removed `shared_queue` surface는 release note / migration note에서만 다뤄야 한다.
 - completion 결과를 control plane이 소비할 수 있는 형태로 surface 해야 한다.
 - worker crash/timeout/restart/shutdown을 consumer 전체 crash와 분리해야 한다.
 - batching, `wait_for_completion()`, shutdown, recycle semantics를 transport별로
@@ -67,20 +65,30 @@ process execution engine의 목표 모델은 다음과 같다.
 
 ## 5. 기능 요구사항
 
-### 5.1 transport mode
+### 5.1 process topology
 
-- process mode는 최소 두 transport를 문서화해야 한다.
-  - `shared_queue`
-  - `worker_pipes`
-- 기본값은 `shared_queue`여야 한다.
-- transport mode는 `ProcessConfig`를 통해 선택 가능해야 한다.
-- invalid transport 값은 startup 이전에 config validation으로 실패해야 한다.
+- process mode의 live topology는 `worker_pipes` 하나다.
+- `ProcessConfig.transport_mode`, `PROCESS_TRANSPORT_MODE`, benchmark/TUI
+  `--process-transport`는 #129에서 제거한다.
+- 새 benchmark artifact는 `process_transport_mode`를 생략하거나 deprecated
+  compatibility field로 `"worker_pipes"`만 emit할 수 있다.
+- `"shared_queue"` 값은 새 release-gate evidence에서 invalid로 처리한다.
 
 ### 5.2 control-plane compatibility
 
 - `WorkManager`와 `BrokerPoller`는 transport mode를 몰라야 한다.
 - `BaseExecutionEngine.submit(work_item)` 계약은 유지해야 한다.
-- completion queue는 1차로 single aggregator를 유지해야 한다.
+- `BaseExecutionEngine.submit_batch(work_items)`는 engine 공통 계약이다. 기본
+  fallback은 기존 `submit()`을 item 순서대로 호출해야 한다.
+- partial batch acceptance는 명시적이어야 한다. engine은 batch 전체를 accept하거나,
+  일반 예외에서는 accepted count를 0으로 취급하거나, 일부 prefix만 accept했다면
+  `BatchSubmitError(accepted_count=...)`를 던져야 한다.
+- ordered route batch는 engine이 `supports_ordered_route_batch=True`를 명시할 때만
+  허용한다. 그렇지 않으면 `KEY_HASH`/`PARTITION`의 effective batch size는 `1`이다.
+- completion aggregation ownership은 parent/control plane에 남는다.
+  `worker_pipes`는 internal `BatchCompletion` envelope로 worker-to-parent IPC를
+  줄일 수 있지만, parent가 외부 surface를 기존 `CompletionEvent` 단위로 펼쳐야
+  한다.
 - process transport 변경이 commit / broker I/O / retry policy를 직접 바꿔서는 안
   된다.
 
@@ -100,19 +108,27 @@ process execution engine의 목표 모델은 다음과 같다.
 - picklable worker 검증이 설정으로 강제될 수 있어야 한다.
 - batching은 IPC 비용 절감 수단이어야 하며 ordering correctness 계층을 대체하면
   안 된다.
+- `ProcessConfig.route_batch_size` 기본값은 `64`이며 process worker-pipe
+  전송/admission profile이다.
+- async/common execution은 item-level WorkManager lease를 유지하며 별도의
+  execution-level route-batch config surface를 갖지 않는다.
+- route batch는 transport envelope일 뿐이다. registry, retry, DLQ, commit,
+  recovery accounting은 item 단위를 유지해야 한다.
 - `wait_for_completion()`은 transport별로 관측 가능한 의미가 동일해야 한다.
 - shutdown은 sentinel, join, terminate/kill escalation 순서를 유지해야 한다.
 - recycle semantics는 transport별로 유지하거나 명시적으로 reject해야 한다.
 
 ## 6. 비기능 요구사항
 
-- ordered partition workload에서 shared input queue 병목을 줄이는 방향이
-  benchmark로 설명 가능해야 한다.
+- ordered partition workload에서 과거 shared input queue 병목을 worker-pipes
+  topology가 어떻게 줄이는지 benchmark로 설명 가능해야 한다.
 - msgpack payload는 size guard를 가져야 한다.
+- malformed route-batch / batch-completion payload는 빈 work나 빈 completion으로
+  해석하지 말고 명시적으로 실패해야 한다.
 - 프로세스 누수가 없어야 한다.
 - crash/timeout이 consumer 전체 crash로 번지지 않아야 한다.
-- metrics / benchmark / release-gate evidence가 transport 차이를 해석할 수
-  있어야 한다.
+- metrics / benchmark / release-gate evidence는 live `shared_queue` 값을 노출하지
+  않아야 한다.
 
 ## 7. 입력/출력 경계
 
@@ -135,7 +151,6 @@ process execution engine의 목표 모델은 다음과 같다.
 
 이 요구사항 문서는 다음을 포함하지 않는다.
 
-- production default를 지금 당장 `worker_pipes`로 바꾸는 결정
 - work stealing 구현
 - broker I/O bridge와의 결합
 - completion queue를 worker별로 나누는 설계
@@ -143,9 +158,8 @@ process execution engine의 목표 모델은 다음과 같다.
 
 ## 9. Acceptance 기준
 
-- `shared_queue`가 compatibility/default path라는 점이 명확해야 한다.
-- `worker_pipes`가 ordered throughput 개선을 위한 장기 방향이라는 점이
-  명확해야 한다.
+- `shared_queue`가 historical context일 뿐 live path가 아니라는 점이 명확해야 한다.
+- `worker_pipes`가 process execution의 단일 live topology라는 점이 명확해야 한다.
 - `WorkManager`가 이미 virtual queue를 가지고 ordering/eligibility를 결정한다는
   점이 설명돼야 한다.
 - async engine이 input queue에서 다시 하나로 합치지 않는 비교 기준으로
@@ -154,3 +168,6 @@ process execution engine의 목표 모델은 다음과 같다.
   지목한다는 점이 드러나야 한다.
 - config, lifecycle, batching, `wait_for_completion()`, shutdown/recycle,
   metrics surface가 문서에서 빠지지 않아야 한다.
+- route-batch 구현은 같은 route만 묶고, worker 내부 순서 실행, 실패 후 tail
+  recovery, fatal exit 전 completed prefix flush, bounded duplicate suppression을
+  보장해야 한다.

@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/adaptive_concurrency.py
+# Role: Computes adaptive concurrency limit changes from runtime load samples.
+# Extend here for concurrency scaling rules; keep broker runtime projection elsewhere.
 from __future__ import annotations
 
 import time
@@ -29,6 +33,13 @@ class AdaptiveConcurrencyController:
         *,
         configured_max_in_flight: int,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            config: Configuration object used to initialize this component.
+            configured_max_in_flight: Configured max in flight value used to initialize this component.
+
+        """
         self._config = config
         self._configured_max_in_flight = max(1, int(configured_max_in_flight))
         self._min_in_flight = self._resolve_min_in_flight(config.min_in_flight)
@@ -37,11 +48,24 @@ class AdaptiveConcurrencyController:
 
     @property
     def enabled(self) -> bool:
-        """Return whether this controller is active."""
+        """Return whether this controller is active.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        """
         return bool(self._config.enabled)
 
     def _resolve_min_in_flight(self, raw_min_in_flight: int) -> int:
-        """Resolve min in flight for adaptive concurrency control."""
+        """Resolve min in flight for adaptive concurrency control.
+
+        Args:
+            raw_min_in_flight: Raw minimum in-flight setting to normalize.
+
+        Returns:
+            Computed integer value.
+
+        """
         if int(raw_min_in_flight) <= 0:
             return max(1, self._configured_max_in_flight // 4)
         return min(self._configured_max_in_flight, max(1, int(raw_min_in_flight)))
@@ -52,7 +76,16 @@ class AdaptiveConcurrencyController:
         *,
         now_seconds: Optional[float] = None,
     ) -> Optional[int]:
-        """Evaluate the latest sample and return any control adjustment."""
+        """Evaluate the latest sample and return any control adjustment.
+
+        Args:
+            sample: Runtime sample used to evaluate adaptive concurrency.
+            now_seconds: Monotonic timestamp override used for deterministic evaluation.
+
+        Returns:
+            Computed integer value, or None when no value is available.
+
+        """
         if not self._config.enabled:
             return None
 
@@ -94,7 +127,15 @@ class AdaptiveConcurrencyController:
         *,
         effective_max_in_flight: int,
     ) -> AdaptiveConcurrencyRuntimeSnapshot:
-        """Build runtime snapshot for adaptive concurrency control."""
+        """Build runtime snapshot for adaptive concurrency control.
+
+        Args:
+            effective_max_in_flight: Effective maximum in-flight limit to report.
+
+        Returns:
+            Runtime snapshot of adaptive concurrency state.
+
+        """
         return AdaptiveConcurrencyRuntimeSnapshot(
             configured_max_in_flight=self._configured_max_in_flight,
             effective_max_in_flight=max(

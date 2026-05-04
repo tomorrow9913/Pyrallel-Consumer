@@ -9,6 +9,8 @@ The English documents in this directory are the canonical contract; the preserve
 - How do the CLI runner, Textual TUI, producer, baseline consumer, and Pyrallel test harness divide responsibilities?
 - When are topics and consumer groups reset or lazily created during a run?
 - How should TPS, total runtime, per-message latency, profiling artifacts, and optional metrics exposure be interpreted together?
+- How should route-batch controls and IPC amortization metrics be interpreted
+  separately from process micro-batch controls?
 - How do JSON summaries feed the current release-gate evaluator without turning the benchmark harness itself into a release-policy engine?
 
 ## Document map
@@ -17,7 +19,7 @@ The English documents in this directory are the canonical contract; the preserve
 | --- | --- |
 | [01-requirements.md](./01-requirements.md) | Scope, responsibilities, inputs/outputs, and acceptance criteria for benchmark tooling |
 | [02-architecture.md](./02-architecture.md) | Runtime component boundaries between the runner, reset helpers, execution rounds, stats pipeline, and TUI |
-| [03-design.md](./03-design.md) | Concrete CLI/TUI options, workload semantics, artifact contracts, and result interpretation rules |
+| [03-design.md](./03-design.md) | Concrete CLI/TUI options, route-batch knobs, workload semantics, artifact contracts, and result interpretation rules |
 | [04-throughput-experiment-blueprint.md](./04-throughput-experiment-blueprint.md) | Research frame and first common-path throughput experiment |
 
 ## Quick reading guide

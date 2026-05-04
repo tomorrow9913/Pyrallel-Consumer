@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
+
+
+def default_workloads() -> tuple[str, ...]:
+    """Return the registry-derived default TUI workload selection."""
+    from benchmarks.workloads import available_names
+
+    names = available_names()
+    return names[:1]
 
 
 @dataclass(slots=True)
 class BenchmarkTuiState:
     """Represent benchmark tui state data used by state."""
 
-    workloads: tuple[str, ...] = ("sleep",)
+    workloads: tuple[str, ...] = field(default_factory=default_workloads)
+    workload_options: dict[str, dict[str, object]] = field(default_factory=dict)
     ordering_modes: tuple[str, ...] = ("key_hash",)
     bootstrap_servers: str = "localhost:9092"
     num_messages: int = 100_000
@@ -35,6 +45,10 @@ class BenchmarkTuiState:
     worker_sleep_ms: float = 0.5
     worker_cpu_iterations: int = 1000
     worker_io_sleep_ms: float = 0.5
+    process_count: int | None = 4
+    process_batch_size: int | None = 1
+    process_max_batch_wait_ms: int | None = 0
+    route_batch_size: int = 64
     metrics_port: int = 9091
     py_spy: bool = False
     py_spy_format: str = "flamegraph"
@@ -72,14 +86,32 @@ class BenchmarkTuiState:
             "--order",
             ",".join(self.ordering_modes),
             "--worker-sleep-ms",
-            str(self.worker_sleep_ms),
+            self._format_option_value(
+                self._workload_option_value("sleep", "sleep_ms", self.worker_sleep_ms)
+            ),
             "--worker-cpu-iterations",
-            str(self.worker_cpu_iterations),
+            self._format_option_value(
+                self._workload_option_value(
+                    "cpu", "iterations", self.worker_cpu_iterations
+                )
+            ),
             "--worker-io-sleep-ms",
-            str(self.worker_io_sleep_ms),
+            self._format_option_value(
+                self._workload_option_value("io", "sleep_ms", self.worker_io_sleep_ms)
+            ),
+            "--process-route-batch-size",
+            str(self.route_batch_size),
         ]
 
         argv.extend(["--metrics-port", str(self.metrics_port)])
+
+        for value, flag in (
+            (self.process_count, "--process-count"),
+            (self.process_batch_size, "--process-batch-size"),
+            (self.process_max_batch_wait_ms, "--process-max-batch-wait-ms"),
+        ):
+            if value is not None:
+                argv.extend([flag, str(value)])
 
         if self.profiling_enabled:
             argv.extend(
@@ -122,4 +154,40 @@ class BenchmarkTuiState:
             if enabled:
                 argv.append(flag)
 
+        self._append_generic_workload_options(argv)
+
         return argv
+
+    def _workload_option_value(
+        self, workload: str, option_name: str, default: object
+    ) -> object:
+        """Return the selected workload option value or its legacy default."""
+        if workload not in self.workloads:
+            return default
+        return self.workload_options.get(workload, {}).get(option_name, default)
+
+    def _append_generic_workload_options(self, argv: list[str]) -> None:
+        """Append generic workload option flags for non-legacy options."""
+        legacy_options = {
+            ("sleep", "sleep_ms"),
+            ("cpu", "iterations"),
+            ("io", "sleep_ms"),
+        }
+        for workload in self.workloads:
+            for option_name, value in self.workload_options.get(workload, {}).items():
+                if (workload, option_name) in legacy_options:
+                    continue
+                argv.extend(
+                    [
+                        "--workload-option",
+                        "%s.%s=%s"
+                        % (workload, option_name, self._format_option_value(value)),
+                    ]
+                )
+
+    @staticmethod
+    def _format_option_value(value: Any) -> str:
+        """Format a workload option value for argv emission."""
+        if isinstance(value, bool):
+            return str(value).lower()
+        return str(value)

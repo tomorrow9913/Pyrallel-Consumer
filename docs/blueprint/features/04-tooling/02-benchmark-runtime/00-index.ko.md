@@ -9,6 +9,8 @@
 - CLI와 TUI는 어떻게 역할을 나누는가
 - profiling은 어떤 도구를 어떤 모드에서 쓰는가
 - TPS와 per-message latency는 어떻게 해석해야 하는가
+- route-batch 옵션과 IPC amortization metric은 process micro-batch 옵션과 어떻게
+  분리해서 해석해야 하는가
 
 ## 문서 역할
 
@@ -16,7 +18,7 @@
 | --- | --- |
 | [01-requirements.md](01-requirements.ko.md) | benchmark surface의 책임과 acceptance 기준 |
 | [02-architecture.md](02-architecture.ko.md) | runner, producer, baseline, pyrallel engine, stats, TUI 관계 |
-| [03-design.md](03-design.ko.md) | 핵심 CLI 옵션, workload semantics, outputs, 해석 규칙 |
+| [03-design.md](03-design.ko.md) | 핵심 CLI 옵션, route-batch knob, workload semantics, outputs, 해석 규칙 |
 | [04-throughput-experiment-blueprint.md](04-throughput-experiment-blueprint.ko.md) | 연구 프레임과 첫 common-path throughput experiment |
 
 ## 빠른 읽기 분기

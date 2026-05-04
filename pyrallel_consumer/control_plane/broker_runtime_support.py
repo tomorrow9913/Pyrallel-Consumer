@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# File: pyrallel_consumer/control_plane/broker_runtime_support.py
+# Role: Projects WorkManager, Kafka, and execution-engine state into runtime metrics snapshots.
+# Extend here for diagnostic projection; keep adaptive policy decisions in adaptive modules.
 from __future__ import annotations
 
 from typing import Any
@@ -52,6 +56,35 @@ class BrokerRuntimeSupport:
         poison_message_config: Any = None,
         poison_message_open_circuit_count: int = 0,
     ) -> None:
+        """Initialize this component.
+
+        Args:
+            work_manager: Work manager used for scheduling and accounting.
+            offset_trackers: Offset trackers value used to initialize this component.
+            consumer: Consumer value used to initialize this component.
+            execution_engine: Execution engine used to process scheduled work.
+            execution_config: Execution config value used to initialize this component.
+            consume_topic: Consume topic value used to initialize this component.
+            ordering_mode: Ordering mode used by the scheduler.
+            dlq_enabled: Dlq enabled value used to initialize this component.
+            dlq_topic_suffix: Dlq topic suffix value used to initialize this component.
+            dlq_payload_mode: Dlq payload mode value used to initialize this component.
+            message_cache_size_bytes: Message cache size bytes value used to initialize this component.
+            message_cache_entry_count: Message cache entry count value used to initialize this component.
+            max_in_flight_messages: Maximum number of in-flight work items.
+            min_in_flight_messages_to_resume: Min in flight messages to resume value used to initialize this component.
+            queue_max_messages: Queue max messages value used to initialize this component.
+            queue_resume_threshold: Queue resume threshold value used to initialize this component.
+            is_paused: Is paused value used to initialize this component.
+            blocking_warn_seconds: Blocking warn seconds value used to initialize this component.
+            logger: Logger used for diagnostics.
+            configured_max_in_flight_messages: Configured max in flight messages value used to initialize this component.
+            adaptive_backpressure: Adaptive backpressure value used to initialize this component.
+            adaptive_concurrency: Adaptive concurrency value used to initialize this component.
+            poison_message_config: Poison message config value used to initialize this component.
+            poison_message_open_circuit_count: Poison message open circuit count value used to initialize this component.
+
+        """
         self._work_manager = work_manager
         self._offset_trackers = offset_trackers
         self._consumer = consumer
@@ -81,7 +114,15 @@ class BrokerRuntimeSupport:
     def _project_process_batch_metrics(
         metrics: EngineRuntimeDiagnostics | ProcessBatchMetrics | None,
     ) -> ProcessBatchMetrics | None:
-        """Handle project process batch metrics within runtime metric projection."""
+        """Handle project process batch metrics within runtime metric projection.
+
+        Args:
+            metrics: Metrics value used by this function.
+
+        Returns:
+            ProcessBatchMetrics | None result produced by this function.
+
+        """
         if metrics is None:
             return None
         if isinstance(metrics, ProcessBatchMetrics):
@@ -138,7 +179,18 @@ class BrokerRuntimeSupport:
         self._logger.debug("Partition diag: %s", "; ".join(parts))
 
     def check_backpressure(self, *, total_queued: int) -> bool:
-        """Handle check backpressure within runtime metric projection."""
+        """Handle check backpressure within runtime metric projection.
+
+        Args:
+            total_queued: Total number of queued messages.
+
+        Returns:
+            True when the operation succeeds or the condition is met; otherwise False.
+
+        Raises:
+            RuntimeError: If the runtime is in a failed or unsupported state.
+
+        """
         if self._consumer is None:
             raise RuntimeError("Consumer must be initialized for backpressure checks")
 
@@ -181,7 +233,12 @@ class BrokerRuntimeSupport:
         return self._is_paused
 
     def build_system_metrics(self) -> SystemMetrics:
-        """Build system metrics for runtime metric projection."""
+        """Build system metrics for runtime metric projection.
+
+        Returns:
+            Current system metrics snapshot.
+
+        """
         partition_metrics_list: list[PartitionMetrics] = []
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
         for tp, tracker in self._offset_trackers.items():
@@ -216,7 +273,12 @@ class BrokerRuntimeSupport:
         )
 
     def build_runtime_snapshot(self) -> RuntimeSnapshot:
-        """Build runtime snapshot for runtime metric projection."""
+        """Build runtime snapshot for runtime metric projection.
+
+        Returns:
+            Current runtime snapshot.
+
+        """
         queue_sizes = self._work_manager.get_virtual_queue_sizes()
         in_flight_counts = self._work_manager.get_in_flight_counts()
         partition_snapshots: list[PartitionRuntimeSnapshot] = []

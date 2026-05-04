@@ -2,7 +2,8 @@
 
 This document freezes the external public contract of `Pyrallel Consumer` as the v1 stable baseline.
 
-The scope of this document matches the P0-B items locked in [MQU-27](/MQU/issues/MQU-27).
+The scope of this document is limited to externally visible behavior that
+operators and downstream users can rely on across the v1 release line.
 
 ## 1) Freeze Scope
 
