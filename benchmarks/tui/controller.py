@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from asyncio.subprocess import PIPE
 from collections.abc import Callable
@@ -77,6 +78,7 @@ class BenchmarkProcessController:
             *argv,
             stdout=PIPE,
             stderr=PIPE,
+            env=self._child_environment(),
         )
         if self._cancel_requested:
             await self.cancel()
@@ -115,3 +117,11 @@ class BenchmarkProcessController:
             self._on_output(decoded, is_error)
             snapshot = self._parser.consume(decoded)
             self._on_progress(snapshot)
+
+    @staticmethod
+    def _child_environment() -> dict[str, str]:
+        """Return environment for the benchmark child process."""
+        return {
+            **os.environ,
+            "PYRALLEL_BENCHMARK_RUNNER_INTERFACE": "tui",
+        }

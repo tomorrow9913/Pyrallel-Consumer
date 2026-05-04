@@ -571,7 +571,17 @@ def test_build_artifact_metadata_prefers_github_environment() -> None:
             "tomorrow9913/Pyrallel-Consumer/.github/workflows/benchmarks.yml"
             "@refs/heads/develop"
         ),
+        "runner_interface": "cli",
     }
+
+
+def test_build_artifact_metadata_records_tui_runner_interface() -> None:
+    metadata = run_parallel_benchmark._build_artifact_metadata(
+        output_path="benchmarks/results/tui.json",
+        environ={"PYRALLEL_BENCHMARK_RUNNER_INTERFACE": "tui"},
+    )
+
+    assert metadata["runner_interface"] == "tui"
 
 
 def test_run_benchmark_writes_artifact_metadata(

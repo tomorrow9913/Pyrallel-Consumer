@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 
@@ -36,6 +37,7 @@ def build_artifact_metadata(
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z"),
+        "runner_interface": _runner_interface(env),
     }
 
     field_map = {
@@ -87,3 +89,10 @@ def build_artifact_metadata(
             metadata["git_ref"] = "refs/tags/%s" % git_ref_name
 
     return metadata
+
+
+def _runner_interface(env: Mapping[str, str]) -> str:
+    """Return the benchmark runner interface recorded in result artifacts."""
+    if env.get("PYRALLEL_BENCHMARK_RUNNER_INTERFACE") == "tui":
+        return "tui"
+    return "cli"
