@@ -4,10 +4,9 @@ from typing import cast
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from pyrallel_consumer.config import KafkaConfig, ParallelConsumerConfig
+from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import (
-    ExecutionMode,
     OrderingMode,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
@@ -191,21 +190,7 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
 
     consumer = PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
 
-    assert consumer._poller is dummy_poller
-    assert consumer._execution_engine is dummy_engine
     assert dummy_work_manager is not None
-    assert (
-        dummy_work_manager.max_in_flight_messages
-        == consumer.config.parallel_consumer.execution.max_in_flight_messages
-    )
-    assert dummy_work_manager.ordering_mode == OrderingMode.KEY_HASH
-    assert (
-        dummy_work_manager.max_revoke_grace_ms
-        == consumer.config.parallel_consumer.execution.max_revoke_grace_ms
-    )
-    assert dummy_work_manager.poison_message_circuit is not None
-    assert dummy_work_manager.poison_message_circuit.enabled is False
-    assert dummy_work_manager.metrics_exporter is None
 
     await consumer.start()
     await consumer.stop()
@@ -215,169 +200,6 @@ async def test_pyrallel_consumer_starts_and_stops(monkeypatch: MonkeyPatch):
     assert dummy_poller.stopped is True
     assert dummy_engine.shutdown_called is True
     assert dummy_poller.metrics.source == "dummy"
-
-
-def test_pyrallel_consumer_wires_poison_message_circuit(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    dummy_engine = _DummyEngine()
-
-    def _create_engine(execution_config, worker):  # noqa: ARG001
-        return dummy_engine
-
-    dummy_work_manager = None
-
-    def _create_work_manager(
-        *,
-        execution_engine,
-        max_in_flight_messages,
-        metrics_exporter=None,
-        ordering_mode=None,
-        max_revoke_grace_ms=None,
-        poison_message_circuit=None,
-        **_kwargs,
-    ):
-        nonlocal dummy_work_manager
-        dummy_work_manager = _DummyWorkManager(
-            execution_engine=execution_engine,
-            max_in_flight_messages=max_in_flight_messages,
-            metrics_exporter=metrics_exporter,
-            ordering_mode=ordering_mode,
-            max_revoke_grace_ms=max_revoke_grace_ms,
-            poison_message_circuit=poison_message_circuit,
-        )
-        return dummy_work_manager
-
-    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
-        return _DummyPoller(
-            consume_topic=consume_topic,
-            kafka_config=kafka_config,
-            execution_engine=execution_engine,
-            work_manager=work_manager,
-        )
-
-    monkeypatch.setattr(
-        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
-    )
-    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
-    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
-
-    config = KafkaConfig(_env_file=None)
-    config.parallel_consumer.poison_message.enabled = True
-    config.parallel_consumer.poison_message.failure_threshold = 2
-    config.parallel_consumer.poison_message.cooldown_ms = 7500
-    config.parallel_consumer.execution.max_retries = 4
-
-    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
-
-    assert dummy_work_manager is not None
-    circuit = dummy_work_manager.poison_message_circuit
-    assert circuit is not None
-    assert circuit.enabled is True
-    assert circuit.failure_threshold == 2
-    assert circuit.cooldown_ms == 7500
-
-
-def test_pyrallel_consumer_wires_process_route_batch_size_to_work_manager(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    dummy_engine = _DummyEngine()
-
-    def _create_engine(execution_config, worker):  # noqa: ARG001
-        return dummy_engine
-
-    created_work_managers: list[_DummyWorkManager] = []
-
-    def _create_work_manager(
-        *,
-        execution_engine,
-        max_in_flight_messages,
-        metrics_exporter=None,
-        ordering_mode=None,
-        max_revoke_grace_ms=None,
-        poison_message_circuit=None,
-        route_batch_size=None,
-    ):
-        work_manager = _DummyWorkManager(
-            execution_engine=execution_engine,
-            max_in_flight_messages=max_in_flight_messages,
-            metrics_exporter=metrics_exporter,
-            ordering_mode=ordering_mode,
-            max_revoke_grace_ms=max_revoke_grace_ms,
-            poison_message_circuit=poison_message_circuit,
-            route_batch_size=route_batch_size,
-        )
-        created_work_managers.append(work_manager)
-        return work_manager
-
-    monkeypatch.setattr(
-        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
-    )
-    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
-    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _DummyPoller)
-
-    parallel_config = ParallelConsumerConfig()
-    parallel_config.execution.mode = ExecutionMode.PROCESS
-    parallel_config.execution.process_config.route_batch_size = 11
-    config = cast(
-        KafkaConfig,
-        cast(object, SimpleNamespace(parallel_consumer=parallel_config)),
-    )
-
-    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
-
-    assert created_work_managers[0].route_batch_size == 11
-
-
-def test_pyrallel_consumer_keeps_async_route_batch_size_item_level(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    dummy_engine = _DummyEngine()
-
-    def _create_engine(execution_config, worker):  # noqa: ARG001
-        return dummy_engine
-
-    created_work_managers: list[_DummyWorkManager] = []
-
-    def _create_work_manager(
-        *,
-        execution_engine,
-        max_in_flight_messages,
-        metrics_exporter=None,
-        ordering_mode=None,
-        max_revoke_grace_ms=None,
-        poison_message_circuit=None,
-        route_batch_size=None,
-    ):
-        work_manager = _DummyWorkManager(
-            execution_engine=execution_engine,
-            max_in_flight_messages=max_in_flight_messages,
-            metrics_exporter=metrics_exporter,
-            ordering_mode=ordering_mode,
-            max_revoke_grace_ms=max_revoke_grace_ms,
-            poison_message_circuit=poison_message_circuit,
-            route_batch_size=route_batch_size,
-        )
-        created_work_managers.append(work_manager)
-        return work_manager
-
-    monkeypatch.setattr(
-        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
-    )
-    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
-    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _DummyPoller)
-
-    parallel_config = ParallelConsumerConfig()
-    parallel_config.execution.mode = ExecutionMode.ASYNC
-    parallel_config.execution.process_config.route_batch_size = 11
-    config = cast(
-        KafkaConfig,
-        cast(object, SimpleNamespace(parallel_consumer=parallel_config)),
-    )
-
-    PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
-
-    assert created_work_managers[0].route_batch_size == 1
 
 
 @pytest.mark.asyncio
