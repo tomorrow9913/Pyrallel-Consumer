@@ -425,30 +425,6 @@ def test_process_execution_engine_defaults_to_worker_pipes_transport_seam(
         asyncio.run(engine.shutdown())
 
 
-@pytest.mark.skip(reason="removed process transport seam in #129")
-def test_requeue_recovered_payloads_uses_removed_transport_seam() -> None:
-    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
-    engine_any = cast(Any, engine)
-    engine_any._transport_mode = "removed_transport"
-    engine_any._task_queue = None
-    transport = _RequeueRecordingTransport()
-    engine_any._transport = transport
-
-    payloads = [
-        {
-            "id": "work-42",
-            "topic": "topic",
-            "partition": 1,
-            "offset": 42,
-            "epoch": 7,
-        }
-    ]
-
-    engine._requeue_recovered_payloads(payloads)
-
-    assert transport.requeued_payloads == [payloads]
-
-
 def test_worker_pipe_transport_creation_does_not_reuse_task_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -500,10 +476,8 @@ def test_process_execution_engine_selects_worker_pipe_transport_seam(
         asyncio.run(engine.shutdown())
 
 
-@pytest.mark.parametrize("transport_mode", ["worker_pipes"])
 def test_start_worker_keeps_single_parent_completion_queue(
     monkeypatch: pytest.MonkeyPatch,
-    transport_mode: str,
 ) -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
@@ -515,8 +489,8 @@ def test_start_worker_keeps_single_parent_completion_queue(
         process_config=ProcessConfig(
             process_count=1,
             queue_size=7,
-            batch_size=1 if transport_mode == "worker_pipes" else 64,
-            max_batch_wait_ms=0 if transport_mode == "worker_pipes" else 5,
+            batch_size=1,
+            max_batch_wait_ms=0,
         ),
     )
     engine_any._log_queue = object()
@@ -1346,40 +1320,6 @@ def test_process_engine_ignores_stale_not_started_tail_after_pending_recovery(
     )
 
     assert requeued == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="removed process transport seam in #129")
-async def test_removed_transport_submit_batch_keeps_base_fallback_behavior() -> None:
-    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
-    submitted: list[WorkItem] = []
-
-    async def record_submit(work_item: WorkItem) -> None:
-        submitted.append(work_item)
-
-    engine.submit = record_submit  # type: ignore[method-assign]
-    items = [
-        WorkItem(
-            id="work-a",
-            tp=TopicPartition("topic", 0),
-            offset=1,
-            epoch=1,
-            key=b"same-key",
-            payload=b"a",
-        ),
-        WorkItem(
-            id="work-b",
-            tp=TopicPartition("topic", 0),
-            offset=2,
-            epoch=1,
-            key=b"same-key",
-            payload=b"b",
-        ),
-    ]
-
-    await engine.submit_batch(items)
-
-    assert submitted == items
 
 
 def test_worker_pipe_start_event_releases_pending_dispatch_capacity() -> None:

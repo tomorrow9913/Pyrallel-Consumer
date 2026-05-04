@@ -368,7 +368,6 @@ async def test_process_completed_events_retries_pending_dlq_failure_and_marks_co
 
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
-    assert support._pending_dlq_events[(tp, 100)].id == "failed-work-id"
 
     await support.process_completed_events([])
 
@@ -405,6 +404,7 @@ async def test_process_completed_events_records_dlq_publish_failure_metric() -> 
     kafka_config.dlq_enabled = True
     kafka_config.parallel_consumer.execution.max_retries = 3
     metrics_exporter = MagicMock()
+    publish_to_dlq = AsyncMock(side_effect=[False, True])
 
     support = BrokerCompletionSupport(
         kafka_config=kafka_config,
@@ -413,7 +413,7 @@ async def test_process_completed_events_records_dlq_publish_failure_metric() -> 
         message_cache=OrderedDict({(tp, 100): (b"key", b"value")}),
         should_cache_message_payloads=lambda: True,
         pop_cached_message=lambda _cache_key: None,
-        publish_to_dlq=AsyncMock(return_value=False),
+        publish_to_dlq=publish_to_dlq,
         logger=MagicMock(),
         metrics_exporter=metrics_exporter,
     )
@@ -434,7 +434,11 @@ async def test_process_completed_events_records_dlq_publish_failure_metric() -> 
 
     metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
     assert 100 not in tracker.completed_offsets
-    assert support._pending_dlq_events[(tp, 100)].id == "failed"
+
+    await support.process_completed_events([])
+
+    assert publish_to_dlq.await_count == 2
+    assert 100 in tracker.completed_offsets
 
 
 @pytest.mark.asyncio
@@ -458,6 +462,7 @@ async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() ->
     metrics_exporter.record_dlq_publish_failure.side_effect = RuntimeError(
         "metrics backend down"
     )
+    publish_to_dlq = AsyncMock(side_effect=[False, True])
 
     support = BrokerCompletionSupport(
         kafka_config=kafka_config,
@@ -466,7 +471,7 @@ async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() ->
         message_cache=OrderedDict({(tp, 100): (b"key", b"value")}),
         should_cache_message_payloads=lambda: True,
         pop_cached_message=lambda _cache_key: None,
-        publish_to_dlq=AsyncMock(return_value=False),
+        publish_to_dlq=publish_to_dlq,
         logger=MagicMock(),
         metrics_exporter=metrics_exporter,
     )
@@ -487,7 +492,11 @@ async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() ->
 
     metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
     assert 100 not in tracker.completed_offsets
-    assert support._pending_dlq_events[(tp, 100)].id == "failed"
+
+    await support.process_completed_events([])
+
+    assert publish_to_dlq.await_count == 2
+    assert 100 in tracker.completed_offsets
 
 
 @pytest.mark.asyncio
@@ -543,10 +552,8 @@ async def test_stale_completion_does_not_drop_pending_dlq_retry() -> None:
     )
 
     await support.process_completed_events([pending_event])
-    assert support._pending_dlq_events[(tp, 100)].id == "current-pending-id"
 
     await support.process_completed_events([stale_event])
-    assert support._pending_dlq_events[(tp, 100)].id == "current-pending-id"
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -610,10 +617,8 @@ async def test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry()
     )
 
     await support.process_completed_events([pending_event])
-    assert support._pending_dlq_events[(tp, 100)].id == "current-pending-id"
 
     await support.process_completed_events([duplicate_success])
-    assert support._pending_dlq_events[(tp, 100)].id == "current-pending-id"
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -684,7 +689,6 @@ async def test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_
 
     await support.process_completed_events([duplicate_failure])
 
-    assert support._pending_dlq_events == OrderedDict()
     assert 100 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 100)]
     publish_to_dlq.assert_awaited_once()
