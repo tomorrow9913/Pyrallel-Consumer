@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, List, Literal, Sequence, cast
+from typing import Awaitable, Callable, List, Literal, Sequence
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parent.parent
@@ -24,7 +24,6 @@ from benchmarks.benchmark_artifacts import (
 )
 from benchmarks.benchmark_cli import build_parser
 from benchmarks.benchmark_output import print_table as _print_table
-from benchmarks.benchmark_rounds import ProcessTransportMode
 from benchmarks.kafka_admin import TopicConfig, reset_topics_and_groups
 from benchmarks.producer import produce_messages
 from benchmarks.profiling import profile_session as _profile_session
@@ -174,15 +173,11 @@ async def _run_pyrparallel_round(
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
-    process_transport_mode: ProcessTransportMode | None = None,
     route_batch_size: int = 64,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
     """Run pyrparallel round for benchmark orchestration."""
-    effective_process_transport_mode = (
-        process_transport_mode if mode == ExecutionMode.PROCESS else None
-    )
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -197,7 +192,6 @@ async def _run_pyrparallel_round(
         workload=workload,
         ordering=ordering,
         topic=topic_name,
-        process_transport_mode=effective_process_transport_mode,
         route_batch_size=route_batch_size,
         process_batch_size=process_batch_size
         if mode == ExecutionMode.PROCESS
@@ -223,7 +217,6 @@ async def _run_pyrparallel_round(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
-        process_transport_mode=effective_process_transport_mode,
         route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
@@ -594,8 +587,7 @@ async def _execute_async_benchmark_run_plans(
                         process_demand_flush_min_residence_ms=(
                             args.process_demand_flush_min_residence_ms
                         ),
-                        process_transport_mode=None,
-                        route_batch_size=args.route_batch_size,
+                        route_batch_size=1,
                         metrics_port=metrics_port,
                         adaptive_concurrency_enabled=(
                             plan.adaptive_concurrency_enabled
@@ -640,10 +632,7 @@ async def _execute_async_benchmark_run_plans(
                 process_demand_flush_min_residence_ms=(
                     args.process_demand_flush_min_residence_ms
                 ),
-                process_transport_mode=cast(
-                    ProcessTransportMode, args.process_transport
-                ),
-                route_batch_size=args.route_batch_size,
+                route_batch_size=args.process_route_batch_size,
                 metrics_port=metrics_port,
                 adaptive_concurrency_enabled=plan.adaptive_concurrency_enabled,
             )

@@ -50,9 +50,6 @@ from pyrallel_consumer.execution_plane.process_transport import (
     logical_work_identity_from_payload,
     stable_worker_index_for_route,
 )
-from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
-    SharedQueueProcessTransport,
-)
 from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
     WorkerPipesProcessTransport,
 )
@@ -340,7 +337,6 @@ def test_process_execution_engine_rejects_worker_pipe_batching_configs() -> None
         process_config=ProcessConfig(
             process_count=1,
             queue_size=7,
-            transport_mode="worker_pipes",
             batch_size=2,
         ),
     )
@@ -402,7 +398,6 @@ def test_process_execution_engine_rejects_unsupported_worker_pipe_slice_combinat
         process_config=ProcessConfig(
             process_count=1,
             queue_size=7,
-            transport_mode="worker_pipes",
             **process_kwargs,
         ),
     )
@@ -430,10 +425,11 @@ def test_process_execution_engine_defaults_to_worker_pipes_transport_seam(
         asyncio.run(engine.shutdown())
 
 
-def test_requeue_recovered_payloads_uses_shared_queue_transport_seam() -> None:
+@pytest.mark.skip(reason="removed process transport seam in #129")
+def test_requeue_recovered_payloads_uses_removed_transport_seam() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
-    engine_any._transport_mode = "shared_queue"
+    engine_any._transport_mode = "removed_transport"
     engine_any._task_queue = None
     transport = _RequeueRecordingTransport()
     engine_any._transport = transport
@@ -464,7 +460,6 @@ def test_worker_pipe_transport_creation_does_not_reuse_task_timeout(
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=1,
-                transport_mode="worker_pipes",
                 batch_size=1,
                 max_batch_wait_ms=0,
                 task_timeout_ms=0,
@@ -492,7 +487,6 @@ def test_process_execution_engine_selects_worker_pipe_transport_seam(
             process_config=ProcessConfig(
                 process_count=2,
                 queue_size=7,
-                transport_mode="worker_pipes",
                 batch_size=1,
                 max_batch_wait_ms=0,
             ),
@@ -506,7 +500,7 @@ def test_process_execution_engine_selects_worker_pipe_transport_seam(
         asyncio.run(engine.shutdown())
 
 
-@pytest.mark.parametrize("transport_mode", ["shared_queue", "worker_pipes"])
+@pytest.mark.parametrize("transport_mode", ["worker_pipes"])
 def test_start_worker_keeps_single_parent_completion_queue(
     monkeypatch: pytest.MonkeyPatch,
     transport_mode: str,
@@ -521,7 +515,6 @@ def test_start_worker_keeps_single_parent_completion_queue(
         process_config=ProcessConfig(
             process_count=1,
             queue_size=7,
-            transport_mode=cast(Any, transport_mode),
             batch_size=1 if transport_mode == "worker_pipes" else 64,
             max_batch_wait_ms=0 if transport_mode == "worker_pipes" else 5,
         ),
@@ -617,7 +610,6 @@ async def test_submit_routes_matching_identities_to_same_worker_pipe(
         process_config=ProcessConfig(
             process_count=2,
             queue_size=4,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -667,7 +659,6 @@ async def test_worker_pipes_submit_batch_sends_one_route_batch_payload(
         process_config=ProcessConfig(
             process_count=2,
             queue_size=4,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -734,7 +725,6 @@ async def test_worker_pipes_route_batch_metrics_calculate_size_distribution(
         process_config=ProcessConfig(
             process_count=1,
             queue_size=4,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -797,7 +787,6 @@ async def test_worker_pipes_submit_batch_hashes_route_once_and_records_pending_b
         process_config=ProcessConfig(
             process_count=2,
             queue_size=4,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -1239,7 +1228,8 @@ def test_process_engine_ignores_stale_not_started_tail_after_pending_recovery(
 
 
 @pytest.mark.asyncio
-async def test_shared_queue_submit_batch_keeps_base_fallback_behavior() -> None:
+@pytest.mark.skip(reason="removed process transport seam in #129")
+async def test_removed_transport_submit_batch_keeps_base_fallback_behavior() -> None:
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     submitted: list[WorkItem] = []
 
@@ -2771,7 +2761,6 @@ def test_worker_pipe_backpressure_waits_for_healthy_slot_without_recovery() -> N
         process_config=ProcessConfig(
             process_count=1,
             queue_size=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -2938,42 +2927,6 @@ def test_worker_pipe_recover_pending_dispatches_returns_identity_metadata() -> N
     assert transport._worker_pipe_queue_slots.acquire(blocking=False) is False
 
 
-def test_shared_queue_transport_declares_no_pending_dispatch_recovery() -> None:
-    transport = SharedQueueProcessTransport(
-        task_queue=cast(Any, queue.Queue()),
-        get_batch_accumulator=Mock(),
-        work_item_from_dict=_work_item_from_dict,
-        increment_in_flight=lambda: None,
-        sentinel=b"sentinel",
-    )
-
-    assert transport.capabilities.pending_dispatch_recovery is False
-    assert transport.recover_pending_dispatches(0) == []
-
-
-def test_shared_queue_requeue_payloads_fails_fast_when_queue_is_full() -> None:
-    task_queue = cast(Any, queue.Queue(maxsize=1))
-    task_queue.put_nowait(b"busy")
-    transport = SharedQueueProcessTransport(
-        task_queue=cast(Any, task_queue),
-        get_batch_accumulator=Mock(),
-        work_item_from_dict=_work_item_from_dict,
-        increment_in_flight=lambda: None,
-        sentinel=b"sentinel",
-    )
-    payload = {
-        "id": "work-42",
-        "topic": "topic",
-        "partition": 1,
-        "offset": 42,
-        "epoch": 7,
-        "requeue_attempts": 0,
-    }
-
-    with pytest.raises(RuntimeError, match="shared_queue transport queue is full"):
-        transport.requeue_payloads([payload])
-
-
 def test_ensure_workers_alive_stops_requeueing_after_max_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3024,7 +2977,6 @@ def test_ensure_workers_alive_requeues_pending_worker_pipe_dispatch(
         max_retries=3,
         process_config=ProcessConfig(
             process_count=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3099,7 +3051,6 @@ def test_ensure_workers_alive_restarts_dead_worker_before_pipe_requeue(
         max_retries=3,
         process_config=ProcessConfig(
             process_count=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3164,7 +3115,6 @@ def test_ensure_workers_alive_emits_failures_when_restart_fails_after_recovery(
         max_retries=3,
         process_config=ProcessConfig(
             process_count=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3253,48 +3203,6 @@ def test_publish_recovered_worker_payloads_emits_failure_when_requeue_fails(
     event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
     assert event.status == CompletionStatus.FAILURE
     assert event.error == "worker_requeue_failed: queue full"
-    assert event.offset == 42
-    assert event.attempt == 3
-
-
-def test_publish_recovered_worker_payloads_emits_failure_when_shared_queue_is_full() -> (
-    None
-):
-    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
-    engine_any = cast(Any, engine)
-    engine_any._config = ExecutionConfig(
-        mode=ExecutionMode.PROCESS,
-        max_retries=3,
-        process_config=ProcessConfig(process_count=1),
-    )
-    engine_any._completion_queue = queue.Queue()
-    engine_any._logger = logging.getLogger(__name__)
-    task_queue = cast(Any, queue.Queue(maxsize=1))
-    task_queue.put(b"occupied")
-    engine_any._transport = SharedQueueProcessTransport(
-        task_queue=task_queue,
-        get_batch_accumulator=lambda: Mock(),
-        work_item_from_dict=_work_item_from_dict,
-        increment_in_flight=lambda: None,
-        sentinel=None,
-    )
-    payload = {
-        "id": "work-42",
-        "topic": "topic",
-        "partition": 1,
-        "offset": 42,
-        "epoch": 7,
-        "requeue_attempts": 2,
-    }
-
-    engine._publish_recovered_worker_payloads(0, [payload])
-
-    raw_event = engine_any._completion_queue.get_nowait()
-    event = _completion_event_from_dict(msgpack.unpackb(raw_event, raw=False))
-    assert event.status == CompletionStatus.FAILURE
-    assert event.error == (
-        "worker_requeue_failed: shared_queue transport queue is full during requeue"
-    )
     assert event.offset == 42
     assert event.attempt == 3
 
@@ -3464,7 +3372,6 @@ def test_worker_pipe_slot_wait_signals_engine_recovery_for_dead_worker(
         process_config=ProcessConfig(
             process_count=1,
             queue_size=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3586,7 +3493,6 @@ def test_worker_pipe_slot_wait_blocks_healthy_worker_until_start_event() -> None
         process_config=ProcessConfig(
             process_count=1,
             queue_size=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3718,7 +3624,6 @@ def test_worker_pipe_slot_wait_reentrant_owner_drains_events_and_releases_slot()
         process_config=ProcessConfig(
             process_count=1,
             queue_size=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3810,7 +3715,6 @@ def test_worker_pipe_slot_wait_cross_thread_contention_noops_until_owner_release
         process_config=ProcessConfig(
             process_count=1,
             queue_size=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -3919,7 +3823,6 @@ def test_ensure_workers_alive_caps_pending_worker_pipe_retries(
         max_retries=3,
         process_config=ProcessConfig(
             process_count=1,
-            transport_mode="worker_pipes",
             batch_size=1,
             max_batch_wait_ms=0,
         ),
@@ -4557,6 +4460,43 @@ def test_ensure_workers_alive_force_bypasses_liveness_throttle(
     assert engine_any._last_worker_liveness_check == 100.5
 
 
+def test_ensure_workers_alive_does_not_restart_workers_after_shutdown_starts() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = True
+    engine_any._drain_visible_worker_events = Mock()
+    engine_any._should_run_worker_liveness_scan = Mock(return_value=True)
+    engine_any._collect_dead_worker_recovery_candidates = Mock(return_value=[(0, 1)])
+    engine_any._restart_dead_worker = Mock()
+
+    engine._ensure_workers_alive(force=True)
+
+    engine_any._restart_dead_worker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_work_after_shutdown_starts() -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._is_shutdown = True
+    engine_any._transport = Mock()
+    engine_any._transport.submit_work_item = AsyncMock()
+
+    item = WorkItem(
+        id="work-1",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=3,
+        key=b"key",
+        payload=b"payload",
+    )
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await engine.submit(item)
+
+    engine_any._transport.submit_work_item.assert_not_awaited()
+
+
 def test_worker_pipe_shutdown_ignores_broken_senders() -> None:
     transport = WorkerPipesProcessTransport(
         process_count=1,
@@ -4571,6 +4511,69 @@ def test_worker_pipe_shutdown_ignores_broken_senders() -> None:
     )
 
     transport.signal_shutdown(1)
+
+
+def test_worker_pipe_shutdown_unblocks_slot_waiter() -> None:
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [cast(Connection, sender)],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=lambda: None,
+        slot_wait_timeout_seconds=0.01,
+    )
+    first_item = WorkItem(
+        id="work-1",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=3,
+        key=b"key",
+        payload=b"payload",
+    )
+    second_item = WorkItem(
+        id="work-2",
+        tp=TopicPartition("topic", 1),
+        offset=43,
+        epoch=3,
+        key=b"key",
+        payload=b"payload",
+    )
+    result_queue: queue.Queue[BaseException | None] = queue.Queue()
+
+    transport.dispatch_payload(
+        _work_item_to_dict(first_item),
+        route_identity=RouteIdentity("topic", 1, b"key"),
+        count_in_flight=True,
+    )
+
+    def blocked_dispatch() -> None:
+        try:
+            transport.dispatch_payload(
+                _work_item_to_dict(second_item),
+                route_identity=RouteIdentity("topic", 1, b"key"),
+                count_in_flight=True,
+            )
+        except BaseException as exc:
+            result_queue.put(exc)
+        else:
+            result_queue.put(None)
+
+    waiter = threading.Thread(target=blocked_dispatch)
+    waiter.start()
+
+    transport.signal_shutdown(1)
+    waiter.join(timeout=1.0)
+
+    assert not waiter.is_alive()
+    result = result_queue.get_nowait()
+    assert isinstance(result, RuntimeError)
+    assert "shutting down" in str(result)
 
 
 def test_worker_pipe_dispatch_rejects_oversized_payload_before_send() -> None:

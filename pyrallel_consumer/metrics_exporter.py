@@ -506,7 +506,7 @@ class PrometheusMetricsExporter:
         if metrics is None:
             for reason in ("size", "timer", "close", "demand"):
                 self._process_batch_flush_count.labels(reason=reason).set(0)
-            for mode in ("shared_queue", "worker_pipes"):
+            for mode in ("worker_pipes",):
                 self._process_batch_transport_mode_gauge.labels(mode=mode).set(0)
             for state in ("full", "bounded"):
                 self._process_batch_support_state_gauge.labels(state=state).set(0)
@@ -570,7 +570,7 @@ class PrometheusMetricsExporter:
         self._process_batch_avg_worker_to_main_ipc_seconds_gauge.set(
             metrics.avg_worker_to_main_ipc_seconds
         )
-        for mode in ("shared_queue", "worker_pipes"):
+        for mode in ("worker_pipes",):
             self._process_batch_transport_mode_gauge.labels(mode=mode).set(
                 1 if metrics.transport_mode == mode else 0
             )

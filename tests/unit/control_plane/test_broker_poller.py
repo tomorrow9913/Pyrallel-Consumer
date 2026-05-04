@@ -9,6 +9,7 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.dto import ExecutionMode
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
 
@@ -24,7 +25,6 @@ def mock_kafka_config():
     parallel_consumer_mock = MagicMock()
     parallel_consumer_mock.poll_batch_size = 1000
     parallel_consumer_mock.worker_pool_size = 8
-    parallel_consumer_mock.execution.route_batch_size = 1
     config.parallel_consumer = parallel_consumer_mock
 
     return config
@@ -101,30 +101,51 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
 
 
-def test_broker_poller_wires_route_batch_size_to_fallback_work_manager(
-    mock_kafka_config, mock_execution_engine
+def test_broker_poller_wires_resolved_process_route_batch_size_to_fallback_work_manager(
+    mock_execution_engine,
 ):
-    mock_kafka_config.parallel_consumer.execution.route_batch_size = 9
+    kafka_config = KafkaConfig(_env_file=None)
+    kafka_config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+    kafka_config.parallel_consumer.execution.process_config.route_batch_size = 13
 
     with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
         BrokerPoller(
             consume_topic="test-topic",
-            kafka_config=mock_kafka_config,
+            kafka_config=kafka_config,
             execution_engine=mock_execution_engine,
+            work_manager_route_batch_size=13,
         )
 
-    assert manager.call_args.kwargs["route_batch_size"] == 9
+    assert manager.call_args.kwargs["route_batch_size"] == 13
 
 
-def test_broker_poller_treats_bool_route_batch_size_as_default(
-    mock_kafka_config, mock_execution_engine
+def test_broker_poller_fallback_accepts_resolved_route_batch_primitive(
+    mock_execution_engine,
 ):
-    mock_kafka_config.parallel_consumer.execution.route_batch_size = True
+    kafka_config = KafkaConfig(_env_file=None)
 
     with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
         BrokerPoller(
             consume_topic="test-topic",
-            kafka_config=mock_kafka_config,
+            kafka_config=kafka_config,
+            execution_engine=mock_execution_engine,
+            work_manager_route_batch_size=13,
+        )
+
+    assert manager.call_args.kwargs["route_batch_size"] == 13
+
+
+def test_broker_poller_wires_async_route_batch_size_as_item_level(
+    mock_execution_engine,
+):
+    kafka_config = KafkaConfig(_env_file=None)
+    kafka_config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+    kafka_config.parallel_consumer.execution.process_config.route_batch_size = 13
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.WorkManager") as manager:
+        BrokerPoller(
+            consume_topic="test-topic",
+            kafka_config=kafka_config,
             execution_engine=mock_execution_engine,
         )
 

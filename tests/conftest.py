@@ -5,10 +5,9 @@ import os
 import pytest
 
 _RUNTIME_PROFILE_ENV_DEFAULTS = {
-    "EXECUTION_ROUTE_BATCH_SIZE": "64",
     "PROCESS_BATCH_SIZE": "1",
     "PROCESS_MAX_BATCH_WAIT_MS": "0",
-    "PROCESS_TRANSPORT_MODE": "worker_pipes",
+    "PROCESS_ROUTE_BATCH_SIZE": "64",
 }
 
 for _key, _value in _RUNTIME_PROFILE_ENV_DEFAULTS.items():

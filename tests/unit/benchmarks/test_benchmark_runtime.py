@@ -709,7 +709,7 @@ def test_run_baseline_round_preserves_workload_specific_run_name(
 
 
 @pytest.mark.asyncio
-async def test_run_pyrparallel_round_does_not_forward_process_transport_to_async_helper(
+async def test_run_pyrparallel_round_omits_process_transport_helper_argument(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
@@ -743,11 +743,10 @@ async def test_run_pyrparallel_round_does_not_forward_process_transport_to_async
         process_worker_fn=lambda _item: None,
         workload="sleep",
         ordering="key_hash",
-        process_transport_mode="worker_pipes",
     )
 
     assert result is benchmark_result
-    assert captured["process_transport_mode"] is None
+    assert "process_transport_mode" not in captured
 
 
 def test_benchmark_stats_summary_carries_process_transport_mode() -> None:
@@ -1221,37 +1220,36 @@ def test_build_kafka_config_sets_route_batch_size_without_changing_process_batch
 ):
     config = pyrallel_consumer_test.build_kafka_config(
         process_batch_size=1,
-        process_transport_mode="worker_pipes",
         route_batch_size=64,
     )
 
-    assert config.parallel_consumer.execution.route_batch_size == 64
+    assert not hasattr(config.parallel_consumer.execution, "route_batch_size")
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 64
     assert config.parallel_consumer.execution.process_config.batch_size == 1
 
 
 def test_build_kafka_config_defaults_route_batch_size_to_worker_pipes_profile() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.route_batch_size == 64
+    assert not hasattr(config.parallel_consumer.execution, "route_batch_size")
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 64
 
 
 def test_build_kafka_config_defaults_to_worker_pipes_transport_profile() -> None:
     config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.process_config.transport_mode == (
-        "worker_pipes"
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config, "transport_mode"
     )
     assert config.parallel_consumer.execution.process_config.batch_size == 1
     assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
 
 
-def test_build_kafka_config_sets_process_transport_mode_override() -> None:
-    config = pyrallel_consumer_test.build_kafka_config(
-        process_transport_mode="worker_pipes"
-    )
+def test_build_kafka_config_has_single_worker_pipes_topology() -> None:
+    config = pyrallel_consumer_test.build_kafka_config()
 
-    assert config.parallel_consumer.execution.process_config.transport_mode == (
-        "worker_pipes"
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config, "transport_mode"
     )
     assert config.parallel_consumer.execution.process_config.batch_size == 1
     assert config.parallel_consumer.execution.process_config.max_batch_wait_ms == 0
@@ -1440,7 +1438,7 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
 
 
 @pytest.mark.asyncio
-async def test_run_pyrallel_consumer_test_passes_process_transport_mode_to_build_kafka_config(
+async def test_run_pyrallel_consumer_test_does_not_pass_process_transport_mode_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -1499,10 +1497,9 @@ async def test_run_pyrallel_consumer_test_passes_process_transport_mode_to_build
         timeout_sec=0,
         execution_mode="process",
         process_worker_fn=lambda _item: None,
-        process_transport_mode="worker_pipes",
     )
 
-    assert captured["process_transport_mode"] == "worker_pipes"
+    assert "process_transport_mode" not in captured
 
 
 @pytest.mark.asyncio
@@ -1531,7 +1528,9 @@ async def test_run_pyrallel_consumer_test_passes_route_batch_size_to_config_and_
     def _fake_build_kafka_config(**kwargs):
         captured_config.update(kwargs)
         config = pyrallel_consumer_test.KafkaConfig()
-        config.parallel_consumer.execution.route_batch_size = kwargs["route_batch_size"]
+        config.parallel_consumer.execution.process_config.route_batch_size = kwargs[
+            "route_batch_size"
+        ]
         return config
 
     def _capture_work_manager(**kwargs):
@@ -1573,7 +1572,6 @@ async def test_run_pyrallel_consumer_test_passes_route_batch_size_to_config_and_
         execution_mode="process",
         process_worker_fn=lambda _item: None,
         process_batch_size=1,
-        process_transport_mode="worker_pipes",
         route_batch_size=64,
     )
 
@@ -1800,11 +1798,11 @@ def test_run_benchmark_passes_process_overrides_to_process_round(
     assert process_calls == [(1, 0, 2, "demand_min_residence", 2)]
 
 
-def test_run_benchmark_passes_process_transport_mode_to_process_round(
+def test_run_benchmark_does_not_pass_process_transport_mode_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
-    process_calls: list[str | None] = []
+    process_calls: list[bool] = []
 
     monkeypatch.setattr(
         run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
@@ -1835,7 +1833,7 @@ def test_run_benchmark_passes_process_transport_mode_to_process_round(
 
     async def _async_round(**kwargs) -> BenchmarkResult:
         if kwargs["mode"].value == "process":
-            process_calls.append(kwargs.get("process_transport_mode"))
+            process_calls.append("process_transport_mode" in kwargs)
         return benchmark_result
 
     monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
@@ -1844,16 +1842,13 @@ def test_run_benchmark_passes_process_transport_mode_to_process_round(
         _build_args(
             skip_async=True,
             skip_process=False,
-            process_transport="worker_pipes",
         ),
         raw_argv=[
             "--skip-async",
-            "--process-transport",
-            "worker_pipes",
         ],
     )
 
-    assert process_calls == ["worker_pipes"]
+    assert process_calls == [False]
 
 
 def test_run_benchmark_passes_route_batch_size_to_process_round(
@@ -1904,7 +1899,7 @@ def test_run_benchmark_passes_route_batch_size_to_process_round(
         ),
         raw_argv=[
             "--skip-async",
-            "--route-batch-size",
+            "--process-route-batch-size",
             "64",
         ],
     )
@@ -1956,12 +1951,9 @@ def test_run_benchmark_does_not_forward_process_transport_mode_to_async_round(
         _build_args(
             skip_async=False,
             skip_process=True,
-            process_transport="worker_pipes",
         ),
         raw_argv=[
             "--skip-process",
-            "--process-transport",
-            "worker_pipes",
         ],
     )
 

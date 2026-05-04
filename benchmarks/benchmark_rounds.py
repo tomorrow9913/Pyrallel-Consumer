@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable
 
 from benchmarks.baseline_consumer import consume_messages
 from benchmarks.producer import produce_messages
@@ -11,8 +11,6 @@ from benchmarks.pyrallel_consumer_test import (
 )
 from benchmarks.stats import BenchmarkResult, BenchmarkStats
 from pyrallel_consumer.dto import WorkItem
-
-ProcessTransportMode = Literal["shared_queue", "worker_pipes"]
 
 
 def _run_baseline_round(
@@ -81,15 +79,11 @@ async def _run_pyrparallel_round(
     process_max_batch_wait_ms: int | None = None,
     process_flush_policy: ProcessFlushPolicy | None = None,
     process_demand_flush_min_residence_ms: int | None = None,
-    process_transport_mode: ProcessTransportMode | None = None,
     route_batch_size: int = 1,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
 ) -> BenchmarkResult:
     """Run pyrparallel round for benchmark rounds."""
-    effective_process_transport_mode = (
-        process_transport_mode if mode == ExecutionMode.PROCESS else None
-    )
     produce_messages(
         num_messages=num_messages,
         num_keys=num_keys,
@@ -104,7 +98,6 @@ async def _run_pyrparallel_round(
         workload=workload,
         ordering=ordering,
         topic=topic_name,
-        process_transport_mode=effective_process_transport_mode,
         route_batch_size=route_batch_size,
         process_batch_size=process_batch_size
         if mode == ExecutionMode.PROCESS
@@ -130,7 +123,6 @@ async def _run_pyrparallel_round(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
-        process_transport_mode=effective_process_transport_mode,
         route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,

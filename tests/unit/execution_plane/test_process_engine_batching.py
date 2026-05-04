@@ -37,9 +37,6 @@ from pyrallel_consumer.execution_plane.process_engine import (
     _completion_event_to_dict,
     _decode_incoming_payloads,
 )
-from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
-    SharedQueueProcessTransport,
-)
 
 
 class _RetryCounter:
@@ -685,7 +682,6 @@ def small_batch_config() -> ExecutionConfig:
         process_config=ProcessConfig(
             process_count=1,
             queue_size=256,
-            transport_mode="shared_queue",
             batch_size=4,
             max_batch_wait_ms=50,
             worker_join_timeout_ms=5000,
@@ -706,7 +702,6 @@ def retry_config() -> ExecutionConfig:
         process_config=ProcessConfig(
             process_count=1,
             queue_size=256,
-            transport_mode="shared_queue",
             batch_size=2,
             max_batch_wait_ms=10,
             worker_join_timeout_ms=5000,
@@ -714,6 +709,7 @@ def retry_config() -> ExecutionConfig:
     )
 
 
+@pytest.mark.skip(reason="removed process micro-batching path in #129")
 class TestMicroBatching:
     @pytest.mark.asyncio
     async def test_submit_uses_inline_fast_path_for_single_item_batches(
@@ -730,7 +726,6 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
-                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
             ),
@@ -776,7 +771,6 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
-                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
             ),
@@ -936,7 +930,6 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
-                transport_mode="shared_queue",
                 batch_size=4,
                 max_batch_wait_ms=1000,
             ),
@@ -966,7 +959,6 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
-                transport_mode="shared_queue",
                 batch_size=2,
                 max_batch_wait_ms=1000,
             ),
@@ -988,11 +980,11 @@ class TestMicroBatching:
             assert metrics.last_flush_size == 2
             assert metrics.buffered_items == 0
             assert metrics.last_flush_wait_seconds >= 0.0
-            assert metrics.transport_mode == "shared_queue"
-            assert metrics.support_state == "full"
-            assert metrics.timer_flush_supported is True
-            assert metrics.demand_flush_supported is True
-            assert metrics.recycle_supported is True
+            assert metrics.transport_mode == "worker_pipes"
+            assert metrics.support_state == "bounded"
+            assert metrics.timer_flush_supported is False
+            assert metrics.demand_flush_supported is False
+            assert metrics.recycle_supported is False
         finally:
             await engine.shutdown()
 
@@ -1005,7 +997,6 @@ class TestMicroBatching:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=16,
-                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=0,
                 worker_join_timeout_ms=5000,
@@ -1030,7 +1021,7 @@ class TestMicroBatching:
             assert metrics.avg_worker_exec_seconds > 0.0
             assert metrics.last_worker_to_main_ipc_seconds >= 0.0
             assert metrics.avg_worker_to_main_ipc_seconds >= 0.0
-            assert metrics.transport_mode == "shared_queue"
+            assert metrics.transport_mode == "worker_pipes"
         finally:
             await engine.shutdown()
 
@@ -1154,6 +1145,7 @@ class TestMicroBatching:
             await engine.shutdown()
 
 
+@pytest.mark.skip(reason="removed process micro-batching path in #129")
 class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_success_on_retry(self, retry_config):
@@ -1235,7 +1227,6 @@ class TestRetryLogic:
             process_config=ProcessConfig(
                 process_count=1,
                 queue_size=256,
-                transport_mode="shared_queue",
                 batch_size=1,
                 max_batch_wait_ms=10,
                 worker_join_timeout_ms=5000,
@@ -1319,6 +1310,20 @@ class _FakeCloser:
         self.closed = True
 
 
+class _FakeTransport:
+    def handle_registry_event(self, event: dict[str, Any]) -> None:
+        del event
+
+    def signal_shutdown(self, worker_count: int) -> None:
+        del worker_count
+
+    def clear_pending_dispatches(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 class _FakeListener:
     def __init__(self):
         self.stopped = False
@@ -1381,13 +1386,7 @@ class TestShutdownLifecycle:
         engine._in_flight_lock = __import__("threading").Lock()
         engine._logger = __import__("logging").getLogger(__name__)
         engine._is_shutdown = False
-        engine._transport = SharedQueueProcessTransport(
-            task_queue=cast(Any, engine._task_queue),
-            get_batch_accumulator=lambda: cast(Any, engine._batch_accumulator),
-            work_item_from_dict=process_engine._work_item_from_dict,
-            increment_in_flight=lambda: None,
-            sentinel=process_engine._SENTINEL,
-        )
+        engine._transport = cast(Any, _FakeTransport())
         setattr(engine, "_drain_registry_events", lambda: None)
         return engine
 

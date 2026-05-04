@@ -36,7 +36,7 @@ def _draft(
         "process-max-batch-wait-ms": ""
         if state.process_max_batch_wait_ms is None
         else str(state.process_max_batch_wait_ms),
-        "route-batch-size": str(state.route_batch_size),
+        "process-route-batch-size": str(state.route_batch_size),
         "topic-prefix": state.topic_prefix,
         "profile-dir": state.profile_dir,
         "profile-top-n": str(state.profile_top_n),
@@ -53,11 +53,7 @@ def _draft(
         "py-spy-native": state.py_spy_native,
         "py-spy-idle": state.py_spy_idle,
     }
-    select_values = {
-        "process-transport": state.process_transport,
-        "log-level": state.log_level,
-        "py-spy-format": state.py_spy_format,
-    }
+    select_values = {"log-level": state.log_level, "py-spy-format": state.py_spy_format}
     return OptionsFormDraft(
         input_values=input_values or default_input_values,
         switch_values=switch_values or default_switch_values,

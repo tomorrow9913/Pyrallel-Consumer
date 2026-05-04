@@ -72,6 +72,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         self._slot_wait_liveness_check = slot_wait_liveness_check
         self._slot_wait_timeout_seconds = slot_wait_timeout_seconds
         self._worker_pipe_queue_slots = threading.BoundedSemaphore(value=queue_size)
+        self._shutdown_event = threading.Event()
         self._pending_dispatch_lock = threading.Lock()
         self._pending_dispatch: dict[PendingDispatchKey, dict[str, Any]] = {}
 
@@ -344,6 +345,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
 
         """
         del worker_count
+        self._shutdown_event.set()
         for sender in self._get_worker_pipe_senders():
             try:
                 sender.send_bytes(self._pipe_sentinel)
@@ -357,6 +359,7 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
 
     def close(self) -> None:
         """Release resources held by this component."""
+        self._shutdown_event.set()
         self.clear_pending_dispatches()
         for sender in self._get_worker_pipe_senders():
             close = getattr(sender, "close", None)
@@ -511,15 +514,22 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         """
         del worker_idx, payload
         liveness_check = self._slot_wait_liveness_check
-        timeout_seconds = self._slot_wait_timeout_seconds
-        if liveness_check is None or timeout_seconds <= 0:
-            self._worker_pipe_queue_slots.acquire()
-            return
+        timeout_seconds = (
+            self._slot_wait_timeout_seconds
+            if self._slot_wait_timeout_seconds > 0
+            else 0.05
+        )
 
         while True:
+            if self._shutdown_event.is_set():
+                raise RuntimeError("worker-pipe transport is shutting down")
             if self._worker_pipe_queue_slots.acquire(timeout=timeout_seconds):
+                if self._shutdown_event.is_set():
+                    self._release_worker_pipe_queue_slot()
+                    raise RuntimeError("worker-pipe transport is shutting down")
                 return
-            liveness_check()
+            if liveness_check is not None:
+                liveness_check()
 
     def _send_packed_payload(
         self,

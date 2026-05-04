@@ -46,7 +46,6 @@ class BenchmarkTuiState:
     worker_cpu_iterations: int = 1000
     worker_io_sleep_ms: float = 0.5
     process_count: int | None = 4
-    process_transport: str = "worker_pipes"
     process_batch_size: int | None = 1
     process_max_batch_wait_ms: int | None = 0
     route_batch_size: int = 64
@@ -100,9 +99,7 @@ class BenchmarkTuiState:
             self._format_option_value(
                 self._workload_option_value("io", "sleep_ms", self.worker_io_sleep_ms)
             ),
-            "--process-transport",
-            self.process_transport,
-            "--route-batch-size",
+            "--process-route-batch-size",
             str(self.route_batch_size),
         ]
 
