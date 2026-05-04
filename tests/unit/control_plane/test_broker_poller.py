@@ -79,6 +79,7 @@ def broker_poller(mock_kafka_config, mock_execution_engine):
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     # Patch Kafka client objects
     poller.producer = AsyncMock()
@@ -96,6 +97,7 @@ def test_broker_poller_uses_seventy_percent_resume_threshold(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
 
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == 700
@@ -135,6 +137,19 @@ def test_broker_poller_fallback_accepts_resolved_route_batch_primitive(
     assert manager.call_args.kwargs["route_batch_size"] == 13
 
 
+def test_broker_poller_fallback_requires_resolved_route_batch_primitive(
+    mock_execution_engine,
+):
+    kafka_config = KafkaConfig(_env_file=None)
+
+    with pytest.raises(ValueError, match="work_manager_route_batch_size"):
+        BrokerPoller(
+            consume_topic="test-topic",
+            kafka_config=kafka_config,
+            execution_engine=mock_execution_engine,
+        )
+
+
 def test_broker_poller_wires_async_route_batch_size_as_item_level(
     mock_execution_engine,
 ):
@@ -147,6 +162,7 @@ def test_broker_poller_wires_async_route_batch_size_as_item_level(
             consume_topic="test-topic",
             kafka_config=kafka_config,
             execution_engine=mock_execution_engine,
+            work_manager_route_batch_size=1,
         )
 
     assert manager.call_args.kwargs["route_batch_size"] == 1
@@ -296,6 +312,7 @@ def test_broker_poller_uses_configured_consumer_task_stop_timeout(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
 
     assert poller._consumer_task_stop_timeout_seconds == pytest.approx(1.234)
@@ -328,6 +345,7 @@ def test_get_partition_index_uses_worker_pool_size_for_key_hash_shards(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     message = MagicMock()
     message.key.return_value = b"fixed-key"
@@ -568,6 +586,7 @@ async def test_on_revoke_commits_metadata_snapshot_when_enabled(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     broker_poller.consumer = mock_consumer
 
@@ -604,6 +623,7 @@ async def test_on_revoke_metadata_snapshot_limits_offsets_encoded(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     broker_poller.consumer = mock_consumer
 
@@ -637,6 +657,7 @@ async def test_on_revoke_omits_metadata_snapshot_in_contiguous_only_mode(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     broker_poller.consumer = mock_consumer
 
@@ -1101,6 +1122,7 @@ async def test_start_skips_completion_monitor_when_disabled(
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
 
     created_tasks = []

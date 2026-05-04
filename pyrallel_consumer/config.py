@@ -293,7 +293,12 @@ def resolve_work_manager_route_batch_size(config: ParallelConsumerConfig) -> int
     """Resolve the engine-mode-aware WorkManager route-batch lease size."""
     execution_config = config.execution
     if execution_config.mode == ExecutionMode.PROCESS:
-        return int(execution_config.process_config.route_batch_size)
+        route_batch_size = execution_config.process_config.route_batch_size
+        if isinstance(route_batch_size, bool) or not isinstance(route_batch_size, int):
+            raise ValueError("route_batch_size must be an integer >= 1")
+        if route_batch_size < 1:
+            raise ValueError("route_batch_size must be an integer >= 1")
+        return route_batch_size
     return 1
 
 

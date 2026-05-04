@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -230,6 +231,30 @@ def test_resolve_work_manager_route_batch_size_uses_process_profile() -> None:
     config.execution.process_config.route_batch_size = 64
 
     assert resolver(config) == 64
+
+
+def test_resolve_work_manager_route_batch_size_rejects_bool_process_profile() -> None:
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.PROCESS
+    config.execution.process_config.route_batch_size = cast(Any, True)
+
+    with pytest.raises(ValueError, match="route_batch_size"):
+        resolver(config)
+
+
+def test_resolve_work_manager_route_batch_size_rejects_non_int_process_profile() -> (
+    None
+):
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.PROCESS
+    config.execution.process_config.route_batch_size = cast(Any, "64")
+
+    with pytest.raises(ValueError, match="route_batch_size"):
+        resolver(config)
 
 
 def test_resolve_work_manager_route_batch_size_keeps_async_item_level() -> None:

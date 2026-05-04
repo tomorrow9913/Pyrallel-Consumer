@@ -76,6 +76,7 @@ def broker_poller_with_dlq(kafka_config_with_dlq, mock_execution_engine):
         consume_topic="test-topic",
         kafka_config=kafka_config_with_dlq,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     poller.producer = MagicMock(spec=Producer)
     poller.consumer = MagicMock()
@@ -89,6 +90,7 @@ def broker_poller_no_dlq(kafka_config_no_dlq, mock_execution_engine):
         consume_topic="test-topic",
         kafka_config=kafka_config_no_dlq,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     poller.producer = MagicMock(spec=Producer)
     poller.consumer = MagicMock()
@@ -225,6 +227,7 @@ async def test_publish_to_dlq_linear_backoff(
         consume_topic="test-topic",
         kafka_config=kafka_config_with_dlq,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     poller.producer = MagicMock(spec=Producer)
     poller.consumer = MagicMock()
@@ -274,6 +277,7 @@ async def test_publish_to_dlq_max_backoff_cap(
         consume_topic="test-topic",
         kafka_config=kafka_config_with_dlq,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     poller.producer = MagicMock(spec=Producer)
     poller.consumer = MagicMock()
@@ -315,6 +319,7 @@ async def test_publish_to_dlq_raises_if_producer_not_initialized():
         consume_topic="test-topic",
         kafka_config=config,
         execution_engine=mock_engine,
+        work_manager_route_batch_size=1,
     )
     # Explicitly set producer to None
     poller.producer = None

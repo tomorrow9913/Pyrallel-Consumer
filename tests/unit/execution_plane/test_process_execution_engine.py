@@ -4576,6 +4576,48 @@ def test_worker_pipe_shutdown_unblocks_slot_waiter() -> None:
     assert "shutting down" in str(result)
 
 
+def test_worker_pipe_slot_wait_uses_blocking_acquire_without_liveness_polling() -> None:
+    class _FakeSlots:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def acquire(self, *args: object, **kwargs: object) -> bool:
+            self.calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+    slots = _FakeSlots()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=1024,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+        slot_wait_liveness_check=None,
+        slot_wait_timeout_seconds=0,
+    )
+    transport._worker_pipe_queue_slots = cast(Any, slots)
+
+    transport._acquire_worker_pipe_queue_slot(
+        worker_idx=0,
+        payload=_work_item_to_dict(
+            WorkItem(
+                id="work-1",
+                tp=TopicPartition("topic", 1),
+                offset=42,
+                epoch=3,
+                key=b"key",
+                payload=b"payload",
+            )
+        ),
+    )
+
+    assert slots.calls == [{"args": (), "kwargs": {"blocking": True}}]
+
+
 def test_worker_pipe_dispatch_rejects_oversized_payload_before_send() -> None:
     sender = _PipeSender()
     transport = WorkerPipesProcessTransport(

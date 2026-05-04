@@ -40,6 +40,7 @@ def broker_poller(mock_kafka_config, mock_execution_engine):
         consume_topic="test-topic",
         kafka_config=mock_kafka_config,
         execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
     )
     poller.consumer = MagicMock(spec=Consumer)
     poller.producer = MagicMock()
