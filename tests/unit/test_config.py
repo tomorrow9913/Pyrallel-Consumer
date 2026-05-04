@@ -196,7 +196,7 @@ def test_execution_config_has_no_route_batch_size_surface(
 
 
 def test_process_config_defaults_to_worker_pipes_route_batch_profile() -> None:
-    config = ProcessConfig(_env_file=None)
+    config = cast(Any, ProcessConfig)(_env_file=None)
 
     assert not hasattr(config, "transport_mode")
     assert config.batch_size == 1
@@ -265,62 +265,6 @@ def test_resolve_work_manager_route_batch_size_keeps_async_item_level() -> None:
     config.execution.process_config.route_batch_size = 32
 
     assert resolver(config) == 1
-
-
-def test_process_config_warns_about_removed_transport_mode_env_override(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "shared_queue")
-
-    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
-        config = ProcessConfig()
-
-    assert not hasattr(config, "transport_mode")
-
-    monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
-
-
-def test_process_config_warns_about_removed_transport_mode_env_file(
-    tmp_path: Path,
-) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
-
-    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
-        config = ProcessConfig(_env_file=env_file)
-
-    assert not hasattr(config, "transport_mode")
-
-
-def test_kafka_config_warns_about_removed_process_transport_mode_in_parent_env_file(
-    tmp_path: Path,
-) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
-
-    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
-        config = KafkaConfig(_env_file=env_file)
-
-    assert not hasattr(
-        config.parallel_consumer.execution.process_config,
-        "transport_mode",
-    )
-
-
-def test_kafka_config_warns_about_removed_process_transport_mode_in_environment(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "shared_queue")
-
-    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
-        config = KafkaConfig(_env_file=None)
-
-    assert not hasattr(
-        config.parallel_consumer.execution.process_config,
-        "transport_mode",
-    )
-
-    monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
 
 
 def test_kafka_config_parent_env_file_propagates_nested_runtime_settings(
@@ -412,18 +356,6 @@ def test_execution_config_env_file_propagates_through_partial_process_dict(
     assert config.mode == ExecutionMode.PROCESS
     assert config.process_config.process_count == 2
     assert config.process_config.route_batch_size == 77
-
-
-def test_kafka_config_parent_env_file_warns_once_for_removed_transport_mode(
-    tmp_path: Path,
-) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
-
-    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE") as warnings:
-        KafkaConfig(_env_file=env_file)
-
-    assert len(warnings) == 1
 
 
 def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None:
@@ -560,13 +492,6 @@ def test_execution_config_accepts_zero_consumer_stop_timeout() -> None:
     config = ExecutionConfig(consumer_task_stop_timeout_ms=0)
 
     assert config.consumer_task_stop_timeout_ms == 0
-
-
-def test_process_config_warns_about_removed_transport_mode_constructor_input() -> None:
-    with pytest.warns(DeprecationWarning, match="transport_mode"):
-        config = ProcessConfig(transport_mode="invalid")
-
-    assert not hasattr(config, "transport_mode")
 
 
 def test_kafka_config_exposes_canonical_snake_case_fields(
