@@ -234,7 +234,7 @@ class ExecutionEngine(ABC):
 parallel_consumer:
   execution:
     mode: "process"  # "async" | "process"
-    max_in_flight: 1000   # Control Plane 기준 전체 동시 처리량
+    max_in_flight_messages: 10000   # Control Plane 기준 전체 동시 처리량
     max_revoke_grace_ms: 500 # Rebalance graceful shutdown deadline
 
     # Retry/Backoff (ExecutionEngine 공통)
@@ -252,10 +252,9 @@ parallel_consumer:
       process_count: 8 # os.cpu_count() 또는 유사한 기본값
       queue_size: 2048
       require_picklable_worker: true
-      batch_size: 1 # Worker-pipes profile: process payload micro-batch 비활성
+      batch_size: 64 # Micro-batching: 메시지 개수
       batch_bytes: 256KB # Micro-batching: 배치 바이트 크기
-      max_batch_wait_ms: 0 # Worker-pipes profile: timer batching 비활성
-      route_batch_size: 64 # 같은 route WorkItem lease / worker-pipe IPC amortization
+      max_batch_wait_ms: 5 # Micro-batching: 최대 대기 시간
       task_timeout_ms: 30000
 
   # 진단/로깅
@@ -273,7 +272,7 @@ parallel_consumer:
   DLQ_TOPIC_SUFFIX: ".dlq"
 ```
 - `execution.mode`가 `"process"`일 때 워커가 코루틴이면 설정 오류를 발생시켜야 합니다.
-- `max_in_flight`는 `WorkManager`가 제어하는 시스템 전체의 동시성 한도이며, `async.max_concurrent_tasks`는 `AsyncExecutionEngine`의 내부 동시성 제한입니다.
+- `max_in_flight_messages`는 `WorkManager`가 제어하는 시스템 전체의 동시성 한도이며, `async.max_concurrent_tasks`는 `AsyncExecutionEngine`의 내부 동시성 제한입니다.
 
 ## 5. 관측성 (Observability)
 
