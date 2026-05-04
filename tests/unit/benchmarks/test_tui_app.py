@@ -1001,22 +1001,15 @@ async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
         assert "run-spotlight-card" in _ancestor_ids(summary_table)
         assert not list(app.screen.query("#run-loading"))
         assert exit_button.display is False
-        assert summary_table.get_row("sleep-key_hash") == [
-            "sleep",
+        assert summary_table.get_row("baseline-key_hash") == [
+            "Baseline",
             "key_hash",
             Text("WAITING", style="grey62"),
             Text("WAITING", style="grey62"),
             Text("WAITING", style="grey62"),
         ]
-        assert summary_table.get_row("cpu-partition") == [
-            "cpu",
-            "partition",
-            Text("WAITING", style="grey62"),
-            Text("WAITING", style="grey62"),
-            Text("WAITING", style="grey62"),
-        ]
-        assert summary_table.get_row("io-partition") == [
-            "io",
+        assert summary_table.get_row("async-partition") == [
+            "Async",
             "partition",
             Text("WAITING", style="grey62"),
             Text("WAITING", style="grey62"),
@@ -1095,11 +1088,15 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
         summary_table = run_screen.query_one("#run-summary", DataTable)
 
     assert progress_bar.progress == 2
-    row = summary_table.get_row("sleep-key_hash")
-    assert row[:2] == ["sleep", "key_hash"]
-    assert row[2] == Text("111.11 TPS", style="bold bright_green")
-    assert row[3] == Text("222.22 TPS", style="bold bright_green")
-    assert row[4] == Text("WAITING", style="grey62")
+    assert summary_table.get_cell("baseline-key_hash", "sleep") == Text(
+        "111.11 TPS", style="bold bright_green"
+    )
+    assert summary_table.get_cell("async-key_hash", "sleep") == Text(
+        "222.22 TPS", style="bold bright_green"
+    )
+    assert summary_table.get_cell("process-key_hash", "sleep") == Text(
+        "WAITING", style="grey62"
+    )
 
 
 @pytest.mark.asyncio
@@ -1150,22 +1147,22 @@ async def test_run_screen_marks_results_below_workload_baseline_average_yellow(
         summary_table = run_screen.query_one("#run-summary", DataTable)
 
     _assert_text_cell(
-        summary_table.get_cell("sleep-key_hash", "baseline"),
+        summary_table.get_cell("baseline-key_hash", "sleep"),
         "100.00 TPS",
         "bold bright_green",
     )
     _assert_text_cell(
-        summary_table.get_cell("sleep-key_hash", "async"),
+        summary_table.get_cell("async-key_hash", "sleep"),
         "149.99 TPS",
         "bold bright_yellow",
     )
     _assert_text_cell(
-        summary_table.get_cell("sleep-key_hash", "process"),
+        summary_table.get_cell("process-key_hash", "sleep"),
         "150.00 TPS",
         "bold bright_green",
     )
     _assert_text_cell(
-        summary_table.get_cell("sleep-partition", "async"),
+        summary_table.get_cell("async-partition", "sleep"),
         "151.00 TPS",
         "bold bright_green",
     )
@@ -1225,17 +1222,17 @@ async def test_run_screen_keeps_baseline_comparison_for_comma_formatted_tps(
         summary_table = _run_screen(app).query_one("#run-summary", DataTable)
 
     _assert_text_cell(
-        summary_table.get_cell("sleep-key_hash", "async"),
+        summary_table.get_cell("async-key_hash", "sleep"),
         "1,499.99 TPS",
         "bold bright_yellow",
     )
     _assert_text_cell(
-        summary_table.get_cell("sleep-key_hash", "process"),
+        summary_table.get_cell("process-key_hash", "sleep"),
         "1,500.00 TPS",
         "bold bright_green",
     )
     _assert_text_cell(
-        summary_table.get_cell("sleep-partition", "async"),
+        summary_table.get_cell("async-partition", "sleep"),
         "1,501.00 TPS",
         "bold bright_green",
     )
@@ -1317,7 +1314,7 @@ async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -
         ordering_chip = run_screen.query_one("#run-chip-ordering", Static)
         phase_chip = run_screen.query_one("#run-chip-phase", Static)
         summary_table = run_screen.query_one("#run-summary", DataTable)
-        active_cell = summary_table.get_cell("sleep-partition", "async")
+        active_cell = summary_table.get_cell("async-partition", "sleep")
 
     assert str(spotlight.content) == "현재 실행"
     assert str(workload_chip.content) == "workload: sleep"
@@ -1399,7 +1396,7 @@ async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_
         progress_bar = run_screen.query_one("#run-progress", ProgressBar)
         elapsed = run_screen.query_one("#run-elapsed", Static)
         summary_table = run_screen.query_one("#run-summary", DataTable)
-        active_cell = summary_table.get_cell("sleep-partition", "async")
+        active_cell = summary_table.get_cell("async-partition", "sleep")
 
     assert str(status.content) == "벤치마크 실행 중"
     assert str(spotlight.content) == "현재 실행"
@@ -1413,14 +1410,16 @@ async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_
     assert phase_progress_bar.total == 50000
     assert phase_progress_bar.progress == 1000
     assert progress_bar.progress == 1
-    row = summary_table.get_row("sleep-key_hash")
-    assert row[:2] == ["sleep", "key_hash"]
-    assert row[2] == Text("111.11 TPS", style="bold bright_green")
-    assert row[3] == Text("WAITING", style="grey62")
+    assert summary_table.get_cell("baseline-key_hash", "sleep") == Text(
+        "111.11 TPS", style="bold bright_green"
+    )
+    assert summary_table.get_cell("async-key_hash", "sleep") == Text(
+        "WAITING", style="grey62"
+    )
     assert isinstance(active_cell, Text)
     assert "RUNNING" in active_cell.plain
 
-    assert summary_table.row_count == 2
+    assert summary_table.row_count == 4
 
 
 @pytest.mark.asyncio
@@ -1518,7 +1517,7 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
         progress_badge = run_screen.query_one("#progress-badge", Static)
         elapsed = run_screen.query_one("#run-elapsed", Static)
         summary_table = run_screen.query_one("#run-summary", DataTable)
-        active_cell = summary_table.get_cell("sleep-key_hash", "async")
+        active_cell = summary_table.get_cell("async-key_hash", "sleep")
 
     assert str(status.content) == "벤치마크 실행 중"
     assert str(spotlight.content) == "현재 실행"
@@ -1533,12 +1532,15 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
     assert phase_progress_bar.progress == 10
     assert isinstance(active_cell, Text)
     assert active_cell.plain.endswith(" RUNNING")
-    active_row = summary_table.get_row("sleep-key_hash")
-    assert isinstance(active_row[0], Text)
-    assert isinstance(active_row[1], Text)
-    assert active_row[2] == Text("111.11 TPS", style="bold bright_green")
-    assert active_row[3] == active_cell
-    assert active_row[4] == Text("WAITING", style="grey62")
+    baseline_row = summary_table.get_row("baseline-key_hash")
+    async_row = summary_table.get_row("async-key_hash")
+    process_row = summary_table.get_row("process-key_hash")
+    assert baseline_row[:2] == ["Baseline", "key_hash"]
+    assert async_row[0] == Text("▶ Async", style="bold bright_cyan")
+    assert async_row[1] == Text("▶ key_hash", style="bold bright_cyan")
+    assert baseline_row[2] == Text("111.11 TPS", style="bold bright_green")
+    assert async_row[2] == active_cell
+    assert process_row[2] == Text("WAITING", style="grey62")
 
 
 @pytest.mark.asyncio
@@ -1594,7 +1596,7 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
         await pilot.pause()
 
         failed_cell = run_screen.query_one("#run-summary", DataTable).get_cell(
-            "sleep-key_hash", "async"
+            "async-key_hash", "sleep"
         )
         status = run_screen.query_one("#run-status", Static)
         reason = run_screen.query_one("#run-terminal-reason", Static)
@@ -1642,11 +1644,11 @@ async def test_run_screen_animates_running_summary_cell_without_loading_widget(
             )
         )
         first_cell = run_screen.query_one("#run-summary", DataTable).get_cell(
-            "sleep-partition", "async"
+            "async-partition", "sleep"
         )
         run_screen._advance_running_spinner()
         second_cell = run_screen.query_one("#run-summary", DataTable).get_cell(
-            "sleep-partition", "async"
+            "async-partition", "sleep"
         )
 
     assert run_screen._spinner_interval_seconds < 0.2

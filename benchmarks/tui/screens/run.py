@@ -426,31 +426,55 @@ class RunScreen(Screen[None]):
         """Handle configure run summary table within run."""
         table = self.query_one("#run-summary", DataTable)
         table.cursor_type = "none"
-        table.add_column("Workload", key="workload")
+        table.add_column("Engine", key="engine")
         table.add_column("Ordering", key="ordering")
-        for phase in self._active_phases:
-            table.add_column(phase.title(), key=phase)
         for workload in self._active_workloads:
+            table.add_column(workload, key=workload)
+        for phase in self._active_phases:
             for ordering in self._active_orderings:
-                row_values = [workload, ordering]
-                row_values.extend("WAITING" for _ in self._active_phases)
-                table.add_row(*row_values, key=self._row_key(workload, ordering))
+                row_values = [phase.title(), ordering]
+                row_values.extend("WAITING" for _workload in self._active_workloads)
+                table.add_row(
+                    *row_values,
+                    key=self._summary_row_key(phase, ordering),
+                )
+
+    def _summary_row_key(self, phase: str, ordering: str) -> str:
+        """Return the summary row key for an engine/ordering pair."""
+        return "%s-%s" % (phase, ordering)
+
+    def _is_active_summary_row(
+        self,
+        *,
+        phase: str,
+        ordering: str,
+        active_phase: str | None,
+        active_ordering: str | None,
+    ) -> bool:
+        """Return whether the engine/ordering row is currently active."""
+        return phase == active_phase and ordering == active_ordering
 
     def _update_run_summary_table(self, snapshot: BenchmarkProgressSnapshot) -> None:
         """Update run summary table for run."""
         table = self.query_one("#run-summary", DataTable)
-        active_row_key = self._active_row_key(snapshot)
         active_phase = self._current_phase(snapshot)
+        active_workload = snapshot.current_workload
+        active_ordering = snapshot.current_ordering
         baseline_averages = self._baseline_averages_by_workload(snapshot)
 
-        for workload in self._active_workloads:
+        for phase in self._active_phases:
             for ordering in self._active_orderings:
-                row_key = self._row_key(workload, ordering)
-                is_active_row = row_key == active_row_key
+                row_key = self._summary_row_key(phase, ordering)
+                is_active_row = self._is_active_summary_row(
+                    phase=phase,
+                    ordering=ordering,
+                    active_phase=active_phase,
+                    active_ordering=active_ordering,
+                )
                 table.update_cell(
                     row_key,
-                    "workload",
-                    self._identity_cell_text(workload, is_active_row),
+                    "engine",
+                    self._identity_cell_text(phase.title(), is_active_row),
                     update_width=True,
                 )
                 table.update_cell(
@@ -460,17 +484,24 @@ class RunScreen(Screen[None]):
                     update_width=True,
                 )
 
+        for workload in self._active_workloads:
+            for ordering in self._active_orderings:
                 row = snapshot.tps_by_workload_ordering.get(workload, {}).get(
                     ordering, {}
                 )
                 for phase in self._active_phases:
-                    phase_key = (row_key, phase)
+                    row_key = self._summary_row_key(phase, ordering)
+                    phase_key = (row_key, workload)
                     if phase_key in self._terminal_cells:
                         value = self._status_text(
                             self._terminal_cells[phase_key],
                             self._terminal_style(self._terminal_cells[phase_key]),
                         )
-                    elif is_active_row and phase == active_phase:
+                    elif (
+                        workload == active_workload
+                        and ordering == active_ordering
+                        and phase == active_phase
+                    ):
                         value = self._status_text(
                             "%s RUNNING" % self._current_spinner_frame(),
                             _RUNNING_STYLE,
@@ -487,7 +518,7 @@ class RunScreen(Screen[None]):
                         )
                     else:
                         value = self._status_text("WAITING", _WAITING_STYLE)
-                    table.update_cell(row_key, phase, value, update_width=True)
+                    table.update_cell(row_key, workload, value, update_width=True)
 
     def _baseline_averages_by_workload(
         self, snapshot: BenchmarkProgressSnapshot
@@ -534,7 +565,9 @@ class RunScreen(Screen[None]):
             ordering = self._active_orderings[0]
         if workload is None or ordering is None or phase is None:
             return
-        self._terminal_cells[(self._row_key(workload, ordering), phase)] = status
+        self._terminal_cells[
+            (self._summary_row_key(phase, ordering), workload)
+        ] = status
         self._update_run_summary_table(self._last_snapshot)
 
     def _last_running_phase(self) -> str | None:
