@@ -734,21 +734,23 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         ]
         if not recovered_payloads:
             return True
-        try:
-            self._requeue_recovered_payloads(recovered_payloads)
-        except Exception as requeue_exc:
-            self._logger.error(
-                "Failed to requeue not_started route-batch tail payloads batch_id=%s: %s",
-                event.get("batch_id"),
-                requeue_exc,
-            )
-            for payload in recovered_payloads:
-                self._emit_worker_recovery_failure(
-                    -1,
-                    payload,
-                    error="not_started_requeue_failed: %s" % requeue_exc,
-                    attempt=self._config.max_retries,
+        for index, payload in enumerate(recovered_payloads):
+            try:
+                self._requeue_recovered_payloads([payload])
+            except Exception as requeue_exc:
+                self._logger.error(
+                    "Failed to requeue not_started route-batch tail payloads batch_id=%s: %s",
+                    event.get("batch_id"),
+                    requeue_exc,
                 )
+                for failed_payload in recovered_payloads[index:]:
+                    self._emit_worker_recovery_failure(
+                        -1,
+                        failed_payload,
+                        error="not_started_requeue_failed: %s" % requeue_exc,
+                        attempt=self._config.max_retries,
+                    )
+                break
         return True
 
     def _drain_registry_events(self) -> None:

@@ -1128,6 +1128,81 @@ def test_process_engine_not_started_requeue_failure_emits_terminal_attempt(
     assert emitted == [(tail_payload, 3)]
 
 
+def test_process_engine_not_started_partial_requeue_failure_keeps_requeued_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    tail_payloads = [
+        {
+            "id": "work-b",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 43,
+            "epoch": 7,
+            "key": b"same-key",
+            "payload": b"b",
+            "requeue_attempts": 0,
+        },
+        {
+            "id": "work-c",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 44,
+            "epoch": 7,
+            "key": b"same-key",
+            "payload": b"c",
+            "requeue_attempts": 0,
+        },
+        {
+            "id": "work-d",
+            "topic": "topic",
+            "partition": 1,
+            "offset": 45,
+            "epoch": 7,
+            "key": b"same-key",
+            "payload": b"d",
+            "requeue_attempts": 0,
+        },
+    ]
+    requeued: list[str] = []
+    emitted: list[tuple[str, int]] = []
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._transport = None
+    engine_any._logger = logging.getLogger(__name__)
+
+    def requeue_one(payloads: list[dict[str, Any]]) -> None:
+        assert len(payloads) == 1
+        if payloads[0]["id"] != "work-b":
+            raise RuntimeError("pipe closed")
+        requeued.append(payloads[0]["id"])
+
+    monkeypatch.setattr(engine, "_requeue_recovered_payloads", requeue_one)
+    monkeypatch.setattr(
+        engine,
+        "_emit_worker_recovery_failure",
+        lambda _idx, payload, *, error, attempt: emitted.append(
+            (payload["id"], attempt)
+        ),
+    )
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": tail_payloads,
+        }
+    )
+
+    assert requeued == ["work-b"]
+    assert emitted == [("work-c", 3), ("work-d", 3)]
+
+
 def test_process_engine_not_started_requeues_tail_still_pending_in_worker_pipes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
