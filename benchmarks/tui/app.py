@@ -285,7 +285,6 @@ class BenchmarkTuiApp(App[None]):
     #run-summary {
         width: 7fr;
         height: auto;
-        margin-top: 1;
         margin-bottom: 0;
     }
 
