@@ -60,9 +60,9 @@ OPTION_HELP = {
         label="Process count",
         description="Override the number of process-mode worker processes.",
     ),
-    "process-transport": OptionHelp(
-        label="Process transport",
-        description="Select how process-mode work is delivered to workers.",
+    "process-route-batch-size": OptionHelp(
+        label="Process route batch size",
+        description="Override process worker-pipe route-batch size.",
     ),
     "process-batch-size": OptionHelp(
         label="Process batch size",

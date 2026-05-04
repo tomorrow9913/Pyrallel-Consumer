@@ -59,6 +59,7 @@ class BrokerPoller:
         kafka_config: KafkaConfig,
         execution_engine: BaseExecutionEngine,
         work_manager: Optional[WorkManager] = None,
+        work_manager_route_batch_size: int | None = None,
     ) -> None:
         """Initialize this component.
 
@@ -67,6 +68,8 @@ class BrokerPoller:
             kafka_config: Kafka and parallel-consumer configuration.
             execution_engine: Execution engine used to process scheduled work.
             work_manager: Work manager used for scheduling and accounting.
+            work_manager_route_batch_size: Pre-resolved route-batch lease size used
+                only when constructing the fallback work manager.
 
         """
         self._consume_topic = consume_topic
@@ -155,19 +158,24 @@ class BrokerPoller:
                 cooldown_ms=int(getattr(self._poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=pc_conf.execution.max_retries,
             )
-        route_batch_size = getattr(pc_conf.execution, "route_batch_size", 1)
-        if isinstance(route_batch_size, bool) or not isinstance(route_batch_size, int):
-            route_batch_size = 1
-        route_batch_size = max(1, route_batch_size)
-        self._work_manager = work_manager or WorkManager(
-            execution_engine=self._execution_engine,
-            max_in_flight_messages=configured_max_in_flight,
-            ordering_mode=self.ORDERING_MODE,
-            blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
-            max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
-            poison_message_circuit=poison_message_circuit,
-            route_batch_size=route_batch_size,
-        )
+        if work_manager is None:
+            if work_manager_route_batch_size is None:
+                raise ValueError(
+                    "work_manager_route_batch_size is required when BrokerPoller "
+                    "constructs a fallback WorkManager"
+                )
+
+            work_manager = WorkManager(
+                execution_engine=self._execution_engine,
+                max_in_flight_messages=configured_max_in_flight,
+                ordering_mode=self.ORDERING_MODE,
+                blocking_cache_ttl=getattr(pc_conf, "blocking_cache_ttl", 0),
+                max_revoke_grace_ms=pc_conf.execution.max_revoke_grace_ms,
+                poison_message_circuit=poison_message_circuit,
+                route_batch_size=work_manager_route_batch_size,
+            )
+
+        self._work_manager = work_manager
 
         self._diag_log_every = int(getattr(pc_conf, "diag_log_every", 1000) or 1000)
         self._diag_events_since_log = 0

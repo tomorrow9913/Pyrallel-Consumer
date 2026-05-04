@@ -199,7 +199,7 @@ class ProcessBatchMetrics:
         avg_worker_exec_seconds (float): Average worker execution time
         last_worker_to_main_ipc_seconds (float): Most recent worker-to-main IPC time
         avg_worker_to_main_ipc_seconds (float): Average worker-to-main IPC time
-        transport_mode (str): Active process transport mode
+        transport_mode (str): Deprecated compatibility field; always worker_pipes.
         support_state (str): Support boundary classification for the active transport
         timer_flush_supported (bool): Whether timer-based flushing is supported
         demand_flush_supported (bool): Whether demand-based flushing is supported
@@ -221,11 +221,11 @@ class ProcessBatchMetrics:
     avg_worker_exec_seconds: float = 0.0
     last_worker_to_main_ipc_seconds: float = 0.0
     avg_worker_to_main_ipc_seconds: float = 0.0
-    transport_mode: str = "shared_queue"
-    support_state: str = "full"
-    timer_flush_supported: bool = True
-    demand_flush_supported: bool = True
-    recycle_supported: bool = True
+    transport_mode: str = "worker_pipes"
+    support_state: str = "bounded"
+    timer_flush_supported: bool = False
+    demand_flush_supported: bool = False
+    recycle_supported: bool = False
     items_per_input_ipc: Optional[float] = None
     items_per_completion_ipc: Optional[float] = None
     route_batch_count: int = 0

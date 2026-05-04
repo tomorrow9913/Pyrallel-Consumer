@@ -20,7 +20,7 @@
 | `--profile` | yappi profiling |
 | `--py-spy` | process worker 포함 profiling |
 | `--process-batch-size` | process micro-batch size override |
-| `--route-batch-size` | 같은 route lease size override. `process-batch-size`와 별도 축 |
+| `--process-route-batch-size` | process same-route lease size override. `process-batch-size`와 별도 축. `--route-batch-size`는 deprecated alias |
 
 ## 3. workload 의미
 

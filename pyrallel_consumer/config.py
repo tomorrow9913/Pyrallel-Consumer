@@ -1,10 +1,27 @@
+import os
 import socket
-from typing import ClassVar, Literal, cast
+import warnings
+from pathlib import Path
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import AliasChoices, Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
+
+REMOVED_PROCESS_TRANSPORT_MODE_WARNING = (
+    "PROCESS_TRANSPORT_MODE was removed and is ignored; "
+    "process mode always uses worker_pipes."
+)
+
+
+def _warn_removed_process_transport_mode(stacklevel: int) -> None:
+    """Warn when removed process transport selection is still configured."""
+    warnings.warn(
+        REMOVED_PROCESS_TRANSPORT_MODE_WARNING,
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
 
 
 class AsyncConfig(BaseSettings):
@@ -30,7 +47,7 @@ class ProcessConfig(BaseSettings):
     require_picklable_worker: bool = True
     batch_size: int = Field(default=1, gt=0)
     batch_bytes: str = "256KB"
-    transport_mode: Literal["shared_queue", "worker_pipes"] = "worker_pipes"
+    route_batch_size: int = Field(default=64, gt=0)
     max_batch_wait_ms: int = 0
     flush_policy: Literal[
         "size_or_timer", "demand", "demand_min_residence"
@@ -42,6 +59,42 @@ class ProcessConfig(BaseSettings):
     msgpack_max_bytes: int = Field(default=1_000_000, gt=0)
     max_tasks_per_child: int = 0
     recycle_jitter_ms: int = 0
+
+    def __init__(self, **data: object) -> None:
+        """Initialize process config and warn about removed transport selection."""
+        if "transport_mode" in data:
+            warnings.warn(
+                "ProcessConfig.transport_mode was removed and is ignored; "
+                "process mode always uses worker_pipes.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if "PROCESS_TRANSPORT_MODE" in os.environ:
+            _warn_removed_process_transport_mode(stacklevel=2)
+        env_file = data.get("_env_file", self.model_config.get("env_file"))
+        if self._env_file_contains_key(env_file, "PROCESS_TRANSPORT_MODE"):
+            _warn_removed_process_transport_mode(stacklevel=2)
+        super().__init__(**cast(dict[str, Any], data))
+
+    @staticmethod
+    def _env_file_contains_key(env_file: object, key: str) -> bool:
+        """Return whether an env file contains a top-level key assignment."""
+        if env_file is None:
+            return False
+        if env_file is False:
+            return False
+        env_paths = env_file if isinstance(env_file, (list, tuple)) else (env_file,)
+        for env_path in env_paths:
+            path = Path(str(env_path))
+            if not path.exists():
+                continue
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.split("=", 1)[0].strip() == key:
+                    return True
+        return False
 
 
 class MetricsConfig(BaseSettings):
@@ -120,7 +173,6 @@ class ExecutionConfig(BaseSettings):
 
     mode: ExecutionMode = ExecutionMode.ASYNC
     max_in_flight: int = Field(default=1000, gt=0)
-    route_batch_size: int = Field(default=64, gt=0)
     max_revoke_grace_ms: int = 500
     shutdown_policy: Literal["graceful", "abort"] = "graceful"
     consumer_task_stop_timeout_ms: int = Field(default=5000, ge=0)
@@ -130,8 +182,22 @@ class ExecutionConfig(BaseSettings):
     exponential_backoff: bool = True
     max_retry_backoff_ms: int = 30000
     retry_jitter_ms: int = 200
-    async_config: AsyncConfig = AsyncConfig()
-    process_config: ProcessConfig = ProcessConfig()
+    async_config: AsyncConfig = Field(default_factory=AsyncConfig)
+    process_config: ProcessConfig = Field(default_factory=ProcessConfig)
+
+    def __init__(self, **data: object) -> None:
+        """Initialize execution config and propagate explicit env files downward."""
+        env_file = data.get("_env_file", self.model_config.get("env_file"))
+        if "_env_file" in data:
+            process_config = data.get("process_config")
+            if isinstance(process_config, dict):
+                data["process_config"] = ProcessConfig(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], process_config),
+                )
+            else:
+                data.setdefault("process_config", ProcessConfig(_env_file=env_file))
+        super().__init__(**cast(dict[str, Any], data))
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -183,13 +249,31 @@ class ParallelConsumerConfig(BaseSettings):
     strict_completion_monitor_enabled: bool = True
     commit_debounce_completion_threshold: int = Field(default=100, gt=0)
     commit_debounce_interval_ms: int = Field(default=100, ge=0)
-    adaptive_backpressure: AdaptiveBackpressureConfig = AdaptiveBackpressureConfig()
-    adaptive_concurrency: AdaptiveConcurrencyConfig = AdaptiveConcurrencyConfig()
-    poison_message: PoisonMessageConfig = PoisonMessageConfig()
+    adaptive_backpressure: AdaptiveBackpressureConfig = Field(
+        default_factory=AdaptiveBackpressureConfig
+    )
+    adaptive_concurrency: AdaptiveConcurrencyConfig = Field(
+        default_factory=AdaptiveConcurrencyConfig
+    )
+    poison_message: PoisonMessageConfig = Field(default_factory=PoisonMessageConfig)
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
-    execution: ExecutionConfig = ExecutionConfig()
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+
+    def __init__(self, **data: object) -> None:
+        """Initialize parallel consumer config and propagate explicit env files."""
+        if "_env_file" in data:
+            env_file = data["_env_file"]
+            execution = data.get("execution")
+            if isinstance(execution, dict):
+                data["execution"] = ExecutionConfig(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], execution),
+                )
+            else:
+                data.setdefault("execution", ExecutionConfig(_env_file=env_file))
+        super().__init__(**cast(dict[str, Any], data))
 
     @field_validator("ordering_mode", mode="before")
     @classmethod
@@ -203,6 +287,19 @@ class ParallelConsumerConfig(BaseSettings):
         raise TypeError(
             f"ordering_mode must be str or OrderingMode, got {type(v).__name__}"
         )
+
+
+def resolve_work_manager_route_batch_size(config: ParallelConsumerConfig) -> int:
+    """Resolve the engine-mode-aware WorkManager route-batch lease size."""
+    execution_config = config.execution
+    if execution_config.mode == ExecutionMode.PROCESS:
+        route_batch_size = execution_config.process_config.route_batch_size
+        if isinstance(route_batch_size, bool) or not isinstance(route_batch_size, int):
+            raise ValueError("route_batch_size must be an integer >= 1")
+        if route_batch_size < 1:
+            raise ValueError("route_batch_size must be an integer >= 1")
+        return route_batch_size
+    return 1
 
 
 class KafkaConfig(BaseSettings):
@@ -363,8 +460,45 @@ class KafkaConfig(BaseSettings):
             "ssl.key.password",
         ),
     )
-    metrics: MetricsConfig = MetricsConfig()
-    parallel_consumer: ParallelConsumerConfig = ParallelConsumerConfig()
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    parallel_consumer: ParallelConsumerConfig = Field(
+        default_factory=ParallelConsumerConfig
+    )
+
+    def __init__(self, **data: object) -> None:
+        """Initialize Kafka config and warn about stale process env-file keys."""
+        env_file = data.get("_env_file", self.model_config.get("env_file"))
+        should_warn_for_explicit_parallel_config = (
+            "parallel_consumer" in data
+            and not isinstance(data.get("parallel_consumer"), dict)
+            and ProcessConfig._env_file_contains_key(env_file, "PROCESS_TRANSPORT_MODE")
+        )
+        if should_warn_for_explicit_parallel_config:
+            _warn_removed_process_transport_mode(stacklevel=2)
+        if "_env_file" in data:
+            metrics = data.get("metrics")
+            if isinstance(metrics, dict):
+                data["metrics"] = cast(Any, MetricsConfig)(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], metrics),
+                )
+            else:
+                data.setdefault(
+                    "metrics",
+                    cast(Any, MetricsConfig)(_env_file=env_file),
+                )
+            parallel_consumer = data.get("parallel_consumer")
+            if isinstance(parallel_consumer, dict):
+                data["parallel_consumer"] = ParallelConsumerConfig(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], parallel_consumer),
+                )
+            else:
+                data.setdefault(
+                    "parallel_consumer",
+                    ParallelConsumerConfig(_env_file=env_file),
+                )
+        super().__init__(**cast(dict[str, Any], data))
 
     def _bootstrap_servers_csv(self) -> str:
         """Handle bootstrap servers csv within runtime configuration and librdkafka client setup."""

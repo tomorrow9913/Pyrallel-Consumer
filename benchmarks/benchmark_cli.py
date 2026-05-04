@@ -17,7 +17,6 @@ _PROCESS_FLUSH_POLICY_CHOICES = (
     "demand",
     "demand_min_residence",
 )
-_PROCESS_TRANSPORT_CHOICES = ("shared_queue", "worker_pipes")
 _LEGACY_WORKLOAD_FLAGS = {
     "sleep.sleep_ms": "worker_sleep_ms",
     "cpu.iterations": "worker_cpu_iterations",
@@ -474,10 +473,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override process-mode micro-batch size for benchmark runs",
     )
     parser.add_argument(
+        "--process-route-batch-size",
+        type=int,
+        dest="process_route_batch_size",
+        default=64,
+        help="Override process worker-pipe route-batch size for benchmark runs",
+    )
+    parser.add_argument(
         "--route-batch-size",
         type=int,
-        default=64,
-        help="Override control-plane same-route batch lease size for benchmark runs",
+        dest="process_route_batch_size",
+        help="Deprecated alias for --process-route-batch-size",
     )
     parser.add_argument(
         "--process-max-batch-wait-ms",
@@ -496,12 +502,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override minimum residence time before demand flush is allowed",
-    )
-    parser.add_argument(
-        "--process-transport",
-        choices=_PROCESS_TRANSPORT_CHOICES,
-        default="worker_pipes",
-        help="Select process-mode input transport for benchmark runs",
     )
     parser.add_argument(
         "--metrics-port",

@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from benchmarks import benchmark_cli, run_parallel_benchmark
 
 
@@ -112,20 +114,37 @@ def test_build_parser_accepts_process_batching_overrides() -> None:
     assert args.process_max_batch_wait_ms == 0
 
 
-def test_build_parser_accepts_route_batch_size_override() -> None:
+def test_build_parser_accepts_process_route_batch_size_override() -> None:
     parser = run_parallel_benchmark.build_parser()
 
-    args = parser.parse_args(["--route-batch-size", "64"])
+    args = parser.parse_args(["--process-route-batch-size", "32"])
 
-    assert args.route_batch_size == 64
+    assert args.process_route_batch_size == 32
 
 
-def test_build_parser_defaults_route_batch_size_to_worker_pipes_profile() -> None:
+def test_build_parser_keeps_route_batch_size_as_deprecated_alias() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(["--route-batch-size", "16"])
+
+    assert args.process_route_batch_size == 16
+
+
+def test_build_parser_defaults_process_route_batch_size_to_worker_pipes_profile() -> (
+    None
+):
     parser = run_parallel_benchmark.build_parser()
 
     args = parser.parse_args([])
 
-    assert args.route_batch_size == 64
+    assert args.process_route_batch_size == 64
+
+
+def test_build_parser_rejects_removed_process_transport_option() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--process-transport", "shared_queue"])
 
 
 def test_build_parser_accepts_process_flush_policy_overrides() -> None:
@@ -144,20 +163,12 @@ def test_build_parser_accepts_process_flush_policy_overrides() -> None:
     assert args.process_demand_flush_min_residence_ms == 2
 
 
-def test_build_parser_accepts_process_transport_override() -> None:
-    parser = run_parallel_benchmark.build_parser()
-
-    args = parser.parse_args(["--process-transport", "worker_pipes"])
-
-    assert args.process_transport == "worker_pipes"
-
-
-def test_build_parser_defaults_process_transport_to_worker_pipes() -> None:
+def test_build_parser_defaults_process_worker_pipes_profile() -> None:
     parser = run_parallel_benchmark.build_parser()
 
     args = parser.parse_args([])
 
-    assert args.process_transport == "worker_pipes"
+    assert not hasattr(args, "process_transport")
     assert args.process_batch_size == 1
     assert args.process_max_batch_wait_ms == 0
 

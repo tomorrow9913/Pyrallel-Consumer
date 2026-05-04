@@ -122,6 +122,8 @@ def _final_gap_count(result: Mapping[str, Any]) -> int | None:
 def _process_transport_mode(result: Mapping[str, Any]) -> str | None:
     """Handle process transport mode within release gate."""
     value = result.get("process_transport_mode")
+    if value is None:
+        return "worker_pipes"
     if isinstance(value, str) and value in REQUIRED_PROCESS_TRANSPORT_MODES:
         return value
     return None
@@ -303,14 +305,16 @@ def _group_results(
             combination = _result_combination(result, path=path)
             if combination[0] == "process":
                 transport_mode = _process_transport_mode(result)
+                raw_transport_mode = result.get("process_transport_mode")
                 if transport_mode is None:
                     checks.append(
                         _check(
                             "measurement_conditions",
                             "FAIL",
-                            "process benchmark results must surface process_transport_mode",
+                            "process benchmark results must use worker_pipes process evidence",
                             path=str(path),
                             combination="/".join(combination),
+                            process_transport_mode=raw_transport_mode,
                         )
                     )
                     continue

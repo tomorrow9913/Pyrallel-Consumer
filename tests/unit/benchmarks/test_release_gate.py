@@ -413,7 +413,7 @@ def test_evaluate_release_gate_requires_worker_pipes_transport_mode(
     assert "process/sleep/key_hash/worker_pipes" in failed_combinations
 
 
-def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
+def test_evaluate_release_gate_accepts_process_results_missing_transport_mode(
     tmp_path: Path,
 ) -> None:
     bad = _passing_summary()
@@ -430,11 +430,8 @@ def test_evaluate_release_gate_rejects_process_results_missing_transport_mode(
 
     report = release_gate.evaluate_release_gate(paths)
 
-    assert report["verdict"] == "NO-GO"
-    failed_codes = {
-        check["code"] for check in report["checks"] if check["status"] == "FAIL"
-    }
-    assert "measurement_conditions" in failed_codes
+    assert report["verdict"] == "PASS"
+    assert report["summary"]["process_transport_modes"] == ["worker_pipes"]
 
 
 def test_evaluate_release_gate_rejects_unknown_process_transport_mode(

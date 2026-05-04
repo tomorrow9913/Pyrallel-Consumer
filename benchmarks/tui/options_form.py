@@ -32,7 +32,7 @@ POSITIVE_INT_FIELDS = {
     "num-keys": 1,
     "num-partitions": 1,
     "timeout-sec": 1,
-    "route-batch-size": 1,
+    "process-route-batch-size": 1,
 }
 NON_NEGATIVE_INT_FIELDS = {
     "metrics-port": 0,
@@ -121,10 +121,9 @@ def validate_options_form(
         timeout_sec=parsed_ints["timeout-sec"],
         metrics_port=parsed_ints["metrics-port"],
         process_count=parsed_ints.get("process-count"),
-        process_transport=draft.select_values["process-transport"],
         process_batch_size=parsed_ints.get("process-batch-size"),
         process_max_batch_wait_ms=parsed_ints.get("process-max-batch-wait-ms"),
-        route_batch_size=parsed_ints["route-batch-size"],
+        route_batch_size=parsed_ints["process-route-batch-size"],
         topic_prefix=draft.input_values["topic-prefix"],
         workloads=draft.workloads,
         ordering_modes=draft.ordering_modes,

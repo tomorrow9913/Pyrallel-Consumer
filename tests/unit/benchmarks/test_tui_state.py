@@ -22,9 +22,8 @@ def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
     assert "sleep" in argv
     assert "--order" in argv
     assert "key_hash" in argv
-    assert "--process-transport" in argv
-    assert "worker_pipes" in argv
-    assert "--route-batch-size" in argv
+    assert "--process-transport" not in argv
+    assert "--process-route-batch-size" in argv
     assert "64" in argv
     assert "--process-count" in argv
     assert "4" in argv
@@ -61,7 +60,6 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
         py_spy_idle=True,
         skip_process=True,
         process_count=4,
-        process_transport="worker_pipes",
         process_batch_size=1,
         process_max_batch_wait_ms=0,
         route_batch_size=64,
@@ -85,11 +83,9 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
     assert "--skip-process" in argv
     assert "--process-count" in argv
     assert "4" in argv
-    assert "--process-transport" in argv
-    assert "worker_pipes" in argv
     assert "--process-batch-size" in argv
     assert "--process-max-batch-wait-ms" in argv
-    assert "--route-batch-size" in argv
+    assert "--process-route-batch-size" in argv
     assert "64" in argv
 
 

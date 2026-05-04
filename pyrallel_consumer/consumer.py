@@ -3,7 +3,12 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional, Union
 
-from pyrallel_consumer.config import KafkaConfig, MetricsConfig, ParallelConsumerConfig
+from pyrallel_consumer.config import (
+    KafkaConfig,
+    MetricsConfig,
+    ParallelConsumerConfig,
+    resolve_work_manager_route_batch_size,
+)
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
@@ -135,13 +140,16 @@ class PyrallelConsumer:
                 cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=execution_config.max_retries,
             )
+        resolved_route_batch_size = resolve_work_manager_route_batch_size(
+            parallel_config
+        )
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
             ordering_mode=ordering_mode,
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
             poison_message_circuit=poison_message_circuit,
-            route_batch_size=execution_config.route_batch_size,
+            route_batch_size=resolved_route_batch_size,
         )
 
         # 3. Create Broker Poller (The main loop)

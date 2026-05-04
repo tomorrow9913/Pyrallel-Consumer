@@ -440,15 +440,6 @@ class OptionsScreen(Screen[None]):
                         widget_id="process-count",
                         placeholder="default",
                     )
-                    yield from self._labeled_select(
-                        option_id="process-transport",
-                        options=[
-                            ("shared_queue", "shared_queue"),
-                            ("worker_pipes", "worker_pipes"),
-                        ],
-                        value=state.process_transport,
-                        widget_id="process-transport",
-                    )
                     yield from self._labeled_input(
                         option_id="process-batch-size",
                         value=(
@@ -470,9 +461,9 @@ class OptionsScreen(Screen[None]):
                         placeholder="default",
                     )
                     yield from self._labeled_input(
-                        option_id="route-batch-size",
+                        option_id="process-route-batch-size",
                         value=str(state.route_batch_size),
-                        widget_id="route-batch-size",
+                        widget_id="process-route-batch-size",
                         placeholder="1",
                     )
                     yield from self._switch_field(
@@ -755,7 +746,7 @@ class OptionsScreen(Screen[None]):
 
     def _form_select_values(self) -> dict[str, str]:
         """Collect select widget values for form validation."""
-        widget_ids = {"process-transport", "log-level", "py-spy-format"}
+        widget_ids = {"log-level", "py-spy-format"}
         return {
             widget_id: str(self.query_one("#%s" % widget_id, Select).value)
             for widget_id in widget_ids

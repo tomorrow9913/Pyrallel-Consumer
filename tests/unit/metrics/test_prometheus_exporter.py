@@ -159,11 +159,8 @@ def test_exporter_updates_metrics_and_observes_completion():
         )._value.get()
         == 1
     )
-    assert (
-        exporter._process_batch_transport_mode_gauge.labels(
-            mode="shared_queue"
-        )._value.get()
-        == 0
+    assert "shared_queue" not in str(
+        exporter._process_batch_transport_mode_gauge.collect()
     )
     assert (
         exporter._process_batch_support_state_gauge.labels(state="bounded")._value.get()
@@ -268,11 +265,8 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
     assert (
         exporter._adaptive_concurrency_effective_max_in_flight_gauge._value.get() == 0
     )
-    assert (
-        exporter._process_batch_transport_mode_gauge.labels(
-            mode="shared_queue"
-        )._value.get()
-        == 0
+    assert "shared_queue" not in str(
+        exporter._process_batch_transport_mode_gauge.collect()
     )
     assert (
         exporter._process_batch_support_state_gauge.labels(state="bounded")._value.get()

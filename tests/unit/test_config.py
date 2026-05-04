@@ -1,9 +1,11 @@
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from pydantic import ValidationError
 
+import pyrallel_consumer.config as config_module
 from pyrallel_consumer.config import (
     ExecutionConfig,
     KafkaConfig,
@@ -18,7 +20,6 @@ BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS = {
     "EXECUTION_ASYNC_CONFIG__TASK_TIMEOUT_MS",
     "EXECUTION_CONSUMER_TASK_STOP_TIMEOUT_MS",
     "EXECUTION_MAX_IN_FLIGHT",
-    "EXECUTION_ROUTE_BATCH_SIZE",
     "EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS",
     "EXECUTION_SHUTDOWN_POLICY",
     "KAFKA_DLQ_FLUSH_TIMEOUT_MS",
@@ -51,8 +52,8 @@ BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS = {
     "PROCESS_MAX_BATCH_WAIT_MS",
     "PROCESS_MAX_TASKS_PER_CHILD",
     "PROCESS_RECYCLE_JITTER_MS",
+    "PROCESS_ROUTE_BATCH_SIZE",
     "PROCESS_SHUTDOWN_DRAIN_TIMEOUT_MS",
-    "PROCESS_TRANSPORT_MODE",
 }
 
 
@@ -76,6 +77,14 @@ def test_env_sample_documents_benchmark_runtime_tuning_surface() -> None:
     missing_keys = sorted(BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS - sample_keys)
 
     assert missing_keys == []
+
+
+def test_env_sample_does_not_document_removed_process_transport_mode() -> None:
+    assert "PROCESS_TRANSPORT_MODE" not in _env_sample_keys()
+
+
+def test_env_sample_does_not_document_deprecated_execution_route_batch_size() -> None:
+    assert "EXECUTION_ROUTE_BATCH_SIZE" not in _env_sample_keys()
 
 
 def test_parallel_consumer_config_defaults():
@@ -174,49 +183,247 @@ def test_execution_config_shutdown_policy_env_override(
     monkeypatch.delenv("EXECUTION_SHUTDOWN_DRAIN_TIMEOUT_MS", raising=False)
 
 
-def test_execution_config_route_batch_size_defaults_to_worker_pipes_profile() -> None:
-    config = ExecutionConfig(_env_file=None)
-
-    assert config.route_batch_size == 64
-
-
-def test_execution_config_route_batch_size_env_override(
+def test_execution_config_has_no_route_batch_size_surface(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EXECUTION_ROUTE_BATCH_SIZE", "64")
 
-    config = ExecutionConfig()
+    config = ExecutionConfig(route_batch_size=64)
 
-    assert config.route_batch_size == 64
+    assert not hasattr(config, "route_batch_size")
 
     monkeypatch.delenv("EXECUTION_ROUTE_BATCH_SIZE", raising=False)
-
-
-def test_execution_config_rejects_invalid_route_batch_size() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        ExecutionConfig(route_batch_size=0)
-
-    assert "route_batch_size" in str(excinfo.value)
 
 
 def test_process_config_defaults_to_worker_pipes_route_batch_profile() -> None:
     config = ProcessConfig(_env_file=None)
 
-    assert config.transport_mode == "worker_pipes"
+    assert not hasattr(config, "transport_mode")
     assert config.batch_size == 1
     assert config.max_batch_wait_ms == 0
+    assert config.route_batch_size == 64
 
 
-def test_process_config_transport_mode_env_override_keeps_legacy_fallback(
+def test_process_config_route_batch_size_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROCESS_ROUTE_BATCH_SIZE", "32")
+
+    config = ProcessConfig()
+
+    assert config.route_batch_size == 32
+
+    monkeypatch.delenv("PROCESS_ROUTE_BATCH_SIZE", raising=False)
+
+
+def test_process_config_rejects_invalid_route_batch_size() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        ProcessConfig(route_batch_size=0)
+
+    assert "route_batch_size" in str(excinfo.value)
+
+
+def test_resolve_work_manager_route_batch_size_uses_process_profile() -> None:
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.PROCESS
+    config.execution.process_config.route_batch_size = 64
+
+    assert resolver(config) == 64
+
+
+def test_resolve_work_manager_route_batch_size_rejects_bool_process_profile() -> None:
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.PROCESS
+    config.execution.process_config.route_batch_size = cast(Any, True)
+
+    with pytest.raises(ValueError, match="route_batch_size"):
+        resolver(config)
+
+
+def test_resolve_work_manager_route_batch_size_rejects_non_int_process_profile() -> (
+    None
+):
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.PROCESS
+    config.execution.process_config.route_batch_size = cast(Any, "64")
+
+    with pytest.raises(ValueError, match="route_batch_size"):
+        resolver(config)
+
+
+def test_resolve_work_manager_route_batch_size_keeps_async_item_level() -> None:
+    resolver = getattr(config_module, "resolve_work_manager_route_batch_size", None)
+    assert callable(resolver)
+    config = ParallelConsumerConfig(_env_file=None)
+    config.execution.mode = ExecutionMode.ASYNC
+    config.execution.process_config.route_batch_size = 32
+
+    assert resolver(config) == 1
+
+
+def test_process_config_warns_about_removed_transport_mode_env_override(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "shared_queue")
 
-    config = ProcessConfig()
+    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
+        config = ProcessConfig()
 
-    assert config.transport_mode == "shared_queue"
+    assert not hasattr(config, "transport_mode")
 
     monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
+
+
+def test_process_config_warns_about_removed_transport_mode_env_file(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
+
+    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
+        config = ProcessConfig(_env_file=env_file)
+
+    assert not hasattr(config, "transport_mode")
+
+
+def test_kafka_config_warns_about_removed_process_transport_mode_in_parent_env_file(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
+
+    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
+        config = KafkaConfig(_env_file=env_file)
+
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config,
+        "transport_mode",
+    )
+
+
+def test_kafka_config_warns_about_removed_process_transport_mode_in_environment(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROCESS_TRANSPORT_MODE", "shared_queue")
+
+    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE"):
+        config = KafkaConfig(_env_file=None)
+
+    assert not hasattr(
+        config.parallel_consumer.execution.process_config,
+        "transport_mode",
+    )
+
+    monkeypatch.delenv("PROCESS_TRANSPORT_MODE", raising=False)
+
+
+def test_kafka_config_parent_env_file_propagates_nested_runtime_settings(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PARALLEL_CONSUMER_ORDERING_MODE", raising=False)
+    monkeypatch.delenv("EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("PROCESS_ROUTE_BATCH_SIZE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "PARALLEL_CONSUMER_ORDERING_MODE=partition",
+                "EXECUTION_MODE=process",
+                "PROCESS_ROUTE_BATCH_SIZE=77",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = KafkaConfig(_env_file=env_file)
+
+    assert config.parallel_consumer.ordering_mode == OrderingMode.PARTITION
+    assert config.parallel_consumer.execution.mode == ExecutionMode.PROCESS
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 77
+
+
+def test_kafka_config_parent_env_file_propagates_through_partial_nested_dicts(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("PROCESS_ROUTE_BATCH_SIZE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EXECUTION_MODE=process",
+                "PROCESS_ROUTE_BATCH_SIZE=77",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = KafkaConfig(
+        _env_file=env_file,
+        parallel_consumer={"ordering_mode": "key_hash"},
+    )
+
+    assert config.parallel_consumer.ordering_mode == OrderingMode.KEY_HASH
+    assert config.parallel_consumer.execution.mode == ExecutionMode.PROCESS
+    assert config.parallel_consumer.execution.process_config.route_batch_size == 77
+
+
+def test_parallel_consumer_env_file_propagates_through_partial_execution_dict(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROCESS_ROUTE_BATCH_SIZE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROCESS_ROUTE_BATCH_SIZE=77\n", encoding="utf-8")
+
+    config = ParallelConsumerConfig(
+        _env_file=env_file,
+        execution={"mode": "async"},
+    )
+
+    assert config.execution.mode == ExecutionMode.ASYNC
+    assert config.execution.process_config.route_batch_size == 77
+
+
+def test_execution_config_env_file_propagates_through_partial_process_dict(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROCESS_ROUTE_BATCH_SIZE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROCESS_ROUTE_BATCH_SIZE=77\n", encoding="utf-8")
+
+    config = ExecutionConfig(
+        _env_file=env_file,
+        mode="process",
+        process_config={"process_count": 2},
+    )
+
+    assert config.mode == ExecutionMode.PROCESS
+    assert config.process_config.process_count == 2
+    assert config.process_config.route_batch_size == 77
+
+
+def test_kafka_config_parent_env_file_warns_once_for_removed_transport_mode(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROCESS_TRANSPORT_MODE=shared_queue\n", encoding="utf-8")
+
+    with pytest.warns(DeprecationWarning, match="PROCESS_TRANSPORT_MODE") as warnings:
+        KafkaConfig(_env_file=env_file)
+
+    assert len(warnings) == 1
 
 
 def test_parallel_consumer_config_env_override(monkeypatch: MonkeyPatch) -> None:
@@ -355,11 +562,11 @@ def test_execution_config_accepts_zero_consumer_stop_timeout() -> None:
     assert config.consumer_task_stop_timeout_ms == 0
 
 
-def test_process_config_rejects_invalid_transport_mode() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        _ = ProcessConfig(transport_mode="invalid")
+def test_process_config_warns_about_removed_transport_mode_constructor_input() -> None:
+    with pytest.warns(DeprecationWarning, match="transport_mode"):
+        config = ProcessConfig(transport_mode="invalid")
 
-    assert "transport_mode" in str(excinfo.value)
+    assert not hasattr(config, "transport_mode")
 
 
 def test_kafka_config_exposes_canonical_snake_case_fields(

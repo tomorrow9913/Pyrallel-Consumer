@@ -69,9 +69,10 @@ Pyrallel rounds add behavior that baseline rounds do not carry:
 - If `metrics_port` is not `None`, that config enables `KafkaConfig.metrics`, and the harness also acquires a cached `PrometheusMetricsExporter` for observer-side updates.
 - Strict-completion-monitor and adaptive-concurrency flags are expanded as matrix axes and encoded into run names, topics, and consumer groups.
 - Process-mode micro-batch overrides (`batch_size`, `max_batch_wait_ms`, `flush_policy`, `demand_flush_min_residence_ms`) are applied only to the benchmark harness configuration for that run.
-- Route-batch overrides (`route_batch_size`) are applied through
-  `KafkaConfig.parallel_consumer.execution.route_batch_size` and passed to the
-  direct `WorkManager` construction used by the benchmark harness.
+- Process route-batch overrides (`route_batch_size`) are applied through
+  `KafkaConfig.parallel_consumer.execution.process_config.route_batch_size`
+  and passed to the direct `WorkManager` construction used by the benchmark
+  harness.
 - Result summaries keep route-batch IPC metrics nullable so baseline and async
   rows remain in the same schema without pretending to have process transport
   counters.

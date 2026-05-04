@@ -197,7 +197,7 @@ Python constructor arguments and attributes use lowercase `snake_case`.
 Environment variables remain uppercase and scoped by runtime prefix:
 `KAFKA_*`, `PARALLEL_CONSUMER_*`, `EXECUTION_*`, `PROCESS_*`, and
 `METRICS_*`. The checked-in `.env.sample` lists the benchmark-relevant runtime
-tuning surface, including process transport, route batching, strict completion
+tuning surface, including process route batching, strict completion
 monitoring, adaptive controls, retry/DLQ, and metrics knobs.
 
 ```dotenv

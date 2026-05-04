@@ -8,7 +8,12 @@ from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
 
-from pyrallel_consumer.config import ExecutionConfig, KafkaConfig, MetricsConfig
+from pyrallel_consumer.config import (
+    ExecutionConfig,
+    KafkaConfig,
+    MetricsConfig,
+    resolve_work_manager_route_batch_size,
+)
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
@@ -30,7 +35,6 @@ topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
 DEFAULT_TIMEOUT_SEC = 60
 ProcessFlushPolicy = Literal["size_or_timer", "demand", "demand_min_residence"]
-ProcessTransportMode = Literal["shared_queue", "worker_pipes"]
 
 
 conf: Dict[str, Any] = {
@@ -434,7 +438,6 @@ def build_kafka_config(
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
-    process_transport_mode: Optional[ProcessTransportMode] = "worker_pipes",
     route_batch_size: int = 64,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
@@ -455,7 +458,9 @@ def build_kafka_config(
     )
 
     kafka_config.parallel_consumer.execution.max_in_flight = 2000
-    kafka_config.parallel_consumer.execution.route_batch_size = route_batch_size
+    kafka_config.parallel_consumer.execution.process_config.route_batch_size = (
+        route_batch_size
+    )
     kafka_config.parallel_consumer.execution.async_config.task_timeout_ms = 10000
     kafka_config.parallel_consumer.strict_completion_monitor_enabled = (
         strict_completion_monitor_enabled
@@ -485,18 +490,15 @@ def build_kafka_config(
         (
             kafka_config.parallel_consumer.execution.process_config.demand_flush_min_residence_ms
         ) = process_demand_flush_min_residence_ms
-    if process_transport_mode is not None:
-        process_config = kafka_config.parallel_consumer.execution.process_config
-        process_config.transport_mode = process_transport_mode
-        if process_transport_mode == "worker_pipes":
-            if process_batch_size is None:
-                process_config.batch_size = 1
-            if process_max_batch_wait_ms is None:
-                process_config.max_batch_wait_ms = 0
-            if process_flush_policy is None:
-                process_config.flush_policy = "size_or_timer"
-            if process_demand_flush_min_residence_ms is None:
-                process_config.demand_flush_min_residence_ms = 0
+    process_config = kafka_config.parallel_consumer.execution.process_config
+    if process_batch_size is None:
+        process_config.batch_size = 1
+    if process_max_batch_wait_ms is None:
+        process_config.max_batch_wait_ms = 0
+    if process_flush_policy is None:
+        process_config.flush_policy = "size_or_timer"
+    if process_demand_flush_min_residence_ms is None:
+        process_config.demand_flush_min_residence_ms = 0
     if metrics_port is not None:
         kafka_config.metrics = MetricsConfig(enabled=True, port=metrics_port)
 
@@ -524,7 +526,6 @@ async def run_pyrallel_consumer_test(
     process_max_batch_wait_ms: Optional[int] = None,
     process_flush_policy: Optional[ProcessFlushPolicy] = None,
     process_demand_flush_min_residence_ms: Optional[int] = None,
-    process_transport_mode: Optional[ProcessTransportMode] = None,
     route_batch_size: int = 64,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
@@ -558,7 +559,6 @@ async def run_pyrallel_consumer_test(
         process_max_batch_wait_ms=process_max_batch_wait_ms,
         process_flush_policy=process_flush_policy,
         process_demand_flush_min_residence_ms=(process_demand_flush_min_residence_ms),
-        process_transport_mode=process_transport_mode,
         route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
@@ -640,7 +640,9 @@ async def run_pyrallel_consumer_test(
         max_in_flight_messages=execution_config.max_in_flight,
         ordering_mode=ordering_mode_value,
         metrics_exporter=metrics_observer,
-        route_batch_size=execution_config.route_batch_size,
+        route_batch_size=resolve_work_manager_route_batch_size(
+            kafka_config.parallel_consumer
+        ),
     )  # type: ignore[call-arg]
 
     broker_poller = BrokerPoller(

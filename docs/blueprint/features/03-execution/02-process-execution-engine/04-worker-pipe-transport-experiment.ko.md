@@ -35,8 +35,8 @@
 
 - `00-index`: process engine의 장기 목표는 ordered virtual queue identity를
   process 경계 너머에서도 보존하는 것
-- `01-requirements`: `shared_queue`는 compatibility path, `worker_pipes`는
-  ordering-preserving direction path
+- `01-requirements`: `shared_queue`는 historical context, `worker_pipes`는
+  process execution의 단일 live topology
 - `02-architecture`: input dispatch topology가 completion aggregation보다 우선
   개선 대상
 - `03-design`: transport mode, route identity, shutdown/recycle, metrics surface
@@ -54,9 +54,9 @@
 - async engine은 submit 순간 `create_task()`로 실행 계층에 work를 바로 보내므로
   input queue에서 다시 하나로 합치지 않는다.
 
-현재 process engine만이 submit된 item을 single queue로 다시 합친다.
+과거 process engine은 submit된 item을 single queue로 다시 합쳤다.
 
-현재 process runtime:
+과거 process runtime:
 
 ```text
 WorkManager virtual queues
@@ -97,23 +97,24 @@ surface, control-plane commit 판단, worker function 실행 의미는 기존 �
 
 ## 실험 가설
 
-1차 실험은 아래 가설만 검증한다.
+#129 이후 이 문서는 아래 가설을 historical evidence로 유지한다.
 
 > ordered process-mode에서 shared input queue가 유효 병렬성을 깎는 경계라면, worker별 input channel과 stable routing은 partition/key 폭이 충분한 workload에서 `shared_queue` 대비 더 높은 throughput을 보여야 한다. 단, ordering, final lag, final gap, release-gate correctness는 깨지면 안 된다.
 
-이 문서는 `worker_pipes`가 production default가 된다고 약속하지 않는다.
-하지만 `worker_pipes`를 **장기 기본 후보**로 평가할 수 있을 만큼의 증거를 만들 수
-있는지 판단하려는 문서다.
+이 문서는 #129 이전에는 `worker_pipes`를 기본 후보로 평가하기 위한 실험 문서였다.
+#129 이후에는 `worker_pipes`를 process execution의 단일 live topology로 채택한
+근거와 남은 운영 계약을 설명하는 historical blueprint로 읽는다.
 
 ## 실험 범위
 
-반드시 명시적 transport option 뒤에 숨긴다.
+`shared_queue` 제거 전에는 명시적 transport option 뒤에 숨겼다. #129 이후에는
+해당 selector가 제거된다.
 
 ```text
-process_transport = shared_queue | worker_pipes
+process_transport = worker_pipes
 ```
 
-기본값은 반드시 `shared_queue`다.
+process mode는 더 이상 `shared_queue`를 선택할 수 없다.
 
 ### 구현된 worker-pipe 범위
 
@@ -147,7 +148,7 @@ transport 실험이어도 control plane은 transport를 몰라야 한다.
 
 반드시 유지할 것:
 
-- `BrokerPoller`와 `WorkManager`는 `shared_queue`인지 `worker_pipes`인지 알지 못한다.
+- `BrokerPoller`와 `WorkManager`는 process engine의 pipe/lane 세부사항을 알지 못한다.
 - `BaseExecutionEngine` public surface는 명시적이고 안정적으로 유지한다.
   - `submit(work_item)`
   - `submit_batch(work_items)`
@@ -192,23 +193,22 @@ Routing 규칙:
 
 ## Config / CLI 계약
 
-`ProcessConfig`에 transport selector를 추가한다.
+#129 이후 `ProcessConfig`는 transport selector가 아니라 process-owned route-batch
+profile을 가진다.
 
 ```python
-transport_mode: Literal["shared_queue", "worker_pipes"] = "shared_queue"
+route_batch_size: int = 64
 ```
 
-`ExecutionConfig`에는 route-batch 크기 selector가 있다.
-
-```python
-route_batch_size: int = 1
-```
+async/common execution은 item-level WorkManager lease를 유지하며 별도의
+execution-level route-batch config surface를 갖지 않는다.
 
 Config 요구사항:
 
-- 기본값은 `shared_queue`
-- env override는 기존 `PROCESS_` naming pattern을 따른다.
-- invalid 값은 config validation에서 즉시 실패한다.
+- `ProcessConfig.transport_mode`와 `PROCESS_TRANSPORT_MODE`는 제거한다.
+- env override는 `PROCESS_ROUTE_BATCH_SIZE`를 사용한다.
+- `--process-route-batch-size`가 benchmark canonical flag다.
+- 기존 `--route-batch-size`는 benchmark transition alias로만 남길 수 있다.
 - 아래 key의 의미를 깨면 안 된다.
   - `process_count`
   - `queue_size`
@@ -221,11 +221,10 @@ Config 요구사항:
   - `max_tasks_per_child`
   - `recycle_jitter_ms`
 
-Benchmark CLI에도 같은 선택지를 노출한다.
+Benchmark CLI는 process transport selector를 노출하지 않는다.
 
 ```bash
---process-transport shared_queue|worker_pipes
---route-batch-size 1|8|32|64|128
+--process-route-batch-size 1|8|32|64|128
 ```
 
 전달 경로는 명시적으로 유지한다.
@@ -233,8 +232,8 @@ Benchmark CLI에도 같은 선택지를 노출한다.
 ```text
 benchmark CLI
   -> benchmark config builder
-  -> KafkaConfig.parallel_consumer.execution.process_config.transport_mode
-  -> KafkaConfig.parallel_consumer.execution.route_batch_size
+  -> KafkaConfig.parallel_consumer.execution.process_config.route_batch_size
+  -> resolve_work_manager_route_batch_size()
   -> ProcessExecutionEngine
 ```
 
@@ -244,14 +243,13 @@ benchmark CLI
 
 | Surface | 규칙 | 이유 |
 | --- | --- | --- |
-| `transport_mode=shared_queue` | fully supported | baseline 유지 |
-| `transport_mode=worker_pipes` + `route_batch_size=1` | supported | unbatched worker-affine path |
-| `transport_mode=worker_pipes` + `route_batch_size>1` | engine이 ordered batch capability를 광고할 때 같은 route lease 지원 | IPC amortization 실험 |
+| process mode | `worker_pipes` 단일 live topology | selectable transport 제거 |
+| `ProcessConfig.route_batch_size=1` | supported | unbatched worker-affine path |
+| `ProcessConfig.route_batch_size>1` | engine이 ordered batch capability를 광고할 때 같은 route lease 지원 | IPC amortization |
 | ordered mode + `supports_ordered_route_batch=False` engine | effective route batch size `1` | fallback `submit_batch()`는 ordered sequential executor가 아님 |
-| `shared_queue` + `route_batch_size>1` | transport-specific 구현 없으면 item semantics fallback | compatibility path는 안전해야 함 |
-| process micro-batch flags | 기존 의미 유지 | `ProcessConfig.batch_size`와 `route_batch_size`를 분리하기 위해 |
+| removed `shared_queue` value | startup/CLI/release-gate에서 거부 | 제거된 transport를 live evidence로 해석하지 않기 위해 |
+| process micro-batch flags | 기존 의미 유지 또는 명시적 unsupported 처리 | `ProcessConfig.batch_size`와 `ProcessConfig.route_batch_size`를 분리하기 위해 |
 | `worker_pipes` + recycle semantics 미구현 | startup reject | silent disable은 benchmark 해석을 오염시킴 |
-| invalid transport value | config validation failure | 실험 범위 고정 |
 
 지원 범위가 넓어지면 표를 수정해야지, 삭제하면 안 된다.
 
@@ -259,12 +257,12 @@ benchmark CLI
 
 route batching은 process micro-batching과 별도 축이다.
 
-- `ProcessConfig.batch_size`는 기존 process payload accumulator 의미를 유지한다.
-- `ExecutionConfig.route_batch_size`는 `WorkManager`가 같은 route에서 한 번에 lease할
-  `WorkItem` 수를 제어한다.
-- `route_batch_size=1`은 compatibility default다.
-- `route_batch_size>1`은 parent-to-worker와 worker-to-parent IPC를 amortize하기
-  위한 명시적 실험 knob다.
+- `ProcessConfig.batch_size`는 process payload compatibility knob로 남되
+  worker-pipes profile에서는 기본 `1`이다.
+- `ProcessConfig.route_batch_size`는 `WorkManager`가 같은 route에서 한 번에 lease할
+  `WorkItem` 수를 제어하는 process-owned profile이다.
+- `ProcessConfig.route_batch_size=64`가 #129의 process worker-pipe 기본값이다.
+- async/common execution은 item-level lease를 사용한다.
 
 아래 의미를 route batch 의미로 암묵적으로 바꾸면 안 된다.
 
@@ -307,7 +305,8 @@ route batching은 process micro-batching과 별도 축이다.
   route-batch tail은 recoverable해야 한다.
 - worker restart policy는 transport별로 문서화해야 한다.
 - `max_tasks_per_child`, `recycle_jitter_ms`는 의미를 유지하거나 `worker_pipes`에서 명시적으로 reject해야 한다.
-- 구현 증거 없이 “shared_queue와 동일하다”라고 과장하면 안 된다.
+- 구현 증거 없이 과거 shared-queue 경로와 동일한 lifecycle parity를 가진다고
+  과장하면 안 된다.
 
 ## ordered mode와 unordered mode의 분리
 
@@ -319,7 +318,7 @@ route batching은 process micro-batching과 별도 축이다.
 - unordered mode:
   - 별도 balancing 또는 hybrid 연구 대상으로 분리 가능
 
-즉 `worker_pipes`는 ordered parallelism을 검증하는 transport이고, stealing/dynamic
+즉 `worker_pipes`는 process execution의 live topology이고, stealing/dynamic
 balancing 설계는 이 문서 범위가 아니다.
 
 ## Observability / benchmark 증거 계약
@@ -328,15 +327,17 @@ balancing 설계는 이 문서 범위가 아니다.
 
 최소한 아래는 남겨야 한다.
 
-- `shared_queue` vs `worker_pipes` benchmark matrix
+- worker-pipes process benchmark evidence
 - final lag / final gap evidence
 - ordering validation evidence
 - release-gate가 같은 correctness 기준으로 GO/NO-GO를 판단했다는 증거
-- transport-specific benchmark metadata
+- `process_transport_mode`가 남는다면 deprecated compatibility field로
+  `"worker_pipes"`만 emit
 - `route_batch_size`, `items_per_input_ipc`, `items_per_completion_ipc`,
   `route_batch_size_avg`, `route_batch_size_max` 같은 route-batch IPC metric
-- reject/skip된 transport-config 조합을 설명할 수 있는 로그나 runtime metadata
-- release-gate summary가 관측된 `process_transport_mode` 목록을 포함해 artifact 비교 시 어떤 transport가 평가되었는지 드러내야 함
+- reject/skip된 process-config 조합을 설명할 수 있는 로그나 runtime metadata
+- release-gate summary는 missing 또는 `"worker_pipes"` process artifact만 live
+  evidence로 인정하고, 제거된 transport 값은 invalid로 표시해야 함
 
 Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
@@ -369,19 +370,20 @@ Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
 ## 권장 구현 slice
 
-### Slice 1 — bounded transport toggle
+### Slice 1 — worker-pipes-only topology
 
-- `transport_mode` config와 benchmark CLI plumbing 추가
-- `shared_queue` path는 그대로 유지
-- `worker_pipes` startup + item-level routing으로 unbatched path 구현
+- `transport_mode` config와 benchmark CLI plumbing 제거
+- `ProcessConfig.route_batch_size=64` 추가
+- execution-level route-batch config surface 제거
+- worker-pipes startup + item-level routing + route-batch path 유지
 - single completion queue 유지
 - unsupported 조합은 명시적으로 reject
 
 ### Slice 2 — evidence / operational hardening
 
-- `submit_batch()`와 ordered batch capability gate 추가
-- `WorkManager` same-route lease 구현
-- engine capability가 없으면 ordered effective batch size를 `1`로 유지
+- release gate / metrics / benchmark JSON에서 live `shared_queue` surface 제거
+- old artifact의 missing `process_transport_mode`는 worker-pipes compatible로 해석
+- `"shared_queue"` artifact는 historical note 외 live release evidence에서 reject
 
 ### Slice 3 — worker-pipes route-batch dispatch
 

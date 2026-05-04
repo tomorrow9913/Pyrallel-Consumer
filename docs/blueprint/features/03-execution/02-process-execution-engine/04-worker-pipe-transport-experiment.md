@@ -88,19 +88,19 @@ The first slice validates one narrow hypothesis:
 > key-wide workloads without breaking ordering, final lag, or release-gate
 > correctness.
 
-Benchmark evidence has promoted worker pipes from experiment to the default
-process transport profile. `shared_queue` continues to exist as an explicit
-legacy compatibility fallback, not as the performance path to tune.
+Benchmark evidence has promoted worker pipes from experiment to the live process
+transport profile. `shared_queue` remains historical context only, not a runtime
+selector or performance path to tune.
 
 ## Scope
 
-Implement the experiment behind an explicit transport option:
+Implement the experiment as the worker-pipe process transport profile:
 
 ```text
-process_transport = shared_queue | worker_pipes
+process_transport = worker_pipes
 ```
 
-The default is now `worker_pipes`.
+The live process transport is `worker_pipes`.
 
 ### Implemented worker-pipe scope
 
@@ -111,9 +111,8 @@ The default is now `worker_pipes`.
 - parent-side expansion back to item-level `CompletionEvent` instances,
 - reuse of the existing single completion queue,
 - reuse of parent-side registry and in-flight accounting,
-- benchmark support for selecting the transport,
-- benchmark support for selecting `route_batch_size`,
-- matrix comparison against the current shared-queue path,
+- benchmark support for selecting process `route_batch_size`,
+- comparison against retained historical shared-queue artifacts when needed,
 - explicit startup rejection for unsupported transport/config combinations.
 
 ### Excluded from the first slice
@@ -125,7 +124,6 @@ The default is now `worker_pipes`.
 - completion ingest threads,
 - shared-memory ring buffers,
 - broker-I/O ownership changes,
-- deleting the legacy `shared_queue` fallback,
 - broad retry, commit, or control-plane redesign.
 
 ## Control-plane invariants
@@ -134,8 +132,8 @@ The control plane must remain transport-agnostic.
 
 The experiment must preserve these invariants:
 
-- `BrokerPoller` and `WorkManager` do not know whether process mode uses
-  `shared_queue` or `worker_pipes`.
+- `BrokerPoller` and `WorkManager` do not know the process IPC topology; they
+  only receive the resolved route-batch size and engine capability flags.
 - `BaseExecutionEngine` public surface remains explicit and stable:
   - `submit(work_item)`
   - `submit_batch(work_items)`
@@ -183,23 +181,24 @@ Routing rules:
 
 ## Configuration and CLI contract
 
-Add a transport selector to `ProcessConfig`:
-
-```python
-transport_mode: Literal["shared_queue", "worker_pipes"] = "worker_pipes"
-```
-
-Add a route-batch selector to `ExecutionConfig`:
+Process transport is not user-selectable. `ProcessConfig` owns process-mode
+route batching:
 
 ```python
 route_batch_size: int = 64
 ```
 
+Keep the generic execution route-batch default item-level:
+
+```python
+route_batch_size: int = 1
+```
+
 Configuration requirements:
 
-- default remains `worker_pipes`,
-- environment override follows the existing `PROCESS_` naming pattern,
-- invalid values fail at config validation time,
+- process-mode route-batch override follows the `PROCESS_ROUTE_BATCH_SIZE`
+  environment naming pattern,
+- invalid route-batch values fail at config validation time,
 - existing keys keep their meaning:
   - `process_count`
   - `queue_size`
@@ -212,11 +211,10 @@ Configuration requirements:
   - `max_tasks_per_child`
   - `recycle_jitter_ms`
 
-Benchmark CLI should expose the same choice:
+Benchmark CLI should expose process route-batch sizing, not transport selection:
 
 ```bash
---process-transport shared_queue|worker_pipes
---route-batch-size 1|8|32|64|128
+--process-route-batch-size 1|8|32|64|128
 ```
 
 The propagation path should remain explicit:
@@ -224,8 +222,8 @@ The propagation path should remain explicit:
 ```text
 benchmark CLI
   -> benchmark config builder
-  -> KafkaConfig.parallel_consumer.execution.process_config.transport_mode
-  -> KafkaConfig.parallel_consumer.execution.route_batch_size
+  -> KafkaConfig.parallel_consumer.execution.process_config.route_batch_size
+  -> resolve_work_manager_route_batch_size(config.parallel_consumer)
   -> ProcessExecutionEngine
 ```
 
@@ -235,14 +233,11 @@ The experiment should prefer explicit rejection over silent fallback.
 
 | Surface | Rule | Why |
 | --- | --- | --- |
-| `transport_mode=shared_queue` | fully supported | control baseline |
 | `transport_mode=worker_pipes` + `route_batch_size=1` | supported | unbatched worker-affine path |
 | `transport_mode=worker_pipes` + `route_batch_size>1` | supported for same-route leases when the engine advertises ordered batch capability | IPC amortization experiment |
 | ordered mode + engine without `supports_ordered_route_batch` | effective route batch size `1` | fallback `submit_batch()` is not an ordered sequential executor |
-| `shared_queue` + `route_batch_size>1` | falls back to item semantics unless a transport-specific implementation exists | compatibility path must remain safe |
 | process micro-batch flags | keep existing meaning; do not reinterpret as route batching | keep `ProcessConfig.batch_size` distinct from `route_batch_size` |
 | `worker_pipes` + recycle semantics not implemented | reject at startup | silent disable would invalidate benchmark interpretation |
-| invalid transport value | config validation failure | keep experiment bounded and observable |
 
 If support widens later, the table should be updated rather than removed.
 
@@ -252,9 +247,9 @@ Route batching is deliberately separate from process micro-batching:
 
 - `ProcessConfig.batch_size` controls the existing process payload accumulator
   semantics.
-- `ExecutionConfig.route_batch_size` controls how many same-route `WorkItem`
-  instances `WorkManager` may lease for one execution-engine call.
-- `route_batch_size=64` is the default process profile used to amortize
+- `ProcessConfig.route_batch_size` controls how many same-route `WorkItem`
+  instances `WorkManager` may lease for one process execution-engine call.
+- `ProcessConfig.route_batch_size=64` is the default process profile used to amortize
   parent-to-worker and worker-to-parent IPC.
 - ordered modes still resolve to an effective batch size of `1` unless the
   execution engine advertises ordered route-batch capability.
@@ -351,18 +346,20 @@ The experiment is incomplete without evidence.
 
 At minimum, implementation and evaluation should preserve or produce:
 
-- benchmark matrices comparing `shared_queue` vs `worker_pipes`,
+- benchmark comparisons against retained historical shared-queue artifacts when
+  a migration decision needs that evidence,
 - final lag and final gap evidence,
 - ordering-validation evidence,
 - release-gate evidence that still treats the run as GO/NO-GO on the same
   final correctness criteria,
-- transport-specific benchmark metadata so results can be grouped by transport,
+- benchmark metadata that records the observed process transport as
+  `worker_pipes`,
 - route-batch metadata and IPC ratios (`route_batch_size`,
   `items_per_input_ipc`, `items_per_completion_ipc`,
   `route_batch_size_avg`, `route_batch_size_max`),
 - enough runtime metrics or logs to explain rejected/unsupported combinations.
 - release-gate summaries that surface the observed `process_transport_mode`
-  values so artifact comparisons remain interpretable.
+  values so retained artifact comparisons remain interpretable.
 
 The benchmark report should make these questions easy to answer:
 
@@ -370,7 +367,7 @@ The benchmark report should make these questions easy to answer:
 2. Did `worker_pipes` improve key-wide throughput?
 3. Did narrow workloads regress beyond acceptable limits?
 4. Did final lag or final gap regress from `0/0`?
-5. Were any transport/config combinations skipped or rejected explicitly?
+5. Were any route-batch/config combinations skipped or rejected explicitly?
 
 ## Success criteria
 
@@ -395,10 +392,10 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 ## Suggested implementation slices
 
-### Slice 1 — bounded transport toggle
+### Slice 1 — worker-pipe process transport
 
-- add `transport_mode` config and benchmark CLI plumbing,
-- keep `shared_queue` path unchanged,
+- make `worker_pipes` the process transport,
+- remove live `shared_queue` config and benchmark CLI plumbing,
 - add worker-pipe startup and item-level routing for the unbatched path,
 - keep single completion queue,
 - reject unsupported combinations explicitly.
@@ -423,7 +420,7 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 ### Slice 5 — benchmark and metric evidence
 
-- add `--route-batch-size`,
+- add `--process-route-batch-size`,
 - expose nullable route-batch IPC metrics in benchmark JSON,
 - keep performance claims tied to stored benchmark artifacts.
 

@@ -80,15 +80,11 @@ from pyrallel_consumer.execution_plane.process_transport import (
     ProcessTransport,
     resolve_route_identity,
 )
-from pyrallel_consumer.execution_plane.process_transport_shared_queue import (
-    SharedQueueProcessTransport,
-)
 from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
     WorkerPipesProcessTransport,
 )
 from pyrallel_consumer.execution_plane.process_worker_runtime import (
     _PIPE_SENTINEL,
-    _SENTINEL,
     _calculate_backoff,
     _receive_task_payload,
     _worker_loop,
@@ -156,12 +152,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         self._config = config
         self._worker_fn = worker_fn
-        self._transport_mode = config.process_config.transport_mode
         self._validate_transport_config()
         self._task_queue: Optional[Queue[Optional[WorkItem]]] = None
         self._batch_accumulator: _BatchAccumulator | _NoOpBatchAccumulator
-        if self._transport_mode == "shared_queue":
-            self._task_queue = Queue(maxsize=config.process_config.queue_size)
         self._completion_queue: Queue[Any] = Queue()
         self._registry_event_queue: Queue[Any] = Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
@@ -195,49 +188,27 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
         self._log_listener.start()
 
-        if self._transport_mode == "shared_queue":
-            if self._task_queue is None:
-                raise RuntimeError("shared_queue transport requires a task queue")
-            self._batch_accumulator = _BatchAccumulator(
-                task_queue=self._task_queue,
-                batch_size=config.process_config.batch_size,
-                max_batch_wait_ms=config.process_config.max_batch_wait_ms,
-                flush_policy=config.process_config.flush_policy,
-                demand_flush_min_residence_ms=(
-                    config.process_config.demand_flush_min_residence_ms
-                ),
-            )
-            if self._task_queue is None:
-                raise RuntimeError("shared_queue transport requires a task queue")
-            self._transport: ProcessTransport = SharedQueueProcessTransport(
-                task_queue=self._task_queue,
-                get_batch_accumulator=lambda: self._batch_accumulator,
-                work_item_from_dict=_work_item_from_dict,
-                increment_in_flight=self._increment_in_flight_count,
-                sentinel=_SENTINEL,
-            )
-        else:
-            self._batch_accumulator = _NoOpBatchAccumulator()
-            worker_pipe_transport = WorkerPipesProcessTransport(
-                process_count=config.process_config.process_count,
-                queue_size=config.process_config.queue_size,
-                max_payload_bytes=config.process_config.msgpack_max_bytes,
-                serialize_work_item=_work_item_to_dict,
-                serialize_batch_payload=_serialize_batch_payload,
-                work_item_from_dict=_work_item_from_dict,
-                get_worker_pipe_senders=lambda: self._worker_pipe_senders,
-                increment_in_flight=self._increment_in_flight_count,
-                pipe_sentinel=_PIPE_SENTINEL,
-                slot_wait_liveness_check=self._signal_worker_pipe_slot_wait,
-            )
-            self._transport = worker_pipe_transport
+        self._batch_accumulator = _NoOpBatchAccumulator()
+        worker_pipe_transport = WorkerPipesProcessTransport(
+            process_count=config.process_config.process_count,
+            queue_size=config.process_config.queue_size,
+            max_payload_bytes=config.process_config.msgpack_max_bytes,
+            serialize_work_item=_work_item_to_dict,
+            serialize_batch_payload=_serialize_batch_payload,
+            work_item_from_dict=_work_item_from_dict,
+            get_worker_pipe_senders=lambda: self._worker_pipe_senders,
+            increment_in_flight=self._increment_in_flight_count,
+            pipe_sentinel=_PIPE_SENTINEL,
+            slot_wait_liveness_check=self._signal_worker_pipe_slot_wait,
+        )
+        self._transport: ProcessTransport = worker_pipe_transport
 
         self._start_workers()
 
     @property
     def supports_ordered_route_batch(self) -> bool:
         """Return whether process mode can dispatch ordered route batches safely."""
-        return self._get_transport_mode() == "worker_pipes"
+        return True
 
     def _validate_transport_config(self) -> None:
         """Validate transport config for multiprocessing execution.
@@ -247,8 +218,6 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         process_config = self._config.process_config
-        if self._transport_mode != "worker_pipes":
-            return
         if process_config.batch_size != 1:
             raise ValueError(
                 "worker_pipes transport only supports batch_size=1 in the first slice"
@@ -482,6 +451,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             force: Whether to force the operation regardless of cadence checks.
 
         """
+        if getattr(self, "_is_shutdown", False):
+            return
         self._drain_visible_worker_events()
         if not self._should_run_worker_liveness_scan(force=force):
             return
@@ -673,6 +644,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _signal_worker_pipe_slot_wait(self) -> None:
         """Handle signal worker pipe slot wait within multiprocessing execution."""
+        if getattr(self, "_is_shutdown", False):
+            return
         lock = getattr(self, "_worker_slot_wait_liveness_lock", None)
         if lock is None:
             lock = threading.RLock()
@@ -980,10 +953,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         batch_accumulator = getattr(self, "_batch_accumulator", _NoOpBatchAccumulator())
         base_metrics = batch_accumulator.snapshot()
         transport_mode = self._get_transport_mode()
-        support_state = "bounded" if transport_mode == "worker_pipes" else "full"
-        timer_flush_supported = transport_mode != "worker_pipes"
-        demand_flush_supported = transport_mode != "worker_pipes"
-        recycle_supported = transport_mode != "worker_pipes"
+        support_state = "bounded"
+        timer_flush_supported = False
+        demand_flush_supported = False
+        recycle_supported = False
         self._initialize_runtime_timing_state()
         with self._runtime_timing_lock:
             main_to_worker_avg = (
@@ -1066,22 +1039,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             work_item: Work item being scheduled or processed.
 
         """
+        if getattr(self, "_is_shutdown", False):
+            raise RuntimeError("ProcessExecutionEngine is shutting down")
         self._drain_registry_events()
-        if self._get_transport_mode() == "worker_pipes":
-            await asyncio.to_thread(self._ensure_workers_alive, force=True)
-        else:
-            self._ensure_workers_alive()
+        await asyncio.to_thread(self._ensure_workers_alive, force=True)
         await self._transport.submit_work_item(
             work_item,
             route_identity=resolve_route_identity(work_item),
             count_in_flight=True,
         )
-        if self._get_transport_mode() == "worker_pipes":
-            self._record_input_ipc(1)
+        self._record_input_ipc(1)
 
     async def submit_batch(self, work_items: list[WorkItem]) -> None:
         """Submit a route-local work batch through the worker-pipe transport."""
-        if self._get_transport_mode() != "worker_pipes" or not work_items:
+        if getattr(self, "_is_shutdown", False):
+            raise RuntimeError("ProcessExecutionEngine is shutting down")
+        if not work_items:
             await super().submit_batch(work_items)
             return
 
@@ -1431,7 +1404,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             Computed string value.
 
         """
-        return getattr(self, "_transport_mode", "shared_queue")
+        return "worker_pipes"
 
     async def shutdown(self) -> None:
         """실행 엔진을 정상적으로 종료합니다. 모든 워커 프로세스에 종료 시그널을 보내고 대기합니다.

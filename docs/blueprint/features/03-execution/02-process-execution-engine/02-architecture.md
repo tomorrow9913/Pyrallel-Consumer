@@ -6,7 +6,7 @@ process-execution-engine subfeature. For the preserved Korean source text, see
 
 ## Architectural comparison
 
-The current compatibility path is:
+The removed historical compatibility path was:
 
 ```text
 WorkManager virtual queues
@@ -32,10 +32,10 @@ WorkManager virtual queues
 ## Architectural implications
 
 - `WorkManager` stays responsible for ordering and eligibility.
-- The process engine stays responsible for transport selection and dispatch.
-- `shared_queue` remains the compatibility/default topology.
-- `worker_pipes` is the worker-affine topology used to validate and evolve the
-  long-term direction.
+- The process engine stays responsible for worker-pipe dispatch.
+- `shared_queue` remains historical context only, not a runtime topology.
+- `worker_pipes` is the worker-affine live topology used to validate and evolve
+  the long-term direction.
 - Completion ownership remains parent-side and item-level. `worker_pipes` can
   use `BatchCompletion` as an internal IPC envelope, but parent polling still
   returns item-level completions and `batch_limit` remains item-count based.
