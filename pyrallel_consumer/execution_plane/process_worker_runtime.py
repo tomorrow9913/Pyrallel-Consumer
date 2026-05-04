@@ -472,6 +472,8 @@ def _worker_loop(
                         route_identity=route_identity,
                         batch_completion_results=batch_completion_results,
                     )
+                    for done_event in deferred_done_events:
+                        registry_event_queue.put(done_event)
                 worker_logger.error(
                     "ProcessWorker[%d] exiting due to task timeout; parent will respawn",
                     process_idx,

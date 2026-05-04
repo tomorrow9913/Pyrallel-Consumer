@@ -747,9 +747,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     -1,
                     payload,
                     error="not_started_requeue_failed: %s" % requeue_exc,
-                    attempt=int(
-                        payload.get("requeue_attempts", self._config.max_retries)
-                    ),
+                    attempt=self._config.max_retries,
                 )
         return True
 
@@ -800,6 +798,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     def _is_duplicate_completion_event(self, event: CompletionEvent) -> bool:
         """Return True when this item completion was already surfaced."""
+        if self._is_synthetic_failure_completion_event(event):
+            return False
         seen = getattr(self, "_seen_completion_identities", None)
         if seen is None:
             seen = set()
@@ -823,6 +823,17 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         while len(order) > max_seen:
             seen.discard(order.popleft())
         return False
+
+    @staticmethod
+    def _is_synthetic_failure_completion_event(event: CompletionEvent) -> bool:
+        """Return whether a failure has no stable work identity to dedupe by."""
+        return (
+            event.status == CompletionStatus.FAILURE
+            and event.id == ""
+            and event.tp.topic == ""
+            and event.offset < 0
+            and event.epoch == 0
+        )
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         """Handle discard registry entry for completion within multiprocessing execution.

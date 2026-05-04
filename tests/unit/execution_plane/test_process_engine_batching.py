@@ -7,7 +7,7 @@ import time
 from collections import deque
 from typing import Any, Dict, cast
 
-import msgpack
+import msgpack  # type: ignore[import-untyped]
 import pytest
 
 from pyrallel_consumer.config import ExecutionConfig, ProcessConfig
@@ -430,6 +430,31 @@ def test_completion_identity_cache_evicts_oldest_entries(
     assert len(engine._seen_completion_identities) == 2
     assert engine._is_duplicate_completion_event(_make_completion_event(1)) is True
     assert engine._is_duplicate_completion_event(_make_completion_event(0)) is False
+
+
+def test_completion_dedupe_does_not_collapse_synthetic_decode_failures() -> None:
+    engine = _make_decode_only_process_engine(max_bytes=1024)
+    first_failure = CompletionEvent(
+        id="",
+        tp=TopicPartition("", 0),
+        offset=-1,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="decode failure one",
+        attempt=1,
+    )
+    second_failure = CompletionEvent(
+        id="",
+        tp=TopicPartition("", 0),
+        offset=-1,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="decode failure two",
+        attempt=1,
+    )
+
+    assert engine._is_duplicate_completion_event(first_failure) is False
+    assert engine._is_duplicate_completion_event(second_failure) is False
 
 
 @pytest.mark.asyncio

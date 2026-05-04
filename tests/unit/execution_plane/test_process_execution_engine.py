@@ -9,7 +9,7 @@ from multiprocessing.connection import Connection
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
-import msgpack
+import msgpack  # type: ignore[import-untyped]
 import pytest
 import pytest_asyncio
 
@@ -1080,6 +1080,52 @@ def test_process_engine_not_started_requeues_tail_without_new_in_flight_count() 
 
     assert transport.requeued_payloads == [[tail_payload]]
     assert engine.get_in_flight_count() == 2
+
+
+def test_process_engine_not_started_requeue_failure_emits_terminal_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    tail_payload = {
+        "id": "work-b",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 43,
+        "epoch": 7,
+        "key": b"same-key",
+        "payload": b"b",
+        "requeue_attempts": 0,
+    }
+    emitted: list[tuple[dict[str, Any], int]] = []
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._transport = None
+    engine_any._logger = logging.getLogger(__name__)
+    monkeypatch.setattr(
+        engine,
+        "_requeue_recovered_payloads",
+        Mock(side_effect=RuntimeError("pipe closed")),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_emit_worker_recovery_failure",
+        lambda _idx, payload, *, error, attempt: emitted.append((payload, attempt)),
+    )
+
+    engine._apply_registry_event(
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-tail",
+            "payloads": [tail_payload],
+        }
+    )
+
+    assert emitted == [(tail_payload, 3)]
 
 
 def test_process_engine_not_started_requeues_tail_still_pending_in_worker_pipes(
@@ -2157,6 +2203,13 @@ def test_worker_runtime_fatal_route_batch_flushes_prefix_completion_before_exit(
         for _ in range(registry_event_queue.qsize())
     ]
     assert [event for event in registry_events if event.get("kind") == "timeout"]
+    assert [
+        event
+        for event in registry_events
+        if event.get("kind") == "done"
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("offset") == 1
+    ]
     assert [
         event for event in registry_events if event.get("kind") == "not_started"
     ] == []
