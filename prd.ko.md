@@ -142,12 +142,12 @@ class OffsetRange:
 - **설계 문서화**: `ExecutionEngine.submit()` may block and must never be called from a control-loop critical path without prior capacity checks by WorkManager.
 
 ### 4.2. `max_in_flight` 설정의 이중적 의미
-- **원칙**: 시스템 전체의 동시 처리량을 제어하는 `max_in_flight_messages`(Control Plane)와 각 `ExecutionEngine`의 내부 용량을 제한하는 `max_concurrent_tasks`(Engine)는 명확히 분리되어야 합니다.
+- **원칙**: 시스템 전체의 동시 처리량을 제어하는 `max_in_flight`(Control Plane)와 각 `ExecutionEngine`의 내부 용량을 제한하는 엔진별 내부 한계는 명확히 분리되어야 합니다.
 - **이유**: Control Plane은 전체 시스템의 부하를 관리하고 Kafka Consumer의 `pause/resume`을 결정하는 역할을 합니다. 반면, 각 `ExecutionEngine`은 자체적으로 감당할 수 있는 동시 작업의 한계(예: CPU 코어 수, 메모리 등)가 있습니다. 이 두 제한은 서로 다른 목적을 가집니다.
 - **설계 문서화**: 설정 스키마에서 이 둘을 명확히 구분하여, 사용자가 두 계층의 용량 제한을 독립적으로 튜닝할 수 있도록 해야 합니다.
   ```yaml
   execution:
-    max_in_flight_messages: 10000   # Control Plane 기준 전체 동시 처리량
+    max_in_flight: 1000   # Control Plane 기준 전체 동시 처리량
     async:
       max_concurrent_tasks: 500     # AsyncEngine 내부의 동시 태스크 수 제한
   ```
@@ -311,9 +311,10 @@ parallel_consumer:
       process_count: 8 # os.cpu_count() 또는 유사한 기본값
       queue_size: 2048
       require_picklable_worker: true
-      batch_size: 64 # Micro-batching: 메시지 개수
+      batch_size: 1 # Worker-pipes profile: process payload micro-batch 비활성
       batch_bytes: 256KB # Micro-batching: 배치 바이트 크기
-      max_batch_wait_ms: 5 # Micro-batching: 최대 대기 시간
+      max_batch_wait_ms: 0 # Worker-pipes profile: timer batching 비활성
+      route_batch_size: 64 # 같은 route WorkItem lease / worker-pipe IPC amortization
 
   commit:
     strategy: "on_complete" # "on_complete" | "periodic"

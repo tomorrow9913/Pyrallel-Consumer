@@ -14,8 +14,9 @@ worker-pipe route-batch 작업은 이 문서의 data-movement 상한에 대한 p
 후속 실험이다. 함께 읽을 문서는
 `features/03-execution/02-process-execution-engine/04-worker-pipe-transport-experiment.md`다.
 
-최신 acceptance-gate evidence에서 명시적
-`process_transport=worker_pipes`, `route_batch_size=64` 실험은 다음 결과를 보였다.
+최신 acceptance-gate evidence에서 process 결과가
+`process_transport_mode=worker_pipes`, `route_batch_size=64` metadata를 emit한
+실험은 다음 결과를 보였다.
 
 - `key_hash`: baseline 784.88 TPS, async 5992.88 TPS(`7.64x`), process
   2583.74 TPS(`3.29x`), final lag `0`, final gap `0`.
@@ -24,8 +25,9 @@ worker-pipe route-batch 작업은 이 문서의 data-movement 상한에 대한 p
 - process IPC evidence: `items_per_input_ipc`와 `items_per_completion_ipc`는
   `key_hash`에서 약 `20.87`, `partition`에서 약 `62.5`였다.
 
-이 결과를 production default 전환 주장으로 일반화하면 안 된다. 측정된 matrix에서
-명시적 route-batch worker-pipe path가 benchmark gate를 통과했다는 증거로 읽는다.
+`process_transport_mode`는 user-facing runtime input이 아니라 benchmark/result
+metadata field다. 이 결과는 측정된 matrix에서 route-batch worker-pipe path가
+benchmark gate를 통과했다는 증거로 읽는다.
 
 ## 연구 프레임
 

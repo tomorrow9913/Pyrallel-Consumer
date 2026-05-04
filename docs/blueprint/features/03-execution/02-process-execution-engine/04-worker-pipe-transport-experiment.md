@@ -94,13 +94,10 @@ selector or performance path to tune.
 
 ## Scope
 
-Implement the experiment as the worker-pipe process transport profile:
-
-```text
-process_transport = worker_pipes
-```
-
-The live process transport is `worker_pipes`.
+The experiment has been promoted into the worker-pipe-only process topology.
+There is no live `process_transport` or `transport_mode` runtime input; benchmark
+artifacts may still record `process_transport_mode=worker_pipes` as result
+metadata.
 
 ### Implemented worker-pipe scope
 
@@ -188,12 +185,6 @@ route batching:
 route_batch_size: int = 64
 ```
 
-Keep the generic execution route-batch default item-level:
-
-```python
-route_batch_size: int = 1
-```
-
 Configuration requirements:
 
 - process-mode route-batch override follows the `PROCESS_ROUTE_BATCH_SIZE`
@@ -233,11 +224,11 @@ The experiment should prefer explicit rejection over silent fallback.
 
 | Surface | Rule | Why |
 | --- | --- | --- |
-| `transport_mode=worker_pipes` + `route_batch_size=1` | supported | unbatched worker-affine path |
-| `transport_mode=worker_pipes` + `route_batch_size>1` | supported for same-route leases when the engine advertises ordered batch capability | IPC amortization experiment |
+| process topology + `route_batch_size=1` | supported | unbatched worker-affine path |
+| process topology + `route_batch_size>1` | supported for same-route leases when the engine advertises ordered batch capability | IPC amortization experiment |
 | ordered mode + engine without `supports_ordered_route_batch` | effective route batch size `1` | fallback `submit_batch()` is not an ordered sequential executor |
 | process micro-batch flags | keep existing meaning; do not reinterpret as route batching | keep `ProcessConfig.batch_size` distinct from `route_batch_size` |
-| `worker_pipes` + recycle semantics not implemented | reject at startup | silent disable would invalidate benchmark interpretation |
+| recycle semantics not implemented for the process topology | reject at startup | silent disable would invalidate benchmark interpretation |
 
 If support widens later, the table should be updated rather than removed.
 
@@ -352,8 +343,8 @@ At minimum, implementation and evaluation should preserve or produce:
 - ordering-validation evidence,
 - release-gate evidence that still treats the run as GO/NO-GO on the same
   final correctness criteria,
-- benchmark metadata that records the observed process transport as
-  `worker_pipes`,
+- benchmark metadata may record the observed process topology as
+  `process_transport_mode=worker_pipes`,
 - route-batch metadata and IPC ratios (`route_batch_size`,
   `items_per_input_ipc`, `items_per_completion_ipc`,
   `route_batch_size_avg`, `route_batch_size_max`),
@@ -392,9 +383,9 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 ## Suggested implementation slices
 
-### Slice 1 — worker-pipe process transport
+### Slice 1 — worker-pipe-only process topology
 
-- make `worker_pipes` the process transport,
+- make worker-pipes the only live process topology,
 - remove live `shared_queue` config and benchmark CLI plumbing,
 - add worker-pipe startup and item-level routing for the unbatched path,
 - keep single completion queue,
@@ -428,7 +419,6 @@ The experiment succeeds only if both performance and correctness stay visible.
 
 This document does not approve:
 
-- changing the default process transport,
 - solving hot-key skew in the same slice,
 - redesigning commit logic,
 - adding worker stealing or migration,
@@ -438,11 +428,12 @@ This document does not approve:
 
 ## Follow-up questions after implementation
 
-When the experiment lands, revise this document with measured answers to these
-questions:
+For future process-engine work, keep revising this historical blueprint with
+measured answers to these questions:
 
 1. Which workload shapes improved, and by how much?
 2. Which unsupported combinations should remain rejected?
-3. Did shutdown, crash recovery, or restart semantics diverge by transport?
+3. Did shutdown, crash recovery, or restart semantics diverge from the prior
+   shared-queue evidence?
 4. Does the evidence justify a second-slice investment?
-5. Should `worker_pipes` stay experimental, graduate, or be abandoned?
+5. Which remaining worker-pipe lifecycle combinations should be hardened next?
