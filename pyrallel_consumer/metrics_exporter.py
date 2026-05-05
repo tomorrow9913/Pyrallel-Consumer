@@ -1041,7 +1041,9 @@ class PrometheusMetricsExporter:
     @staticmethod
     def _remove_labeled_metric(metric: Gauge, labels: dict[str, str]) -> None:
         """Remove a labeled gauge sample if it was previously emitted."""
+        label_names = getattr(metric, "_labelnames", ())
+        label_values = tuple(labels[name] for name in label_names)
         try:
-            metric.remove_by_labels(labels)
+            metric.remove(*label_values)
         except KeyError:
             return

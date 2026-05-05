@@ -909,6 +909,26 @@ def test_exporter_removes_stale_pipeline_subqueue_metrics_when_unsupported() -> 
     assert "pyrallel_pipeline_subqueues{" not in metrics_text
 
 
+def test_remove_labeled_metric_uses_positional_label_api() -> None:
+    class _PositionalRemoveGauge:
+        _labelnames = ("stage", "engine_type")
+
+        def __init__(self) -> None:
+            self.removed: tuple[str, ...] | None = None
+
+        def remove(self, *label_values: str) -> None:
+            self.removed = label_values
+
+    metric = _PositionalRemoveGauge()
+
+    PrometheusMetricsExporter._remove_labeled_metric(  # type: ignore[arg-type]
+        metric,
+        {"engine_type": "async", "stage": "queued"},
+    )
+
+    assert metric.removed == ("queued", "async")
+
+
 def test_exporter_closes_http_server_when_enabled(monkeypatch):
     registry = CollectorRegistry()
     closed = {"shutdown": 0, "server_close": 0, "join": 0}
