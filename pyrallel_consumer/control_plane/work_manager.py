@@ -17,9 +17,19 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     OffsetRange,
     OrderingMode,
+    PipelineAdmissionDiagnostics,
+    PipelineBlockedReason,
+    PipelineCount,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityDiagnostics,
+    PipelineDispatchCapacityReason,
+    PipelineStage,
+    PipelineSubqueueDiagnostics,
+    PipelineWorkerDiagnostics,
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
-from pyrallel_consumer.dto import WorkItem
+from pyrallel_consumer.dto import WorkItem, WorkManagerPipelineDiagnostics
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
 
 OffsetTrackerAssignment = Mapping[DtoTopicPartition, int | OffsetTracker]
@@ -101,6 +111,7 @@ class WorkManager:
         self._partitions_in_flight: set[DtoTopicPartition] = set()
         self._key_in_flight_counts: Dict[tuple[DtoTopicPartition, Any], int] = {}
         self._partition_in_flight_counts: Dict[DtoTopicPartition, int] = {}
+        self._leased_queue_keys: set[tuple[DtoTopicPartition, Any]] = set()
         self._blocking_cache: Dict[DtoTopicPartition, Optional[OffsetRange]] = {}
         self._blocking_cache_ttl = blocking_cache_ttl
         self._blocking_cache_counter = 0
@@ -401,6 +412,20 @@ class WorkManager:
                 return 1
         return min(self._route_batch_size, remaining_capacity)
 
+    def _resolve_logical_eligible_prefix_limit(self) -> int:
+        """Resolve same-queue eligible prefix size before dispatch capacity."""
+        if self._ordering_mode == OrderingMode.PARTITION:
+            return 1
+        if self._ordering_mode == OrderingMode.KEY_HASH:
+            supports_ordered_route_batch = getattr(
+                self._execution_engine,
+                "supports_ordered_route_batch",
+                False,
+            )
+            if supports_ordered_route_batch is not True:
+                return 1
+        return self._route_batch_size
+
     def _select_same_queue_batch(
         self,
         queue: asyncio.Queue[WorkItem],
@@ -422,6 +447,19 @@ class WorkManager:
                 break
             accepted_items.append(item)
         return accepted_items
+
+    def _diagnose_poison_safe_prefix(
+        self,
+        items: list[WorkItem],
+    ) -> tuple[int, bool]:
+        """Return poison-safe prefix size without mutating poison circuit state."""
+        if self._poison_message_circuit is None:
+            return len(items), False
+
+        for index, item in enumerate(items):
+            if self._poison_message_circuit.would_force_fail(item):
+                return index, True
+        return len(items), False
 
     def _record_submitted_items(self, items: list[WorkItem]) -> None:
         """Record successfully accepted work items in dispatch accounting."""
@@ -770,6 +808,8 @@ class WorkManager:
                         len(items_to_submit) < selected_batch_size
                     )
 
+                    if selected_queue_key is not None:
+                        self._leased_queue_keys.add(selected_queue_key)
                     try:
                         if len(items_to_submit) == 1:
                             await self._execution_engine.submit(items_to_submit[0])
@@ -824,6 +864,9 @@ class WorkManager:
                                 queue_to_dequeue_from,
                             )
                         return
+                    finally:
+                        if selected_queue_key is not None:
+                            self._leased_queue_keys.discard(selected_queue_key)
                 else:
                     return
         finally:
@@ -981,6 +1024,152 @@ class WorkManager:
 
         """
         return self._total_queued_messages
+
+    def get_pipeline_diagnostics(
+        self, *, top_k_depths_limit: int = 10
+    ) -> WorkManagerPipelineDiagnostics:
+        """Return WorkManager-owned internal pipeline diagnostics.
+
+        The helper intentionally stays outside public RuntimeSnapshot v1. It reports
+        WorkManager-owned logical queue, eligibility, blocked-reason, and
+        dispatch-capacity state without reading execution-engine private internals.
+        """
+        stage_counts = {
+            stage: PipelineCount(count=0, oldest_age_ms=None) for stage in PipelineStage
+        }
+        stage_support = {
+            stage: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for stage in PipelineStage
+        }
+        for stage in (PipelineStage.QUEUED, PipelineStage.DISPATCHED):
+            stage_support[stage] = PipelineDiagnosticsSupportState.SUPPORTED
+        section_support = {
+            PipelineDiagnosticsSection.STAGES: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.BLOCKED: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.SUBQUEUES: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.DISPATCH_CAPACITY: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.ADMISSION: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+            PipelineDiagnosticsSection.WORKERS: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+        }
+        blocked_counts = {
+            reason: PipelineCount(count=0, oldest_age_ms=None)
+            for reason in PipelineBlockedReason
+        }
+
+        queued_subqueues = 0
+        queued_items = 0
+        eligible_subqueues = 0
+        eligible_items = 0
+        blocked_subqueues = 0
+        blocked_items = 0
+        queue_depths: list[int] = []
+        logical_prefix_limit = self._resolve_logical_eligible_prefix_limit()
+
+        for tp, queue_map in self._virtual_partition_queues.items():
+            for key, queue in queue_map.items():
+                depth = queue.qsize()
+                if depth <= 0:
+                    continue
+
+                queued_subqueues += 1
+                queued_items += depth
+                queue_depths.append(depth)
+                queue_key = (tp, key)
+                eligible_prefix = 0
+                primary_blocked_reason: Optional[PipelineBlockedReason] = None
+                candidate_prefix = self._peek_queue_batch(queue, logical_prefix_limit)
+                poison_safe_prefix, poison_blocked = self._diagnose_poison_safe_prefix(
+                    candidate_prefix
+                )
+
+                if self._rebalancing:
+                    primary_blocked_reason = PipelineBlockedReason.REBALANCING
+                elif queue_key in self._leased_queue_keys:
+                    primary_blocked_reason = PipelineBlockedReason.ROUTE_LOCK
+                elif poison_blocked and poison_safe_prefix == 0:
+                    primary_blocked_reason = PipelineBlockedReason.POISON_GUARD
+                elif not self._is_queue_eligible(queue_key):
+                    primary_blocked_reason = PipelineBlockedReason.ORDERING_LOCK
+                else:
+                    eligible_prefix = poison_safe_prefix
+                    if eligible_prefix > 0:
+                        eligible_subqueues += 1
+                        eligible_items += eligible_prefix
+                    if poison_blocked:
+                        primary_blocked_reason = PipelineBlockedReason.POISON_GUARD
+                    elif depth > eligible_prefix:
+                        primary_blocked_reason = PipelineBlockedReason.FRONTIER_DEFERRED
+
+                blocked_depth = depth - eligible_prefix
+                if blocked_depth > 0:
+                    blocked_subqueues += 1
+                    blocked_items += blocked_depth
+                    if primary_blocked_reason is not None:
+                        current_count = blocked_counts[primary_blocked_reason].count
+                        blocked_counts[primary_blocked_reason] = PipelineCount(
+                            count=current_count + blocked_depth,
+                            oldest_age_ms=None,
+                        )
+
+        stage_counts[PipelineStage.QUEUED] = PipelineCount(
+            count=queued_items,
+            oldest_age_ms=None,
+        )
+        stage_counts[PipelineStage.DISPATCHED] = PipelineCount(
+            count=self._current_in_flight_count,
+            oldest_age_ms=None,
+        )
+
+        remaining_capacity = max(
+            0,
+            self._max_in_flight_messages - self._current_in_flight_count,
+        )
+        dispatch_capacity_blocked_items = max(0, eligible_items - remaining_capacity)
+        dispatch_capacity_reason = None
+        if dispatch_capacity_blocked_items > 0:
+            dispatch_capacity_reason = PipelineDispatchCapacityReason.MAX_IN_FLIGHT
+
+        sorted_depths = sorted(queue_depths, reverse=True)
+        if top_k_depths_limit < 0:
+            top_k_depths_limit = 0
+
+        return WorkManagerPipelineDiagnostics(
+            stage_counts=stage_counts,
+            blocked_counts=blocked_counts,
+            dispatch_capacity=PipelineDispatchCapacityDiagnostics(
+                blocked_items=dispatch_capacity_blocked_items,
+                reason=dispatch_capacity_reason,
+                oldest_age_ms=None,
+            ),
+            admission=PipelineAdmissionDiagnostics(
+                blocked_items=0,
+                reason=None,
+                oldest_age_ms=None,
+                support_state=PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+            ),
+            workers=PipelineWorkerDiagnostics(
+                total=0,
+                executing=0,
+                admitted=None,
+                top_k_loads=[],
+                support_state=PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+            ),
+            subqueues=PipelineSubqueueDiagnostics(
+                total=sum(
+                    len(queue_map)
+                    for queue_map in self._virtual_partition_queues.values()
+                ),
+                queued=queued_subqueues,
+                queued_items=queued_items,
+                eligible_subqueues=eligible_subqueues,
+                eligible_items=eligible_items,
+                blocked_subqueues=blocked_subqueues,
+                blocked_items=blocked_items,
+                top_k_depths=sorted_depths[:top_k_depths_limit],
+            ),
+            stage_support=stage_support,
+            section_support=section_support,
+        )
 
     def get_max_in_flight_messages(self) -> int:
         """Return max in flight messages for work scheduling and completion accounting.

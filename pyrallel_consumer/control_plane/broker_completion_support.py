@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from pyrallel_consumer.config import KafkaConfig
@@ -34,6 +34,9 @@ class CompletionProcessingResult:
 
     processed_count: int
     completed_partitions: frozenset[DtoTopicPartition]
+    completed_counts_by_partition: dict[DtoTopicPartition, int] = field(
+        default_factory=dict
+    )
 
 
 class BrokerCompletionSupport:
@@ -150,6 +153,7 @@ class BrokerCompletionSupport:
         resolved_pending_keys: set[tuple[DtoTopicPartition, int]] = set()
         completed_count = 0
         completed_partitions: set[DtoTopicPartition] = set()
+        completed_counts_by_partition: dict[DtoTopicPartition, int] = {}
 
         for event, from_pending_ledger in events_to_process:
             pending_key = (event.tp, event.offset)
@@ -239,9 +243,14 @@ class BrokerCompletionSupport:
                     )
                     continue
 
+            before_completed_count = len(tracker.completed_offsets)
             tracker.mark_complete(event.offset)
-            completed_count += 1
-            completed_partitions.add(event.tp)
+            if len(tracker.completed_offsets) != before_completed_count:
+                completed_count += 1
+                completed_partitions.add(event.tp)
+                completed_counts_by_partition[event.tp] = (
+                    completed_counts_by_partition.get(event.tp, 0) + 1
+                )
             if from_pending_ledger:
                 resolved_pending_keys.add(pending_key)
             self._pending_dlq_events.pop(pending_key, None)
@@ -250,4 +259,5 @@ class BrokerCompletionSupport:
         return CompletionProcessingResult(
             processed_count=completed_count,
             completed_partitions=frozenset(completed_partitions),
+            completed_counts_by_partition=completed_counts_by_partition,
         )

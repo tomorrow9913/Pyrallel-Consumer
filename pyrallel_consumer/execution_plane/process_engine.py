@@ -25,6 +25,7 @@ from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
     EngineRuntimeDiagnostics,
+    EngineWorkerDiagnostics,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     RouteBatch,
@@ -965,6 +966,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._drain_registry_events()
         batch_accumulator = getattr(self, "_batch_accumulator", _NoOpBatchAccumulator())
         base_metrics = batch_accumulator.snapshot()
+        worker_diagnostics = self._snapshot_worker_diagnostics()
         transport_mode = self._get_transport_mode()
         support_state = "bounded"
         timer_flush_supported = False
@@ -1043,7 +1045,52 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                         ),
                     )
                 ),
+                workers=worker_diagnostics,
             )
+
+    def _snapshot_pending_worker_loads(self) -> list[int]:
+        snapshot_loads = getattr(self._transport, "snapshot_pending_worker_loads", None)
+        if not callable(snapshot_loads):
+            return []
+        worker_loads = snapshot_loads()
+        if not isinstance(worker_loads, list):
+            return []
+        return [load for load in worker_loads if isinstance(load, int)]
+
+    def _snapshot_worker_diagnostics(self) -> EngineWorkerDiagnostics:
+        worker_count = self._config.process_config.process_count
+        pending_loads = self._snapshot_pending_worker_loads()
+        pending_by_worker = [0 for _ in range(worker_count)]
+        for worker_idx, load in enumerate(pending_loads[:worker_count]):
+            pending_by_worker[worker_idx] = load
+
+        executing_by_worker = [0 for _ in range(worker_count)]
+        with self._registry_state_lock:
+            for key in self._in_flight_registry:
+                worker_idx = key[0]
+                if isinstance(worker_idx, int) and 0 <= worker_idx < worker_count:
+                    executing_by_worker[worker_idx] += 1
+
+        executing = sum(1 for load in executing_by_worker if load > 0)
+        admitted = sum(
+            1
+            for worker_idx, load in enumerate(pending_by_worker)
+            if load > 0 and executing_by_worker[worker_idx] == 0
+        )
+        top_k_loads = sorted(
+            (
+                executing_by_worker[worker_idx] + pending_by_worker[worker_idx]
+                for worker_idx in range(worker_count)
+                if executing_by_worker[worker_idx] + pending_by_worker[worker_idx] > 0
+            ),
+            reverse=True,
+        )[:10]
+        return EngineWorkerDiagnostics(
+            total=worker_count,
+            executing=executing,
+            admitted=admitted,
+            top_k_loads=top_k_loads,
+        )
 
     async def submit(self, work_item: WorkItem) -> None:
         """제출된 작업 항목을 태스크 큐에 넣습니다.

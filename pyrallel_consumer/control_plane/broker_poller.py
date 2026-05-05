@@ -21,11 +21,21 @@ from ..config import AdaptiveBackpressureConfig, AdaptiveConcurrencyConfig, Kafk
 from ..dto import (
     CompletionEvent,
     DLQPayloadMode,
+    EngineRuntimeDiagnostics,
     OrderingMode,
+    PipelineCount,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineSettlementBlockerReason,
+    PipelineSettlementDiagnostics,
+    PipelineStage,
+    PipelineWorkerDiagnostics,
     RuntimeSnapshot,
     SystemMetrics,
 )
 from ..dto import TopicPartition as DtoTopicPartition
+from ..dto import WorkManagerPipelineDiagnostics
 from ..logger import LogManager
 from .adaptive_backpressure import AdaptiveBackpressureController
 from .adaptive_concurrency import (
@@ -224,6 +234,7 @@ class BrokerPoller:
         self._message_cache_size_bytes = 0
         self._idle_consume_timeout_seconds = 0.1
         self._dirty_commit_partitions: set[DtoTopicPartition] = set()
+        self._unsettled_completions_by_partition: dict[DtoTopicPartition, int] = {}
         self._completions_since_last_commit = 0
         self._commit_debounce_completion_threshold = (
             self._resolve_commit_debounce_completion_threshold(pc_conf)
@@ -955,7 +966,16 @@ class BrokerPoller:
 
         """
         for tp, _ in commits_to_make:
-            self._dirty_commit_partitions.discard(tp)
+            tracker = self._offset_trackers.get(tp)
+            remaining_unsettled = (
+                len(tracker.completed_offsets) if tracker is not None else 0
+            )
+            if remaining_unsettled > 0:
+                self._dirty_commit_partitions.add(tp)
+                self._unsettled_completions_by_partition[tp] = remaining_unsettled
+            else:
+                self._dirty_commit_partitions.discard(tp)
+                self._unsettled_completions_by_partition.pop(tp, None)
         if not self._dirty_commit_partitions:
             self._completions_since_last_commit = 0
 
@@ -1027,6 +1047,10 @@ class BrokerPoller:
         if processed_count > 0:
             dirty_partitions = completed_partitions | pending_retry_partitions
             self._dirty_commit_partitions.update(dirty_partitions)
+            for tp, count in processing_result.completed_counts_by_partition.items():
+                self._unsettled_completions_by_partition[tp] = (
+                    self._unsettled_completions_by_partition.get(tp, 0) + count
+                )
             self._completions_since_last_commit += processed_count
 
         self._diag_events_since_log += processed_count
@@ -1476,12 +1500,16 @@ class BrokerPoller:
             record_commit_failure=self._record_commit_failure_for_partition,
         )
         for partition in partitions:
-            self._dirty_commit_partitions.discard(
-                DtoTopicPartition(
-                    topic=str(partition.topic),
-                    partition=int(partition.partition),
-                )
+            revoked_tp = DtoTopicPartition(
+                topic=str(partition.topic),
+                partition=int(partition.partition),
             )
+            self._dirty_commit_partitions.discard(revoked_tp)
+            self._unsettled_completions_by_partition.pop(revoked_tp, None)
+            for pending_key in list(self._pending_dlq_events):
+                pending_tp, _ = pending_key
+                if pending_tp == revoked_tp:
+                    self._pending_dlq_events.pop(pending_key, None)
 
     # ------------------------------------------------------------------
     async def start(self) -> None:
@@ -1671,6 +1699,79 @@ class BrokerPoller:
 
         """
         return self._make_runtime_support().build_runtime_snapshot()
+
+    def get_pipeline_diagnostics(self) -> WorkManagerPipelineDiagnostics:
+        """Return experimental internal pipeline diagnostics sidecar snapshot."""
+        diagnostics = self._work_manager.get_pipeline_diagnostics()
+        runtime_metrics = self._execution_engine.get_runtime_metrics()
+        return self._compose_pipeline_diagnostics(diagnostics, runtime_metrics)
+
+    def _compose_pipeline_diagnostics(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        runtime_metrics: Optional[EngineRuntimeDiagnostics],
+    ) -> WorkManagerPipelineDiagnostics:
+        """Compose WorkManager sidecar data with broker and engine diagnostics."""
+        completed_unsettled = sum(
+            self._unsettled_completions_by_partition.get(tp, 0)
+            for tp in self._dirty_commit_partitions
+        )
+        pending_dlq_count = len(self._pending_dlq_events)
+        settlement_blocker_reason = None
+        if pending_dlq_count > 0:
+            settlement_blocker_reason = (
+                PipelineSettlementBlockerReason.DLQ_PUBLISH_PENDING
+            )
+        elif completed_unsettled > 0:
+            settlement_blocker_reason = PipelineSettlementBlockerReason.COMMIT_PENDING
+
+        stage_counts = dict(diagnostics.stage_counts)
+        stage_counts[PipelineStage.COMPLETED_UNSETTLED] = PipelineCount(
+            count=completed_unsettled,
+            oldest_age_ms=None,
+        )
+        stage_counts[PipelineStage.DLQ] = PipelineCount(
+            count=pending_dlq_count,
+            oldest_age_ms=None,
+        )
+        stage_support = dict(diagnostics.stage_support)
+        stage_support[
+            PipelineStage.COMPLETED_UNSETTLED
+        ] = PipelineDiagnosticsSupportState.SUPPORTED
+        stage_support[PipelineStage.DLQ] = PipelineDiagnosticsSupportState.SUPPORTED
+        section_support = dict(diagnostics.section_support)
+        section_support[
+            PipelineDiagnosticsSection.SETTLEMENT
+        ] = PipelineDiagnosticsSupportState.SUPPORTED
+
+        workers = diagnostics.workers
+        if runtime_metrics is not None and runtime_metrics.workers is not None:
+            section_support[
+                PipelineDiagnosticsSection.WORKERS
+            ] = PipelineDiagnosticsSupportState.SUPPORTED
+            workers = PipelineWorkerDiagnostics(
+                total=runtime_metrics.workers.total,
+                executing=runtime_metrics.workers.executing,
+                admitted=runtime_metrics.workers.admitted,
+                top_k_loads=list(runtime_metrics.workers.top_k_loads),
+                support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+            )
+
+        settlement = PipelineSettlementDiagnostics(
+            completed_unsettled=completed_unsettled,
+            oldest_age_ms=None,
+            blocker_reason=settlement_blocker_reason,
+            support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+        )
+        return replace(
+            diagnostics,
+            stage_counts=stage_counts,
+            stage_support=stage_support,
+            settlement=settlement,
+            workers=workers,
+            section_support=section_support,
+            scope=PipelineDiagnosticsScope.COMBINED_INTERNAL,
+        )
 
     def _make_runtime_support(self) -> BrokerRuntimeSupport:
         """Create runtime support for Kafka polling and control-plane orchestration.

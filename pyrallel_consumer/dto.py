@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -246,6 +246,16 @@ class ProcessRuntimeDiagnostics:
 
 
 @dataclass(frozen=True)
+class EngineWorkerDiagnostics:
+    """Engine-owned worker or lane capacity diagnostics."""
+
+    total: int
+    executing: int
+    admitted: Optional[int] = None
+    top_k_loads: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EngineRuntimeDiagnostics:
     """
     Engine-agnostic runtime diagnostics envelope.
@@ -253,6 +263,189 @@ class EngineRuntimeDiagnostics:
 
     engine_type: str
     process: Optional[ProcessRuntimeDiagnostics] = None
+    workers: Optional[EngineWorkerDiagnostics] = None
+
+
+class PipelineStage(str, Enum):
+    """Bounded internal pipeline stage names for sidecar diagnostics.
+
+    Slice 2A/2B WorkManager diagnostics observe only WorkManager-owned stages.
+    Future-owned stages remain present for a stable sidecar shape but are
+    marked with NOT_IMPLEMENTED support state until their owning slice populates
+    them.
+    """
+
+    ACQUIRED = "acquired"
+    BUFFERED = "buffered"
+    QUEUED = "queued"
+    DISPATCHED = "dispatched"
+    EXECUTING = "executing"
+    COMPLETED_UNSETTLED = "completed_unsettled"
+    FAILED = "failed"
+    DLQ = "dlq"
+
+
+class PipelineBlockedReason(str, Enum):
+    """Bounded logical blocked reasons for queued work diagnostics."""
+
+    ORDERING_LOCK = "ordering_lock"
+    ROUTE_LOCK = "route_lock"
+    RETRY_DELAY = "retry_delay"
+    FRONTIER_DEFERRED = "frontier_deferred"
+    POISON_GUARD = "poison_guard"
+    REBALANCING = "rebalancing"
+    SHUTDOWN = "shutdown"
+
+
+class PipelineDispatchCapacityReason(str, Enum):
+    """Bounded dispatch-capacity reasons for eligible work diagnostics."""
+
+    MAX_IN_FLIGHT = "max_in_flight"
+    ADAPTIVE_LIMIT = "adaptive_limit"
+
+
+class PipelineAdmissionReason(str, Enum):
+    """Bounded execution admission reasons for eligible work diagnostics."""
+
+    ENGINE_CAPACITY = "engine_capacity"
+    WORKER_PIPE_FULL = "worker_pipe_full"
+    WORKER_STARTING = "worker_starting"
+    WORKER_DRAINING = "worker_draining"
+
+
+class PipelineSettlementBlockerReason(str, Enum):
+    """Bounded terminal settlement blocker reasons."""
+
+    COMMIT_PENDING = "commit_pending"
+    ACK_PENDING = "ack_pending"
+    DELETE_PENDING = "delete_pending"
+    ARCHIVE_PENDING = "archive_pending"
+    DLQ_PUBLISH_PENDING = "dlq_publish_pending"
+    ORDERED_CURSOR_GAP = "ordered_cursor_gap"
+    UNKNOWN = "unknown"
+
+
+class PipelineDiagnosticsSupportState(str, Enum):
+    """Machine-readable support state for partial pipeline diagnostics."""
+
+    SUPPORTED = "supported"
+    UNAVAILABLE = "unavailable"
+    NOT_IMPLEMENTED = "not_implemented"
+
+
+class PipelineDiagnosticsScope(str, Enum):
+    """Machine-readable scope for the exposed diagnostics sidecar."""
+
+    WORK_MANAGER_ONLY = "work_manager_only"
+    COMBINED_INTERNAL = "combined_internal"
+
+
+class PipelineDiagnosticsSection(str, Enum):
+    """Machine-readable sections of the diagnostics sidecar."""
+
+    STAGES = "stages"
+    BLOCKED = "blocked"
+    SUBQUEUES = "subqueues"
+    DISPATCH_CAPACITY = "dispatch_capacity"
+    ADMISSION = "admission"
+    WORKERS = "workers"
+    SETTLEMENT = "settlement"
+
+
+@dataclass(frozen=True)
+class PipelineCount:
+    """Count and optional age for a bounded pipeline diagnostic bucket."""
+
+    count: int
+    oldest_age_ms: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class PipelineDispatchCapacityDiagnostics:
+    """Snapshot of WorkManager dispatch-capacity pressure."""
+
+    blocked_items: int
+    reason: Optional[PipelineDispatchCapacityReason] = None
+    oldest_age_ms: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class PipelineAdmissionDiagnostics:
+    """Snapshot of execution-engine admission pressure.
+
+    In Slice 2A/2B this field is an unavailable placeholder: WorkManager does
+    not inspect execution-engine private admission state, so `blocked_items=0`
+    with `reason=None` must not be interpreted as observed engine capacity.
+    """
+
+    blocked_items: int
+    reason: Optional[PipelineAdmissionReason] = None
+    oldest_age_ms: Optional[int] = None
+    support_state: (
+        PipelineDiagnosticsSupportState
+    ) = PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+
+
+@dataclass(frozen=True)
+class PipelineWorkerDiagnostics:
+    """Snapshot of engine-owned worker or lane capacity state."""
+
+    total: int
+    executing: int
+    admitted: Optional[int] = None
+    top_k_loads: list[int] = field(default_factory=list)
+    support_state: (
+        PipelineDiagnosticsSupportState
+    ) = PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+
+
+@dataclass(frozen=True)
+class PipelineSettlementDiagnostics:
+    """Snapshot of broker-owned terminal settlement pressure."""
+
+    completed_unsettled: int
+    oldest_age_ms: Optional[int] = None
+    blocker_reason: Optional[PipelineSettlementBlockerReason] = None
+    support_state: (
+        PipelineDiagnosticsSupportState
+    ) = PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+
+
+@dataclass(frozen=True)
+class PipelineSubqueueDiagnostics:
+    """Snapshot of WorkManager scheduling-unit queue topology."""
+
+    total: int
+    queued: int
+    queued_items: int
+    eligible_subqueues: int
+    eligible_items: int
+    blocked_subqueues: int
+    blocked_items: int
+    top_k_depths: list[int]
+
+
+@dataclass(frozen=True)
+class WorkManagerPipelineDiagnostics:
+    """Internal WorkManager-owned pipeline diagnostics sidecar.
+
+    The current helper owns queue topology, eligibility, logical blocked reason,
+    and dispatch-capacity diagnostics only. Execution admission and later
+    pipeline stages keep a stable shape but are unavailable until later slices.
+    """
+
+    stage_counts: dict[PipelineStage, PipelineCount]
+    blocked_counts: dict[PipelineBlockedReason, PipelineCount]
+    dispatch_capacity: PipelineDispatchCapacityDiagnostics
+    admission: PipelineAdmissionDiagnostics
+    workers: PipelineWorkerDiagnostics
+    subqueues: PipelineSubqueueDiagnostics
+    stage_support: dict[PipelineStage, PipelineDiagnosticsSupportState]
+    section_support: dict[PipelineDiagnosticsSection, PipelineDiagnosticsSupportState]
+    scope: PipelineDiagnosticsScope = PipelineDiagnosticsScope.WORK_MANAGER_ONLY
+    settlement: PipelineSettlementDiagnostics = field(
+        default_factory=lambda: PipelineSettlementDiagnostics(completed_unsettled=0)
+    )
 
 
 class ResourceSignalStatus(str, Enum):

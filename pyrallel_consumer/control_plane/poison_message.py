@@ -98,6 +98,22 @@ class PoisonMessageCircuitBreaker:
             True when the operation succeeds or the condition is met; otherwise False.
 
         """
+        return self._should_force_fail(work_item, prune_expired=True)
+
+    def would_force_fail(self, work_item: WorkItem) -> bool:
+        """Return force-fail eligibility without mutating circuit state.
+
+        Args:
+            work_item: Work item being inspected.
+
+        Returns:
+            True when the work item currently matches an open circuit.
+
+        """
+        return self._should_force_fail(work_item, prune_expired=False)
+
+    def _should_force_fail(self, work_item: WorkItem, *, prune_expired: bool) -> bool:
+        """Return force-fail eligibility with optional expired-state cleanup."""
         if not self.enabled:
             return False
 
@@ -110,7 +126,8 @@ class PoisonMessageCircuitBreaker:
         if now < state.open_until:
             return True
 
-        self._states.pop(circuit_key, None)
+        if prune_expired:
+            self._states.pop(circuit_key, None)
         return False
 
     def build_forced_failure_event(self, work_item: WorkItem) -> CompletionEvent:
