@@ -1,7 +1,7 @@
 import pytest
 
 pytest.importorskip("prometheus_client")
-from prometheus_client import CollectorRegistry  # noqa: E402
+from prometheus_client import CollectorRegistry, generate_latest  # noqa: E402
 
 from pyrallel_consumer.config import MetricsConfig  # noqa: E402
 from pyrallel_consumer.dto import (  # noqa: E402
@@ -9,11 +9,23 @@ from pyrallel_consumer.dto import (  # noqa: E402
     AdaptiveConcurrencyRuntimeSnapshot,
     CompletionStatus,
     PartitionMetrics,
+    PipelineAdmissionDiagnostics,
+    PipelineBlockedReason,
+    PipelineCount,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityDiagnostics,
+    PipelineDispatchCapacityReason,
+    PipelineStage,
+    PipelineSubqueueDiagnostics,
+    PipelineWorkerDiagnostics,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
+    WorkManagerPipelineDiagnostics,
 )
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter  # noqa: E402
 
@@ -26,6 +38,68 @@ def _make_partition_metrics(topic: str, partition: int) -> PartitionMetrics:
         blocking_offset=10,
         blocking_duration_sec=1.5,
         queued_count=7,
+    )
+
+
+def _make_pipeline_diagnostics() -> WorkManagerPipelineDiagnostics:
+    return WorkManagerPipelineDiagnostics(
+        stage_counts={stage: PipelineCount(count=0) for stage in PipelineStage}
+        | {
+            PipelineStage.QUEUED: PipelineCount(count=5, oldest_age_ms=1000),
+            PipelineStage.DISPATCHED: PipelineCount(count=2),
+        },
+        blocked_counts={
+            reason: PipelineCount(count=0) for reason in PipelineBlockedReason
+        }
+        | {
+            PipelineBlockedReason.ORDERING_LOCK: PipelineCount(
+                count=3, oldest_age_ms=2000
+            )
+        },
+        dispatch_capacity=PipelineDispatchCapacityDiagnostics(
+            blocked_items=4,
+            reason=PipelineDispatchCapacityReason.MAX_IN_FLIGHT,
+            oldest_age_ms=3000,
+        ),
+        admission=PipelineAdmissionDiagnostics(blocked_items=0),
+        workers=PipelineWorkerDiagnostics(
+            total=8,
+            executing=6,
+            admitted=2,
+            top_k_loads=[5, 3, 1],
+            support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+        ),
+        subqueues=PipelineSubqueueDiagnostics(
+            total=2,
+            queued=1,
+            queued_items=7,
+            eligible_subqueues=1,
+            eligible_items=5,
+            blocked_subqueues=1,
+            blocked_items=3,
+            top_k_depths=[7, 3],
+        ),
+        stage_support={
+            stage: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for stage in PipelineStage
+        }
+        | {
+            PipelineStage.QUEUED: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineStage.DISPATCHED: PipelineDiagnosticsSupportState.SUPPORTED,
+        },
+        section_support={
+            section: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for section in PipelineDiagnosticsSection
+        }
+        | {
+            PipelineDiagnosticsSection.STAGES: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.BLOCKED: PipelineDiagnosticsSupportState.SUPPORTED,
+            PipelineDiagnosticsSection.DISPATCH_CAPACITY: (
+                PipelineDiagnosticsSupportState.SUPPORTED
+            ),
+            PipelineDiagnosticsSection.WORKERS: PipelineDiagnosticsSupportState.SUPPORTED,
+        },
+        scope=PipelineDiagnosticsScope.COMBINED_INTERNAL,
     )
 
 
@@ -65,7 +139,8 @@ def test_exporter_updates_metrics_and_observes_completion():
             size_flush_count=3,
             timer_flush_count=2,
             close_flush_count=1,
-            total_flushed_items=12,
+            demand_flush_count=4,
+            total_flushed_items=20,
             last_flush_size=4,
             last_flush_wait_seconds=0.05,
             buffered_items=1,
@@ -131,6 +206,8 @@ def test_exporter_updates_metrics_and_observes_completion():
     assert blocking == 1.5
     assert exporter._process_batch_flush_count.labels(reason="size")._value.get() == 3
     assert exporter._process_batch_flush_count.labels(reason="timer")._value.get() == 2
+    assert exporter._process_batch_flush_count.labels(reason="close")._value.get() == 1
+    assert exporter._process_batch_flush_count.labels(reason="demand")._value.get() == 4
     assert exporter._process_batch_last_size_gauge._value.get() == 4
     assert exporter._process_batch_avg_size_gauge._value.get() == 2
     assert exporter._process_batch_buffered_items_gauge._value.get() == 1
@@ -309,6 +386,126 @@ def test_exporter_rejects_unknown_commit_failure_reason() -> None:
         exporter.record_commit_failure(
             TopicPartition(topic="topic-a", partition=0), reason="exception text"
         )
+
+
+def test_exporter_projects_supported_pipeline_diagnostics_as_bounded_metrics() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.update_pipeline_diagnostics(
+        _make_pipeline_diagnostics(), engine_type="process"
+    )
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    assert (
+        'pyrallel_pipeline_stage_messages{engine_type="process",stage="queued"} 5.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_stage_messages{engine_type="process",stage="dispatched"} 2.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_blocked_messages{engine_type="process",reason="ordering_lock"} 3.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_dispatch_capacity_blocked_messages{engine_type="process",reason="max_in_flight"} 4.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_section_support_state{engine_type="process",section="workers",state="supported"} 1.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_worker_capacity_units{engine_type="process",state="total"} 8.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_worker_capacity_units{engine_type="process",state="executing"} 6.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_worker_capacity_units{engine_type="process",state="admitted"} 2.0'
+        in metrics_text
+    )
+    for forbidden in (
+        "top_k_loads",
+        "top_k_depths",
+        "topic=",
+        "partition=",
+        "key=",
+        "route=",
+        "worker_id=",
+        "subqueue_id=",
+        "offset=",
+        "exception_text",
+        "oldest_age_ms",
+    ):
+        assert forbidden not in metrics_text
+
+
+def test_exporter_rejects_unknown_pipeline_engine_type() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    with pytest.raises(ValueError, match="Unknown pipeline engine_type"):
+        exporter.update_pipeline_diagnostics(
+            _make_pipeline_diagnostics(), engine_type="tenant-42"
+        )
+
+
+def test_exporter_omits_observed_pipeline_counts_for_unsupported_sections() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+    diagnostics = _make_pipeline_diagnostics()
+    unsupported = WorkManagerPipelineDiagnostics(
+        stage_counts=diagnostics.stage_counts,
+        blocked_counts=diagnostics.blocked_counts,
+        dispatch_capacity=diagnostics.dispatch_capacity,
+        admission=diagnostics.admission,
+        workers=PipelineWorkerDiagnostics(
+            total=4,
+            executing=3,
+            admitted=None,
+            top_k_loads=[3],
+            support_state=PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+        ),
+        subqueues=diagnostics.subqueues,
+        stage_support={
+            stage: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for stage in PipelineStage
+        },
+        section_support={
+            section: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for section in PipelineDiagnosticsSection
+        }
+        | {
+            PipelineDiagnosticsSection.WORKERS: (
+                PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            )
+        },
+        scope=PipelineDiagnosticsScope.WORK_MANAGER_ONLY,
+    )
+
+    exporter.update_pipeline_diagnostics(unsupported, engine_type="async")
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    assert "pyrallel_pipeline_stage_messages{" not in metrics_text
+    assert "pyrallel_pipeline_blocked_messages{" not in metrics_text
+    assert "pyrallel_pipeline_dispatch_capacity_blocked_messages{" not in metrics_text
+    assert "pyrallel_pipeline_worker_capacity_units{" not in metrics_text
+    assert (
+        'pyrallel_pipeline_section_support_state{engine_type="async",section="workers",state="not_implemented"} 1.0'
+        in metrics_text
+    )
+    assert 'state="admitted"' not in metrics_text
 
 
 def test_exporter_closes_http_server_when_enabled(monkeypatch):

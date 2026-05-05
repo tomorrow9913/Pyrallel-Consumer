@@ -7,6 +7,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import (
+    ExecutionMode,
     OrderingMode,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
@@ -27,12 +28,16 @@ class _DummyPrometheusExporter:
     def __init__(self, config):
         self.config = config
         self.system_metrics_updates = []
+        self.pipeline_diagnostics_updates = []
         self.completion_updates = []
         self.closed = False
         _DummyPrometheusExporter.instances.append(self)
 
     def update_from_system_metrics(self, metrics) -> None:
         self.system_metrics_updates.append(metrics)
+
+    def update_pipeline_diagnostics(self, diagnostics, *, engine_type: str) -> None:
+        self.pipeline_diagnostics_updates.append((diagnostics, engine_type))
 
     def observe_completion(self, tp, status, duration_seconds: float) -> None:
         self.completion_updates.append((tp, status, duration_seconds))
@@ -76,6 +81,7 @@ class _DummyPoller:
         self.wait_closed_called = False
         self.metrics = SimpleNamespace(source="dummy")
         self.runtime_snapshot = SimpleNamespace(source="runtime")
+        self.pipeline_diagnostics = SimpleNamespace(source="pipeline")
 
     async def start(self):
         self.started = True
@@ -91,6 +97,9 @@ class _DummyPoller:
 
     def get_runtime_snapshot(self):
         return self.runtime_snapshot
+
+    def get_pipeline_diagnostics(self):
+        return self.pipeline_diagnostics
 
 
 class _DummyResourceSignalProvider:
@@ -270,15 +279,88 @@ async def test_pyrallel_consumer_auto_wires_metrics_exporter_when_enabled(
     assert dummy_work_manager.metrics_exporter is exporter
     await consumer.stop()
 
+    dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
     assert exporter.system_metrics_updates == [
         dummy_poller.metrics,
         dummy_poller.metrics,
+    ]
+    assert exporter.pipeline_diagnostics_updates == [
+        (dummy_poller.pipeline_diagnostics, "async"),
+        (dummy_poller.pipeline_diagnostics, "async"),
     ]
     assert exporter.closed is True
     assert dummy_engine.shutdown_called is True
     assert dummy_work_manager.metrics_exporter is None
     assert consumer._metrics_exporter is None
     assert consumer._metrics_task is None
+
+
+@pytest.mark.asyncio
+async def test_pyrallel_consumer_publishes_pipeline_diagnostics_with_process_engine_type(
+    monkeypatch: MonkeyPatch,
+):
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    def _create_work_manager(
+        *,
+        execution_engine,
+        max_in_flight_messages,
+        ordering_mode=None,
+        max_revoke_grace_ms=None,
+        metrics_exporter=None,
+        poison_message_circuit=None,
+        **_kwargs,
+    ):
+        return _DummyWorkManager(
+            execution_engine=execution_engine,
+            max_in_flight_messages=max_in_flight_messages,
+            metrics_exporter=metrics_exporter,
+            ordering_mode=ordering_mode,
+            max_revoke_grace_ms=max_revoke_grace_ms,
+            poison_message_circuit=poison_message_circuit,
+        )
+
+    dummy_poller = None
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        nonlocal dummy_poller
+        dummy_poller = _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+        return dummy_poller
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.WorkManager", _create_work_manager)
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.PrometheusMetricsExporter",
+        _DummyPrometheusExporter,
+    )
+
+    config = KafkaConfig()
+    config.metrics.enabled = True
+    config.metrics.port = 9912
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+
+    consumer = PyrallelConsumer(config=config, worker=lambda _: None, topic="demo")
+
+    await consumer.start()
+    exporter = cast(_DummyPrometheusExporter, consumer._metrics_exporter)
+    await consumer.stop()
+
+    assert dummy_poller is not None
+    assert exporter.pipeline_diagnostics_updates == [
+        (dummy_poller.pipeline_diagnostics, "process"),
+        (dummy_poller.pipeline_diagnostics, "process"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -818,3 +900,44 @@ def test_pyrallel_consumer_delegates_runtime_snapshot_to_poller(
 
     dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
     assert consumer.get_runtime_snapshot() is dummy_poller.runtime_snapshot
+
+
+def test_pyrallel_consumer_delegates_pipeline_diagnostics_to_poller(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dummy_engine = _DummyEngine()
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return dummy_engine
+
+    dummy_poller = None
+
+    def _create_poller(*, consume_topic, kafka_config, execution_engine, work_manager):
+        nonlocal dummy_poller
+        dummy_poller = _DummyPoller(
+            consume_topic=consume_topic,
+            kafka_config=kafka_config,
+            execution_engine=execution_engine,
+            work_manager=work_manager,
+        )
+        return dummy_poller
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    monkeypatch.setattr("pyrallel_consumer.consumer.BrokerPoller", _create_poller)
+
+    consumer = PyrallelConsumer(
+        config=KafkaConfig(), worker=lambda _: None, topic="demo"
+    )
+
+    dummy_poller = cast(_DummyPoller, cast(object, dummy_poller))
+    assert consumer.get_pipeline_diagnostics() is dummy_poller.pipeline_diagnostics
+
+
+def test_pyrallel_consumer_pipeline_diagnostics_docstring_marks_internal_experimental():
+    docstring = PyrallelConsumer.get_pipeline_diagnostics.__doc__
+
+    assert docstring is not None
+    assert "experimental" in docstring
+    assert "internal" in docstring

@@ -15,11 +15,18 @@ from pyrallel_consumer.dto import (
     AdaptiveBackpressureSnapshot,
     AdaptiveConcurrencyRuntimeSnapshot,
     CompletionStatus,
+    PipelineBlockedReason,
+    PipelineCount,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityReason,
+    PipelineStage,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
+    WorkManagerPipelineDiagnostics,
 )
 
 _RESOURCE_SIGNAL_STATUSES = tuple(status.value for status in ResourceSignalStatus)
@@ -31,6 +38,11 @@ _ADAPTIVE_BACKPRESSURE_DECISIONS = (
     "cooldown",
 )
 COMMIT_FAILURE_REASONS = ("kafka_exception",)
+_PIPELINE_SUPPORT_STATES = tuple(
+    state.value for state in PipelineDiagnosticsSupportState
+)
+_PIPELINE_ENGINE_TYPES = ("async", "process")
+_PIPELINE_WORKER_CAPACITY_STATES = ("total", "executing", "admitted")
 
 
 class _Joinable(Protocol):
@@ -308,6 +320,36 @@ class PrometheusMetricsExporter:
             "Whether recycle settings are supported for the active process transport",
             registry=self._registry,
         )
+        self._pipeline_stage_messages_gauge = Gauge(
+            "pyrallel_pipeline_stage_messages",
+            "Pipeline diagnostic message counts by supported bounded stage",
+            labelnames=("stage", "engine_type"),
+            registry=self._registry,
+        )
+        self._pipeline_blocked_messages_gauge = Gauge(
+            "pyrallel_pipeline_blocked_messages",
+            "Pipeline diagnostic blocked message counts by supported bounded reason",
+            labelnames=("reason", "engine_type"),
+            registry=self._registry,
+        )
+        self._pipeline_dispatch_capacity_blocked_messages_gauge = Gauge(
+            "pyrallel_pipeline_dispatch_capacity_blocked_messages",
+            "Pipeline diagnostic dispatch-capacity blocked count by bounded reason",
+            labelnames=("reason", "engine_type"),
+            registry=self._registry,
+        )
+        self._pipeline_section_support_state_gauge = Gauge(
+            "pyrallel_pipeline_section_support_state",
+            "Pipeline diagnostics section support state as a bounded one-hot gauge",
+            labelnames=("section", "state", "engine_type"),
+            registry=self._registry,
+        )
+        self._pipeline_worker_capacity_units_gauge = Gauge(
+            "pyrallel_pipeline_worker_capacity_units",
+            "Pipeline diagnostic aggregate worker capacity units by bounded state",
+            labelnames=("state", "engine_type"),
+            registry=self._registry,
+        )
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -351,6 +393,25 @@ class PrometheusMetricsExporter:
     def update_metadata_size(self, topic: str, size_bytes: int) -> None:
         """Update metadata size for Prometheus metric export."""
         self._metadata_size_gauge.labels(topic=topic).set(size_bytes)
+
+    def update_pipeline_diagnostics(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        """Project supported pipeline diagnostics sidecar values into Prometheus."""
+        if engine_type not in _PIPELINE_ENGINE_TYPES:
+            allowed_engine_types = ", ".join(_PIPELINE_ENGINE_TYPES)
+            raise ValueError(
+                "Unknown pipeline engine_type: "
+                f"{engine_type!r}; expected one of: {allowed_engine_types}"
+            )
+        self._update_pipeline_section_support(diagnostics, engine_type=engine_type)
+        self._update_pipeline_stage_counts(diagnostics, engine_type=engine_type)
+        self._update_pipeline_blocked_counts(diagnostics, engine_type=engine_type)
+        self._update_pipeline_dispatch_capacity(diagnostics, engine_type=engine_type)
+        self._update_pipeline_worker_capacity(diagnostics, engine_type=engine_type)
 
     def record_commit_failure(
         self, tp: TopicPartition, reason: str = "kafka_exception"
@@ -587,3 +648,124 @@ class PrometheusMetricsExporter:
         self._process_batch_recycle_supported_gauge.set(
             1 if metrics.recycle_supported else 0
         )
+
+    def _update_pipeline_section_support(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        for section in PipelineDiagnosticsSection:
+            support_state = diagnostics.section_support.get(
+                section, PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            )
+            for state in _PIPELINE_SUPPORT_STATES:
+                self._pipeline_section_support_state_gauge.labels(
+                    section=section.value,
+                    state=state,
+                    engine_type=engine_type,
+                ).set(1 if support_state.value == state else 0)
+
+    def _update_pipeline_stage_counts(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        section_supported = (
+            diagnostics.section_support.get(PipelineDiagnosticsSection.STAGES)
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        for stage in PipelineStage:
+            labels = {"stage": stage.value, "engine_type": engine_type}
+            stage_supported = (
+                diagnostics.stage_support.get(stage)
+                == PipelineDiagnosticsSupportState.SUPPORTED
+            )
+            if section_supported and stage_supported:
+                self._pipeline_stage_messages_gauge.labels(**labels).set(
+                    diagnostics.stage_counts.get(stage, PipelineCount(count=0)).count
+                )
+            else:
+                self._remove_labeled_metric(self._pipeline_stage_messages_gauge, labels)
+
+    def _update_pipeline_blocked_counts(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        section_supported = (
+            diagnostics.section_support.get(PipelineDiagnosticsSection.BLOCKED)
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        for reason in PipelineBlockedReason:
+            labels = {"reason": reason.value, "engine_type": engine_type}
+            if section_supported:
+                self._pipeline_blocked_messages_gauge.labels(**labels).set(
+                    diagnostics.blocked_counts.get(reason, PipelineCount(count=0)).count
+                )
+            else:
+                self._remove_labeled_metric(
+                    self._pipeline_blocked_messages_gauge, labels
+                )
+
+    def _update_pipeline_dispatch_capacity(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        section_supported = (
+            diagnostics.section_support.get(
+                PipelineDiagnosticsSection.DISPATCH_CAPACITY
+            )
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        active_reason = diagnostics.dispatch_capacity.reason
+        for reason in PipelineDispatchCapacityReason:
+            labels = {"reason": reason.value, "engine_type": engine_type}
+            if section_supported and active_reason == reason:
+                self._pipeline_dispatch_capacity_blocked_messages_gauge.labels(
+                    **labels
+                ).set(diagnostics.dispatch_capacity.blocked_items)
+            else:
+                self._remove_labeled_metric(
+                    self._pipeline_dispatch_capacity_blocked_messages_gauge, labels
+                )
+
+    def _update_pipeline_worker_capacity(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        *,
+        engine_type: str,
+    ) -> None:
+        section_supported = (
+            diagnostics.section_support.get(PipelineDiagnosticsSection.WORKERS)
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        worker_supported = (
+            diagnostics.workers.support_state
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        values = {
+            "total": diagnostics.workers.total,
+            "executing": diagnostics.workers.executing,
+            "admitted": diagnostics.workers.admitted,
+        }
+        for state in _PIPELINE_WORKER_CAPACITY_STATES:
+            labels = {"state": state, "engine_type": engine_type}
+            value = values[state]
+            if section_supported and worker_supported and value is not None:
+                self._pipeline_worker_capacity_units_gauge.labels(**labels).set(value)
+            else:
+                self._remove_labeled_metric(
+                    self._pipeline_worker_capacity_units_gauge, labels
+                )
+
+    @staticmethod
+    def _remove_labeled_metric(metric: Gauge, labels: dict[str, str]) -> None:
+        try:
+            metric.remove_by_labels(labels)
+        except KeyError:
+            return
