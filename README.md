@@ -96,6 +96,20 @@ If `adaptive_concurrency.enabled=true`, `execution.max_in_flight` remains the
 configured ceiling while `runtime_snapshot.queue.max_in_flight` reflects the
 live control-plane limit after adaptive adjustments.
 
+### Pipeline Diagnostics Sidecar API
+
+`PyrallelConsumer.get_pipeline_diagnostics()` exposes the supported broker-neutral
+pipeline diagnostics sidecar. It stays separate from `get_runtime_snapshot()` and
+does not add fields to the frozen RuntimeSnapshot v1 contract. The sidecar reports
+bounded stage counts, blocked reasons, support states, subqueue aggregates,
+dispatch/admission capacity, worker aggregates, settlement blockers, poll
+counters, and related support metadata. The sidecar-backed `pyrallel_pipeline_*`
+Prometheus metrics are projections of this sidecar; unsupported sections are
+represented through support-state gauges rather than fake observed values.
+`pyrallel_pipeline_completion_to_commit_latency_seconds` is a broker-owned
+pipeline event metric emitted alongside the sidecar projection, not a field in
+`get_pipeline_diagnostics()`.
+
 ## 📊 Benchmark Snapshot (profiling OFF)
 
 Recent run (4 partitions, 2000 messages, 100 keys, profiling off):
@@ -135,8 +149,9 @@ contract. The commit clamping rule is computed from the control-plane `WorkManag
 dispatch ledger, while engine-private registries remain recovery/diagnostics
 state rather than the canonical source of commit safety.
 
-For runtime observability, `process_batch_metrics` remains the v1 compatibility projection
-while generic engine diagnostics evolve behind the same stable public snapshot boundary.
+For runtime observability, `process_batch_metrics` remains the v1 compatibility projection,
+`get_runtime_snapshot()` remains the frozen v1 operator snapshot, and
+`get_pipeline_diagnostics()` is the separate supported pipeline diagnostics sidecar.
 
 ```mermaid
 graph TD
@@ -473,6 +488,10 @@ The checked-in Grafana dashboard is a reference/sample dashboard for exploring
 the public metric surface and composing your own panels. It is not a
 production opinionated dashboard or alert policy.
 
+The dashboard is intentionally two-layered: Operator triage is a curated subset
+for first-screen health/risk/bottleneck checks, while Metric catalog/reference
+covers the public metric surface for composing detailed panels.
+
 Usage:
 
 1) Current facade note:
@@ -521,6 +540,12 @@ docker compose up -d
 - `pyrallel_pipeline_dispatch_capacity_blocked_messages`
 - `pyrallel_pipeline_section_support_state`
 - `pyrallel_pipeline_worker_capacity_units`
+- `pyrallel_pipeline_subqueue_items`
+- `pyrallel_pipeline_subqueues`
+- `pyrallel_pipeline_settlement_blocker_state`
+- `pyrallel_pipeline_poll_records_total`
+- `pyrallel_pipeline_poll_events_total`
+- `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
 
 Interpretation and operator actions for these metrics live in:
 - `docs/operations/guide.en.md`

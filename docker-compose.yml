@@ -43,7 +43,7 @@ services:
       - pyrallel_network
 
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
+    image: danielqsj/kafka-exporter:v1.7.0
     container_name: kafka-exporter
     command:
       - "--kafka.server=kafka-1:29092"
@@ -56,7 +56,7 @@ services:
       - pyrallel_network
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.54.1
     container_name: prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -68,7 +68,7 @@ services:
       - pyrallel_network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.1.4
     container_name: grafana
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

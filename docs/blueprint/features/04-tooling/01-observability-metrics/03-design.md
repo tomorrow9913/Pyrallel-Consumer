@@ -107,7 +107,7 @@ The exporter mirrors `ProcessBatchMetrics` snapshots and resets the series to
 `0` when process metrics are absent or after process/runtime restart. Treat it
 as a snapshot gauge; use `rate()` / `increase()` only with reset awareness.
 
-### 2.4 Internal pipeline diagnostics sidecar
+### 2.4 Stable pipeline diagnostics sidecar
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -116,13 +116,21 @@ as a snapshot gauge; use `rate()` / `increase()` only with reset awareness.
 | `pyrallel_pipeline_dispatch_capacity_blocked_messages` | Gauge | `reason`, `engine_type` | dispatch-capacity pressure for bounded reasons such as `max_in_flight` |
 | `pyrallel_pipeline_section_support_state` | Gauge | `section`, `state`, `engine_type` | one-hot support state for each sidecar section |
 | `pyrallel_pipeline_worker_capacity_units` | Gauge | `state`, `engine_type` | aggregate worker capacity counts for `total`, `executing`, and `admitted` when worker diagnostics are supported |
+| `pyrallel_pipeline_subqueue_items` | Gauge | `state`, `engine_type` | aggregate queued, eligible, and blocked item counts across bounded scheduling subqueues |
+| `pyrallel_pipeline_subqueues` | Gauge | `state`, `engine_type` | aggregate total, queued, eligible, and blocked subqueue counts |
+| `pyrallel_pipeline_settlement_blocker_state` | Gauge | `reason`, `engine_type` | one-hot current primary settlement blocker reason when settlement diagnostics are supported |
+| `pyrallel_pipeline_poll_records_total` | Counter | `broker_kind`, `engine_type` | delta-safe broker poll record count from supported poll diagnostics |
+| `pyrallel_pipeline_poll_events_total` | Counter | `event`, `broker_kind`, `engine_type` | delta-safe bounded broker poll event counts |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds` | Histogram | `engine_type` | broker-owned pipeline event metric emitted alongside the sidecar projection for completion-to-successful-commit settlement latency |
 
-The pipeline metrics are a bounded Prometheus projection of
-`PyrallelConsumer.get_pipeline_diagnostics()` / `BrokerPoller.get_pipeline_diagnostics()`.
-They do not add a new diagnostics source of truth and do not change
+Most pipeline metrics are a bounded Prometheus projection of the official sidecar
+returned by `PyrallelConsumer.get_pipeline_diagnostics()` /
+`BrokerPoller.get_pipeline_diagnostics()`. Completion-to-commit latency is a
+broker-owned pipeline event metric emitted alongside the sidecar projection, not
+a sidecar DTO field. They do not merge into or change
 `RuntimeSnapshot` v1. The exporter emits observed count gauges only for sections
 and stages whose support state is `supported`. `not_implemented` and
-`unavailable` sections are represented through
+`unavailable` sections are part of the public support-state contract and are represented through
 `pyrallel_pipeline_section_support_state`; their observed count gauges stay
 absent rather than being exported as zero.
 
@@ -147,9 +155,16 @@ Labels must stay bounded. The current canonical label values are:
 | `pyrallel_pipeline_stage_messages.stage` | `acquired`, `buffered`, `queued`, `dispatched`, `executing`, `completed_unsettled`, `failed`, `dlq` |
 | `pyrallel_pipeline_blocked_messages.reason` | `ordering_lock`, `route_lock`, `retry_delay`, `frontier_deferred`, `poison_guard`, `rebalancing`, `shutdown` |
 | `pyrallel_pipeline_dispatch_capacity_blocked_messages.reason` | `max_in_flight`, `adaptive_limit` |
-| `pyrallel_pipeline_section_support_state.section` | `stages`, `blocked`, `subqueues`, `dispatch_capacity`, `admission`, `workers`, `settlement` |
+| `pyrallel_pipeline_section_support_state.section` | `stages`, `blocked`, `subqueues`, `dispatch_capacity`, `admission`, `workers`, `settlement`, `poll` |
 | `pyrallel_pipeline_section_support_state.state` | `supported`, `unavailable`, `not_implemented` |
 | `pyrallel_pipeline_worker_capacity_units.state` | `total`, `executing`, `admitted` |
+| `pyrallel_pipeline_subqueue_items.state` | `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_subqueues.state` | `total`, `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_settlement_blocker_state.reason` | `commit_pending`, `dlq_publish_pending`, `ordered_cursor_gap`, `ack_pending`, `delete_pending`, `archive_pending`, `unknown` |
+| `pyrallel_pipeline_poll_records_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_poll_events_total.event` | `nonempty`, `empty`, `error` |
+| `pyrallel_pipeline_poll_events_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds.engine_type` | `async`, `process` |
 
 `first_sample_pending` is part of the public resource-signal enum for custom
 providers that can distinguish warm-up from failure. The built-in null provider
@@ -164,7 +179,26 @@ reports `unavailable`.
 | metadata size | commit metadata encoding path | `PrometheusMetricsExporter.update_metadata_size()` | Gauge is the most recent offset-commit metadata payload size per topic. |
 | adaptive/resource-signal gauges | adaptive controllers and resource-signal provider | `PrometheusMetricsExporter` | Disabled/absent adaptive sections are exported as zero-valued gauges plus `decision="disabled"` for backpressure. |
 | process-batch and IPC gauges | process execution engine via `ProcessBatchMetrics` | `SystemMetrics.process_batch_metrics` then `PrometheusMetricsExporter` | Control plane does not inspect process-engine internals; it only carries the DTO projection. |
-| pipeline diagnostics sidecar gauges | `WorkManager`, execution engine diagnostics, and `BrokerPoller` sidecar composition | `PrometheusMetricsExporter.update_pipeline_diagnostics()` | Exporter projects only supported bounded aggregate fields; it does not compute pipeline state. |
+| pipeline diagnostics sidecar gauges | `WorkManager`, execution engine diagnostics, and `BrokerPoller` sidecar composition | `PrometheusMetricsExporter.update_pipeline_diagnostics()` | Exporter projects official sidecar DTO fields only; it does not inspect or compute pipeline state from private internals. |
+
+### 2.7 Triage-first metric model
+
+The triage-first metric model assigns each internal bottleneck signal to the
+runtime owner that can observe it without guessing:
+
+| Operational question | Source | Metric direction |
+| --- | --- | --- |
+| How many records are poll loops acquiring? | BrokerPoller/control-plane diagnostics | poll/acquire rate via bounded poll event counters |
+| How many messages are waiting inside Pyrallel? | WorkManager-owned scheduling state | queued and eligible gauges |
+| How many messages were accepted for dispatch? | WorkManager-owned submit handoff | dispatched is WorkManager-owned accepted submit accounting |
+| How many capacity units are occupied by execution? | ExecutionEngine diagnostics | executing/admitted are engine-owned worker capacity diagnostics |
+| How many terminal-path items cannot settle? | BrokerPoller settlement diagnostics | completed-unsettled and DLQ pending gauges |
+| Which terminal-path blocker is currently active? | BrokerPoller settlement diagnostics | bounded settlement blocker state as one-hot current reason |
+| How long does completed work wait before commit? | BrokerPoller settlement diagnostics | completion-to-commit latency as a settlement-path diagnostic |
+
+completion-to-commit latency must not use Kafka broker timestamp as a substitute;
+it measures process-local internal transition time between completion handling and
+successful settlement/commit.
 
 When process mode is inactive, process-batch metrics are exported as zero-valued
 gauges rather than omitted. This keeps dashboards stable, but operators should

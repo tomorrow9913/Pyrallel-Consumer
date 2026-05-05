@@ -37,7 +37,20 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: Resource signal gauges are advisory inputs for tuning experiments. The status gauge uses fixed labels only; no dynamic `provider` label is exported.
 - **Tip**: Treat `unavailable`, `stale`, and `first_sample_pending` as fail-open states. They should explain why resource-aware tuning is inactive, not force a lower concurrency limit.
 
-### 1.6. Process Batch Flush Count
+### 1.6. Process Worker-Pipe Route Batches
+- **Prometheus queries**:
+    - `consumer_process_route_batch_count`
+    - `consumer_process_route_batch_items`
+    - `consumer_process_route_batch_avg_size`
+    - `consumer_process_route_batch_max_size`
+    - `consumer_process_ipc_items_per_input_payload`
+    - `consumer_process_ipc_items_per_completion_payload`
+- **Meaning**: The live process topology uses worker-pipes. In this topology, worker-pipes bypasses BatchAccumulator flush counts; route-batch and IPC payload metrics are the primary process-mode batching signals.
+- **Tip**:
+    - Use route-batch count/items and IPC items-per-payload first when diagnosing process throughput or payload efficiency.
+    - Treat zero BatchAccumulator flush/sizing values as expected under the worker-pipes-only path unless the support boundary says a different transport is active.
+
+### 1.6b. Legacy Process Batch Flush Count
 - **Prometheus query**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **Meaning**:
     - `size`: batches are reaching the configured batch size and flushing efficiently.
@@ -45,8 +58,9 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - `demand`: the active flush policy is force-flushing buffered work before the normal size/timer path.
     - `close`: buffered work was flushed during shutdown or rebalance cleanup.
 - **Tip**:
-    - If `timer` dominates and `consumer_process_batch_avg_size` stays low, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` only if the latency budget allows it.
-    - If `demand` keeps growing, the workload is spending more time on latency-first forced flushes than on full batches. Revisit `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, and ordering skew together.
+    - Consult these only as v1 compatibility signals for the old BatchAccumulator path. Worker-pipes users should prioritize the route-batch and IPC payload metrics above.
+    - If `timer` dominates and `consumer_process_batch_avg_size` stays low on a BatchAccumulator-capable path, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` only if the latency budget allows it.
+    - If `demand` keeps growing on a BatchAccumulator-capable path, the workload is spending more time on latency-first forced flushes than on full batches. Revisit `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, and ordering skew together.
 
 ### 1.6a. Commit and DLQ Failure Counters
 - **Prometheus queries**:
@@ -55,7 +69,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: These counters identify release-critical failures that can otherwise appear only as lag/gap symptoms. Commit failures indicate replay-risk at the broker commit boundary; DLQ publish failures mean a terminal failed message could not be published and the offset remains pending retry.
 - **Tip**: Alert on any increase. For commit failures, check Kafka coordinator health, ACLs, and broker connectivity. For DLQ publish failures, verify DLQ topic existence, producer ACLs, payload size limits, and broker availability before restarting or scaling consumers.
 
-### 1.7. Process Batch Buffer Health
+### 1.7. Legacy Process Batch Buffer Health
 - **Prometheus queries**:
     - `consumer_process_batch_avg_size`
     - `consumer_process_batch_last_size`
@@ -63,6 +77,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - `consumer_process_batch_buffered_items`
     - `consumer_process_batch_buffered_age_seconds`
 - **Meaning**:
+    - These gauges describe the legacy BatchAccumulator buffer surface. In worker-pipes-only process mode they can remain zero while route-batch/IPC metrics show real work.
     - `avg/last_size` show real micro-batch efficiency.
     - `last_wait_seconds` and `buffered_age_seconds` show how long work sat before flush.
     - `buffered_items` means work is still accumulating in the main-process batch buffer and has not reached worker queues yet.
@@ -97,10 +112,10 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: These gauges describe which process execution diagnostics are active and which process-batch control paths the current transport supports. `transport_mode` is currently bounded to `worker_pipes`; `support_state` is bounded to `full` or `bounded`.
 - **Tip**: Treat these as compatibility and support-boundary signals, not throughput counters. Use them before interpreting zero-valued timer/demand/recycle behavior as a runtime fault.
 
-### 1.10. Engine Capability Boundary
+### 1.10. Engine Capability and Pipeline Diagnostics Boundary
 - **Definition**: The control plane only depends on the shared execution-engine contract.
 - **Meaning**: Commit clamping is computed from the control-plane `WorkManager` dispatch ledger. This commit clamping rule belongs to the control plane, while process-private registries remain recovery/diagnostics state rather than a required engine capability.
-- **Tip**: Keep `process_batch_metrics` documented as a v1 compatibility projection while generic engine diagnostics evolve internally. When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
+- **Tip**: Keep `process_batch_metrics` documented as a v1 compatibility projection and keep `get_pipeline_diagnostics()` as the separate supported sidecar for broker-neutral pipeline observability. `RuntimeSnapshot` v1 remains unchanged. When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
 
 ### 1.11. Shutdown Drain Diagnostics
 - **Log lines**:
@@ -159,20 +174,21 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - Use `max_revoke_grace_ms` to ensure cleanup time during rebalancing.
 
 ### 3.3. Low throughput with growing lag in process mode
-1. Inspect `consumer_process_batch_flush_count{reason="timer"}` together with `consumer_process_batch_avg_size`.
-2. If timer-driven flushes dominate and average batch size is small, batching efficiency is poor. Reduce `batch_size` or increase `max_batch_wait_ms` within your latency budget.
-3. If batch size looks healthy but `consumer_process_batch_avg_main_to_worker_ipc_seconds` is high, the bottleneck is payload serialization or IPC pressure. Check message size, serialization cost, and `queue_size`.
+1. Inspect `consumer_process_route_batch_count`, `consumer_process_route_batch_items`, `consumer_process_ipc_items_per_input_payload`, and `consumer_process_ipc_items_per_completion_payload` first. Worker-pipes bypasses BatchAccumulator flush counts, so legacy flush/sizing gauges can stay zero while work is flowing.
+2. If route batches are frequent but `consumer_process_ipc_items_per_input_payload` is low, payload efficiency is poor. Revisit route batch size, ordering skew, and message size.
+3. If payload efficiency looks healthy but `consumer_process_batch_avg_main_to_worker_ipc_seconds` is high, the bottleneck is payload serialization or IPC pressure. Check message size, serialization cost, and `queue_size`.
 4. If IPC looks normal but `consumer_process_batch_avg_worker_exec_seconds` is high, the worker logic is the bottleneck. Check CPU saturation, downstream I/O, and timeout/DLQ behavior.
 
 ### 3.4. Repeating queue/backpressure oscillation in process mode
-1. Inspect `consumer_backpressure_active`, `consumer_in_flight_count`, and `consumer_process_batch_buffered_items` together.
-2. If `buffered_items` and `consumer_internal_queue_depth` are both high, the main batch buffer and partition queues are backing up together. Revisit `max_in_flight_messages`, `queue_size`, and ordering skew.
+1. Inspect `consumer_backpressure_active`, `consumer_in_flight_count`, `consumer_process_route_batch_items`, and the IPC items-per-payload gauges together.
+2. If route-batch items and `consumer_internal_queue_depth` are both high, worker-pipe routing and partition queues are backing up together. Revisit `max_in_flight_messages`, `queue_size`, and ordering skew.
 3. If `buffered_items` stays low but `consumer_process_batch_avg_worker_to_main_ipc_seconds` or `consumer_process_batch_last_worker_to_main_ipc_seconds` is high, completion draining may be the bottleneck. Check main-process load and completion polling cadence.
 
 ## 4. Monitoring Dashboard (Grafana Recommended)
 
 Assuming `get_metrics()` results are collected via Prometheus, the following panel configuration is recommended.
 The checked-in Grafana dashboard is a reference/sample dashboard for exploring the public metric surface and composing panels; it is not a production opinionated dashboard or alert policy.
+The dashboard is intentionally two-layered: Operator triage is a curated subset for first-screen health/risk/bottleneck checks, while Metric catalog/reference covers the public metric surface for detailed panel composition.
 
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
@@ -205,14 +221,14 @@ The checked-in Grafana dashboard is a reference/sample dashboard for exploring t
     - Insight: Checks the backlog status of virtual partition queues.
 
 ### 4.4. Process Mode Health (Row)
-- **Flush Reason Mix**:
+- **Worker-Pipe Route Batches**:
     - Type: Time Series
-    - Query: `consumer_process_batch_flush_count`
-    - Insight: In steady state, `size` should usually dominate while `timer` and `demand` remain secondary. A `timer`-heavy mix means small batches; a `demand`-heavy mix means frequent forced flushes.
-- **Batch Efficiency**:
+    - Query: `consumer_process_route_batch_count`, `consumer_process_route_batch_items`
+    - Insight: Worker-pipes bypasses BatchAccumulator flush counts; these route-batch counters are the primary process throughput view.
+- **Worker-Pipe Payload Efficiency**:
     - Type: Time Series
-    - Query: `consumer_process_batch_avg_size`, `consumer_process_batch_last_size`, `consumer_process_batch_buffered_age_seconds`
-    - Insight: Falling batch size plus rising buffered age usually means the current batching policy does not match the workload.
+    - Query: `consumer_process_ipc_items_per_input_payload`, `consumer_process_ipc_items_per_completion_payload`
+    - Insight: Low items per IPC payload means route batches are not amortizing serialization and queue transfer costs.
 - **IPC vs Worker Time Split**:
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
@@ -237,15 +253,24 @@ The checked-in Grafana dashboard is a reference/sample dashboard for exploring t
     - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
 
 ### 4.6. Pipeline Diagnostics Surface (Row)
+- **Surface**: `PyrallelConsumer.get_pipeline_diagnostics()` and `BrokerPoller.get_pipeline_diagnostics()` provide the supported sidecar that backs the `pyrallel_pipeline_*` Prometheus projection. Unsupported sections are visible through `pyrallel_pipeline_section_support_state`; do not treat absent observed gauges as zero work.
 - **Pipeline Stages**:
     - Type: Time Series
     - Query: `pyrallel_pipeline_stage_messages`
 - **Pipeline Blocked Reasons**:
     - Type: Time Series
     - Query: `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- **Pipeline Settlement Blocker State**:
+    - Type: State Timeline / Status History
+    - Query: `pyrallel_pipeline_settlement_blocker_state`
+    - Insight: One-hot bounded current settlement blocker reason (`commit_pending`, `dlq_publish_pending`, `ordered_cursor_gap`, `ack_pending`, `delete_pending`, `archive_pending`, or `unknown`). Supported healthy settlement emits all reasons as `0`; unsupported settlement is represented by `pyrallel_pipeline_section_support_state`, not fake observed values.
 - **Pipeline Support and Worker Capacity**:
     - Type: Time Series
     - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
+- **Pipeline Subqueues, Polling, and Commit Settlement**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
+    - Insight: Completion-to-commit latency is a broker-owned pipeline event metric emitted alongside the sidecar projection, not a field returned by `get_pipeline_diagnostics()`.
 
 ---
 © 2026 Pyrallel Consumer Project

@@ -106,7 +106,7 @@ process-level signal로 해석할 수 있을 때가 아니라면 consumer마다 
 process metrics가 없거나 runtime/process가 재시작되면 series를 `0`으로 되돌리기 때문이다.
 이 값을 snapshot gauge로 해석하고, `rate()` / `increase()`는 reset 가능성을 고려해서 사용한다.
 
-### 3.4 Internal pipeline diagnostics sidecar
+### 3.4 Stable pipeline diagnostics sidecar
 
 | Metric | Type | Labels | 의미 |
 | --- | --- | --- | --- |
@@ -115,12 +115,19 @@ process metrics가 없거나 runtime/process가 재시작되면 series를 `0`으
 | `pyrallel_pipeline_dispatch_capacity_blocked_messages` | Gauge | `reason`, `engine_type` | `max_in_flight` 같은 bounded reason의 dispatch-capacity pressure |
 | `pyrallel_pipeline_section_support_state` | Gauge | `section`, `state`, `engine_type` | sidecar section별 one-hot support state |
 | `pyrallel_pipeline_worker_capacity_units` | Gauge | `state`, `engine_type` | worker diagnostics가 support될 때 `total`, `executing`, `admitted` aggregate worker capacity count |
+| `pyrallel_pipeline_subqueue_items` | Gauge | `state`, `engine_type` | bounded scheduling subqueue 전체의 queued, eligible, blocked item count aggregate |
+| `pyrallel_pipeline_subqueues` | Gauge | `state`, `engine_type` | total, queued, eligible, blocked subqueue count aggregate |
+| `pyrallel_pipeline_settlement_blocker_state` | Gauge | `reason`, `engine_type` | settlement diagnostics가 support될 때 현재 primary settlement blocker reason을 one-hot으로 표현 |
+| `pyrallel_pipeline_poll_records_total` | Counter | `broker_kind`, `engine_type` | support되는 poll diagnostics의 delta-safe broker poll record count |
+| `pyrallel_pipeline_poll_events_total` | Counter | `event`, `broker_kind`, `engine_type` | bounded broker poll event count를 delta-safe counter로 투영 |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds` | Histogram | `engine_type` | completion부터 successful commit settlement까지의 latency를 sidecar projection과 함께 노출하는 BrokerPoller 소유 pipeline event metric |
 
-Pipeline metrics는 `PyrallelConsumer.get_pipeline_diagnostics()` /
-`BrokerPoller.get_pipeline_diagnostics()` sidecar를 bounded Prometheus projection으로
-투영한 것이다. 새로운 source of truth를 만들지 않으며 `RuntimeSnapshot` v1을 바꾸지
+대부분의 pipeline metrics는 `PyrallelConsumer.get_pipeline_diagnostics()` /
+`BrokerPoller.get_pipeline_diagnostics()`가 반환하는 official sidecar를 bounded
+Prometheus projection으로 투영한 것이다. Completion-to-commit latency는 sidecar DTO
+field가 아니라 sidecar projection과 함께 노출되는 BrokerPoller 소유 pipeline event metric이다. `RuntimeSnapshot` v1에 병합하거나 바꾸지
 않는다. exporter는 support state가 `supported`인 section/stage의 observed count gauge만
-내보낸다. `not_implemented`와 `unavailable` section은
+내보낸다. `not_implemented`와 `unavailable` section은 public support-state contract의 일부이며
 `pyrallel_pipeline_section_support_state`로 표현하고, observed count gauge는 `0`으로
 export하지 않고 absent로 둔다.
 
@@ -145,9 +152,16 @@ label 값은 bounded해야 한다. 현재 canonical allowed value는 다음과 �
 | `pyrallel_pipeline_stage_messages.stage` | `acquired`, `buffered`, `queued`, `dispatched`, `executing`, `completed_unsettled`, `failed`, `dlq` |
 | `pyrallel_pipeline_blocked_messages.reason` | `ordering_lock`, `route_lock`, `retry_delay`, `frontier_deferred`, `poison_guard`, `rebalancing`, `shutdown` |
 | `pyrallel_pipeline_dispatch_capacity_blocked_messages.reason` | `max_in_flight`, `adaptive_limit` |
-| `pyrallel_pipeline_section_support_state.section` | `stages`, `blocked`, `subqueues`, `dispatch_capacity`, `admission`, `workers`, `settlement` |
+| `pyrallel_pipeline_section_support_state.section` | `stages`, `blocked`, `subqueues`, `dispatch_capacity`, `admission`, `workers`, `settlement`, `poll` |
 | `pyrallel_pipeline_section_support_state.state` | `supported`, `unavailable`, `not_implemented` |
 | `pyrallel_pipeline_worker_capacity_units.state` | `total`, `executing`, `admitted` |
+| `pyrallel_pipeline_subqueue_items.state` | `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_subqueues.state` | `total`, `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_settlement_blocker_state.reason` | `commit_pending`, `dlq_publish_pending`, `ordered_cursor_gap`, `ack_pending`, `delete_pending`, `archive_pending`, `unknown` |
+| `pyrallel_pipeline_poll_records_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_poll_events_total.event` | `nonempty`, `empty`, `error` |
+| `pyrallel_pipeline_poll_events_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds.engine_type` | `async`, `process` |
 
 `first_sample_pending`은 warm-up과 failure를 구분할 수 있는 custom provider를 위한 public
 resource-signal enum 값이다. built-in null provider는 `unavailable`을 보고한다.
@@ -161,7 +175,27 @@ resource-signal enum 값이다. built-in null provider는 `unavailable`을 보�
 | metadata size | commit metadata encoding path | `PrometheusMetricsExporter.update_metadata_size()` | topic별 가장 최근 offset-commit metadata payload size다. |
 | adaptive/resource-signal gauge | adaptive controller와 resource-signal provider | `PrometheusMetricsExporter` | adaptive section이 disabled/absent면 zero-valued gauge와 backpressure `decision="disabled"`로 투영한다. |
 | process-batch / IPC gauge | process execution engine의 `ProcessBatchMetrics` | `SystemMetrics.process_batch_metrics`와 `PrometheusMetricsExporter` | control plane은 process-engine internals를 보지 않고 DTO projection만 운반한다. |
-| pipeline diagnostics sidecar gauge | `WorkManager`, execution engine diagnostics, `BrokerPoller` sidecar composition | `PrometheusMetricsExporter.update_pipeline_diagnostics()` | exporter는 support되는 bounded aggregate field만 투영하고 pipeline state를 계산하지 않는다. |
+| pipeline diagnostics sidecar gauge | `WorkManager`, execution engine diagnostics, `BrokerPoller` sidecar composition | `PrometheusMetricsExporter.update_pipeline_diagnostics()` | exporter는 official sidecar DTO field만 투영하며 private state에서 pipeline state를 직접 계산하지 않는다. |
+
+### 3.7 Triage-first metric model
+
+Triage-first metric model은 내부 병목 신호를 추측 없이 관측할 수 있는 runtime owner에
+배정한다.
+
+| Operational question | Source | Metric direction |
+| --- | --- | --- |
+| How many records are poll loops acquiring? | BrokerPoller/control-plane diagnostics | poll/acquire rate via bounded poll event counters |
+| How many messages are waiting inside Pyrallel? | WorkManager-owned scheduling state | queued and eligible gauges |
+| How many messages were accepted for dispatch? | WorkManager-owned submit handoff | dispatched is WorkManager-owned accepted submit accounting |
+| How many capacity units are occupied by execution? | ExecutionEngine diagnostics | executing/admitted are engine-owned worker capacity diagnostics |
+| How many terminal-path items cannot settle? | BrokerPoller settlement diagnostics | completed-unsettled and DLQ pending gauges |
+| Which terminal-path blocker is currently active? | BrokerPoller settlement diagnostics | bounded settlement blocker state as one-hot current reason |
+| How long does completed work wait before commit? | BrokerPoller settlement diagnostics | completion-to-commit latency as a settlement-path diagnostic |
+
+completion-to-commit latency must not use Kafka broker timestamp as a substitute.
+completion-to-commit latency는 Kafka broker timestamp를 substitute로 사용하면 안 된다.
+내부 completion 처리와 성공한 settlement/commit 사이의 process-local transition time을
+측정한다.
 
 process mode가 비활성일 때 process-batch metrics는 omit하지 않고 zero-valued gauge로
 export된다. dashboard 안정성을 위한 선택이며, 운영자는 process mode가 아닐 때의 zero를

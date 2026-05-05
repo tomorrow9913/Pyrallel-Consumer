@@ -103,6 +103,19 @@ Prometheus scrape 외에 운영자가 즉시 구조화된 런타임 상태를 �
 ceiling으로 유지되고, 실제 런타임에서 적용 중인 control-plane 한도는
 `runtime_snapshot.queue.max_in_flight`로 확인합니다.
 
+### Pipeline Diagnostics Sidecar API
+
+`PyrallelConsumer.get_pipeline_diagnostics()`는 supported broker-neutral pipeline
+diagnostics sidecar를 제공합니다. 이 API는 `get_runtime_snapshot()`과 분리되어
+있으며, frozen RuntimeSnapshot v1 contract에 field를 추가하지 않습니다. Sidecar는
+bounded stage count, blocked reason, support state, subqueue aggregate,
+dispatch/admission capacity, worker aggregate, settlement blocker, poll counter,
+관련 support metadata를 보고합니다. Sidecar-backed `pyrallel_pipeline_*`
+Prometheus metric은 이 sidecar의 projection이며, unsupported section은 fake
+observed value가 아니라 support-state gauge로 표현합니다.
+`pyrallel_pipeline_completion_to_commit_latency_seconds`는
+`get_pipeline_diagnostics()` field가 아니라 sidecar projection과 함께 노출되는 BrokerPoller 소유 pipeline event metric입니다.
+
 ## 📊 벤치마크 샘플 (프로파일 OFF)
 
 최근 실행(4 partitions, 2000 msgs, 100 keys, profiling off)의 처리량(TPS)을 아래에 공유합니다. 워크로드는 `benchmarks/run_parallel_benchmark.py`의 `--workloads` 옵션으로 선택했고, 실행 시 프로파일링은 모두 비활성화했습니다.
@@ -141,6 +154,10 @@ review용 요약이며 full runtime snapshot API를 직렬화한 것은 아닙�
 Control Plane은 공통 `BaseExecutionEngine` 계약만 의존합니다. Process 전용 커밋
 클램프 정보도 엔진 capability로 노출하므로, `BrokerPoller`가
 `ProcessExecutionEngine` 구체 타입을 직접 검사하지 않아도 안전성을 유지할 수 있습니다.
+
+Runtime observability에서 `process_batch_metrics`는 v1 compatibility projection으로
+유지되고, `get_runtime_snapshot()`은 frozen v1 operator snapshot으로 유지되며,
+`get_pipeline_diagnostics()`는 별도의 supported pipeline diagnostics sidecar입니다.
 
 ```mermaid
 graph TD
@@ -553,6 +570,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - `docker-compose.yml`에 Prometheus(9090), Grafana(3000), Kafka Exporter(9308), Kafka UI(8080), Kafka(9092)가 포함됩니다.
 - Prometheus 설정은 `monitoring/prometheus.yml`에서 관리하며 기본으로 `kafka-exporter`와 호스트의 Pyrallel Consumer(메트릭 포트 9091)를 스크랩합니다. 컨슈머가 컨테이너 내에서 돌면 해당 주소를 컨테이너 호스트네임으로 변경하세요.
 - 포함된 Grafana dashboard는 public metric surface를 탐색하고 필요한 패널을 조합하기 위한 reference/sample dashboard입니다. production opinionated dashboard나 alert policy가 아닙니다.
+- 이 dashboard는 두 계층입니다: Operator triage는 첫 화면에서 정상/위험/병목을 확인하는 curated subset이고, Metric catalog/reference는 상세 패널 구성을 위한 public metric surface 전체 coverage입니다.
 
 사용 방법
 1) 현재 퍼사드 기준 참고:
@@ -581,7 +599,7 @@ docker compose up -d
 - process batch 관측 예시: `consumer_process_batch_flush_count{reason="timer"}`, `consumer_process_batch_avg_size`, `consumer_process_batch_last_size`, `consumer_process_batch_last_wait_seconds`, `consumer_process_batch_buffered_items`, `consumer_process_batch_buffered_age_seconds`.
 - process timing 분해 예시: `consumer_process_batch_last_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_last_worker_exec_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_last_worker_to_main_ipc_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`.
 - process support boundary 예시: `consumer_process_batch_transport_mode`, `consumer_process_batch_support_state`, `consumer_process_batch_timer_flush_supported`, `consumer_process_batch_demand_flush_supported`, `consumer_process_batch_recycle_supported`.
-- pipeline metric surface 예시: `pyrallel_pipeline_stage_messages`, `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`, `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`.
+- pipeline metric surface 예시: `pyrallel_pipeline_stage_messages`, `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`, `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`, `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_settlement_blocker_state`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`.
 - 위 process-mode 메트릭의 해석 기준과 운영자 대응 흐름은 `docs/operations/guide.ko.md`, `docs/operations/guide.en.md`를 기준 문서로 사용하십시오.
 
 ## 🤝 기여하기
