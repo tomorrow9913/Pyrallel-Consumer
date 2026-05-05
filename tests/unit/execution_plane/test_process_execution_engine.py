@@ -741,6 +741,56 @@ async def test_worker_diagnostics_do_not_double_count_executing_route_batch_tail
 
 
 @pytest.mark.asyncio
+async def test_worker_diagnostics_preserve_pending_load_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+    config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        process_config=ProcessConfig(
+            process_count=3,
+            queue_size=4,
+            batch_size=1,
+            max_batch_wait_ms=0,
+        ),
+    )
+    engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+    engine_any = cast(Any, engine)
+    engine_any._transport = type(
+        "_TestTransport",
+        (),
+        {
+            "handle_registry_event": lambda self, event: None,
+            "signal_shutdown": lambda self, worker_count: None,
+            "clear_pending_dispatches": lambda self: None,
+            "close": lambda self: None,
+            "snapshot_pending_worker_loads": lambda self: [2, "bad", 5],
+        },
+    )()
+    engine_any._apply_registry_event(
+        {
+            "kind": "start",
+            "key": (2, "topic", 0, 1),
+            "payload": _work_item_to_dict(
+                WorkItem("work-a", TopicPartition("topic", 0), 1, 1, b"k", b"a")
+            ),
+        }
+    )
+
+    try:
+        runtime_metrics = engine.get_runtime_metrics()
+
+        assert runtime_metrics is not None
+        assert isinstance(runtime_metrics.workers, EngineWorkerDiagnostics)
+        assert runtime_metrics.workers.total == 3
+        assert runtime_metrics.workers.executing == 1
+        assert runtime_metrics.workers.admitted == 1
+        assert runtime_metrics.workers.top_k_loads == [6, 2]
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_worker_pipes_route_batch_metrics_calculate_size_distribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

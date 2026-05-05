@@ -1031,14 +1031,6 @@ def test_observability_design_docs_define_triage_first_metric_ownership() -> Non
     design_paths = [
         REPO_ROOT
         / "docs"
-        / "plans"
-        / "2026-05-04-pyrallel-internal-pipeline-metrics-design.md",
-        REPO_ROOT
-        / "docs"
-        / "plans"
-        / "2026-05-04-pyrallel-internal-pipeline-metrics-design.ko.md",
-        REPO_ROOT
-        / "docs"
         / "blueprint"
         / "features"
         / "04-tooling"

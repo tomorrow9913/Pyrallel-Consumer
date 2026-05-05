@@ -1057,7 +1057,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         worker_loads = snapshot_loads()
         if not isinstance(worker_loads, list):
             return []
-        return [load for load in worker_loads if isinstance(load, int)]
+        return [load if isinstance(load, int) else 0 for load in worker_loads]
 
     def _snapshot_worker_diagnostics(self) -> EngineWorkerDiagnostics:
         """Return process worker capacity diagnostics without reading private callers."""

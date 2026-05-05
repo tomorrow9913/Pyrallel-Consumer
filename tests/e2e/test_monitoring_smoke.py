@@ -97,7 +97,7 @@ def _grafana_provisioning_ready(grafana_auth: str) -> bool:
         "http://127.0.0.1:3000/api/datasources/uid/prometheus",
         auth=grafana_auth,
     ).get("uid") == "prometheus" and any(
-        result.get("title") == "Pyrallel Overview"
+        result.get("uid") == "pyrallel-overview"
         for result in _fetch_json(
             "http://127.0.0.1:3000/api/search?query=Pyrallel",
             auth=grafana_auth,
