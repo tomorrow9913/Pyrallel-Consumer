@@ -169,6 +169,9 @@ three-callable tuple used by `run_parallel_benchmark.py`.
 - JSON summaries include `performance_improvements`, which reports TPS delta,
   percent delta, and ratio for adaptive on/off pairs plus the best Pyrallel run
   versus the matching baseline for each workload/order combination.
+- JSON summaries include observability evidence fields: `metrics_observations`,
+  `final_lag`, and `final_gap_count`. These are selected runtime-review values,
+  not a serialized copy of the full `RuntimeSnapshot` API.
 - Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process worker `.prof` files (suffix `-worker-<pid>.prof`) are written only when both `--profile` and `--profile-process-workers` are set.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
 

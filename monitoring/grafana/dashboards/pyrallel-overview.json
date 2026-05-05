@@ -77,9 +77,31 @@
           "legendFormat": "{{status}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(consumer_commit_failures_total[1m]))",
+          "legendFormat": "commit failure {{reason}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(consumer_dlq_publish_failures_total[1m]))",
+          "legendFormat": "dlq publish failures",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "Throughput by status (1m rate)",
+      "title": "Throughput and terminal failures (1m rate)",
       "type": "timeseries"
     },
     {
@@ -138,9 +160,64 @@
           "legendFormat": "in_flight",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_parallel_lag)",
+          "legendFormat": "parallel_lag",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_gap_count)",
+          "legendFormat": "gap_count",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_internal_queue_depth)",
+          "legendFormat": "internal_queue_depth",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(consumer_oldest_task_duration_seconds)",
+          "legendFormat": "oldest_task_duration_seconds",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_metadata_size_bytes)",
+          "legendFormat": "metadata_size_bytes",
+          "range": true,
+          "refId": "F"
         }
       ],
-      "title": "In-flight messages",
+      "title": "Core queue and commit metadata gauges",
       "type": "timeseries"
     },
     {
@@ -260,9 +337,42 @@
           "legendFormat": "backpressure",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_signal_status",
+          "legendFormat": "resource {{status}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_cpu_utilization_ratio",
+          "legendFormat": "cpu_utilization_ratio",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_memory_utilization_ratio",
+          "legendFormat": "memory_utilization_ratio",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Backpressure state",
+      "title": "Backpressure and resource signals",
       "type": "timeseries"
     },
     {
@@ -339,6 +449,17 @@
           "legendFormat": "close",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_flush_count{reason=\"demand\"}",
+          "legendFormat": "demand",
+          "range": true,
+          "refId": "D"
         }
       ],
       "title": "Process batch flushes",
@@ -403,8 +524,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_process_batch_buffered_age_seconds",
-          "legendFormat": "buffered_age_seconds",
+          "expr": "consumer_process_batch_last_size",
+          "legendFormat": "last_size",
           "range": true,
           "refId": "B"
         },
@@ -418,6 +539,28 @@
           "legendFormat": "buffered_items",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_wait_seconds",
+          "legendFormat": "last_wait_seconds",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_buffered_age_seconds",
+          "legendFormat": "buffered_age_seconds",
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Process batch sizing",
@@ -497,9 +640,143 @@
           "legendFormat": "avg_worker_to_main_ipc_seconds",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_main_to_worker_ipc_seconds",
+          "legendFormat": "last_main_to_worker_ipc_seconds",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_worker_exec_seconds",
+          "legendFormat": "last_worker_exec_seconds",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_worker_to_main_ipc_seconds",
+          "legendFormat": "last_worker_to_main_ipc_seconds",
+          "range": true,
+          "refId": "F"
         }
       ],
       "title": "Process batch timing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_transport_mode",
+          "legendFormat": "transport: {{mode}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_support_state",
+          "legendFormat": "support: {{state}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_timer_flush_supported",
+          "legendFormat": "timer_flush_supported",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_demand_flush_supported",
+          "legendFormat": "demand_flush_supported",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_recycle_supported",
+          "legendFormat": "recycle_supported",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Process batch support boundary",
       "type": "timeseries"
     },
     {
@@ -533,7 +810,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 45
       },
       "id": 8,
       "options": {
@@ -580,6 +857,39 @@
           "legendFormat": "adaptive_concurrency_effective",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_concurrency_configured_max_in_flight",
+          "legendFormat": "adaptive_concurrency_configured_max",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_min_in_flight",
+          "legendFormat": "adaptive_backpressure_min",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_concurrency_min_in_flight",
+          "legendFormat": "adaptive_concurrency_min",
+          "range": true,
+          "refId": "F"
         }
       ],
       "title": "Adaptive control caps",
@@ -616,7 +926,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 45
       },
       "id": 9,
       "options": {
@@ -707,9 +1017,258 @@
           "legendFormat": "backpressure_cooldown_ms",
           "range": true,
           "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_lag_scale_up_threshold",
+          "legendFormat": "backpressure_lag_scale_up_threshold",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_low_latency_threshold_ms",
+          "legendFormat": "backpressure_low_latency_threshold_ms",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_high_latency_threshold_ms",
+          "legendFormat": "backpressure_high_latency_threshold_ms",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_avg_completion_latency_seconds",
+          "legendFormat": "backpressure_avg_completion_latency_seconds",
+          "range": true,
+          "refId": "K"
         }
       ],
       "title": "Adaptive control parameters",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage, engine_type) (pyrallel_pipeline_stage_messages)",
+          "legendFormat": "{{engine_type}} {{stage}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pipeline stage messages",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason, engine_type) (pyrallel_pipeline_blocked_messages)",
+          "legendFormat": "{{engine_type}} {{reason}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_dispatch_capacity_blocked_messages",
+          "legendFormat": "dispatch {{engine_type}} {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Pipeline blocked reasons",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_section_support_state",
+          "legendFormat": "support {{engine_type}} {{section}} {{state}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_worker_capacity_units",
+          "legendFormat": "worker {{engine_type}} {{state}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Pipeline support and worker capacity",
       "type": "timeseries"
     }
   ],
@@ -726,7 +1285,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Pyrallel Overview",
+  "title": "Pyrallel Overview - Reference / sample",
   "uid": "pyrallel-overview",
   "version": 1,
   "weekStart": ""

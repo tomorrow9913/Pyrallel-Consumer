@@ -87,12 +87,22 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `worker_exec`만 높으면 CPU saturation 또는 느린 사용자 로직 문제입니다. `process_count` 증설, worker 최적화, timeout/DLQ 정책 점검이 우선입니다.
     - `worker_to_main`이 높고 `buffered_items`나 `consumer_in_flight_count`도 높으면 completion drain이 밀리고 있을 가능성이 큽니다. main process 부하, completion polling cadence, 과도한 로그/metrics 갱신 빈도를 확인하십시오.
 
-### 1.9. Engine Capability Boundary (엔진 capability 경계)
+### 1.9. Process Batch Support Boundary (process 배치 지원 경계)
+- **Prometheus 쿼리**:
+    - `consumer_process_batch_transport_mode`
+    - `consumer_process_batch_support_state`
+    - `consumer_process_batch_timer_flush_supported`
+    - `consumer_process_batch_demand_flush_supported`
+    - `consumer_process_batch_recycle_supported`
+- **의미**: 이 gauge들은 어떤 process 실행 진단이 활성인지, 현재 transport가 어떤 process-batch 제어 경로를 지원하는지 설명합니다. `transport_mode`는 현재 `worker_pipes`로 제한되고, `support_state`는 `full` 또는 `bounded`로 제한됩니다.
+- **운영 팁**: 이 값들은 throughput counter가 아니라 compatibility/support-boundary 신호입니다. timer/demand/recycle 관련 값이 0일 때 운영 장애로 해석하기 전에 먼저 지원 여부를 확인하십시오.
+
+### 1.10. Engine Capability Boundary (엔진 capability 경계)
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
 - **의미**: commit clamping / commit clamp용 최소 in-flight offset은 control-plane `WorkManager` dispatch ledger에서 계산한다. 따라서 process 전용 registry는 canonical commit safety 규칙이 아니라 recovery/diagnostics 상태로 남아야 합니다.
 - **운영 팁**: `process_batch_metrics`는 v1 compatibility projection으로 계속 문서화하고, generic engine diagnostics는 내부 진화 방향으로 취급하십시오. 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
 
-### 1.10. Shutdown Drain Diagnostics (종료 drain 진단)
+### 1.11. Shutdown Drain Diagnostics (종료 drain 진단)
 - **로그 라인**:
     - `ProcessExecutionEngine shutdown pre-join drain: registry_events=... completion_events=... residual_in_flight_registry=...`
     - `ProcessExecutionEngine shutdown post-join drain: registry_events=... completion_events=... passes=... residual_in_flight_registry=...`
@@ -100,7 +110,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 이 로그는 shutdown 중 main process에서 보이는 IPC를 얼마나 reconcile했는지와 남은 process-private 진단 상태를 설명합니다. Prometheus counter, retry ledger, DLQ trigger, commit-safety 근거가 아닙니다.
 - **운영 팁**: `completion_events`가 0보다 크면 이미 보이던 real completion이 일반 prefetched completion 경로로 이동했다는 증거로만 해석하십시오. `passes`는 bounded stable-empty 관찰 횟수이며, shutdown 경계 밖의 숨은 worker outcome이 절대 없다는 증명이 아닙니다. Commit advancement, DLQ publish, epoch fencing은 계속 control-plane의 normal completion handling에서만 결정됩니다.
 
-### 1.11. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
+### 1.12. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
 - **Prometheus 쿼리**:
     - `consumer_adaptive_backpressure_configured_max_in_flight`
     - `consumer_adaptive_backpressure_effective_max_in_flight`
@@ -162,6 +172,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 ## 4. 모니터링 대시보드 (Grafana 권장)
 
 `get_metrics()` 결과를 Prometheus 등으로 수집한다고 가정할 때, 다음과 같은 패널 구성을 권장합니다.
+포함된 Grafana dashboard는 public metric surface를 탐색하고 필요한 패널을 조합하기 위한 reference/sample dashboard이며, production opinionated dashboard나 alert policy가 아닙니다.
 
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
@@ -206,6 +217,10 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: 세 값을 분리해서 보면 병목이 serialization/IPC인지, 실제 worker 실행인지, completion 회수인지 빠르게 구분할 수 있습니다.
+- **Support Boundary**:
+    - Type: Time Series
+    - Query: `consumer_process_batch_transport_mode`, `consumer_process_batch_support_state`, `consumer_process_batch_timer_flush_supported`, `consumer_process_batch_demand_flush_supported`, `consumer_process_batch_recycle_supported`
+    - Insight: missing activity를 장애로 해석하기 전에 active process transport가 timer, demand, recycle 경로를 지원하는지 먼저 확인합니다.
 
 ### 4.5. Adaptive Control Runtime (Row)
 - **Adaptive Backpressure Limits**:
@@ -220,6 +235,17 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **튜닝 참조값**:
     - Type: Table
     - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
+
+### 4.6. Pipeline Diagnostics Surface (Row)
+- **Pipeline Stages**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_stage_messages`
+- **Pipeline Blocked Reasons**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- **Pipeline Support and Worker Capacity**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
 
 ---
 © 2026 Pyrallel Consumer Project

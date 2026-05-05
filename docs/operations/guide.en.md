@@ -87,12 +87,22 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
     - High `worker_exec` alone points to CPU saturation or slow handler logic; tune `process_count`, optimize the worker, or tighten timeout/DLQ policy.
     - High `worker_to_main` with rising `buffered_items` or `consumer_in_flight_count` suggests completion drain is lagging. Check main-process load, completion polling cadence, and overly chatty logging/metrics loops.
 
-### 1.9. Engine Capability Boundary
+### 1.9. Process Batch Support Boundary
+- **Prometheus queries**:
+    - `consumer_process_batch_transport_mode`
+    - `consumer_process_batch_support_state`
+    - `consumer_process_batch_timer_flush_supported`
+    - `consumer_process_batch_demand_flush_supported`
+    - `consumer_process_batch_recycle_supported`
+- **Meaning**: These gauges describe which process execution diagnostics are active and which process-batch control paths the current transport supports. `transport_mode` is currently bounded to `worker_pipes`; `support_state` is bounded to `full` or `bounded`.
+- **Tip**: Treat these as compatibility and support-boundary signals, not throughput counters. Use them before interpreting zero-valued timer/demand/recycle behavior as a runtime fault.
+
+### 1.10. Engine Capability Boundary
 - **Definition**: The control plane only depends on the shared execution-engine contract.
 - **Meaning**: Commit clamping is computed from the control-plane `WorkManager` dispatch ledger. This commit clamping rule belongs to the control plane, while process-private registries remain recovery/diagnostics state rather than a required engine capability.
 - **Tip**: Keep `process_batch_metrics` documented as a v1 compatibility projection while generic engine diagnostics evolve internally. When validating refactors, run the same control-plane checks against async and process engines (or mocks) to confirm the boundary stays polymorphic.
 
-### 1.10. Shutdown Drain Diagnostics
+### 1.11. Shutdown Drain Diagnostics
 - **Log lines**:
     - `ProcessExecutionEngine shutdown pre-join drain: registry_events=... completion_events=... residual_in_flight_registry=...`
     - `ProcessExecutionEngine shutdown post-join drain: registry_events=... completion_events=... passes=... residual_in_flight_registry=...`
@@ -100,7 +110,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: These entries describe visible IPC reconciliation during shutdown and remaining process-private diagnostic state. They are not Prometheus counters, a retry ledger, a DLQ trigger, or commit-safety evidence.
 - **Tip**: Treat non-zero `completion_events` as evidence that already-visible real completions were moved into the normal prefetched completion path. Treat `passes` as a bounded stable-empty observation only; it is not proof that no hidden worker outcome can still exist outside the shutdown boundary. Commit advancement, DLQ publish, and epoch fencing remain control-plane decisions driven by normal completion handling.
 
-### 1.11. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
+### 1.12. Adaptive Backpressure / Adaptive Concurrency Runtime Snapshots
 - **Prometheus queries**:
     - `consumer_adaptive_backpressure_configured_max_in_flight`
     - `consumer_adaptive_backpressure_effective_max_in_flight`
@@ -162,6 +172,7 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 ## 4. Monitoring Dashboard (Grafana Recommended)
 
 Assuming `get_metrics()` results are collected via Prometheus, the following panel configuration is recommended.
+The checked-in Grafana dashboard is a reference/sample dashboard for exploring the public metric surface and composing panels; it is not a production opinionated dashboard or alert policy.
 
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
@@ -206,6 +217,10 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: Split these three values to quickly decide whether the bottleneck is serialization/IPC, worker execution, or completion draining.
+- **Support Boundary**:
+    - Type: Time Series
+    - Query: `consumer_process_batch_transport_mode`, `consumer_process_batch_support_state`, `consumer_process_batch_timer_flush_supported`, `consumer_process_batch_demand_flush_supported`, `consumer_process_batch_recycle_supported`
+    - Insight: Confirm whether the active process transport supports the timer, demand, and recycle paths before treating missing activity as an operational failure.
 
 ### 4.5. Adaptive Control Runtime (Row)
 - **Adaptive Backpressure Limits**:
@@ -220,6 +235,17 @@ Assuming `get_metrics()` results are collected via Prometheus, the following pan
 - **Tuning Reference**:
     - Type: Table
     - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
+
+### 4.6. Pipeline Diagnostics Surface (Row)
+- **Pipeline Stages**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_stage_messages`
+- **Pipeline Blocked Reasons**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- **Pipeline Support and Worker Capacity**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
 
 ---
 © 2026 Pyrallel Consumer Project

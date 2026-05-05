@@ -70,6 +70,11 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | Average worker execution time |
 | `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | Most recent worker-to-main IPC time |
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
+| `consumer_process_batch_transport_mode` | Gauge | `mode` | One-hot process execution transport diagnostic (`worker_pipes`) |
+| `consumer_process_batch_support_state` | Gauge | `state` | One-hot support boundary state (`full` or `bounded`) |
+| `consumer_process_batch_timer_flush_supported` | Gauge | – | Whether timer flush is supported by the active process execution path |
+| `consumer_process_batch_demand_flush_supported` | Gauge | – | Whether demand flush is supported by the active process execution path |
+| `consumer_process_batch_recycle_supported` | Gauge | – | Whether recycle settings are supported by the active process execution path |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
 For failure alerting, use `consumer_commit_failures_total{reason="kafka_exception"}`
@@ -403,6 +408,9 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - JSON reports include `performance_improvements` entries with TPS delta,
   percent delta, and ratio for adaptive on/off comparisons and best Pyrallel
   versus baseline comparisons.
+- JSON reports also include observability evidence fields: `metrics_observations`,
+  `final_lag`, and `final_gap_count`. These summarize selected runtime metrics
+  for benchmark review; they are not the full runtime snapshot API.
 - No flags: launches a Textual TUI so you can configure the benchmark interactively.
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
@@ -461,6 +469,10 @@ Included stack (via `docker-compose.yml`):
 - Kafka UI (8080)
 - Kafka (9092)
 
+The checked-in Grafana dashboard is a reference/sample dashboard for exploring
+the public metric surface and composing your own panels. It is not a
+production opinionated dashboard or alert policy.
+
 Usage:
 
 1) Current facade note:
@@ -499,6 +511,16 @@ docker compose up -d
 - `consumer_process_batch_avg_worker_exec_seconds`
 - `consumer_process_batch_last_worker_to_main_ipc_seconds`
 - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
+- `consumer_process_batch_transport_mode`
+- `consumer_process_batch_support_state`
+- `consumer_process_batch_timer_flush_supported`
+- `consumer_process_batch_demand_flush_supported`
+- `consumer_process_batch_recycle_supported`
+- `pyrallel_pipeline_stage_messages`
+- `pyrallel_pipeline_blocked_messages`
+- `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- `pyrallel_pipeline_section_support_state`
+- `pyrallel_pipeline_worker_capacity_units`
 
 Interpretation and operator actions for these metrics live in:
 - `docs/operations/guide.en.md`

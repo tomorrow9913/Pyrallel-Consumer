@@ -77,6 +77,11 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | 평균 worker 실행 시간 |
 | `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | 최근 worker-to-main IPC 시간 |
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | 평균 worker-to-main IPC 시간 |
+| `consumer_process_batch_transport_mode` | Gauge | `mode` | process 실행 transport 진단 one-hot (`worker_pipes`) |
+| `consumer_process_batch_support_state` | Gauge | `state` | support boundary 상태 one-hot (`full` 또는 `bounded`) |
+| `consumer_process_batch_timer_flush_supported` | Gauge | – | active process 실행 경로가 timer flush를 지원하는지 여부 |
+| `consumer_process_batch_demand_flush_supported` | Gauge | – | active process 실행 경로가 demand flush를 지원하는지 여부 |
+| `consumer_process_batch_recycle_supported` | Gauge | – | active process 실행 경로가 recycle 설정을 지원하는지 여부 |
 
 이 지표들은 `BrokerPoller.get_metrics()`와 동일한 값을 기반으로 생성되며, Grafana 대시보드 구성 시 그대로 사용할 수 있습니다.
 실패 알림에는 최종 Kafka commit 실패용
@@ -101,6 +106,9 @@ ceiling으로 유지되고, 실제 런타임에서 적용 중인 control-plane �
 ## 📊 벤치마크 샘플 (프로파일 OFF)
 
 최근 실행(4 partitions, 2000 msgs, 100 keys, profiling off)의 처리량(TPS)을 아래에 공유합니다. 워크로드는 `benchmarks/run_parallel_benchmark.py`의 `--workloads` 옵션으로 선택했고, 실행 시 프로파일링은 모두 비활성화했습니다.
+벤치마크 JSON summary는 `performance_improvements` 외에도 선택된 관측 증거인
+`metrics_observations`, `final_lag`, `final_gap_count`를 포함합니다. 이 값들은
+review용 요약이며 full runtime snapshot API를 직렬화한 것은 아닙니다.
 
 ### 워크로드 옵션이 실제로 하는 일
 
@@ -544,6 +552,7 @@ uv run python benchmarks/run_parallel_benchmark.py \
 
 - `docker-compose.yml`에 Prometheus(9090), Grafana(3000), Kafka Exporter(9308), Kafka UI(8080), Kafka(9092)가 포함됩니다.
 - Prometheus 설정은 `monitoring/prometheus.yml`에서 관리하며 기본으로 `kafka-exporter`와 호스트의 Pyrallel Consumer(메트릭 포트 9091)를 스크랩합니다. 컨슈머가 컨테이너 내에서 돌면 해당 주소를 컨테이너 호스트네임으로 변경하세요.
+- 포함된 Grafana dashboard는 public metric surface를 탐색하고 필요한 패널을 조합하기 위한 reference/sample dashboard입니다. production opinionated dashboard나 alert policy가 아닙니다.
 
 사용 방법
 1) 현재 퍼사드 기준 참고:
@@ -571,6 +580,8 @@ docker compose up -d
 - 예시 쿼리: `consumer_processed_total`, `consumer_processing_latency_seconds_bucket`, `consumer_in_flight_count`.
 - process batch 관측 예시: `consumer_process_batch_flush_count{reason="timer"}`, `consumer_process_batch_avg_size`, `consumer_process_batch_last_size`, `consumer_process_batch_last_wait_seconds`, `consumer_process_batch_buffered_items`, `consumer_process_batch_buffered_age_seconds`.
 - process timing 분해 예시: `consumer_process_batch_last_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_last_worker_exec_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_last_worker_to_main_ipc_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`.
+- process support boundary 예시: `consumer_process_batch_transport_mode`, `consumer_process_batch_support_state`, `consumer_process_batch_timer_flush_supported`, `consumer_process_batch_demand_flush_supported`, `consumer_process_batch_recycle_supported`.
+- pipeline metric surface 예시: `pyrallel_pipeline_stage_messages`, `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`, `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`.
 - 위 process-mode 메트릭의 해석 기준과 운영자 대응 흐름은 `docs/operations/guide.ko.md`, `docs/operations/guide.en.md`를 기준 문서로 사용하십시오.
 
 ## 🤝 기여하기
