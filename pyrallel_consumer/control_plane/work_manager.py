@@ -1028,11 +1028,11 @@ class WorkManager:
     def get_pipeline_diagnostics(
         self, *, top_k_depths_limit: int = 10
     ) -> WorkManagerPipelineDiagnostics:
-        """Return WorkManager-owned internal pipeline diagnostics.
+        """Return WorkManager-owned stable pipeline diagnostics.
 
-        The helper intentionally stays outside public RuntimeSnapshot v1. It reports
+        The sidecar intentionally stays outside public RuntimeSnapshot v1. It reports
         WorkManager-owned logical queue, eligibility, blocked-reason, and
-        dispatch-capacity state without reading execution-engine private internals.
+        dispatch-capacity state without reading execution-engine private state.
         """
         stage_counts = {
             stage: PipelineCount(count=0, oldest_age_ms=None) for stage in PipelineStage

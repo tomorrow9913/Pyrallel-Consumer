@@ -287,5 +287,5 @@ class PyrallelConsumer:
         return self._poller.get_runtime_snapshot()
 
     def get_pipeline_diagnostics(self) -> WorkManagerPipelineDiagnostics:
-        """Get the experimental internal pipeline diagnostics sidecar snapshot."""
+        """Get the stable pipeline diagnostics sidecar snapshot."""
         return self._poller.get_pipeline_diagnostics()

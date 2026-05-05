@@ -79,6 +79,19 @@ def _empty_work_manager_pipeline_diagnostics() -> WorkManagerPipelineDiagnostics
     )
 
 
+def test_work_manager_only_pipeline_poll_diagnostics_is_not_implemented() -> None:
+    diagnostics = _empty_work_manager_pipeline_diagnostics()
+
+    assert (
+        diagnostics.poll.support_state
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.POLL]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+
+
 @pytest.fixture
 def mock_kafka_config():
     config = MagicMock(spec=KafkaConfig)
@@ -544,6 +557,60 @@ class TestBrokerPollerMetrics:
             == PipelineDiagnosticsSupportState.SUPPORTED
         )
 
+    def test_get_pipeline_diagnostics_adds_broker_poll_sidecar(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics.poll.records_total == 0
+        assert diagnostics.poll.nonempty_polls_total == 0
+        assert diagnostics.poll.empty_polls_total == 0
+        assert diagnostics.poll.error_polls_total == 0
+        assert (
+            diagnostics.poll.support_state == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.POLL]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+
+    def test_record_pipeline_poll_batch_updates_broker_owned_poll_sidecar(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        broker_poller_with_mocks._record_pipeline_poll_batch([object(), object()])
+        broker_poller_with_mocks._record_pipeline_poll_batch([])
+        broker_poller_with_mocks._record_pipeline_poll_error()
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+        assert diagnostics.poll.records_total == 2
+        assert diagnostics.poll.nonempty_polls_total == 1
+        assert diagnostics.poll.empty_polls_total == 1
+        assert diagnostics.poll.error_polls_total == 1
+
+    def test_on_revoke_drops_unsettled_completion_timestamp_ledger(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._unsettled_completion_timestamps_by_partition[tp] = {
+            10: 100.0
+        }
+        revoked = [MagicMock(topic="test-topic", partition=0)]
+        broker_poller_with_mocks._rebalance_support.handle_revoke = MagicMock()
+
+        broker_poller_with_mocks._on_revoke(MagicMock(), revoked)
+
+        assert (
+            broker_poller_with_mocks._unsettled_completion_timestamps_by_partition == {}
+        )
+
     def test_get_pipeline_diagnostics_reports_completed_unsettled_from_broker_ledger(
         self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
     ):
@@ -688,7 +755,7 @@ class TestBrokerPollerMetrics:
         diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
 
         assert diagnostics is not pipeline_diagnostics
-        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED_INTERNAL
+        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED
         assert (
             diagnostics.section_support[PipelineDiagnosticsSection.WORKERS]
             == PipelineDiagnosticsSupportState.SUPPORTED
@@ -714,7 +781,7 @@ class TestBrokerPollerMetrics:
 
         diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
 
-        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED_INTERNAL
+        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED
         assert (
             diagnostics.section_support[PipelineDiagnosticsSection.WORKERS]
             == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED

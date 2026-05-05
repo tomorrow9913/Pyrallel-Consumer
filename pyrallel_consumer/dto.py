@@ -267,7 +267,7 @@ class EngineRuntimeDiagnostics:
 
 
 class PipelineStage(str, Enum):
-    """Bounded internal pipeline stage names for sidecar diagnostics.
+    """Bounded pipeline stage names for the stable diagnostics sidecar.
 
     Slice 2A/2B WorkManager diagnostics observe only WorkManager-owned stages.
     Future-owned stages remain present for a stable sidecar shape but are
@@ -334,14 +334,22 @@ class PipelineDiagnosticsSupportState(str, Enum):
 
 
 class PipelineDiagnosticsScope(str, Enum):
-    """Machine-readable scope for the exposed diagnostics sidecar."""
+    """Machine-readable scope for the stable diagnostics sidecar."""
 
     WORK_MANAGER_ONLY = "work_manager_only"
-    COMBINED_INTERNAL = "combined_internal"
+    COMBINED = "combined"
+    COMBINED_INTERNAL = "combined"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "PipelineDiagnosticsScope | None":
+        """Normalize legacy serialized scope names to the canonical value."""
+        if value == "combined_internal":
+            return cls.COMBINED
+        return None
 
 
 class PipelineDiagnosticsSection(str, Enum):
-    """Machine-readable sections of the diagnostics sidecar."""
+    """Machine-readable sections of the stable diagnostics sidecar."""
 
     STAGES = "stages"
     BLOCKED = "blocked"
@@ -350,6 +358,21 @@ class PipelineDiagnosticsSection(str, Enum):
     ADMISSION = "admission"
     WORKERS = "workers"
     SETTLEMENT = "settlement"
+    POLL = "poll"
+
+
+@dataclass(frozen=True)
+class PipelinePollDiagnostics:
+    """BrokerPoller-owned poll/acquire counters for pipeline diagnostics."""
+
+    records_total: int = 0
+    nonempty_polls_total: int = 0
+    empty_polls_total: int = 0
+    error_polls_total: int = 0
+    broker_kind: str = "kafka"
+    support_state: (
+        PipelineDiagnosticsSupportState
+    ) = PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
 
 
 @dataclass(frozen=True)
@@ -427,11 +450,12 @@ class PipelineSubqueueDiagnostics:
 
 @dataclass(frozen=True)
 class WorkManagerPipelineDiagnostics:
-    """Internal WorkManager-owned pipeline diagnostics sidecar.
+    """Stable broker-neutral pipeline diagnostics sidecar snapshot.
 
-    The current helper owns queue topology, eligibility, logical blocked reason,
-    and dispatch-capacity diagnostics only. Execution admission and later
-    pipeline stages keep a stable shape but are unavailable until later slices.
+    The public sidecar keeps RuntimeSnapshot v1 unchanged while exposing bounded
+    queue, eligibility, blocked, capacity, settlement, poll, and worker diagnostic
+    projections. Unsupported sections use explicit support-state metadata instead
+    of fake observed values.
     """
 
     stage_counts: dict[PipelineStage, PipelineCount]
@@ -446,6 +470,11 @@ class WorkManagerPipelineDiagnostics:
     settlement: PipelineSettlementDiagnostics = field(
         default_factory=lambda: PipelineSettlementDiagnostics(completed_unsettled=0)
     )
+    poll: PipelinePollDiagnostics = field(default_factory=PipelinePollDiagnostics)
+
+
+PipelineDiagnostics = WorkManagerPipelineDiagnostics
+PipelineDiagnosticsSnapshot = WorkManagerPipelineDiagnostics
 
 
 class ResourceSignalStatus(str, Enum):

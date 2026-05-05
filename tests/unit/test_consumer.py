@@ -935,9 +935,11 @@ def test_pyrallel_consumer_delegates_pipeline_diagnostics_to_poller(
     assert consumer.get_pipeline_diagnostics() is dummy_poller.pipeline_diagnostics
 
 
-def test_pyrallel_consumer_pipeline_diagnostics_docstring_marks_internal_experimental():
+def test_pyrallel_consumer_pipeline_diagnostics_docstring_marks_stable_sidecar():
     docstring = PyrallelConsumer.get_pipeline_diagnostics.__doc__
 
     assert docstring is not None
-    assert "experimental" in docstring
-    assert "internal" in docstring
+    assert "stable" in docstring.lower()
+    assert "sidecar" in docstring.lower()
+    assert "experimental" not in docstring.lower()
+    assert "internal" not in docstring.lower()

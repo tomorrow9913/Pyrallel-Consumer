@@ -1049,7 +1049,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
 
     def _snapshot_pending_worker_loads(self) -> list[int]:
-        snapshot_loads = getattr(self._transport, "snapshot_pending_worker_loads", None)
+        """Return pending per-worker transport loads when transport exists."""
+        transport = getattr(self, "_transport", None)
+        snapshot_loads = getattr(transport, "snapshot_pending_worker_loads", None)
         if not callable(snapshot_loads):
             return []
         worker_loads = snapshot_loads()
@@ -1058,6 +1060,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         return [load for load in worker_loads if isinstance(load, int)]
 
     def _snapshot_worker_diagnostics(self) -> EngineWorkerDiagnostics:
+        """Return process worker capacity diagnostics without reading private callers."""
         worker_count = self._config.process_config.process_count
         pending_loads = self._snapshot_pending_worker_loads()
         pending_by_worker = [0 for _ in range(worker_count)]

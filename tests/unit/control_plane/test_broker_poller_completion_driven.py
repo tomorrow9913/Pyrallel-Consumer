@@ -514,6 +514,7 @@ async def test_partial_commit_retains_gap_completion_and_counts_next_completion(
             processed_count=1,
             completed_partitions=frozenset({topic_partition}),
             completed_counts_by_partition={topic_partition: 1},
+            completed_offsets_by_partition={topic_partition: (11,)},
         )
     )
     broker_poller._make_completion_support = MagicMock(return_value=completion_support)
@@ -534,6 +535,86 @@ async def test_partial_commit_retains_gap_completion_and_counts_next_completion(
 
     diagnostics_after_next_completion = broker_poller.get_pipeline_diagnostics()
     assert diagnostics_after_next_completion.settlement.completed_unsettled == 2
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_records_unsettled_completion_timestamps(
+    broker_poller, topic_partition, completion_event
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    completion_support = MagicMock()
+    completion_support.process_completed_events = AsyncMock(
+        return_value=CompletionProcessingResult(
+            processed_count=1,
+            completed_partitions=frozenset({topic_partition}),
+            completed_counts_by_partition={topic_partition: 1},
+            completed_offsets_by_partition={topic_partition: (0,)},
+        )
+    )
+    broker_poller._make_completion_support = MagicMock(return_value=completion_support)
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.time.monotonic") as clock:
+        clock.return_value = 123.0
+        await broker_poller._process_completed_events([completion_event])
+
+    assert broker_poller._unsettled_completion_timestamps_by_partition == {
+        topic_partition: {0: 123.0}
+    }
+
+
+def test_clear_committed_dirty_partitions_observes_commit_latency_and_retains_gap(
+    broker_poller, topic_partition
+):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=10,
+        max_revoke_grace_ms=1000,
+    )
+    tracker.mark_complete(10)
+    tracker.mark_complete(12)
+    tracker.commit_through(10)
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+    broker_poller._unsettled_completion_timestamps_by_partition[topic_partition] = {
+        10: 100.0,
+        12: 101.0,
+    }
+    broker_poller._metrics_exporter = MagicMock()
+
+    with patch("pyrallel_consumer.control_plane.broker_poller.time.monotonic") as clock:
+        clock.return_value = 105.0
+        broker_poller._clear_committed_dirty_partitions([(topic_partition, 10)])
+
+    broker_poller._metrics_exporter.observe_completion_to_commit_latency.assert_called_once_with(
+        engine_type="async",
+        duration_seconds=5.0,
+    )
+    assert broker_poller._unsettled_completion_timestamps_by_partition == {
+        topic_partition: {12: 101.0}
+    }
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_does_not_observe_latency_when_commit_fails(
+    broker_poller, topic_partition
+):
+    broker_poller._offset_trackers[topic_partition] = _make_tracker(topic_partition)
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+    broker_poller._unsettled_completion_timestamps_by_partition[topic_partition] = {
+        0: 100.0
+    }
+    broker_poller._metrics_exporter = MagicMock()
+    broker_poller._commit_offsets = AsyncMock(return_value=False)
+    dispatch_support = MagicMock()
+    dispatch_support.build_commit_candidates.return_value = [(topic_partition, 0)]
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    await broker_poller._commit_ready_offsets(force=True)
+
+    broker_poller._metrics_exporter.observe_completion_to_commit_latency.assert_not_called()
+    assert broker_poller._unsettled_completion_timestamps_by_partition == {
+        topic_partition: {0: 100.0}
+    }
 
 
 @pytest.mark.asyncio
