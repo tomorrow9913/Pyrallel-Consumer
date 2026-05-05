@@ -36,6 +36,8 @@ from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
 class _NoopEngine(BaseExecutionEngine):
+    """Minimal execution engine used to synthesize diagnostics evidence."""
+
     def __init__(
         self,
         runtime_metrics: Optional[EngineRuntimeDiagnostics] = None,
@@ -44,46 +46,59 @@ class _NoopEngine(BaseExecutionEngine):
         self._runtime_metrics = runtime_metrics
 
     async def submit(self, work_item: WorkItem) -> None:
+        """Record submitted offsets without executing user work."""
         self.submitted_offsets.append(work_item.offset)
 
     async def poll_completed_events(
         self, batch_limit: int = 1000
     ) -> list[CompletionEvent]:
+        """Return no completions for evidence scenarios."""
         return []
 
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
     ) -> bool:
+        """Report that no asynchronous work completed."""
         return False
 
     def get_in_flight_count(self) -> int:
+        """Return an empty in-flight count for evidence scenarios."""
         return 0
 
     def get_runtime_metrics(self) -> Optional[EngineRuntimeDiagnostics]:
+        """Return configured synthetic engine diagnostics."""
         return self._runtime_metrics
 
     async def shutdown(self) -> None:
+        """Satisfy the execution engine shutdown contract."""
         return None
 
 
 class _DiagnosticsWorkManager:
+    """Small WorkManager facade that returns a prepared diagnostics snapshot."""
+
     def __init__(self, diagnostics: WorkManagerPipelineDiagnostics) -> None:
         self._diagnostics = diagnostics
 
     def get_ordering_mode(self) -> OrderingMode:
+        """Return a deterministic ordering mode for poller construction."""
         return OrderingMode.KEY_HASH
 
     def get_total_in_flight_count(self) -> int:
+        """Return no submitted work for evidence scenarios."""
         return 0
 
     def get_virtual_queue_sizes(self) -> dict[TopicPartition, dict[object, int]]:
+        """Return no virtual queue sizes for evidence scenarios."""
         return {}
 
     def get_pipeline_diagnostics(self) -> WorkManagerPipelineDiagnostics:
+        """Return the prepared WorkManager-owned diagnostics snapshot."""
         return self._diagnostics
 
 
 def _json_ready(value: Any) -> Any:
+    """Convert dataclasses and enums into JSON-serializable values."""
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
@@ -96,6 +111,7 @@ def _json_ready(value: Any) -> Any:
 
 
 def _empty_diagnostics() -> WorkManagerPipelineDiagnostics:
+    """Build a diagnostics snapshot with no observed pipeline activity."""
     return WorkManagerPipelineDiagnostics(
         stage_counts={stage: PipelineCount(count=0) for stage in PipelineStage},
         blocked_counts={
@@ -131,6 +147,7 @@ def _setup_work_manager(
     tp: TopicPartition,
     max_in_flight: int = 100,
 ) -> WorkManager:
+    """Create a WorkManager with one assigned partition for evidence scenarios."""
     work_manager = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=max_in_flight,
@@ -150,6 +167,7 @@ def _make_poller(
     diagnostics: Optional[WorkManagerPipelineDiagnostics] = None,
     runtime_metrics: Optional[EngineRuntimeDiagnostics] = None,
 ) -> BrokerPoller:
+    """Create a BrokerPoller around synthetic WorkManager and engine diagnostics."""
     config = KafkaConfig(_env_file=None)
     engine = _NoopEngine(runtime_metrics=runtime_metrics)
     work_manager = _DiagnosticsWorkManager(diagnostics or _empty_diagnostics())
@@ -162,6 +180,7 @@ def _make_poller(
 
 
 def _summarize_snapshot(diagnostics: WorkManagerPipelineDiagnostics) -> dict[str, Any]:
+    """Flatten a diagnostics snapshot into stable evidence JSON fields."""
     return {
         "scope": diagnostics.scope.value,
         "stages": {
@@ -195,11 +214,13 @@ def _summarize_snapshot(diagnostics: WorkManagerPipelineDiagnostics) -> dict[str
 
 
 async def _normal_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnostics:
+    """Return an idle WorkManager diagnostics snapshot."""
     work_manager = _setup_work_manager(engine=_NoopEngine(), tp=tp)
     return work_manager.get_pipeline_diagnostics()
 
 
 async def _ordering_lock_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnostics:
+    """Return a snapshot with one key-ordered item blocked behind another."""
     engine = _NoopEngine()
     work_manager = _setup_work_manager(engine=engine, tp=tp)
     await work_manager.submit_message(tp, 0, 1, b"key-A", b"payload-0")
@@ -209,6 +230,7 @@ async def _ordering_lock_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiag
 
 
 async def _max_in_flight_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnostics:
+    """Return a snapshot showing max-in-flight dispatch pressure."""
     engine = _NoopEngine()
     work_manager = _setup_work_manager(engine=engine, tp=tp, max_in_flight=1)
     await work_manager.submit_message(tp, 0, 1, b"key-A", b"payload-0")
@@ -218,6 +240,7 @@ async def _max_in_flight_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiag
 
 
 def _worker_occupancy_snapshot() -> WorkManagerPipelineDiagnostics:
+    """Return a composed snapshot with process worker occupancy diagnostics."""
     diagnostics = _empty_diagnostics()
     runtime_metrics = EngineRuntimeDiagnostics(
         engine_type="process",
@@ -235,6 +258,7 @@ def _worker_occupancy_snapshot() -> WorkManagerPipelineDiagnostics:
 
 
 def _commit_pending_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnostics:
+    """Return a snapshot with one completed item waiting for commit."""
     poller = _make_poller()
     poller._dirty_commit_partitions.add(tp)
     poller._unsettled_completions_by_partition[tp] = 1
@@ -243,6 +267,7 @@ def _commit_pending_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnosti
 
 
 def _dlq_publish_pending_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiagnostics:
+    """Return a snapshot with one terminal failure waiting for DLQ publish."""
     poller = _make_poller()
     poller._pending_dlq_events[(tp, 12)] = CompletionEvent(
         id="evidence-12",
@@ -257,6 +282,7 @@ def _dlq_publish_pending_snapshot(tp: TopicPartition) -> WorkManagerPipelineDiag
 
 
 async def build_evidence() -> dict[str, Any]:
+    """Build the pipeline diagnostics evidence artifact content."""
     tp = TopicPartition("evidence-topic", 0)
     scenario_builders = {
         "normal": await _normal_snapshot(tp),
@@ -333,6 +359,7 @@ async def build_evidence() -> dict[str, Any]:
 
 
 def write_evidence(path: Path) -> dict[str, Any]:
+    """Write the pipeline diagnostics evidence artifact to disk."""
     evidence = asyncio.run(build_evidence())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -342,6 +369,7 @@ def write_evidence(path: Path) -> dict[str, Any]:
 
 
 def main() -> None:
+    """Parse CLI arguments and regenerate the evidence artifact."""
     parser = argparse.ArgumentParser(
         description="Generate #131 pipeline diagnostics sidecar evidence JSON."
     )

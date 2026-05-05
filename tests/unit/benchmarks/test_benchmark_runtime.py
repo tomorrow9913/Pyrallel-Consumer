@@ -1661,6 +1661,9 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
 ) -> None:
     captured_metrics_exporter: Any = None
     metrics_updates: list[Any] = []
+    pipeline_updates: list[tuple[Any, str]] = []
+    poller_exporters: list[Any] = []
+    pipeline_diagnostics = object()
 
     class _FakePrometheusExporter:
         def observe_completion(self, tp, status, duration_seconds: float) -> None:
@@ -1669,12 +1672,18 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
         def update_from_system_metrics(self, metrics) -> None:
             metrics_updates.append(metrics)
 
+        def update_pipeline_diagnostics(self, diagnostics, *, engine_type: str) -> None:
+            pipeline_updates.append((diagnostics, engine_type))
+
     class _FakePoller:
         async def start(self) -> None:
             return None
 
         async def stop(self) -> None:
             return None
+
+        def set_metrics_exporter(self, metrics_exporter) -> None:
+            poller_exporters.append(metrics_exporter)
 
         def get_metrics(self):
             return SimpleNamespace(
@@ -1683,6 +1692,9 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
                 partitions=[],
                 process_batch_metrics=None,
             )
+
+        def get_pipeline_diagnostics(self):
+            return pipeline_diagnostics
 
     class _FakeEngine:
         async def shutdown(self) -> None:
@@ -1730,6 +1742,87 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
 
     assert captured_metrics_exporter is not None
     assert metrics_updates
+    assert pipeline_updates == [
+        (pipeline_diagnostics, "async"),
+        (pipeline_diagnostics, "async"),
+    ]
+    assert poller_exporters == [captured_metrics_exporter._prometheus_metrics_exporter]
+
+
+@pytest.mark.asyncio
+async def test_publish_metrics_loop_publishes_pipeline_diagnostics() -> None:
+    stop_event = asyncio.Event()
+    system_metrics = object()
+    pipeline_diagnostics = object()
+    system_updates: list[Any] = []
+    pipeline_updates: list[tuple[Any, str]] = []
+
+    class _FakePoller:
+        def get_metrics(self):
+            return system_metrics
+
+        def get_pipeline_diagnostics(self):
+            return pipeline_diagnostics
+
+    class _FakeExporter:
+        def update_from_system_metrics(self, metrics) -> None:
+            system_updates.append(metrics)
+
+        def update_pipeline_diagnostics(self, diagnostics, *, engine_type: str) -> None:
+            pipeline_updates.append((diagnostics, engine_type))
+            stop_event.set()
+
+    await pyrallel_consumer_test._publish_metrics_until_stopped(
+        stop_event=stop_event,
+        broker_poller=cast(Any, _FakePoller()),
+        prometheus_exporter=cast(Any, _FakeExporter()),
+        engine_type=ExecutionMode.PROCESS.value,
+        interval_sec=0,
+    )
+
+    assert system_updates == [system_metrics]
+    assert pipeline_updates == [(pipeline_diagnostics, "process")]
+
+
+@pytest.mark.asyncio
+async def test_finalize_consumer_run_publishes_final_pipeline_diagnostics() -> None:
+    system_metrics = SimpleNamespace(partitions=[], process_batch_metrics=None)
+    pipeline_diagnostics = object()
+    system_updates: list[Any] = []
+    pipeline_updates: list[tuple[Any, str]] = []
+
+    class _FakePoller:
+        async def stop(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return system_metrics
+
+        def get_pipeline_diagnostics(self):
+            return pipeline_diagnostics
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeExporter:
+        def update_from_system_metrics(self, metrics) -> None:
+            system_updates.append(metrics)
+
+        def update_pipeline_diagnostics(self, diagnostics, *, engine_type: str) -> None:
+            pipeline_updates.append((diagnostics, engine_type))
+
+    await pyrallel_consumer_test._finalize_consumer_run(
+        broker_poller=cast(Any, _FakePoller()),
+        engine=cast(Any, _FakeEngine()),
+        stats=None,
+        prometheus_exporter=cast(Any, _FakeExporter()),
+        metrics_start=0.0,
+        engine_type=ExecutionMode.ASYNC.value,
+    )
+
+    assert system_updates == [system_metrics]
+    assert pipeline_updates == [(pipeline_diagnostics, "async")]
 
 
 def test_run_benchmark_passes_process_overrides_to_process_round(
