@@ -17,6 +17,11 @@ PROCESS_MODE_METRICS = [
     "consumer_process_batch_avg_worker_exec_seconds",
     "consumer_process_batch_last_worker_to_main_ipc_seconds",
     "consumer_process_batch_avg_worker_to_main_ipc_seconds",
+    "consumer_process_batch_transport_mode",
+    "consumer_process_batch_support_state",
+    "consumer_process_batch_timer_flush_supported",
+    "consumer_process_batch_demand_flush_supported",
+    "consumer_process_batch_recycle_supported",
 ]
 
 RESOURCE_SIGNAL_METRICS = [
@@ -104,6 +109,24 @@ def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
         )
         assert "`worker_to_main_ipc_seconds`" not in text
         assert "`total_in_flight` suggests" not in text
+
+
+def test_benchmark_docs_describe_json_observability_evidence_fields() -> None:
+    docs = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.ko.md",
+        REPO_ROOT / "benchmarks" / "README.md",
+    ]
+    expected_fields = [
+        "metrics_observations",
+        "final_lag",
+        "final_gap_count",
+    ]
+
+    for path in docs:
+        text = path.read_text(encoding="utf-8", errors="strict")
+        for field in expected_fields:
+            assert field in text, f"{field} missing from {path.relative_to(REPO_ROOT)}"
 
 
 def test_runtime_boundary_docs_describe_control_plane_commit_clamp_contract() -> None:

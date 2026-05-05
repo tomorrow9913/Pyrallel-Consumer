@@ -18,6 +18,7 @@ from pyrallel_consumer.dto import (
     RuntimeSnapshot,
     SystemMetrics,
     WorkItem,
+    WorkManagerPipelineDiagnostics,
 )
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
@@ -178,6 +179,10 @@ class PyrallelConsumer:
             setattr(metrics, "resource_signal", resource_signal)
         try:
             self._metrics_exporter.update_from_system_metrics(metrics)
+            self._metrics_exporter.update_pipeline_diagnostics(
+                self._poller.get_pipeline_diagnostics(),
+                engine_type=self.config.parallel_consumer.execution.mode.value,
+            )
         except Exception:
             self._logger.exception("Metrics exporter update failed")
 
@@ -280,3 +285,7 @@ class PyrallelConsumer:
         Get the current runtime diagnostics snapshot.
         """
         return self._poller.get_runtime_snapshot()
+
+    def get_pipeline_diagnostics(self) -> WorkManagerPipelineDiagnostics:
+        """Get the stable pipeline diagnostics sidecar snapshot."""
+        return self._poller.get_pipeline_diagnostics()

@@ -67,6 +67,18 @@ def _fetch_text(url: str) -> str:
         return response.read().decode()
 
 
+def _grafana_admin_password() -> str:
+    password = os.environ.get("GF_SECURITY_ADMIN_PASSWORD")
+    if password:
+        return password
+    env_path = REPO_ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("GF_SECURITY_ADMIN_PASSWORD="):
+                return line.split("=", 1)[1].strip()
+    return "local-e2e"
+
+
 def _wait_until(description: str, timeout_sec: float, predicate) -> None:
     deadline = time.monotonic() + timeout_sec
     last_error: Exception | None = None
@@ -78,6 +90,19 @@ def _wait_until(description: str, timeout_sec: float, predicate) -> None:
             last_error = exc
         time.sleep(2)
     raise RuntimeError(f"{description} did not become ready: {last_error}")
+
+
+def _grafana_provisioning_ready(grafana_auth: str) -> bool:
+    return _fetch_json(
+        "http://127.0.0.1:3000/api/datasources/uid/prometheus",
+        auth=grafana_auth,
+    ).get("uid") == "prometheus" and any(
+        result.get("uid") == "pyrallel-overview"
+        for result in _fetch_json(
+            "http://127.0.0.1:3000/api/search?query=Pyrallel",
+            auth=grafana_auth,
+        )
+    )
 
 
 def _prometheus_target_health() -> dict[str, str]:
@@ -100,7 +125,8 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
             timeout_sec=90,
             predicate=lambda: _fetch_text("http://127.0.0.1:9090/-/ready") != "",
         )
-        grafana_auth = base64.b64encode(b"admin:local-e2e").decode()
+        grafana_password = _grafana_admin_password()
+        grafana_auth = base64.b64encode(f"admin:{grafana_password}".encode()).decode()
         _wait_until(
             "Grafana",
             timeout_sec=90,
@@ -124,6 +150,17 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
             _skip_or_fail(
                 "Monitoring stack Prometheus kafka-exporter target is not healthy: "
                 f"{exc}"
+            )
+        try:
+            _wait_until(
+                "Grafana provisioning",
+                timeout_sec=60,
+                predicate=lambda: _grafana_provisioning_ready(grafana_auth),
+            )
+        except RuntimeError as exc:
+            _skip_or_fail(
+                "Monitoring stack Grafana provisioning is not available with the "
+                f"configured admin credentials: {exc}"
             )
     except Exception as exc:
         _skip_or_fail(f"Monitoring stack not available for e2e smoke test: {exc}")
@@ -188,24 +225,6 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
                 "Monitoring stack Prometheus targets not healthy for e2e smoke "
                 f"test: {exc}"
             )
-        _wait_until(
-            "Grafana provisioning",
-            timeout_sec=60,
-            predicate=lambda: (
-                _fetch_json(
-                    "http://127.0.0.1:3000/api/datasources/uid/prometheus",
-                    auth=grafana_auth,
-                ).get("uid")
-                == "prometheus"
-                and any(
-                    result.get("title") == "Pyrallel Overview"
-                    for result in _fetch_json(
-                        "http://127.0.0.1:3000/api/search?query=Pyrallel",
-                        auth=grafana_auth,
-                    )
-                )
-            ),
-        )
         output, _ = benchmark.communicate(timeout=220)
         assert benchmark.returncode == 0, output
         assert json_output.exists()

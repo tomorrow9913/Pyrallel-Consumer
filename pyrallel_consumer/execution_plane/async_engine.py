@@ -15,6 +15,8 @@ from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
     CompletionEvent,
     CompletionStatus,
+    EngineRuntimeDiagnostics,
+    EngineWorkerDiagnostics,
     TopicPartition,
     WorkItem,
 )
@@ -233,6 +235,18 @@ class AsyncExecutionEngine(BaseExecutionEngine):
 
         """
         return len(self._in_flight_tasks)
+
+    def get_runtime_metrics(self) -> EngineRuntimeDiagnostics:
+        """Return async-engine-owned runtime diagnostics."""
+        return EngineRuntimeDiagnostics(
+            engine_type="async",
+            workers=EngineWorkerDiagnostics(
+                total=self._config.max_in_flight,
+                executing=len(self._in_flight_tasks),
+                admitted=None,
+                top_k_loads=[],
+            ),
+        )
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         """Return min inflight offset for async execution.

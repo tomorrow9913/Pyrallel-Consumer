@@ -9,7 +9,7 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import ExecutionMode
+from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, ExecutionMode
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
 
@@ -572,6 +572,50 @@ async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
         # This requires a bit more advanced mocking if we want to assert on calls to specific instances.
         # For simplicity, we assume the deletion implies the tracker was handled.
         # A more robust test might check mock_offset_tracker_factory calls or global mocks.
+
+
+@pytest.mark.asyncio
+async def test_on_revoke_clears_pending_dlq_events_for_revoked_partitions(
+    broker_poller, mock_consumer
+):
+    revoked_tp = DtoTopicPartition(topic="test-topic", partition=0)
+    retained_tp = DtoTopicPartition(topic="test-topic", partition=1)
+    for tp in (revoked_tp, retained_tp):
+        tracker = OffsetTracker(
+            topic_partition=tp,
+            starting_offset=0,
+            max_revoke_grace_ms=0,
+            initial_completed_offsets=set(),
+        )
+        tracker.last_committed_offset = -1
+        tracker.last_fetched_offset = 10
+        broker_poller._offset_trackers[tp] = tracker
+
+    revoked_event = CompletionEvent(
+        id="revoked-pending-dlq",
+        tp=revoked_tp,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="dlq unavailable",
+        attempt=3,
+    )
+    retained_event = CompletionEvent(
+        id="retained-pending-dlq",
+        tp=retained_tp,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="dlq unavailable",
+        attempt=3,
+    )
+    broker_poller._pending_dlq_events[(revoked_tp, 10)] = revoked_event
+    broker_poller._pending_dlq_events[(retained_tp, 10)] = retained_event
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    assert (revoked_tp, 10) not in broker_poller._pending_dlq_events
+    assert broker_poller._pending_dlq_events == {(retained_tp, 10): retained_event}
 
 
 @pytest.mark.asyncio

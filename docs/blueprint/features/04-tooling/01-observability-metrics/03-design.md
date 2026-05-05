@@ -17,6 +17,25 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `PARALLEL_CONSUMER_BLOCKING_WARN_SECONDS` | warning threshold for oldest blocking offset | `5.0` |
 | `PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS` | optional hard timeout hint for blocking offsets | `0` |
 
+Canonical Python configuration remains the primary API. Environment variables
+are settings inputs that hydrate the same config objects.
+
+| Python config field | Environment key | Notes |
+| --- | --- | --- |
+| `KafkaConfig.metrics.enabled` / `MetricsConfig.enabled` | `METRICS_ENABLED` | Enables the library Prometheus HTTP exporter. |
+| `KafkaConfig.metrics.port` / `MetricsConfig.port` | `METRICS_PORT` | Exporter port used by the per-process exporter cache. |
+| `ParallelConsumerConfig.execution.max_in_flight_messages` | `PARALLEL_CONSUMER_EXECUTION__MAX_IN_FLIGHT` | Static hard ceiling for control-plane in-flight work. |
+| `ParallelConsumerConfig.adaptive_backpressure.enabled` | `PARALLEL_CONSUMER_ADAPTIVE_BACKPRESSURE__ENABLED` | Enables adaptive backpressure telemetry and live limit control. |
+| `ParallelConsumerConfig.adaptive_concurrency.enabled` | `PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__ENABLED` | Enables adaptive concurrency telemetry and live limit control. |
+| `ParallelConsumerConfig.poison_message.enabled` | `PARALLEL_CONSUMER_POISON_MESSAGE__ENABLED` | Enables poison-message runtime snapshot section. |
+
+Exporter instances are cached per metrics port inside the process. The current
+metric surface has no `consumer_id`/`instance` label. Multiple consumers sharing
+one exporter port therefore share one registry: counters with identical labels
+aggregate, and gauges with identical labels are last-snapshot-wins. Prefer one
+consumer per metrics port unless topics/partitions and no-label gauges are
+operationally understood as process-level signals.
+
 ## 2. Canonical metric surface
 
 ### 2.1 Completion, queue, and partition state
@@ -76,6 +95,114 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `consumer_process_batch_avg_worker_exec_seconds` | Gauge | none | average process worker execution time |
 | `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | none | most recent worker-to-main IPC time |
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | none | average worker-to-main IPC time |
+| `consumer_process_batch_transport_mode` | Gauge | `mode` | one-hot process execution transport diagnostic; currently `worker_pipes` only |
+| `consumer_process_batch_support_state` | Gauge | `state` | one-hot support boundary state for the active process execution diagnostic |
+| `consumer_process_batch_timer_flush_supported` | Gauge | none | `1` when timer flush is supported by the active process execution path |
+| `consumer_process_batch_demand_flush_supported` | Gauge | none | `1` when demand flush is supported by the active process execution path |
+| `consumer_process_batch_recycle_supported` | Gauge | none | `1` when recycle settings are supported by the active process execution path |
+
+`consumer_process_batch_flush_count` is intentionally a Gauge in the current
+exporter even though the value is cumulative inside a process-engine snapshot.
+The exporter mirrors `ProcessBatchMetrics` snapshots and resets the series to
+`0` when process metrics are absent or after process/runtime restart. Treat it
+as a snapshot gauge; use `rate()` / `increase()` only with reset awareness.
+
+### 2.4 Stable pipeline diagnostics sidecar
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `pyrallel_pipeline_stage_messages` | Gauge | `stage`, `engine_type` | supported sidecar message counts by bounded pipeline stage |
+| `pyrallel_pipeline_blocked_messages` | Gauge | `reason`, `engine_type` | supported sidecar blocked counts by bounded blocker reason |
+| `pyrallel_pipeline_dispatch_capacity_blocked_messages` | Gauge | `reason`, `engine_type` | dispatch-capacity pressure for bounded reasons such as `max_in_flight` |
+| `pyrallel_pipeline_section_support_state` | Gauge | `section`, `state`, `engine_type` | one-hot support state for each sidecar section |
+| `pyrallel_pipeline_worker_capacity_units` | Gauge | `state`, `engine_type` | aggregate worker capacity counts for `total`, `executing`, and `admitted` when worker diagnostics are supported |
+| `pyrallel_pipeline_subqueue_items` | Gauge | `state`, `engine_type` | aggregate queued, eligible, and blocked item counts across bounded scheduling subqueues |
+| `pyrallel_pipeline_subqueues` | Gauge | `state`, `engine_type` | aggregate total, queued, eligible, and blocked subqueue counts |
+| `pyrallel_pipeline_settlement_blocker_state` | Gauge | `reason`, `engine_type` | one-hot current primary settlement blocker reason when settlement diagnostics are supported |
+| `pyrallel_pipeline_poll_records_total` | Counter | `broker_kind`, `engine_type` | delta-safe broker poll record count from supported poll diagnostics |
+| `pyrallel_pipeline_poll_events_total` | Counter | `event`, `broker_kind`, `engine_type` | delta-safe bounded broker poll event counts |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds` | Histogram | `engine_type` | broker-owned pipeline event metric emitted alongside the sidecar projection for completion-to-successful-commit settlement latency |
+
+Most pipeline metrics are a bounded Prometheus projection of the official sidecar
+returned by `PyrallelConsumer.get_pipeline_diagnostics()` /
+`BrokerPoller.get_pipeline_diagnostics()`. Completion-to-commit latency is a
+broker-owned pipeline event metric emitted alongside the sidecar projection, not
+a sidecar DTO field. They do not merge into or change
+`RuntimeSnapshot` v1. The exporter emits observed count gauges only for sections
+and stages whose support state is `supported`. `not_implemented` and
+`unavailable` sections are part of the public support-state contract and are represented through
+`pyrallel_pipeline_section_support_state`; their observed count gauges stay
+absent rather than being exported as zero.
+
+`workers.top_k_loads`, `subqueues.top_k_depths`, stage/blocker/settlement ages,
+and raw topic, partition, key, route, worker id, subqueue id, offset, or exception
+text remain snapshot/debug-only and must not be Prometheus labels. Worker
+occupancy is exposed only as aggregate `pyrallel_pipeline_worker_capacity_units`.
+
+### 2.5 Label value contract
+
+Labels must stay bounded. The current canonical label values are:
+
+| Label surface | Allowed values |
+| --- | --- |
+| `consumer_processed_total.status` | `success`, `failure` |
+| `consumer_commit_failures_total.reason` | `kafka_exception` |
+| `consumer_adaptive_backpressure_last_decision.decision` | `disabled`, `hold`, `scale_up`, `scale_down`, `cooldown` |
+| `consumer_process_batch_flush_count.reason` | `size`, `timer`, `close`, `demand` |
+| `consumer_process_batch_transport_mode.mode` | `worker_pipes` |
+| `consumer_process_batch_support_state.state` | `full`, `bounded` |
+| `consumer_resource_signal_status.status` | `available`, `unavailable`, `stale`, `first_sample_pending` |
+| `pyrallel_pipeline_stage_messages.stage` | `acquired`, `buffered`, `queued`, `dispatched`, `executing`, `completed_unsettled`, `failed`, `dlq` |
+| `pyrallel_pipeline_blocked_messages.reason` | `ordering_lock`, `route_lock`, `retry_delay`, `frontier_deferred`, `poison_guard`, `rebalancing`, `shutdown` |
+| `pyrallel_pipeline_dispatch_capacity_blocked_messages.reason` | `max_in_flight`, `adaptive_limit` |
+| `pyrallel_pipeline_section_support_state.section` | `stages`, `blocked`, `subqueues`, `dispatch_capacity`, `admission`, `workers`, `settlement`, `poll` |
+| `pyrallel_pipeline_section_support_state.state` | `supported`, `unavailable`, `not_implemented` |
+| `pyrallel_pipeline_worker_capacity_units.state` | `total`, `executing`, `admitted` |
+| `pyrallel_pipeline_subqueue_items.state` | `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_subqueues.state` | `total`, `queued`, `eligible`, `blocked` |
+| `pyrallel_pipeline_settlement_blocker_state.reason` | `commit_pending`, `dlq_publish_pending`, `ordered_cursor_gap`, `ack_pending`, `delete_pending`, `archive_pending`, `unknown` |
+| `pyrallel_pipeline_poll_records_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_poll_events_total.event` | `nonempty`, `empty`, `error` |
+| `pyrallel_pipeline_poll_events_total.broker_kind` | `kafka`, `unknown` |
+| `pyrallel_pipeline_completion_to_commit_latency_seconds.engine_type` | `async`, `process` |
+
+`first_sample_pending` is part of the public resource-signal enum for custom
+providers that can distinguish warm-up from failure. The built-in null provider
+reports `unavailable`.
+
+### 2.6 Metric ownership
+
+| Metric group | Computed by | Projected by | Boundary |
+| --- | --- | --- | --- |
+| completion counters and processing latency | `WorkManager` completion ledger | `PrometheusMetricsExporter` | Latency starts at WorkManager dispatch timestamp and ends when completion is processed. |
+| queue depth, in-flight, lag/gap/blocking duration | `BrokerPoller` / `BrokerRuntimeSupport` from control-plane state | `PrometheusMetricsExporter` | `consumer_internal_queue_depth` is partition-level virtual queue backlog. |
+| metadata size | commit metadata encoding path | `PrometheusMetricsExporter.update_metadata_size()` | Gauge is the most recent offset-commit metadata payload size per topic. |
+| adaptive/resource-signal gauges | adaptive controllers and resource-signal provider | `PrometheusMetricsExporter` | Disabled/absent adaptive sections are exported as zero-valued gauges plus `decision="disabled"` for backpressure. |
+| process-batch and IPC gauges | process execution engine via `ProcessBatchMetrics` | `SystemMetrics.process_batch_metrics` then `PrometheusMetricsExporter` | Control plane does not inspect process-engine internals; it only carries the DTO projection. |
+| pipeline diagnostics sidecar gauges | `WorkManager`, execution engine diagnostics, and `BrokerPoller` sidecar composition | `PrometheusMetricsExporter.update_pipeline_diagnostics()` | Exporter projects official sidecar DTO fields only; it does not inspect or compute pipeline state from private internals. |
+
+### 2.7 Triage-first metric model
+
+The triage-first metric model assigns each internal bottleneck signal to the
+runtime owner that can observe it without guessing:
+
+| Operational question | Source | Metric direction |
+| --- | --- | --- |
+| How many records are poll loops acquiring? | BrokerPoller/control-plane diagnostics | poll/acquire rate via bounded poll event counters |
+| How many messages are waiting inside Pyrallel? | WorkManager-owned scheduling state | queued and eligible gauges |
+| How many messages were accepted for dispatch? | WorkManager-owned submit handoff | dispatched is WorkManager-owned accepted submit accounting |
+| How many capacity units are occupied by execution? | ExecutionEngine diagnostics | executing/admitted are engine-owned worker capacity diagnostics |
+| How many terminal-path items cannot settle? | BrokerPoller settlement diagnostics | completed-unsettled and DLQ pending gauges |
+| Which terminal-path blocker is currently active? | BrokerPoller settlement diagnostics | bounded settlement blocker state as one-hot current reason |
+| How long does completed work wait before commit? | BrokerPoller settlement diagnostics | completion-to-commit latency as a settlement-path diagnostic |
+
+completion-to-commit latency must not use Kafka broker timestamp as a substitute;
+it measures process-local internal transition time between completion handling and
+successful settlement/commit.
+
+When process mode is inactive, process-batch metrics are exported as zero-valued
+gauges rather than omitted. This keeps dashboards stable, but operators should
+interpret those zeros as "not active" unless process mode is in use.
 
 ## 3. Runtime snapshot API boundary
 

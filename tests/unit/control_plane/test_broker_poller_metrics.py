@@ -17,16 +17,79 @@ from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
     DLQPayloadMode,
     EngineRuntimeDiagnostics,
+    EngineWorkerDiagnostics,
     OffsetRange,
     OrderingMode,
+    PipelineAdmissionDiagnostics,
+    PipelineCount,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityDiagnostics,
+    PipelineSettlementBlockerReason,
+    PipelineStage,
+    PipelineSubqueueDiagnostics,
+    PipelineWorkerDiagnostics,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     SystemMetrics,
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
+from pyrallel_consumer.dto import WorkManagerPipelineDiagnostics
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+
+
+def _empty_work_manager_pipeline_diagnostics() -> WorkManagerPipelineDiagnostics:
+    return WorkManagerPipelineDiagnostics(
+        stage_counts={
+            stage: PipelineCount(count=0, oldest_age_ms=None) for stage in PipelineStage
+        },
+        blocked_counts={},
+        dispatch_capacity=PipelineDispatchCapacityDiagnostics(blocked_items=0),
+        admission=PipelineAdmissionDiagnostics(blocked_items=0),
+        workers=PipelineWorkerDiagnostics(
+            total=0,
+            executing=0,
+            admitted=None,
+            top_k_loads=[],
+            support_state=PipelineDiagnosticsSupportState.NOT_IMPLEMENTED,
+        ),
+        subqueues=PipelineSubqueueDiagnostics(
+            total=0,
+            queued=0,
+            queued_items=0,
+            eligible_subqueues=0,
+            eligible_items=0,
+            blocked_subqueues=0,
+            blocked_items=0,
+            top_k_depths=[],
+        ),
+        stage_support={
+            stage: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for stage in PipelineStage
+        },
+        section_support={
+            section: PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+            for section in PipelineDiagnosticsSection
+        },
+    )
+
+
+def test_work_manager_only_pipeline_poll_diagnostics_is_not_implemented() -> None:
+    diagnostics = _empty_work_manager_pipeline_diagnostics()
+
+    assert (
+        diagnostics.poll.support_state
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.POLL]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
 
 
 @pytest.fixture
@@ -462,3 +525,271 @@ class TestBrokerPollerMetrics:
         assert partition.blocking_offset == 91
         assert partition.in_flight_count == 2
         assert partition.min_in_flight_offset == 92
+
+    def test_get_pipeline_diagnostics_adds_empty_settlement_sidecar(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics is not pipeline_diagnostics
+        assert diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED].count == 0
+        assert (
+            diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED].oldest_age_ms
+            is None
+        )
+        assert diagnostics.settlement.completed_unsettled == 0
+        assert diagnostics.settlement.oldest_age_ms is None
+        assert diagnostics.settlement.blocker_reason is None
+        assert (
+            diagnostics.settlement.support_state
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert (
+            diagnostics.stage_support[PipelineStage.COMPLETED_UNSETTLED]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.SETTLEMENT]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+
+    def test_get_pipeline_diagnostics_adds_broker_poll_sidecar(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics.poll.records_total == 0
+        assert diagnostics.poll.nonempty_polls_total == 0
+        assert diagnostics.poll.empty_polls_total == 0
+        assert diagnostics.poll.error_polls_total == 0
+        assert (
+            diagnostics.poll.support_state == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.POLL]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+
+    def test_record_pipeline_poll_batch_updates_broker_owned_poll_sidecar(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        broker_poller_with_mocks._record_pipeline_poll_batch([object(), object()])
+        broker_poller_with_mocks._record_pipeline_poll_batch([])
+        broker_poller_with_mocks._record_pipeline_poll_error()
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+        assert diagnostics.poll.records_total == 2
+        assert diagnostics.poll.nonempty_polls_total == 1
+        assert diagnostics.poll.empty_polls_total == 1
+        assert diagnostics.poll.error_polls_total == 1
+
+    def test_on_revoke_drops_unsettled_completion_timestamp_ledger(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._unsettled_completion_timestamps_by_partition[tp] = {
+            10: 100.0
+        }
+        revoked = [MagicMock(topic="test-topic", partition=0)]
+        broker_poller_with_mocks._rebalance_support.handle_revoke = MagicMock()
+
+        broker_poller_with_mocks._on_revoke(MagicMock(), revoked)
+
+        assert (
+            broker_poller_with_mocks._unsettled_completion_timestamps_by_partition == {}
+        )
+
+    def test_get_pipeline_diagnostics_reports_completed_unsettled_from_broker_ledger(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._dirty_commit_partitions.add(tp)
+        broker_poller_with_mocks._unsettled_completions_by_partition[tp] = 2
+        broker_poller_with_mocks._completions_since_last_commit = 2
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        completed = diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED]
+        assert completed.count == 2
+        assert completed.oldest_age_ms is None
+        assert diagnostics.settlement.completed_unsettled == 2
+        assert diagnostics.settlement.oldest_age_ms is None
+        assert diagnostics.settlement.blocker_reason == (
+            PipelineSettlementBlockerReason.COMMIT_PENDING
+        )
+
+    def test_get_pipeline_diagnostics_does_not_count_dirty_partition_as_unsettled_message(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._dirty_commit_partitions.add(tp)
+        broker_poller_with_mocks._completions_since_last_commit = 0
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        completed = diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED]
+        assert completed.count == 0
+        assert diagnostics.settlement.completed_unsettled == 0
+        assert diagnostics.settlement.blocker_reason is None
+
+    def test_get_pipeline_diagnostics_reports_unsettled_completion_count_after_counter_reset(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._dirty_commit_partitions.add(tp)
+        broker_poller_with_mocks._unsettled_completions_by_partition[tp] = 3
+        broker_poller_with_mocks._completions_since_last_commit = 0
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        completed = diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED]
+        assert completed.count == 3
+        assert diagnostics.settlement.completed_unsettled == 3
+        assert diagnostics.settlement.blocker_reason == (
+            PipelineSettlementBlockerReason.COMMIT_PENDING
+        )
+
+    def test_clear_committed_dirty_partitions_preserves_retained_gap_completion(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+        tracker = OffsetTracker(
+            topic_partition=tp,
+            starting_offset=10,
+            max_revoke_grace_ms=1000,
+        )
+        tracker.mark_complete(10)
+        tracker.mark_complete(12)
+        tracker.commit_through(10)
+        broker_poller_with_mocks._offset_trackers[tp] = tracker
+        broker_poller_with_mocks._dirty_commit_partitions.add(tp)
+        broker_poller_with_mocks._unsettled_completions_by_partition[tp] = 2
+
+        broker_poller_with_mocks._clear_committed_dirty_partitions([(tp, 10)])
+
+        assert tp in broker_poller_with_mocks._dirty_commit_partitions
+        assert broker_poller_with_mocks._unsettled_completions_by_partition[tp] == 1
+
+    def test_get_pipeline_diagnostics_keeps_pending_dlq_separate_from_completed_unsettled(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+        tp = DtoTopicPartition("test-topic", 0)
+        broker_poller_with_mocks._pending_dlq_events[(tp, 12)] = CompletionEvent(
+            id="work-12",
+            tp=tp,
+            offset=12,
+            epoch=0,
+            status=CompletionStatus.FAILURE,
+            error="boom",
+            attempt=3,
+        )
+        broker_poller_with_mocks._completions_since_last_commit = 1
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics.stage_counts[PipelineStage.DLQ].count == 1
+        assert diagnostics.stage_counts[PipelineStage.COMPLETED_UNSETTLED].count == 0
+        assert diagnostics.settlement.completed_unsettled == 0
+        assert diagnostics.settlement.blocker_reason == (
+            PipelineSettlementBlockerReason.DLQ_PUBLISH_PENDING
+        )
+        assert diagnostics.settlement.oldest_age_ms is None
+        assert (
+            diagnostics.stage_support[PipelineStage.DLQ]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+
+    def test_get_pipeline_diagnostics_delegates_to_work_manager(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = None
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics is not pipeline_diagnostics
+        mock_work_manager.get_pipeline_diagnostics.assert_called_once_with()
+
+    def test_get_pipeline_diagnostics_combines_engine_worker_metrics(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = (
+            EngineRuntimeDiagnostics(
+                engine_type="process",
+                workers=EngineWorkerDiagnostics(
+                    total=2,
+                    executing=1,
+                    admitted=1,
+                    top_k_loads=[3, 1],
+                ),
+            )
+        )
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics is not pipeline_diagnostics
+        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.WORKERS]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert diagnostics.workers.total == 2
+        assert diagnostics.workers.executing == 1
+        assert diagnostics.workers.admitted == 1
+        assert diagnostics.workers.top_k_loads == [3, 1]
+        mock_work_manager.get_pipeline_diagnostics.assert_called_once_with()
+        mock_execution_engine.get_runtime_metrics.assert_called_once_with()
+
+    def test_get_pipeline_diagnostics_leaves_engine_sections_unavailable_without_workers(
+        self, broker_poller_with_mocks, mock_work_manager, mock_execution_engine
+    ):
+        pipeline_diagnostics = _empty_work_manager_pipeline_diagnostics()
+        mock_work_manager.get_pipeline_diagnostics.return_value = pipeline_diagnostics
+        mock_execution_engine.get_runtime_metrics.return_value = (
+            EngineRuntimeDiagnostics(
+                engine_type="custom",
+                workers=None,
+            )
+        )
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics.scope == PipelineDiagnosticsScope.COMBINED
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.WORKERS]
+            == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+        )
+        assert (
+            diagnostics.section_support[PipelineDiagnosticsSection.SETTLEMENT]
+            == PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        assert diagnostics.workers.support_state == (
+            PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+        )
