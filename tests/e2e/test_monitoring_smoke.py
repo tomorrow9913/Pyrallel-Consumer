@@ -140,13 +140,13 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         "--order",
         "partition",
         "--num-messages",
-        "4000",
+        "8000",
         "--num-keys",
         "200",
         "--num-partitions",
         "4",
         "--worker-sleep-ms",
-        "5",
+        "10",
         "--timeout-sec",
         "180",
         "--metrics-port",
@@ -188,24 +188,30 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
                 "Monitoring stack Prometheus targets not healthy for e2e smoke "
                 f"test: {exc}"
             )
-        _wait_until(
-            "Grafana provisioning",
-            timeout_sec=60,
-            predicate=lambda: (
-                _fetch_json(
-                    "http://127.0.0.1:3000/api/datasources/uid/prometheus",
-                    auth=grafana_auth,
-                ).get("uid")
-                == "prometheus"
-                and any(
-                    result.get("title") == "Pyrallel Overview"
-                    for result in _fetch_json(
-                        "http://127.0.0.1:3000/api/search?query=Pyrallel",
+        try:
+            _wait_until(
+                "Grafana provisioning",
+                timeout_sec=60,
+                predicate=lambda: (
+                    _fetch_json(
+                        "http://127.0.0.1:3000/api/datasources/uid/prometheus",
                         auth=grafana_auth,
+                    ).get("uid")
+                    == "prometheus"
+                    and any(
+                        result.get("title") == "Pyrallel Overview"
+                        for result in _fetch_json(
+                            "http://127.0.0.1:3000/api/search?query=Pyrallel",
+                            auth=grafana_auth,
+                        )
                     )
-                )
-            ),
-        )
+                ),
+            )
+        except RuntimeError as exc:
+            _skip_or_fail(
+                "Monitoring stack Grafana provisioning is not healthy for e2e "
+                f"smoke test: {exc}"
+            )
         output, _ = benchmark.communicate(timeout=220)
         assert benchmark.returncode == 0, output
         assert json_output.exists()

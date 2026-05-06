@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
@@ -35,6 +36,7 @@ topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
 DEFAULT_TIMEOUT_SEC = 60
 ProcessFlushPolicy = Literal["size_or_timer", "demand", "demand_min_residence"]
+_LOGGER = logging.getLogger(__name__)
 
 
 conf: Dict[str, Any] = {
@@ -332,6 +334,25 @@ def _record_release_gate_metrics_from_snapshot(
     )
 
 
+def _publish_prometheus_snapshot(
+    *,
+    broker_poller: BrokerPoller,
+    prometheus_exporter: PrometheusMetricsExporter,
+    metrics: SystemMetrics,
+) -> None:
+    """Publish system and sidecar pipeline diagnostics to Prometheus."""
+    prometheus_exporter.update_from_system_metrics(metrics)
+    get_pipeline_diagnostics = getattr(broker_poller, "get_pipeline_diagnostics", None)
+    update_pipeline_diagnostics = getattr(
+        prometheus_exporter, "update_pipeline_diagnostics", None
+    )
+    if callable(get_pipeline_diagnostics) and callable(update_pipeline_diagnostics):
+        try:
+            update_pipeline_diagnostics(get_pipeline_diagnostics())
+        except Exception:
+            _LOGGER.exception("Pipeline diagnostics exporter update failed")
+
+
 async def _publish_metrics_until_stopped(
     *,
     stop_event: asyncio.Event,
@@ -341,7 +362,11 @@ async def _publish_metrics_until_stopped(
 ) -> None:
     """Publish broker metrics snapshots until the run stops."""
     while not stop_event.is_set():
-        prometheus_exporter.update_from_system_metrics(broker_poller.get_metrics())
+        _publish_prometheus_snapshot(
+            broker_poller=broker_poller,
+            prometheus_exporter=prometheus_exporter,
+            metrics=broker_poller.get_metrics(),
+        )
         await asyncio.sleep(interval_sec)
 
 
@@ -422,7 +447,11 @@ async def _finalize_consumer_run(
             getattr(final_metrics, "process_batch_metrics", None)
         )
     if prometheus_exporter is not None:
-        prometheus_exporter.update_from_system_metrics(final_metrics)
+        _publish_prometheus_snapshot(
+            broker_poller=broker_poller,
+            prometheus_exporter=prometheus_exporter,
+            metrics=final_metrics,
+        )
     await engine.shutdown()
     if stats:
         stats.stop()

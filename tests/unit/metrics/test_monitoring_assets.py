@@ -160,6 +160,33 @@ def test_failure_counter_metric_names_are_documented() -> None:
         assert "consumer_dlq_publish_failures_total" in doc_text
 
 
+def test_completed_offset_skip_counter_metric_name_is_documented() -> None:
+    doc_paths = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.ko.md",
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "04-tooling"
+        / "01-observability-metrics"
+        / "03-design.md",
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "04-tooling"
+        / "01-observability-metrics"
+        / "03-design.ko.md",
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+    ]
+
+    for doc_path in doc_paths:
+        doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
+        assert "pyrallel_pipeline_completed_offset_skips_total" in doc_text
+
+
 def test_operations_guides_document_control_plane_commit_clamp_boundary() -> None:
     guide_en = (REPO_ROOT / "docs" / "operations" / "guide.en.md").read_text(
         encoding="utf-8", errors="strict"
@@ -198,5 +225,6 @@ def test_e2e_workflow_and_test_cover_prometheus_and_grafana_smoke_checks() -> No
     assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in test_text
     assert "from confluent_kafka.admin import AdminClient" in test_text
     assert "client.list_topics(timeout=5)" in test_text
-    assert '"4000"' in test_text
+    assert '"8000"' in test_text
+    assert '"10"' in test_text
     assert '"180"' in test_text
