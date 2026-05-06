@@ -107,6 +107,22 @@ class PoisonMessageConfig(BaseSettings):
     cooldown_ms: int = Field(default=30000, ge=0)
 
 
+class CommitCoordinatorConfig(BaseSettings):
+    """Hold settings for asynchronous commit coordination."""
+
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    queue_max_partitions: int = Field(default=1024, gt=0)
+    retry_backoff_ms: int = Field(default=100, ge=0)
+    max_retry_backoff_ms: int = Field(default=5000, ge=0)
+    stop_drain_timeout_ms: int = Field(default=5000, ge=0)
+
+
 class ExecutionConfig(BaseSettings):
     """Hold settings for runtime configuration and librdkafka client setup."""
 
@@ -206,6 +222,9 @@ class ParallelConsumerConfig(BaseSettings):
         default_factory=AdaptiveConcurrencyConfig
     )
     poison_message: PoisonMessageConfig = Field(default_factory=PoisonMessageConfig)
+    commit_coordinator: CommitCoordinatorConfig = Field(
+        default_factory=CommitCoordinatorConfig
+    )
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
@@ -216,6 +235,7 @@ class ParallelConsumerConfig(BaseSettings):
         if "_env_file" in data:
             env_file = data["_env_file"]
             execution = data.get("execution")
+            commit_coordinator = data.get("commit_coordinator")
             if isinstance(execution, dict):
                 data["execution"] = ExecutionConfig(
                     _env_file=env_file,
@@ -223,6 +243,16 @@ class ParallelConsumerConfig(BaseSettings):
                 )
             else:
                 data.setdefault("execution", ExecutionConfig(_env_file=env_file))
+            if isinstance(commit_coordinator, dict):
+                data["commit_coordinator"] = cast(Any, CommitCoordinatorConfig)(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], commit_coordinator),
+                )
+            else:
+                data.setdefault(
+                    "commit_coordinator",
+                    cast(Any, CommitCoordinatorConfig)(_env_file=env_file),
+                )
         super().__init__(**cast(dict[str, Any], data))
 
     @field_validator("ordering_mode", mode="before")
@@ -590,7 +620,7 @@ class KafkaConfig(BaseSettings):
             if k in _exclude:
                 continue
             if isinstance(v, SecretStr):
-                conf[k.replace("_", ".")] = v.get_secret_value()
+                conf[k.replace("_", ".")] = cast(SecretStr, v).get_secret_value()
                 continue
             conf[k.replace("_", ".")] = v
 

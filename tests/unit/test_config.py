@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 import pyrallel_consumer.config as config_module
 from pyrallel_consumer.config import (
+    CommitCoordinatorConfig,
     ExecutionConfig,
     KafkaConfig,
     MetricsConfig,
@@ -102,6 +103,50 @@ def test_parallel_consumer_config_defaults():
     assert config.poison_message.enabled is False
     assert config.poison_message.failure_threshold == 3
     assert config.poison_message.cooldown_ms == 30000
+    assert isinstance(config.commit_coordinator, CommitCoordinatorConfig)
+    assert config.commit_coordinator.enabled is False
+    assert config.commit_coordinator.queue_max_partitions == 1024
+    assert config.commit_coordinator.retry_backoff_ms == 100
+    assert config.commit_coordinator.max_retry_backoff_ms == 5000
+    assert config.commit_coordinator.stop_drain_timeout_ms == 5000
+
+
+def test_parallel_consumer_config_commit_coordinator_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_COORDINATOR__ENABLED", "true")
+    monkeypatch.setenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__QUEUE_MAX_PARTITIONS", "7"
+    )
+    monkeypatch.setenv("PARALLEL_CONSUMER_COMMIT_COORDINATOR__RETRY_BACKOFF_MS", "11")
+    monkeypatch.setenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__MAX_RETRY_BACKOFF_MS", "111"
+    )
+    monkeypatch.setenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__STOP_DRAIN_TIMEOUT_MS", "222"
+    )
+
+    config = ParallelConsumerConfig()
+
+    assert config.commit_coordinator.enabled is True
+    assert config.commit_coordinator.queue_max_partitions == 7
+    assert config.commit_coordinator.retry_backoff_ms == 11
+    assert config.commit_coordinator.max_retry_backoff_ms == 111
+    assert config.commit_coordinator.stop_drain_timeout_ms == 222
+
+    monkeypatch.delenv("PARALLEL_CONSUMER_COMMIT_COORDINATOR__ENABLED", raising=False)
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__QUEUE_MAX_PARTITIONS", raising=False
+    )
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__RETRY_BACKOFF_MS", raising=False
+    )
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__MAX_RETRY_BACKOFF_MS", raising=False
+    )
+    monkeypatch.delenv(
+        "PARALLEL_CONSUMER_COMMIT_COORDINATOR__STOP_DRAIN_TIMEOUT_MS", raising=False
+    )
 
 
 def test_parallel_consumer_config_poison_message_env_override(
