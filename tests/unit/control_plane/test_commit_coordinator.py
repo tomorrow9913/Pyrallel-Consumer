@@ -7,6 +7,7 @@ from confluent_kafka import KafkaException
 
 from pyrallel_consumer.control_plane.commit_coordinator import (
     COMMIT_COORDINATOR_FAILURE_REASONS,
+    CommitBatchAborted,
     CommitCandidate,
     CommitCoordinator,
     CommitCoordinatorConfig,
@@ -143,6 +144,35 @@ async def test_success_metrics_refresh_cleared_pending_depth() -> None:
 
 
 @pytest.mark.asyncio
+async def test_aborted_batch_does_not_report_success_settlement() -> None:
+    tp = DtoTopicPartition("topic", 0)
+    settlements_seen: list[CommitSettlement] = []
+    failures_seen: list[tuple[list[CommitSettlement], str]] = []
+
+    async def commit_sync(candidates: list[CommitCandidate]) -> None:
+        assert candidates[0].safe_offset == 9
+        raise CommitBatchAborted("lease superseded before broker commit")
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(),
+        commit_sync=commit_sync,
+        on_commit_success=settlements_seen.extend,
+        on_commit_failure=lambda settlements, reason: failures_seen.append(
+            (settlements, reason)
+        ),
+        record_metrics=lambda event, reason, count, latency: None,
+    )
+
+    await coordinator.enqueue([_candidate(tp, 9)])
+    await coordinator.drain(timeout=1.0)
+
+    assert settlements_seen == []
+    assert failures_seen[0][1] == "stale_lease"
+    assert coordinator.latest_settled_offsets == {}
+    assert coordinator.remaining_candidates() == {}
+
+
+@pytest.mark.asyncio
 async def test_success_callback_error_does_not_strand_in_flight_candidate() -> None:
     tp = DtoTopicPartition("topic", 0)
 
@@ -165,6 +195,48 @@ async def test_success_callback_error_does_not_strand_in_flight_candidate() -> N
 
     assert await coordinator.drain(timeout=1.0) is True
     assert coordinator.remaining_candidates() == {}
+
+
+@pytest.mark.asyncio
+async def test_enqueue_ignores_duplicate_candidate_while_commit_is_in_flight() -> None:
+    tp = DtoTopicPartition("topic", 0)
+    release_commit = asyncio.Event()
+    submitted: list[list[CommitCandidate]] = []
+
+    async def commit_sync(candidates: list[CommitCandidate]) -> None:
+        submitted.append(candidates)
+        await release_commit.wait()
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(),
+        commit_sync=commit_sync,
+        on_commit_success=lambda settlements: None,
+        on_commit_failure=lambda settlements, reason: None,
+        record_metrics=lambda event, reason, count, latency: None,
+    )
+
+    await coordinator.enqueue([_candidate(tp, 9)])
+    for _ in range(10):
+        if submitted:
+            break
+        await asyncio.sleep(0)
+    assert submitted
+    assert coordinator.stats.queue_depth == 1
+    in_flight_candidate = submitted[0][0]
+
+    assert await coordinator.enqueue([_candidate(tp, 9)]) is True
+    assert coordinator.stats.queue_depth == 1
+    assert coordinator.is_active_lease(
+        in_flight_candidate.tp,
+        in_flight_candidate.assignment_epoch,
+        in_flight_candidate.lease_id,
+    )
+
+    release_commit.set()
+    await coordinator.drain(timeout=1.0)
+
+    assert len(submitted) == 1
+    assert coordinator.latest_settled_offsets[tp] == 9
 
 
 @pytest.mark.asyncio

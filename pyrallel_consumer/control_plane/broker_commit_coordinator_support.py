@@ -9,7 +9,12 @@ from ..dto import TopicPartition as DtoTopicPartition
 from ..logger import LogManager
 from .broker_operation_guard import BrokerOperationGuard
 from .broker_support import BrokerCommitPlanner
-from .commit_coordinator import CommitCandidate, CommitCoordinator, CommitSettlement
+from .commit_coordinator import (
+    CommitBatchAborted,
+    CommitCandidate,
+    CommitCoordinator,
+    CommitSettlement,
+)
 from .offset_tracker import OffsetTracker
 
 logger = LogManager.get_logger(__name__)
@@ -108,6 +113,7 @@ class BrokerCommitCoordinatorSupport:
         )
 
         def commit_if_active() -> bool:
+            """Commit only if every candidate lease still belongs to this batch."""
             coordinator = self._get_coordinator()
             if coordinator is None:
                 return False
@@ -121,7 +127,13 @@ class BrokerCommitCoordinatorSupport:
             consumer.commit(offsets=offsets_to_commit, asynchronous=False)
             return True
 
-        await self._operation_guard.run_off_event_loop(commit_if_active)
+        if not await self._operation_guard.run_off_event_loop(commit_if_active):
+            coordinator = self._get_coordinator()
+            if coordinator is not None:
+                coordinator.cancel_leases(
+                    [candidate.tp for candidate in tracked_candidates]
+                )
+            raise CommitBatchAborted("coordinator lease became inactive before commit")
 
     async def settle_committed_offsets(
         self, settlements: list[CommitSettlement]

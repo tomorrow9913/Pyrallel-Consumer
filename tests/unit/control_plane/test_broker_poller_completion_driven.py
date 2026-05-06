@@ -13,6 +13,7 @@ from pyrallel_consumer.control_plane.broker_completion_support import (
 )
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.commit_coordinator import (
+    CommitBatchAborted,
     CommitCandidate,
     CommitCoordinator,
     CommitSettlement,
@@ -514,19 +515,19 @@ async def test_commit_coordinator_sync_revalidates_lease_before_guarded_commit(
         side_effect=revoke_before_commit
     )
 
-    await broker_poller._commit_coordinator_sync(
-        [
-            CommitCandidate(
-                tp=topic_partition,
-                safe_offset=4,
-                assignment_epoch=3,
-                lease_id=9,
-                enqueued_at=0.0,
-            )
-        ]
+    candidate = CommitCandidate(
+        tp=topic_partition,
+        safe_offset=4,
+        assignment_epoch=3,
+        lease_id=9,
+        enqueued_at=0.0,
     )
 
+    with pytest.raises(CommitBatchAborted):
+        await broker_poller._commit_coordinator_sync([candidate])
+
     broker_poller.consumer.commit.assert_not_called()
+    coordinator.cancel_leases.assert_called_once_with([topic_partition])
 
 
 @pytest.mark.asyncio

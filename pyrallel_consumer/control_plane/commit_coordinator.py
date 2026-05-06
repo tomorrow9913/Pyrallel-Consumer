@@ -24,8 +24,14 @@ COMMIT_COORDINATOR_FAILURE_REASONS = (
 CommitLeaseId = int
 
 
+class CommitBatchAborted(Exception):
+    """Raised when a coordinator batch is intentionally skipped before commit."""
+
+
 @dataclass(frozen=True)
 class CommitCandidate:
+    """Prepared partition offset candidate with assignment and lease identity."""
+
     tp: DtoTopicPartition
     safe_offset: int
     assignment_epoch: int
@@ -35,6 +41,8 @@ class CommitCandidate:
 
 @dataclass(frozen=True)
 class CommitSettlement:
+    """Result token emitted after coordinator commit success or failure."""
+
     tp: DtoTopicPartition
     safe_offset: int
     assignment_epoch: int
@@ -46,6 +54,8 @@ class CommitSettlement:
 
 @dataclass(frozen=True)
 class CommitCoordinatorStats:
+    """Snapshot of coordinator queue, lease, and retry counters."""
+
     queue_depth: int = 0
     coalesced_count: int = 0
     submitted_count: int = 0
@@ -60,6 +70,8 @@ MetricCallback = Callable[[str, str | None, int, float | None], None]
 
 @dataclass
 class CommitCoordinator:
+    """Coalesce commit candidates and settle them after broker confirmation."""
+
     config: CommitCoordinatorConfig
     commit_sync: Callable[[list[CommitCandidate]], Awaitable[None]]
     on_commit_success: Callable[[list[CommitSettlement]], object]
@@ -83,18 +95,22 @@ class CommitCoordinator:
 
     @property
     def accepting(self) -> bool:
+        """Return whether the coordinator accepts new commit candidates."""
         return self._accepting
 
     @property
     def healthy(self) -> bool:
+        """Return whether the worker can continue processing commit batches."""
         return self._healthy
 
     @property
     def latest_settled_offsets(self) -> dict[DtoTopicPartition, int]:
+        """Return the latest broker-confirmed safe offset by topic partition."""
         return dict(self._latest_settled_offsets)
 
     @property
     def stats(self) -> CommitCoordinatorStats:
+        """Return current queue depth and aggregate coordinator counters."""
         now = time.monotonic()
         ages = [now - candidate.enqueued_at for candidate in self._pending.values()]
         in_flight_depth = sum(
@@ -120,6 +136,7 @@ class CommitCoordinator:
         force: bool = False,
         source: str = "unknown",
     ) -> bool:
+        """Add candidates to the pending outbox, coalescing by partition."""
         del force, source
         if not self._accepting or not self._healthy:
             return False
@@ -131,6 +148,13 @@ class CommitCoordinator:
                 continue
             current = self._pending.get(candidate.tp)
             if current is not None and candidate.safe_offset <= current.safe_offset:
+                continue
+            in_flight = self._in_flight.get(candidate.tp)
+            if (
+                current is None
+                and in_flight is not None
+                and candidate.safe_offset <= in_flight.safe_offset
+            ):
                 continue
             if current is None and candidate.tp not in self._pending:
                 projected_size = len(self._pending) + len(self._in_flight)
@@ -162,12 +186,15 @@ class CommitCoordinator:
         return True
 
     def stop_accepting(self) -> None:
+        """Stop accepting new candidates globally."""
         self._accepting = False
 
     def stop_accepting_partitions(self, tps: Iterable[DtoTopicPartition]) -> None:
+        """Stop accepting candidates for revoked partitions by cancelling leases."""
         self.cancel_leases(tps)
 
     def cancel_leases(self, tps: Iterable[DtoTopicPartition]) -> None:
+        """Cancel pending and in-flight leases for the supplied partitions."""
         for tp in tps:
             for source in (self._pending, self._in_flight):
                 candidate = source.pop(tp, None)
@@ -180,6 +207,7 @@ class CommitCoordinator:
     def remaining_candidates(
         self, tps: Iterable[DtoTopicPartition] | None = None
     ) -> dict[DtoTopicPartition, CommitCandidate]:
+        """Return pending and in-flight candidates for shutdown fallback."""
         allowed = set(tps) if tps is not None else None
         remaining = dict(self._pending)
         remaining.update(self._in_flight)
@@ -190,6 +218,7 @@ class CommitCoordinator:
     def is_active_lease(
         self, tp: DtoTopicPartition, assignment_epoch: int, lease_id: CommitLeaseId
     ) -> bool:
+        """Return whether the supplied epoch and lease can still settle."""
         candidate = self._pending.get(tp) or self._in_flight.get(tp)
         if candidate is None:
             return False
@@ -204,6 +233,7 @@ class CommitCoordinator:
         timeout: float,
         tps: Iterable[DtoTopicPartition] | None = None,
     ) -> bool:
+        """Wait for pending coordinator work to finish within a timeout."""
         deadline = time.monotonic() + max(0.0, timeout)
         while self.remaining_candidates(tps):
             task = self._worker_task
@@ -219,11 +249,13 @@ class CommitCoordinator:
         return not self.remaining_candidates(tps)
 
     def _ensure_worker(self) -> None:
+        """Start the background commit worker when it is not already running."""
         if self._worker_task is not None and not self._worker_task.done():
             return
         self._worker_task = asyncio.create_task(self._run_worker())
 
     async def _run_worker(self) -> None:
+        """Submit pending batches and emit success or failure settlements."""
         while self._pending and self._healthy:
             batch = list(self._pending.values())
             self._pending.clear()
@@ -252,6 +284,23 @@ class CommitCoordinator:
                 self._in_flight.clear()
                 self._prune_cancelled_leases()
                 await asyncio.sleep(self._retry_backoff_seconds())
+                continue
+            except CommitBatchAborted:
+                latency = max(0.0, time.monotonic() - started_at)
+                settlements = self._failure_settlements(
+                    batch,
+                    reason="stale_lease",
+                    latency_seconds=latency,
+                )
+                if settlements:
+                    await self._invoke_failure_safely(settlements, "stale_lease")
+                for candidate in batch:
+                    self._cancelled_leases.add(
+                        (candidate.tp, candidate.assignment_epoch, candidate.lease_id)
+                    )
+                self._in_flight.clear()
+                self._prune_cancelled_leases()
+                self.record_metrics("failure", "stale_lease", len(batch), None)
                 continue
             except Exception:
                 self._healthy = False
@@ -321,6 +370,7 @@ class CommitCoordinator:
         reason: str,
         latency_seconds: float,
     ) -> list[CommitSettlement]:
+        """Build failure settlements for candidates whose leases remain active."""
         return [
             CommitSettlement(
                 tp=candidate.tp,
@@ -338,6 +388,7 @@ class CommitCoordinator:
         ]
 
     async def _invoke_success(self, settlements: list[CommitSettlement]) -> None:
+        """Invoke the success callback, awaiting async implementations."""
         result = self.on_commit_success(settlements)
         if inspect.isawaitable(result):
             await result
@@ -345,6 +396,7 @@ class CommitCoordinator:
     async def _invoke_failure(
         self, settlements: list[CommitSettlement], reason: str
     ) -> None:
+        """Invoke the failure callback, awaiting async implementations."""
         result = self.on_commit_failure(settlements, reason)
         if inspect.isawaitable(result):
             await result
@@ -352,6 +404,7 @@ class CommitCoordinator:
     async def _invoke_failure_safely(
         self, settlements: list[CommitSettlement], reason: str
     ) -> None:
+        """Invoke failure callback and fail closed if the callback crashes."""
         try:
             await self._invoke_failure(settlements, reason)
         except Exception:
@@ -361,6 +414,7 @@ class CommitCoordinator:
             self.record_metrics("failure", "worker_crash", len(settlements), None)
 
     def _prune_cancelled_leases(self) -> None:
+        """Drop cancelled lease markers that no longer reference live candidates."""
         active_keys = {
             (candidate.tp, candidate.assignment_epoch, candidate.lease_id)
             for candidate in (*self._pending.values(), *self._in_flight.values())
@@ -368,5 +422,6 @@ class CommitCoordinator:
         self._cancelled_leases.intersection_update(active_keys)
 
     def _retry_backoff_seconds(self) -> float:
+        """Return bounded retry backoff in seconds."""
         backoff_ms = min(self.config.retry_backoff_ms, self.config.max_retry_backoff_ms)
         return max(0.0, backoff_ms / 1000.0)
