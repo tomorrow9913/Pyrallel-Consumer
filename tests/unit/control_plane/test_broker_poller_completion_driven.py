@@ -7,11 +7,16 @@ import pytest
 from confluent_kafka import Consumer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 
-from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.config import CommitCoordinatorConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_completion_support import (
     CompletionProcessingResult,
 )
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
+from pyrallel_consumer.control_plane.commit_coordinator import (
+    CommitCandidate,
+    CommitCoordinator,
+    CommitSettlement,
+)
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import CompletionEvent, CompletionStatus
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
@@ -123,8 +128,9 @@ async def test_run_consumer_schedules_after_completion_even_without_new_messages
         return fn(*args, **kwargs)
 
     broker_poller._running = True
-    with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
-        "asyncio.sleep", new=AsyncMock()
+    with (
+        patch("asyncio.to_thread", side_effect=passthrough_to_thread),
+        patch("asyncio.sleep", new=AsyncMock()),
     ):
         await broker_poller._run_consumer()
 
@@ -161,8 +167,9 @@ async def test_run_consumer_schedules_twice_when_messages_and_completions_share_
         return fn(*args, **kwargs)
 
     broker_poller._running = True
-    with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
-        "asyncio.sleep", new=AsyncMock()
+    with (
+        patch("asyncio.to_thread", side_effect=passthrough_to_thread),
+        patch("asyncio.sleep", new=AsyncMock()),
     ):
         await broker_poller._run_consumer()
 
@@ -214,8 +221,9 @@ async def test_run_consumer_falls_back_without_duplicate_enqueue_for_sync_batch_
         return fn(*args, **kwargs)
 
     broker_poller._running = True
-    with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
-        "asyncio.sleep", new=AsyncMock()
+    with (
+        patch("asyncio.to_thread", side_effect=passthrough_to_thread),
+        patch("asyncio.sleep", new=AsyncMock()),
     ):
         await broker_poller._run_consumer()
 
@@ -363,6 +371,228 @@ async def test_commit_ready_offsets_serializes_commit_calls_and_releases_control
 
     assert broker_poller._commit_offsets.await_count == 2
     assert max_active_commits == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_enqueues_when_commit_coordinator_enabled(
+    broker_poller, topic_partition
+) -> None:
+    broker_poller._kafka_config.parallel_consumer.commit_coordinator.enabled = True
+    broker_poller._commit_coordinator_enabled = True
+    enqueue = AsyncMock(return_value=True)
+    broker_poller._commit_coordinator = MagicMock(enqueue=enqueue)
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 3
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+
+    broker_poller._make_dispatch_support = MagicMock()
+    broker_poller._make_dispatch_support.return_value.build_commit_candidates.return_value = [
+        (topic_partition, 4)
+    ]
+
+    await broker_poller._commit_ready_offsets(force=True, source="test")
+
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args is not None
+    candidates = enqueue.await_args.args[0]
+    assert len(candidates) == 1
+    assert candidates[0].tp == topic_partition
+    assert candidates[0].safe_offset == 4
+    assert candidates[0].assignment_epoch == 3
+    broker_poller.consumer.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_falls_back_to_sync_commit_when_coordinator_rejects(
+    broker_poller, topic_partition
+) -> None:
+    broker_poller._kafka_config.parallel_consumer.commit_coordinator.enabled = True
+    broker_poller._commit_coordinator_enabled = True
+    enqueue = AsyncMock(return_value=False)
+    broker_poller._commit_coordinator = MagicMock(enqueue=enqueue)
+    broker_poller._commit_offsets = AsyncMock(return_value=True)
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 3
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+
+    broker_poller._make_dispatch_support = MagicMock()
+    broker_poller._make_dispatch_support.return_value.build_commit_candidates.return_value = [
+        (topic_partition, 4)
+    ]
+
+    await broker_poller._commit_ready_offsets(force=True, source="test")
+
+    enqueue.assert_awaited_once()
+    broker_poller._commit_offsets.assert_awaited_once_with([(topic_partition, 4)])
+    stats = broker_poller.get_commit_cadence_stats()
+    assert stats["commit_calls_total"] == 1
+    assert stats["partitions_advanced_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_ready_offsets_updates_runtime_coordinator_pending_gauge(
+    broker_poller, topic_partition
+) -> None:
+    broker_poller._kafka_config.parallel_consumer.commit_coordinator.enabled = True
+    broker_poller._commit_coordinator_enabled = True
+    enqueue = AsyncMock(return_value=True)
+    coordinator = MagicMock(enqueue=enqueue)
+    coordinator.stats.queue_depth = 1
+    broker_poller._commit_coordinator = coordinator
+    metrics_exporter = MagicMock()
+    broker_poller._metrics_exporter = metrics_exporter
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 3
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+
+    broker_poller._make_dispatch_support = MagicMock()
+    broker_poller._make_dispatch_support.return_value.build_commit_candidates.return_value = [
+        (topic_partition, 4)
+    ]
+
+    await broker_poller._commit_ready_offsets(force=True, source="test")
+
+    metrics_exporter.set_commit_coordinator_pending_partitions.assert_called_with(
+        "async",
+        1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_settle_committed_offsets_ignores_stale_epoch(
+    broker_poller, topic_partition
+) -> None:
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 2
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+    broker_poller._commit_coordinator = MagicMock()
+    broker_poller._commit_coordinator.is_active_lease.return_value = True
+
+    await broker_poller._settle_committed_offsets(
+        [
+            CommitSettlement(
+                tp=topic_partition,
+                safe_offset=5,
+                assignment_epoch=1,
+                lease_id=99,
+                success=True,
+                reason=None,
+                latency_seconds=0.01,
+            )
+        ]
+    )
+
+    tracker.commit_through.assert_not_called()
+    assert topic_partition in broker_poller._dirty_commit_partitions
+
+
+@pytest.mark.asyncio
+async def test_commit_coordinator_sync_revalidates_lease_before_guarded_commit(
+    broker_poller, topic_partition
+) -> None:
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 3
+    broker_poller._offset_trackers[topic_partition] = tracker
+    coordinator = MagicMock()
+    coordinator.is_active_lease.return_value = True
+    broker_poller._commit_coordinator = coordinator
+
+    def revoke_before_commit(operation):
+        coordinator.is_active_lease.return_value = False
+        return operation()
+
+    broker_poller._consumer_operation_guard.run = MagicMock(
+        side_effect=revoke_before_commit
+    )
+
+    await broker_poller._commit_coordinator_sync(
+        [
+            CommitCandidate(
+                tp=topic_partition,
+                safe_offset=4,
+                assignment_epoch=3,
+                lease_id=9,
+                enqueued_at=0.0,
+            )
+        ]
+    )
+
+    broker_poller.consumer.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stale_epoch_coordinator_candidate_does_not_settle_success(
+    broker_poller, topic_partition
+) -> None:
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 4
+    broker_poller._offset_trackers[topic_partition] = tracker
+    settlements_seen: list[CommitSettlement] = []
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(),
+        commit_sync=broker_poller._commit_coordinator_sync,
+        on_commit_success=settlements_seen.extend,
+        on_commit_failure=lambda settlements, reason: None,
+        record_metrics=lambda event, reason, count, latency: None,
+    )
+    broker_poller._commit_coordinator = coordinator
+
+    await coordinator.enqueue(
+        [
+            CommitCandidate(
+                tp=topic_partition,
+                safe_offset=4,
+                assignment_epoch=3,
+                lease_id=0,
+                enqueued_at=0.0,
+            )
+        ]
+    )
+    assert await coordinator.drain(timeout=1.0) is True
+
+    broker_poller.consumer.commit.assert_not_called()
+    assert settlements_seen == []
+    assert coordinator.latest_settled_offsets == {}
+
+
+@pytest.mark.asyncio
+async def test_transient_coordinator_retry_retains_dirty_without_final_failure_metric(
+    broker_poller, topic_partition
+) -> None:
+    coordinator = MagicMock()
+    coordinator.is_active_lease.return_value = True
+    coordinator.stats.queue_depth = 1
+    broker_poller._commit_coordinator = coordinator
+    broker_poller._record_commit_failure = MagicMock()
+
+    await broker_poller._retain_failed_commit_offsets(
+        [
+            CommitSettlement(
+                tp=topic_partition,
+                safe_offset=4,
+                assignment_epoch=3,
+                lease_id=9,
+                success=False,
+                reason="kafka_exception",
+                latency_seconds=0.01,
+            )
+        ],
+        "kafka_exception",
+    )
+
+    assert topic_partition in broker_poller._dirty_commit_partitions
+    broker_poller._record_commit_failure.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1146,6 +1376,22 @@ async def test_concurrent_graceful_stop_cleans_up_once(
     assert support.calls == 1
     broker_poller._drain_shutdown_work.assert_awaited_once()
     broker_poller._cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_still_drains_commit_coordinator_before_abort(
+    broker_poller,
+) -> None:
+    broker_poller._work_manager.schedule = AsyncMock()
+    broker_poller._drain_completion_events_once = AsyncMock(return_value=False)
+    broker_poller._work_manager.get_total_in_flight_count = MagicMock(return_value=1)
+    broker_poller._get_total_queued_messages = AsyncMock(return_value=0)
+    broker_poller._drain_commit_coordinator_for_shutdown = AsyncMock(return_value=True)
+
+    drained = await broker_poller._drain_shutdown_work(timeout_seconds=0.0)
+
+    assert drained is False
+    broker_poller._drain_commit_coordinator_for_shutdown.assert_awaited_once()
 
 
 @pytest.mark.asyncio

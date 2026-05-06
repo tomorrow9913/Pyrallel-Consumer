@@ -7,7 +7,10 @@ from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
 from pyrallel_consumer.config import KafkaConfig
-from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
+from pyrallel_consumer.control_plane.broker_poller import (
+    BrokerPoller,
+    RevokePreparation,
+)
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import (
     CompletionEvent,
@@ -442,6 +445,27 @@ async def test_on_assign_passes_shared_trackers_to_work_manager(
     assert assignments[expected_tp_1].get_current_epoch() == 1
     assert broker_poller._offset_trackers[expected_tp_0].last_committed_offset == 99
     assert broker_poller._offset_trackers[expected_tp_1].last_committed_offset == 199
+
+
+def test_on_assign_bridge_failure_raises_without_partial_state(
+    broker_poller, mock_consumer
+):
+    broker_poller._event_loop = MagicMock()
+    broker_poller._event_loop.is_closed.return_value = False
+    broker_poller._offset_trackers.clear()
+    broker_poller._work_manager.on_assign = MagicMock()
+    future = MagicMock()
+    future.result.side_effect = TimeoutError("assign bridge timed out")
+
+    with patch("asyncio.run_coroutine_threadsafe", return_value=future):
+        with pytest.raises(RuntimeError, match="Assign bridge failed"):
+            broker_poller._on_assign(
+                mock_consumer,
+                [KafkaTopicPartition("test-topic", 0, 100)],
+            )
+
+    assert broker_poller._offset_trackers == {}
+    broker_poller._work_manager.on_assign.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -924,6 +948,42 @@ class TestOnRevokeCommitExceptionDefense:
         exporter.record_commit_failure.assert_called_once_with(
             DtoTopicPartition(topic="test-topic", partition=0),
             "kafka_exception",
+        )
+
+    def test_on_revoke_prep_bridge_failure_records_rebalance_metric(
+        self, broker_poller, mock_consumer
+    ):
+        exporter = MagicMock()
+        broker_poller.set_metrics_exporter(exporter)
+        broker_poller._event_loop = MagicMock()
+        broker_poller._event_loop.is_closed.return_value = False
+        broker_poller._prepare_revoke_from_callback = MagicMock(return_value=None)
+
+        broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+        exporter.record_commit_failure.assert_called_once_with(
+            DtoTopicPartition(topic="test-topic", partition=0),
+            "rebalance_bridge_failed",
+        )
+
+    def test_on_revoke_cleanup_bridge_failure_records_rebalance_metric(
+        self, broker_poller, mock_consumer
+    ):
+        exporter = MagicMock()
+        broker_poller.set_metrics_exporter(exporter)
+        revoked_tp = DtoTopicPartition(topic="test-topic", partition=0)
+        broker_poller._prepare_revoke_from_callback = MagicMock(
+            return_value=RevokePreparation(
+                revoked_tps=[revoked_tp], offsets_to_commit=[]
+            )
+        )
+        broker_poller._cleanup_revoke_from_callback = MagicMock(return_value=False)
+
+        broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+        exporter.record_commit_failure.assert_called_once_with(
+            DtoTopicPartition(topic="test-topic", partition=0),
+            "rebalance_bridge_failed",
         )
 
 
