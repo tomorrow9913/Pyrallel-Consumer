@@ -97,8 +97,14 @@ class CommitCoordinator:
     def stats(self) -> CommitCoordinatorStats:
         now = time.monotonic()
         ages = [now - candidate.enqueued_at for candidate in self._pending.values()]
+        in_flight_depth = sum(
+            1
+            for candidate in self._in_flight.values()
+            if candidate.safe_offset
+            > self._latest_settled_offsets.get(candidate.tp, -1)
+        )
         return CommitCoordinatorStats(
-            queue_depth=len(self._pending) + len(self._in_flight),
+            queue_depth=len(self._pending) + in_flight_depth,
             coalesced_count=self._coalesced_count,
             submitted_count=self._submitted_count,
             success_count=self._success_count,
@@ -288,9 +294,10 @@ class CommitCoordinator:
                 self._success_count += len(settlements)
                 for settlement in settlements:
                     self._latest_settled_offsets[settlement.tp] = settlement.safe_offset
-                self.record_metrics("success", None, len(settlements), latency)
+                success_recorded = False
                 try:
                     await self._invoke_success(settlements)
+                    success_recorded = True
                 except Exception:
                     self._healthy = False
                     self._accepting = False
@@ -301,6 +308,8 @@ class CommitCoordinator:
                 finally:
                     self._in_flight.clear()
                     self._prune_cancelled_leases()
+                    if success_recorded:
+                        self.record_metrics("success", None, len(settlements), latency)
             else:
                 self._in_flight.clear()
                 self._prune_cancelled_leases()

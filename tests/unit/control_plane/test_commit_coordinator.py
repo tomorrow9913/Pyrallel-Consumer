@@ -114,6 +114,35 @@ async def test_success_callback_runs_while_lease_is_still_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_success_metrics_refresh_cleared_pending_depth() -> None:
+    tp = DtoTopicPartition("topic", 0)
+    pending_depths: list[int] = []
+
+    async def commit_sync(candidates: list[CommitCandidate]) -> None:
+        assert candidates[0].safe_offset == 9
+
+    def record_metrics(
+        event: str, reason: str | None, count: int, latency: float | None
+    ) -> None:
+        del reason, count, latency
+        if event == "success":
+            pending_depths.append(coordinator.stats.queue_depth)
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(),
+        commit_sync=commit_sync,
+        on_commit_success=lambda settlements: None,
+        on_commit_failure=lambda settlements, reason: None,
+        record_metrics=record_metrics,
+    )
+
+    await coordinator.enqueue([_candidate(tp, 9)])
+    await coordinator.drain(timeout=1.0)
+
+    assert pending_depths[-1] == 0
+
+
+@pytest.mark.asyncio
 async def test_success_callback_error_does_not_strand_in_flight_candidate() -> None:
     tp = DtoTopicPartition("topic", 0)
 
