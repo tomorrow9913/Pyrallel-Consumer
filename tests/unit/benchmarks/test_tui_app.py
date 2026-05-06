@@ -1565,7 +1565,9 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
     assert isinstance(active_row[0], Text)
     assert isinstance(active_row[1], Text)
     assert active_row[2] == Text("111.11 TPS", style="bold bright_green")
-    assert active_row[3] == active_cell
+    assert isinstance(active_row[3], Text)
+    assert active_row[3].plain.endswith(" RUNNING")
+    assert active_row[3].style == active_cell.style
     assert active_row[4] == Text("WAITING", style="grey62")
 
 
