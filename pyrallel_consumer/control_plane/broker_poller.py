@@ -1028,6 +1028,7 @@ class BrokerPoller:
     async def _build_commit_coordinator_candidates(
         self, commits_to_make: list[tuple[DtoTopicPartition, int]]
     ) -> list[CommitCandidate]:
+        """Build enriched commit candidates for the async coordinator."""
         return await self._commit_coordinator_support.build_candidates(commits_to_make)
 
     def get_commit_cadence_stats(self) -> Dict[str, Any]:
@@ -1263,21 +1264,25 @@ class BrokerPoller:
 
     # ------------------------------------------------------------------
     async def _commit_coordinator_sync(self, candidates: list[CommitCandidate]) -> None:
+        """Submit coordinator candidates to Kafka through the support adapter."""
         await self._commit_coordinator_support.commit_sync(candidates)
 
     async def _settle_committed_offsets(
         self, settlements: list[CommitSettlement]
     ) -> None:
+        """Apply successful coordinator settlements to offset trackers."""
         await self._commit_coordinator_support.settle_committed_offsets(settlements)
 
     async def _retain_failed_commit_offsets(
         self, settlements: list[CommitSettlement], reason: str
     ) -> None:
+        """Retain retry intent for failed coordinator settlements."""
         await self._commit_coordinator_support.retain_failed_commit_offsets(
             settlements, reason
         )
 
     def _record_commit_coordinator_pending_partitions(self) -> None:
+        """Record pending coordinator partition depth for metrics."""
         self._commit_coordinator_metrics_sink.record_pending_depth()
 
     def _record_commit_coordinator_metric(
@@ -1287,11 +1292,13 @@ class BrokerPoller:
         count: int,
         latency: float | None,
     ) -> None:
+        """Dispatch a coordinator metric event to the metrics sink."""
         self._commit_coordinator_metrics_sink.record_event(
             event, reason, count, latency
         )
 
     def _commit_coordinator_metrics_exporter(self) -> Any | None:
+        """Return the direct or WorkManager-backed metrics exporter."""
         if self._metrics_exporter is not None:
             return self._metrics_exporter
         return getattr(self._work_manager, "_metrics_exporter", None)
@@ -1724,11 +1731,13 @@ class BrokerPoller:
     def _assign_from_callback(
         self, consumer: Consumer, partitions: list[KafkaTopicPartition]
     ) -> bool:
+        """Bridge assign callback state changes onto the event loop."""
         return self._rebalance_bridge.assign_from_callback(consumer, partitions)
 
     def _assign_sync(
         self, consumer: Consumer, partitions: list[KafkaTopicPartition]
     ) -> None:
+        """Install assignment trackers and notify WorkManager."""
         work_manager_assignments = self._rebalance_support.build_assignments(
             consumer=consumer,
             partitions=partitions,
@@ -1772,11 +1781,13 @@ class BrokerPoller:
     def _prepare_revoke_from_callback(
         self, partitions: list[KafkaTopicPartition]
     ) -> RevokePreparation | None:
+        """Bridge revoke preparation onto the event loop."""
         return self._rebalance_bridge.prepare_revoke_from_callback(partitions)
 
     def _prepare_revoke_sync(
         self, partitions: list[KafkaTopicPartition]
     ) -> RevokePreparation:
+        """Prepare revoke payloads and state transitions under control lock."""
         revoked_tps = [
             DtoTopicPartition(
                 topic=str(partition.topic), partition=int(partition.partition)
@@ -1816,10 +1827,12 @@ class BrokerPoller:
         consumer: Consumer,
         offsets_to_commit: list[KafkaTopicPartition],
     ) -> list[DtoTopicPartition]:
+        """Commit prepared revoke offsets under the broker operation guard."""
         failed_tps: list[DtoTopicPartition] = []
         for offset in offsets_to_commit:
 
             def commit_offset(offset: KafkaTopicPartition = offset) -> None:
+                """Commit one revoke offset synchronously."""
                 consumer.commit(offsets=[offset], asynchronous=False)
 
             try:
@@ -1841,6 +1854,7 @@ class BrokerPoller:
         revoked_tps: list[DtoTopicPartition],
         failed_tps: list[DtoTopicPartition],
     ) -> bool:
+        """Bridge revoke cleanup onto the event loop."""
         return self._rebalance_bridge.cleanup_revoke_from_callback(
             revoked_tps, failed_tps
         )
@@ -1850,6 +1864,7 @@ class BrokerPoller:
         revoked_tps: list[DtoTopicPartition],
         failed_tps: list[DtoTopicPartition],
     ) -> None:
+        """Remove revoked partition state after broker revoke commit finishes."""
         failed_set = set(failed_tps)
         for failed_tp in failed_tps:
             self._record_commit_failure_for_partition(failed_tp, "kafka_exception")
@@ -1865,6 +1880,7 @@ class BrokerPoller:
                     self._pending_dlq_events.pop(pending_key, None)
 
     def _rebalance_bridge_timeout_seconds(self) -> float:
+        """Return bounded rebalance callback bridge timeout in seconds."""
         timeout_ms = getattr(
             self._kafka_config.parallel_consumer.execution,
             "max_revoke_grace_ms",
@@ -1875,6 +1891,7 @@ class BrokerPoller:
     def _record_commit_failure_for_rebalance_bridge(
         self, partitions: list[KafkaTopicPartition]
     ) -> None:
+        """Record replay-safe failures when rebalance bridge phases fail."""
         for partition in partitions:
             self._record_commit_failure_for_partition(
                 DtoTopicPartition(str(partition.topic), int(partition.partition)),
@@ -2034,6 +2051,7 @@ class BrokerPoller:
                 await asyncio.sleep(min(remaining_seconds, sleep_seconds))
 
     async def _drain_commit_coordinator_for_shutdown(self, deadline: float) -> bool:
+        """Drain coordinator work or run sync fallback before shutdown close."""
         coordinator_timeout = getattr(
             self._kafka_config.parallel_consumer.commit_coordinator,
             "stop_drain_timeout_ms",

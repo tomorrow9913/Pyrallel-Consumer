@@ -19,6 +19,7 @@ class CommitCoordinatorMetricsSink:
         self._get_pending_depth = get_pending_depth
 
     def record_pending_depth(self) -> None:
+        """Publish the current coordinator pending partition depth."""
         exporter = self._get_metrics_exporter()
         if exporter is None:
             return
@@ -30,9 +31,11 @@ class CommitCoordinatorMetricsSink:
             recorder(self._get_engine_type(), depth)
 
     def record_submitted(self, count: int) -> None:
+        """Record broker commit submissions for coordinator-managed partitions."""
         self._call_counter("record_commit_coordinator_submitted", count)
 
     def record_success(self, count: int, latency: float | None) -> None:
+        """Record successful settlements and optional settlement latency."""
         self._call_counter("record_commit_coordinator_success", count)
         if latency is None:
             return
@@ -48,12 +51,15 @@ class CommitCoordinatorMetricsSink:
             observer(self._get_engine_type(), latency)
 
     def record_failure(self, reason: str, count: int) -> None:
+        """Record failed coordinator settlements by bounded reason."""
         self._call_reason_counter("record_commit_coordinator_failure", reason, count)
 
     def record_retry(self, reason: str, count: int) -> None:
+        """Record retryable coordinator failures by bounded reason."""
         self._call_reason_counter("record_commit_coordinator_retry", reason, count)
 
     def record_coalesced(self, count: int) -> None:
+        """Record candidates superseded by newer same-partition candidates."""
         self._call_counter("record_commit_coordinator_coalesced", count)
 
     def record_event(
@@ -77,6 +83,7 @@ class CommitCoordinatorMetricsSink:
             self.record_coalesced(count)
 
     def _call_counter(self, method_name: str, count: int) -> None:
+        """Call a counter-style exporter method when it is available."""
         exporter = self._get_metrics_exporter()
         if exporter is None:
             return
@@ -85,6 +92,7 @@ class CommitCoordinatorMetricsSink:
             recorder(self._get_engine_type(), count)
 
     def _call_reason_counter(self, method_name: str, reason: str, count: int) -> None:
+        """Call a reason-labeled counter exporter method when available."""
         exporter = self._get_metrics_exporter()
         if exporter is None:
             return

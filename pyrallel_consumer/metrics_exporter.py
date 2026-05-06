@@ -601,6 +601,7 @@ class PrometheusMetricsExporter:
     def set_commit_coordinator_pending_partitions(
         self, engine_type: str, count: int
     ) -> None:
+        """Set current pending partition depth for async commit coordinator."""
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_pending_partitions.labels(engine_type=engine_type).set(
             count
@@ -609,6 +610,7 @@ class PrometheusMetricsExporter:
     def record_commit_coordinator_submitted(
         self, engine_type: str, partition_count: int
     ) -> None:
+        """Record partitions submitted through the async commit coordinator."""
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_submitted_total.labels(engine_type=engine_type).inc(
             partition_count
@@ -617,6 +619,7 @@ class PrometheusMetricsExporter:
     def record_commit_coordinator_success(
         self, engine_type: str, partition_count: int
     ) -> None:
+        """Record partitions settled after successful coordinator commit."""
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_success_total.labels(engine_type=engine_type).inc(
             partition_count
@@ -625,6 +628,7 @@ class PrometheusMetricsExporter:
     def record_commit_coordinator_failure(
         self, engine_type: str, reason: str, partition_count: int
     ) -> None:
+        """Record failed coordinator partitions by bounded failure reason."""
         self._validate_commit_coordinator_reason(reason)
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_failures_total.labels(
@@ -635,6 +639,7 @@ class PrometheusMetricsExporter:
     def record_commit_coordinator_retry(
         self, engine_type: str, reason: str, partition_count: int
     ) -> None:
+        """Record coordinator partitions scheduled for retry by reason."""
         self._validate_commit_coordinator_reason(reason)
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_retries_total.labels(
@@ -645,6 +650,7 @@ class PrometheusMetricsExporter:
     def record_commit_coordinator_coalesced(
         self, engine_type: str, count: int = 1
     ) -> None:
+        """Record coordinator candidates replaced by newer candidates."""
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_coalesced_total.labels(engine_type=engine_type).inc(
             count
@@ -653,6 +659,7 @@ class PrometheusMetricsExporter:
     def observe_commit_coordinator_settlement_latency(
         self, engine_type: str, duration_seconds: float
     ) -> None:
+        """Observe latency from coordinator submission to settlement."""
         self._validate_pipeline_engine_type(engine_type)
         self._commit_coordinator_settlement_latency_hist.labels(
             engine_type=engine_type
@@ -925,6 +932,7 @@ class PrometheusMetricsExporter:
 
     @staticmethod
     def _validate_commit_coordinator_reason(reason: str) -> None:
+        """Validate a bounded commit coordinator reason label."""
         if reason not in COMMIT_COORDINATOR_FAILURE_REASONS:
             allowed_reasons = ", ".join(COMMIT_COORDINATOR_FAILURE_REASONS)
             raise ValueError(

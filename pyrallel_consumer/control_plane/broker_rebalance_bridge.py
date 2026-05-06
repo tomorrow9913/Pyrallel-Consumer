@@ -13,6 +13,8 @@ from ..dto import TopicPartition as DtoTopicPartition
 
 @dataclass(frozen=True)
 class RevokePreparation:
+    """Prepared revoke state built on the BrokerPoller event loop."""
+
     revoked_tps: list[DtoTopicPartition]
     offsets_to_commit: list[KafkaTopicPartition]
 
@@ -44,6 +46,7 @@ class BrokerRebalanceBridge:
     def assign_from_callback(
         self, consumer: Consumer, partitions: list[KafkaTopicPartition]
     ) -> bool:
+        """Run assign state mutation through the bounded event-loop bridge."""
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
             self._assign_sync(consumer, partitions)
@@ -62,12 +65,14 @@ class BrokerRebalanceBridge:
     async def _assign_on_event_loop(
         self, consumer: Consumer, partitions: list[KafkaTopicPartition]
     ) -> None:
+        """Apply assignment under the control lock on the event loop."""
         async with self._control_lock:
             self._assign_sync(consumer, partitions)
 
     def prepare_revoke_from_callback(
         self, partitions: list[KafkaTopicPartition]
     ) -> RevokePreparation | None:
+        """Prepare revoke state through the bounded event-loop bridge."""
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
             return self._prepare_revoke_sync(partitions)
@@ -83,6 +88,7 @@ class BrokerRebalanceBridge:
     async def _prepare_revoke_on_event_loop(
         self, partitions: list[KafkaTopicPartition]
     ) -> RevokePreparation:
+        """Build revoke preparation under the control lock on the event loop."""
         async with self._control_lock:
             return self._prepare_revoke_sync(partitions)
 
@@ -91,6 +97,7 @@ class BrokerRebalanceBridge:
         revoked_tps: list[DtoTopicPartition],
         failed_tps: list[DtoTopicPartition],
     ) -> bool:
+        """Clean up revoked partition state through the event-loop bridge."""
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
             self._cleanup_revoke_sync(revoked_tps, failed_tps)
@@ -110,5 +117,6 @@ class BrokerRebalanceBridge:
         revoked_tps: list[DtoTopicPartition],
         failed_tps: list[DtoTopicPartition],
     ) -> None:
+        """Apply revoke cleanup under the control lock on the event loop."""
         async with self._control_lock:
             self._cleanup_revoke_sync(revoked_tps, failed_tps)
