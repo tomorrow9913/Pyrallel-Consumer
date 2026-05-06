@@ -9,9 +9,31 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import ExecutionMode, OrderingMode
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    ExecutionMode,
+    OrderingMode,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
+
+
+def _make_message(
+    topic: str,
+    partition: int,
+    offset: int,
+    key: bytes,
+    value: bytes,
+):
+    message = MagicMock()
+    message.topic.return_value = topic
+    message.partition.return_value = partition
+    message.offset.return_value = offset
+    message.key.return_value = key
+    message.value.return_value = value
+    message.error.return_value = None
+    return message
 
 
 @pytest.fixture
@@ -163,30 +185,6 @@ def test_broker_poller_wires_async_route_batch_size_as_item_level(
     )
 
     assert poller._work_manager.get_route_batch_size() == 1
-
-
-def test_make_dispatch_support_wires_completed_offset_skip_callback(broker_poller):
-    with patch(
-        "pyrallel_consumer.control_plane.broker_poller.BrokerDispatchSupport"
-    ) as support_cls:
-        support = broker_poller._make_dispatch_support()
-
-    assert support is support_cls.return_value
-    assert (
-        support_cls.call_args.kwargs["record_completed_offset_skip"]
-        == broker_poller._record_completed_offset_skip
-    )
-
-
-def _make_message(topic: str, partition: int, offset: int, key: bytes, value: bytes):
-    message = MagicMock()
-    message.error.return_value = None
-    message.topic.return_value = topic
-    message.partition.return_value = partition
-    message.offset.return_value = offset
-    message.key.return_value = key
-    message.value.return_value = value
-    return message
 
 
 @pytest.mark.asyncio
@@ -599,6 +597,50 @@ async def test_on_revoke_removes_offset_trackers(broker_poller, mock_consumer):
 
 
 @pytest.mark.asyncio
+async def test_on_revoke_clears_pending_dlq_events_for_revoked_partitions(
+    broker_poller, mock_consumer
+):
+    revoked_tp = DtoTopicPartition(topic="test-topic", partition=0)
+    retained_tp = DtoTopicPartition(topic="test-topic", partition=1)
+    for tp in (revoked_tp, retained_tp):
+        tracker = OffsetTracker(
+            topic_partition=tp,
+            starting_offset=0,
+            max_revoke_grace_ms=0,
+            initial_completed_offsets=set(),
+        )
+        tracker.last_committed_offset = -1
+        tracker.last_fetched_offset = 10
+        broker_poller._offset_trackers[tp] = tracker
+
+    revoked_event = CompletionEvent(
+        id="revoked-pending-dlq",
+        tp=revoked_tp,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="dlq unavailable",
+        attempt=3,
+    )
+    retained_event = CompletionEvent(
+        id="retained-pending-dlq",
+        tp=retained_tp,
+        offset=10,
+        epoch=0,
+        status=CompletionStatus.FAILURE,
+        error="dlq unavailable",
+        attempt=3,
+    )
+    broker_poller._pending_dlq_events[(revoked_tp, 10)] = revoked_event
+    broker_poller._pending_dlq_events[(retained_tp, 10)] = retained_event
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    assert (revoked_tp, 10) not in broker_poller._pending_dlq_events
+    assert broker_poller._pending_dlq_events == {(retained_tp, 10): retained_event}
+
+
+@pytest.mark.asyncio
 async def test_on_revoke_commits_metadata_snapshot_when_enabled(
     mock_kafka_config, mock_execution_engine, mock_consumer
 ):
@@ -945,8 +987,13 @@ async def test_commit_offsets_uses_safe_offset_without_rescanning_tracker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ordering_mode",
+    [OrderingMode.UNORDERED, OrderingMode.KEY_HASH, OrderingMode.PARTITION],
+)
 async def test_restored_sparse_offsets_skip_dispatch_and_commit_after_gap(
     broker_poller,
+    ordering_mode: OrderingMode,
 ):
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     tracker = OffsetTracker(
@@ -960,7 +1007,7 @@ async def test_restored_sparse_offsets_skip_dispatch_and_commit_after_gap(
         last_fetched_offset=7,
     )
     broker_poller._offset_trackers[tp] = tracker
-    broker_poller.ORDERING_MODE = OrderingMode.UNORDERED
+    broker_poller.ORDERING_MODE = ordering_mode
     broker_poller._work_manager = MagicMock()
     broker_poller._work_manager.submit_message = AsyncMock()
     broker_poller._work_manager.get_min_in_flight_offset.return_value = None

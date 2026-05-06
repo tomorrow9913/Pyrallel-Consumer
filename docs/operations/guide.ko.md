@@ -37,7 +37,20 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: resource signal 지표는 튜닝 실험용 advisory input입니다. status gauge는 고정 label만 사용하며 동적 `provider` label은 노출하지 않습니다.
 - **운영 팁**: `unavailable`, `stale`, `first_sample_pending`은 fail-open 상태입니다. 이 값들은 resource-aware tuning이 비활성인 이유를 설명해야 하며, 자체적으로 concurrency limit를 낮추면 안 됩니다.
 
-### 1.6. Process Batch Flush Count (process 배치 flush 이유)
+### 1.6. Process Worker-Pipe Route Batches (process worker-pipe route batch)
+- **Prometheus 쿼리**:
+    - `consumer_process_route_batch_count`
+    - `consumer_process_route_batch_items`
+    - `consumer_process_route_batch_avg_size`
+    - `consumer_process_route_batch_max_size`
+    - `consumer_process_ipc_items_per_input_payload`
+    - `consumer_process_ipc_items_per_completion_payload`
+- **의미**: 현재 process topology는 worker-pipes를 사용합니다. 이 topology에서는 worker-pipes bypasses BatchAccumulator flush counts; route-batch와 IPC payload 지표가 process-mode batching을 해석하는 기본 신호입니다.
+- **운영 팁**:
+    - Process 처리량이나 payload 효율을 볼 때는 route-batch count/items와 IPC items-per-payload를 먼저 확인하십시오.
+    - support boundary가 다른 transport를 가리키지 않는 한, worker-pipes-only 경로에서 BatchAccumulator flush/sizing 값이 0인 것은 정상일 수 있습니다.
+
+### 1.6b. Legacy Process Batch Flush Count (legacy process 배치 flush 이유)
 - **Prometheus 쿼리**: `consumer_process_batch_flush_count{reason=~"size|timer|close|demand"}`
 - **의미**:
     - `size`: 배치 크기가 설정값에 도달해 정상적으로 묶여 전송되었습니다.
@@ -45,8 +58,9 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `demand`: 현재 flush policy가 size/timer 경로보다 먼저 누적 버퍼를 강제로 비우고 있습니다.
     - `close`: 종료나 rebalance 정리 과정에서 잔여 버퍼를 배출했습니다.
 - **운영 팁**:
-    - `timer` 비중이 높고 `consumer_process_batch_avg_size`가 낮으면 batching 효율이 떨어진 상태입니다. 지연 예산이 허용하면 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리는 쪽을 검토하십시오.
-    - `demand`가 계속 증가하면 latency-first 강제 flush가 많다는 뜻입니다. `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, ordering skew를 함께 확인하십시오.
+    - 이 값들은 이전 BatchAccumulator 경로의 v1 compatibility signal로 보십시오. worker-pipes 사용자는 위 route-batch와 IPC payload 지표를 우선해야 합니다.
+    - BatchAccumulator 지원 경로에서 `timer` 비중이 높고 `consumer_process_batch_avg_size`가 낮으면 batching 효율이 떨어진 상태입니다. 지연 예산이 허용하면 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리는 쪽을 검토하십시오.
+    - BatchAccumulator 지원 경로에서 `demand`가 계속 증가하면 latency-first 강제 flush가 많다는 뜻입니다. `flush_policy`, `demand_flush_min_residence_ms`, `process_count`, ordering skew를 함께 확인하십시오.
 
 ### 1.6a. Commit / DLQ 실패 Counter
 - **Prometheus 쿼리**:
@@ -55,13 +69,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 이 counter들은 lag/gap 증상으로만 보일 수 있는 release-critical 실패를 직접 구분합니다. Commit 실패는 broker commit 경계의 replay risk를 뜻하고, DLQ publish 실패는 terminal 실패 메시지를 DLQ에 publish하지 못해 offset이 retry 대기 상태로 유지됨을 뜻합니다.
 - **운영 팁**: 값이 증가하면 즉시 알림을 권장합니다. Commit 실패는 Kafka coordinator 상태, ACL, broker 연결을 확인하십시오. DLQ publish 실패는 DLQ topic 존재 여부, producer ACL, payload size 제한, broker 가용성을 먼저 복구한 뒤 consumer 재시작/확장을 검토하십시오.
 
-### 1.6b. 완료 Offset Skip Counter
-- **Prometheus 쿼리**: `pyrallel_pipeline_completed_offset_skips_total`
-- **Labels**: `engine_type`, `broker_kind`
-- **의미**: `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level counter입니다. `metadata_snapshot` restore가 이미 완료로 표시했지만 더 낮은 gap 때문에 아직 연속 commit되지 않은 consumed record를 dispatch에서 skip한 수를 나타냅니다.
-- **운영 팁**: 이 지표는 poll-call event가 아니며 poll event label이나 `consumer_processed_total` 의미를 바꾸지 않습니다. Rebalance/restart 이후 증가하면 복원된 sparse offset의 중복 worker dispatch를 막고 있다는 뜻입니다.
-
-### 1.7. Process Batch Buffer Health (버퍼 적체 상태)
+### 1.7. Legacy Process Batch Buffer Health (legacy 버퍼 적체 상태)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_avg_size`
     - `consumer_process_batch_last_size`
@@ -69,6 +77,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `consumer_process_batch_buffered_items`
     - `consumer_process_batch_buffered_age_seconds`
 - **의미**:
+    - 이 gauge들은 legacy BatchAccumulator buffer surface를 설명합니다. worker-pipes-only process mode에서는 실제 작업이 route-batch/IPC 지표로 보이더라도 이 값들이 0으로 유지될 수 있습니다.
     - `avg/last_size`는 실제 micro-batch 효율을 보여줍니다.
     - `last_wait_seconds`와 `buffered_age_seconds`는 flush 전 대기 시간을 보여줍니다.
     - `buffered_items`가 높으면 아직 worker queue로 내려가지 못한 작업이 main process 버퍼에 쌓여 있다는 뜻입니다.
@@ -93,12 +102,22 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - `worker_exec`만 높으면 CPU saturation 또는 느린 사용자 로직 문제입니다. `process_count` 증설, worker 최적화, timeout/DLQ 정책 점검이 우선입니다.
     - `worker_to_main`이 높고 `buffered_items`나 `consumer_in_flight_count`도 높으면 completion drain이 밀리고 있을 가능성이 큽니다. main process 부하, completion polling cadence, 과도한 로그/metrics 갱신 빈도를 확인하십시오.
 
-### 1.9. Engine Capability Boundary (엔진 capability 경계)
+### 1.9. Process Batch Support Boundary (process 배치 지원 경계)
+- **Prometheus 쿼리**:
+    - `consumer_process_batch_transport_mode`
+    - `consumer_process_batch_support_state`
+    - `consumer_process_batch_timer_flush_supported`
+    - `consumer_process_batch_demand_flush_supported`
+    - `consumer_process_batch_recycle_supported`
+- **의미**: 이 gauge들은 어떤 process 실행 진단이 활성인지, 현재 transport가 어떤 process-batch 제어 경로를 지원하는지 설명합니다. `transport_mode`는 현재 `worker_pipes`로 제한되고, `support_state`는 `full` 또는 `bounded`로 제한됩니다.
+- **운영 팁**: 이 값들은 throughput counter가 아니라 compatibility/support-boundary 신호입니다. timer/demand/recycle 관련 값이 0일 때 운영 장애로 해석하기 전에 먼저 지원 여부를 확인하십시오.
+
+### 1.10. Engine Capability and Pipeline Diagnostics Boundary (엔진 capability와 pipeline diagnostics 경계)
 - **정의**: Control Plane은 공통 실행 엔진 계약에만 의존합니다.
 - **의미**: commit clamping / commit clamp용 최소 in-flight offset은 control-plane `WorkManager` dispatch ledger에서 계산한다. 따라서 process 전용 registry는 canonical commit safety 규칙이 아니라 recovery/diagnostics 상태로 남아야 합니다.
-- **운영 팁**: `process_batch_metrics`는 v1 compatibility projection으로 계속 문서화하고, generic engine diagnostics는 내부 진화 방향으로 취급하십시오. 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
+- **운영 팁**: `process_batch_metrics`는 v1 compatibility projection으로 계속 문서화하고, `get_pipeline_diagnostics()`는 broker-neutral pipeline observability를 위한 별도 supported sidecar로 유지하십시오. `RuntimeSnapshot` v1은 변경되지 않습니다. 리팩터링 검증 시 async/process 엔진(또는 mock) 모두에 동일한 control-plane 검증을 적용해 polymorphic 경계가 유지되는지 확인하십시오.
 
-### 1.10. Shutdown Drain Diagnostics (종료 drain 진단)
+### 1.11. Shutdown Drain Diagnostics (종료 drain 진단)
 - **로그 라인**:
     - `ProcessExecutionEngine shutdown pre-join drain: registry_events=... completion_events=... residual_in_flight_registry=...`
     - `ProcessExecutionEngine shutdown post-join drain: registry_events=... completion_events=... passes=... residual_in_flight_registry=...`
@@ -106,7 +125,7 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 이 로그는 shutdown 중 main process에서 보이는 IPC를 얼마나 reconcile했는지와 남은 process-private 진단 상태를 설명합니다. Prometheus counter, retry ledger, DLQ trigger, commit-safety 근거가 아닙니다.
 - **운영 팁**: `completion_events`가 0보다 크면 이미 보이던 real completion이 일반 prefetched completion 경로로 이동했다는 증거로만 해석하십시오. `passes`는 bounded stable-empty 관찰 횟수이며, shutdown 경계 밖의 숨은 worker outcome이 절대 없다는 증명이 아닙니다. Commit advancement, DLQ publish, epoch fencing은 계속 control-plane의 normal completion handling에서만 결정됩니다.
 
-### 1.11. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
+### 1.12. Adaptive Backpressure / Adaptive Concurrency 런타임 스냅샷
 - **Prometheus 쿼리**:
     - `consumer_adaptive_backpressure_configured_max_in_flight`
     - `consumer_adaptive_backpressure_effective_max_in_flight`
@@ -155,19 +174,21 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - `max_revoke_grace_ms` 설정을 통해 리밸런싱 시 정리 시간을 확보하십시오.
 
 ### 3.3. Process-mode에서 처리량은 낮고 lag만 늘어날 때
-1. `consumer_process_batch_flush_count{reason="timer"}`와 `consumer_process_batch_avg_size`를 같이 보십시오.
-2. `timer` flush가 지배적이고 평균 배치가 작으면 batching 비효율입니다. latency budget 안에서 `batch_size`를 낮추거나 `max_batch_wait_ms`를 늘리십시오.
-3. 배치 크기는 충분한데 `consumer_process_batch_avg_main_to_worker_ipc_seconds`가 높으면 payload/IPC 비용이 병목입니다. message size, serialization 비용, `queue_size` 포화를 먼저 확인하십시오.
+1. `consumer_process_route_batch_count`, `consumer_process_route_batch_items`, `consumer_process_ipc_items_per_input_payload`, `consumer_process_ipc_items_per_completion_payload`를 먼저 보십시오. Worker-pipes bypasses BatchAccumulator flush counts이므로 legacy flush/sizing gauge가 0이어도 작업은 흐를 수 있습니다.
+2. route batch가 자주 발생하지만 `consumer_process_ipc_items_per_input_payload`가 낮으면 payload 효율이 낮은 상태입니다. route batch size, ordering skew, message size를 함께 확인하십시오.
+3. payload 효율은 충분한데 `consumer_process_batch_avg_main_to_worker_ipc_seconds`가 높으면 payload/IPC 비용이 병목입니다. message size, serialization 비용, `queue_size` 포화를 먼저 확인하십시오.
 4. IPC는 정상인데 `consumer_process_batch_avg_worker_exec_seconds`만 높으면 worker 로직이 병목입니다. CPU saturation, 외부 I/O, timeout/DLQ를 점검하십시오.
 
 ### 3.4. Process-mode에서 queue/backpressure가 반복될 때
-1. `consumer_backpressure_active`, `consumer_in_flight_count`, `consumer_process_batch_buffered_items`를 같이 보십시오.
-2. `buffered_items`와 `consumer_internal_queue_depth`가 동시에 높으면 main buffer와 partition queue가 함께 밀리는 상태입니다. `max_in_flight_messages`, `queue_size`, ordering skew를 점검하십시오.
+1. `consumer_backpressure_active`, `consumer_in_flight_count`, `consumer_process_route_batch_items`, IPC items-per-payload gauge를 같이 보십시오.
+2. route-batch items와 `consumer_internal_queue_depth`가 동시에 높으면 worker-pipe routing과 partition queue가 함께 밀리는 상태입니다. `max_in_flight_messages`, `queue_size`, ordering skew를 점검하십시오.
 3. `buffered_items`는 낮은데 `consumer_process_batch_avg_worker_to_main_ipc_seconds` 또는 `consumer_process_batch_last_worker_to_main_ipc_seconds`가 높으면 completion 회수가 병목일 수 있습니다. main process 부하와 polling cadence를 점검하십시오.
 
 ## 4. 모니터링 대시보드 (Grafana 권장)
 
 `get_metrics()` 결과를 Prometheus 등으로 수집한다고 가정할 때, 다음과 같은 패널 구성을 권장합니다.
+포함된 Grafana dashboard는 public metric surface를 탐색하고 필요한 패널을 조합하기 위한 reference/sample dashboard이며, production opinionated dashboard나 alert policy가 아닙니다.
+이 dashboard는 두 계층입니다: Operator triage는 첫 화면에서 정상/위험/병목을 확인하는 curated subset이고, Metric catalog/reference는 상세 패널 구성을 위한 public metric surface 전체 coverage입니다.
 
 ### 4.1. System Overview (Row)
 - **Total In-Flight**:
@@ -200,18 +221,22 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - Insight: 가상 파티션 큐의 백로그 상태를 확인합니다.
 
 ### 4.4. Process Mode Health (Row)
-- **Flush Reason Mix**:
+- **Worker-Pipe Route Batches**:
     - Type: Time Series
-    - Query: `consumer_process_batch_flush_count`
-    - Insight: steady-state에서 `size`가 주도하고 `timer`/`demand`는 보조적으로 나타나는 편이 일반적입니다. `timer` 편중은 작은 배치, `demand` 편중은 잦은 강제 배출 신호입니다.
-- **Batch Efficiency**:
+    - Query: `consumer_process_route_batch_count`, `consumer_process_route_batch_items`
+    - Insight: Worker-pipes bypasses BatchAccumulator flush counts이므로 이 route-batch counter들이 process 처리량을 보는 기본 패널입니다.
+- **Worker-Pipe Payload Efficiency**:
     - Type: Time Series
-    - Query: `consumer_process_batch_avg_size`, `consumer_process_batch_last_size`, `consumer_process_batch_buffered_age_seconds`
-    - Insight: 평균 배치 크기 하락과 버퍼 age 상승이 동시에 보이면 batching 정책이 workload와 맞지 않는 경우가 많습니다.
+    - Query: `consumer_process_ipc_items_per_input_payload`, `consumer_process_ipc_items_per_completion_payload`
+    - Insight: IPC payload당 item 수가 낮으면 route batch가 serialization/queue transfer 비용을 충분히 amortize하지 못하는 상태입니다.
 - **IPC vs Worker Time Split**:
     - Type: Time Series
     - Query: `consumer_process_batch_avg_main_to_worker_ipc_seconds`, `consumer_process_batch_avg_worker_exec_seconds`, `consumer_process_batch_avg_worker_to_main_ipc_seconds`
     - Insight: 세 값을 분리해서 보면 병목이 serialization/IPC인지, 실제 worker 실행인지, completion 회수인지 빠르게 구분할 수 있습니다.
+- **Support Boundary**:
+    - Type: Time Series
+    - Query: `consumer_process_batch_transport_mode`, `consumer_process_batch_support_state`, `consumer_process_batch_timer_flush_supported`, `consumer_process_batch_demand_flush_supported`, `consumer_process_batch_recycle_supported`
+    - Insight: missing activity를 장애로 해석하기 전에 active process transport가 timer, demand, recycle 경로를 지원하는지 먼저 확인합니다.
 
 ### 4.5. Adaptive Control Runtime (Row)
 - **Adaptive Backpressure Limits**:
@@ -226,6 +251,26 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **튜닝 참조값**:
     - Type: Table
     - Query: `consumer_adaptive_backpressure_scale_up_step`, `consumer_adaptive_backpressure_scale_down_step`, `consumer_adaptive_backpressure_cooldown_ms`, `consumer_adaptive_concurrency_scale_up_step`, `consumer_adaptive_concurrency_scale_down_step`, `consumer_adaptive_concurrency_cooldown_ms`
+
+### 4.6. Pipeline Diagnostics Surface (Row)
+- **Surface**: `PyrallelConsumer.get_pipeline_diagnostics()`와 `BrokerPoller.get_pipeline_diagnostics()`는 `pyrallel_pipeline_*` Prometheus projection의 기반이 되는 supported sidecar입니다. Unsupported section은 `pyrallel_pipeline_section_support_state`로 확인하며, absent observed gauge를 zero work로 해석하지 마십시오.
+- **Pipeline Stages**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_stage_messages`
+- **Pipeline Blocked Reasons**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_blocked_messages`, `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- **Pipeline Settlement Blocker State**:
+    - Type: State Timeline / Status History
+    - Query: `pyrallel_pipeline_settlement_blocker_state`
+    - Insight: 현재 settlement를 막는 primary reason을 bounded one-hot으로 보여줍니다(`commit_pending`, `dlq_publish_pending`, `ordered_cursor_gap`, `ack_pending`, `delete_pending`, `archive_pending`, `unknown`). Settlement가 supported이고 healthy이면 모든 reason이 `0`으로 나오며, unsupported settlement는 fake observed value가 아니라 `pyrallel_pipeline_section_support_state`로 표현합니다.
+- **Pipeline Support and Worker Capacity**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
+- **Pipeline Subqueues, Polling, and Commit Settlement**:
+    - Type: Time Series
+    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completed_offset_skips_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
+    - Insight: Completion-to-commit latency는 `get_pipeline_diagnostics()`가 반환하는 field가 아니라 sidecar projection과 함께 노출되는 BrokerPoller 소유 pipeline event metric입니다. `pyrallel_pipeline_completed_offset_skips_total`은 `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level restored-offset skip count이며 poll-call event가 아닙니다.
 
 ---
 © 2026 Pyrallel Consumer Project

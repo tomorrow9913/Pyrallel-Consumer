@@ -24,6 +24,7 @@ operators and downstream users can rely on across the v1 release line.
 | Secure Kafka connection fields (`KafkaConfig.security_protocol`, `sasl_mechanisms`, `sasl_username`, `sasl_password`, `ssl_ca_location`, `ssl_certificate_location`, `ssl_key_location`, `ssl_key_password`) | unset | optional allowlisted librdkafka TLS/SASL keys only | Adding optional allowlisted keys is minor; generic passthrough or logging/snapshotting secrets is not allowed |
 | Commit public surface | completion-driven (`on_complete`) only | no explicit public knob for periodic commit | Adding a periodic commit option to facade/config changes the contract |
 | Runtime diagnostics facade (`PyrallelConsumer.get_runtime_snapshot()`) | read-only structured snapshot | queue summary, retry policy, DLQ status, per-partition assignment/runtime state | Additive read-only fields are backward-compatible; renaming/removing existing snapshot fields is breaking once documented |
+| Pipeline diagnostics sidecar (`PyrallelConsumer.get_pipeline_diagnostics()`) | read-only supported sidecar snapshot | bounded pipeline stages, blocked reasons, support state, subqueues, dispatch capacity, admission, workers, settlement, poll counters | Additive read-only fields are backward-compatible; support-state semantics and bounded enum values are stable once documented |
 
 Operational rules:
 
@@ -92,9 +93,21 @@ they are not part of the canonical commit-safety rule.
 `process_batch_metrics` remains the frozen v1 compatibility projection for
 process-mode batching and IPC/runtime counters.
 
-Generic engine diagnostics remain an additive internal direction for future runtime
-observability, but the documented v1 `RuntimeSnapshot` field boundary above stays
-frozen until a future major-version contract change.
+### Pipeline diagnostics sidecar surface
+
+Pipeline diagnostics stay separate from RuntimeSnapshot v1. The supported sidecar
+is exposed through `PyrallelConsumer.get_pipeline_diagnostics()` and
+`BrokerPoller.get_pipeline_diagnostics()` as a broker-neutral observability
+surface for bounded pipeline stages, blocked reasons, dispatch capacity,
+admission, worker capacity, subqueues, settlement, and poll counters.
+
+Support-state values are stable and machine-readable: `supported`, `unavailable`,
+and `not_implemented`. Unsupported or not-yet-implemented sections are represented
+through support metadata rather than fake observed values. Prometheus `pyrallel_pipeline_*` metrics project this sidecar; the exporter must not inspect
+control-plane, broker, or execution-engine private state directly.
+
+The documented v1 `RuntimeSnapshot` field boundary above stays frozen until a
+future major-version contract change.
 
 Process-engine shutdown drain log lines are diagnostic-only reconciliation evidence.
 They may report pre-join/post-join `registry_events`, `completion_events`,

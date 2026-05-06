@@ -67,6 +67,18 @@ def _fetch_text(url: str) -> str:
         return response.read().decode()
 
 
+def _grafana_admin_password() -> str:
+    password = os.environ.get("GF_SECURITY_ADMIN_PASSWORD")
+    if password:
+        return password
+    env_path = REPO_ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("GF_SECURITY_ADMIN_PASSWORD="):
+                return line.split("=", 1)[1].strip()
+    return "local-e2e"
+
+
 def _wait_until(description: str, timeout_sec: float, predicate) -> None:
     deadline = time.monotonic() + timeout_sec
     last_error: Exception | None = None
@@ -78,6 +90,50 @@ def _wait_until(description: str, timeout_sec: float, predicate) -> None:
             last_error = exc
         time.sleep(2)
     raise RuntimeError(f"{description} did not become ready: {last_error}")
+
+
+def _grafana_provisioning_ready(grafana_auth: str) -> bool:
+    return _fetch_json(
+        "http://127.0.0.1:3000/api/datasources/uid/prometheus",
+        auth=grafana_auth,
+    ).get("uid") == "prometheus" and any(
+        result.get("uid") == "pyrallel-overview"
+        for result in _fetch_json(
+            "http://127.0.0.1:3000/api/search?query=Pyrallel",
+            auth=grafana_auth,
+        )
+    )
+
+
+def _wait_for_benchmark_metrics_endpoint(
+    benchmark: subprocess.Popen[str],
+    *,
+    timeout_sec: float,
+) -> None:
+    """Wait for benchmark metrics while failing fast if the process exits."""
+    deadline = time.monotonic() + timeout_sec
+    required_metrics = (
+        "consumer_processed_total",
+        "consumer_in_flight_count",
+        "pyrallel_pipeline_poll_records_total",
+        "pyrallel_pipeline_poll_events_total",
+    )
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        if benchmark.poll() is not None:
+            output = benchmark.stdout.read() if benchmark.stdout is not None else ""
+            raise RuntimeError(
+                "benchmark exited before metrics endpoint became ready: "
+                f"returncode={benchmark.returncode}\n{output}"
+            )
+        try:
+            metrics_text = _fetch_text("http://127.0.0.1:9091/metrics")
+            if all(metric in metrics_text for metric in required_metrics):
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(2)
+    raise RuntimeError(f"benchmark metrics endpoint did not become ready: {last_error}")
 
 
 def _prometheus_target_health() -> dict[str, str]:
@@ -100,7 +156,8 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
             timeout_sec=90,
             predicate=lambda: _fetch_text("http://127.0.0.1:9090/-/ready") != "",
         )
-        grafana_auth = base64.b64encode(b"admin:local-e2e").decode()
+        grafana_password = _grafana_admin_password()
+        grafana_auth = base64.b64encode(f"admin:{grafana_password}".encode()).decode()
         _wait_until(
             "Grafana",
             timeout_sec=90,
@@ -124,6 +181,17 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
             _skip_or_fail(
                 "Monitoring stack Prometheus kafka-exporter target is not healthy: "
                 f"{exc}"
+            )
+        try:
+            _wait_until(
+                "Grafana provisioning",
+                timeout_sec=60,
+                predicate=lambda: _grafana_provisioning_ready(grafana_auth),
+            )
+        except RuntimeError as exc:
+            _skip_or_fail(
+                "Monitoring stack Grafana provisioning is not available with the "
+                f"configured admin credentials: {exc}"
             )
     except Exception as exc:
         _skip_or_fail(f"Monitoring stack not available for e2e smoke test: {exc}")
@@ -164,15 +232,9 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         text=True,
     )
     try:
-        _wait_until(
-            "benchmark metrics endpoint",
+        _wait_for_benchmark_metrics_endpoint(
+            benchmark,
             timeout_sec=180,
-            predicate=lambda: (
-                "consumer_processed_total"
-                in _fetch_text("http://127.0.0.1:9091/metrics")
-                and "consumer_in_flight_count"
-                in _fetch_text("http://127.0.0.1:9091/metrics")
-            ),
         )
         try:
             _wait_until(
@@ -187,30 +249,6 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
             _skip_or_fail(
                 "Monitoring stack Prometheus targets not healthy for e2e smoke "
                 f"test: {exc}"
-            )
-        try:
-            _wait_until(
-                "Grafana provisioning",
-                timeout_sec=60,
-                predicate=lambda: (
-                    _fetch_json(
-                        "http://127.0.0.1:3000/api/datasources/uid/prometheus",
-                        auth=grafana_auth,
-                    ).get("uid")
-                    == "prometheus"
-                    and any(
-                        result.get("title") == "Pyrallel Overview"
-                        for result in _fetch_json(
-                            "http://127.0.0.1:3000/api/search?query=Pyrallel",
-                            auth=grafana_auth,
-                        )
-                    )
-                ),
-            )
-        except RuntimeError as exc:
-            _skip_or_fail(
-                "Monitoring stack Grafana provisioning is not healthy for e2e "
-                f"smoke test: {exc}"
             )
         output, _ = benchmark.communicate(timeout=220)
         assert benchmark.returncode == 0, output

@@ -89,7 +89,7 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
         logger=MagicMock(),
     )
 
-    await support.process_completed_events(
+    result = await support.process_completed_events(
         [
             CompletionEvent(
                 id="done",
@@ -105,6 +105,60 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
 
     assert 0 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 0)]
+    assert result.completed_offsets_by_partition == {tp: (0,)}
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_returns_only_newly_completed_offsets() -> None:
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets={0},
+    )
+    tracker.increment_epoch()
+    support = BrokerCompletionSupport(
+        kafka_config=KafkaConfig(),
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict(),
+        should_cache_message_payloads=lambda: False,
+        pop_cached_message=lambda _cache_key: None,
+        publish_to_dlq=AsyncMock(return_value=True),
+        logger=MagicMock(),
+    )
+
+    result = await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="duplicate",
+                tp=tp,
+                offset=0,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+            CompletionEvent(
+                id="new",
+                tp=tp,
+                offset=1,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            ),
+        ]
+    )
+
+    assert result.processed_count == 1
+    assert result.completed_counts_by_partition == {tp: 1}
+    assert result.completed_offsets_by_partition == {tp: (1,)}
 
 
 @pytest.mark.asyncio

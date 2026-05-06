@@ -1,20 +1,35 @@
 from dataclasses import fields
 from pathlib import Path
 
+from pyrallel_consumer import (
+    PipelineDiagnosticsSnapshot as ExportedPipelineDiagnosticsSnapshot,
+)
+from pyrallel_consumer.consumer import PyrallelConsumer
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.dto import (
     AdaptiveBackpressureSnapshot,
     AdaptiveConcurrencyRuntimeSnapshot,
     DlqRuntimeSnapshot,
     EngineRuntimeDiagnostics,
     PartitionRuntimeSnapshot,
+    PipelineAdmissionDiagnostics,
+    PipelineDiagnostics,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSnapshot,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityDiagnostics,
     PipelinePollDiagnostics,
+    PipelineSettlementDiagnostics,
+    PipelineStage,
+    PipelineSubqueueDiagnostics,
+    PipelineWorkerDiagnostics,
     PoisonMessageRuntimeSnapshot,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     QueueRuntimeSnapshot,
     RetryPolicySnapshot,
     RuntimeSnapshot,
-    SystemMetrics,
     WorkManagerPipelineDiagnostics,
 )
 
@@ -58,7 +73,9 @@ def test_public_contract_doc_freezes_runtime_snapshot_field_boundary() -> None:
         "adaptive_backpressure.last_decision",
         "Commit clamping is computed from the control-plane `WorkManager` dispatch ledger",
         "`process_batch_metrics` remains the frozen v1 compatibility projection",
-        "Generic engine diagnostics remain an additive internal direction",
+        "Pipeline diagnostics sidecar surface",
+        "Pipeline diagnostics stay separate from RuntimeSnapshot v1",
+        "Prometheus `pyrallel_pipeline_*` metrics project this sidecar",
         "Process-engine shutdown drain log lines are diagnostic-only reconciliation evidence",
         "not a retry ledger",
         "not be interpreted as commit-safety or DLQ-publish authority",
@@ -166,7 +183,7 @@ def test_engine_runtime_diagnostics_envelope_is_additive_to_v1_snapshot() -> Non
     assert diagnostics.process.batch_metrics.size_flush_count == 1
 
 
-def test_pipeline_poll_diagnostics_exposes_completed_offset_skip_counter() -> None:
+def test_pipeline_poll_diagnostics_are_additive_sidecar_not_runtime_snapshot() -> None:
     assert [field.name for field in fields(PipelinePollDiagnostics)] == [
         "records_total",
         "nonempty_polls_total",
@@ -176,39 +193,110 @@ def test_pipeline_poll_diagnostics_exposes_completed_offset_skip_counter() -> No
         "broker_kind",
         "support_state",
     ]
-    assert PipelinePollDiagnostics().records_total == 0
-    assert PipelinePollDiagnostics().nonempty_polls_total == 0
-    assert PipelinePollDiagnostics().empty_polls_total == 0
-    assert PipelinePollDiagnostics().error_polls_total == 0
-    assert PipelinePollDiagnostics().completed_offset_skips_total == 0
-    assert PipelinePollDiagnostics().broker_kind == "kafka"
-    assert PipelinePollDiagnostics().support_state == "supported"
+    assert "poll" in [field.name for field in fields(WorkManagerPipelineDiagnostics)]
+    assert "poll" not in [field.name for field in fields(RuntimeSnapshot)]
 
 
-def test_system_metrics_preserves_positional_default_field_compatibility() -> None:
-    process_metrics = ProcessBatchMetrics(
-        size_flush_count=1,
-        timer_flush_count=0,
-        close_flush_count=0,
-        total_flushed_items=1,
-        last_flush_size=1,
-        last_flush_wait_seconds=0.0,
-        buffered_items=0,
-        buffered_age_seconds=0.0,
-    )
-
-    metrics = SystemMetrics(0, False, [], process_metrics)
-
-    assert metrics.process_batch_metrics is process_metrics
-    assert metrics.completed_offset_skips_total == 0
-
-
-def test_work_manager_pipeline_diagnostics_exposes_poll_sidecar() -> None:
+def test_pipeline_diagnostics_public_sidecar_field_names_remain_stable() -> None:
+    assert PipelineDiagnostics is WorkManagerPipelineDiagnostics
+    assert PipelineDiagnosticsSnapshot is WorkManagerPipelineDiagnostics
+    assert ExportedPipelineDiagnosticsSnapshot is WorkManagerPipelineDiagnostics
     assert [field.name for field in fields(WorkManagerPipelineDiagnostics)] == [
+        "stage_counts",
+        "blocked_counts",
+        "dispatch_capacity",
+        "admission",
+        "workers",
+        "subqueues",
+        "stage_support",
+        "section_support",
+        "scope",
+        "settlement",
         "poll",
     ]
-    diagnostics = WorkManagerPipelineDiagnostics(
-        poll=PipelinePollDiagnostics(completed_offset_skips_total=3)
+    assert [field.name for field in fields(PipelineDispatchCapacityDiagnostics)] == [
+        "blocked_items",
+        "reason",
+        "oldest_age_ms",
+    ]
+    assert [field.name for field in fields(PipelineAdmissionDiagnostics)] == [
+        "blocked_items",
+        "reason",
+        "oldest_age_ms",
+        "support_state",
+    ]
+    assert [field.name for field in fields(PipelineWorkerDiagnostics)] == [
+        "total",
+        "executing",
+        "admitted",
+        "top_k_loads",
+        "support_state",
+    ]
+    assert [field.name for field in fields(PipelineSubqueueDiagnostics)] == [
+        "total",
+        "queued",
+        "queued_items",
+        "eligible_subqueues",
+        "eligible_items",
+        "blocked_subqueues",
+        "blocked_items",
+        "top_k_depths",
+    ]
+    assert [field.name for field in fields(PipelineSettlementDiagnostics)] == [
+        "completed_unsettled",
+        "oldest_age_ms",
+        "blocker_reason",
+        "support_state",
+    ]
+
+
+def test_pipeline_diagnostics_public_sidecar_uses_bounded_enums() -> None:
+    assert [stage.value for stage in PipelineStage] == [
+        "acquired",
+        "buffered",
+        "queued",
+        "dispatched",
+        "executing",
+        "completed_unsettled",
+        "failed",
+        "dlq",
+    ]
+    assert [state.value for state in PipelineDiagnosticsSupportState] == [
+        "supported",
+        "unavailable",
+        "not_implemented",
+    ]
+    assert [section.value for section in PipelineDiagnosticsSection] == [
+        "stages",
+        "blocked",
+        "subqueues",
+        "dispatch_capacity",
+        "admission",
+        "workers",
+        "settlement",
+        "poll",
+    ]
+    assert PipelineDiagnosticsScope.WORK_MANAGER_ONLY.value == "work_manager_only"
+    assert PipelineDiagnosticsScope.COMBINED.value == "combined"
+    assert (
+        PipelineDiagnosticsScope.COMBINED_INTERNAL is PipelineDiagnosticsScope.COMBINED
+    )
+    assert (
+        PipelineDiagnosticsScope("combined_internal")
+        is PipelineDiagnosticsScope.COMBINED
     )
 
-    assert diagnostics.poll.completed_offset_skips_total == 3
+
+def test_pipeline_diagnostics_public_api_docstrings_are_stable_not_experimental() -> (
+    None
+):
+    for docstring in (
+        PyrallelConsumer.get_pipeline_diagnostics.__doc__,
+        BrokerPoller.get_pipeline_diagnostics.__doc__,
+        WorkManagerPipelineDiagnostics.__doc__,
+    ):
+        assert docstring is not None
+        lowered = docstring.lower()
+        assert "stable" in lowered or "supported" in lowered
+        assert "experimental" not in lowered
+        assert "internal" not in lowered

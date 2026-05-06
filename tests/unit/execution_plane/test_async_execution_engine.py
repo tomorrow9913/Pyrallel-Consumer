@@ -5,6 +5,7 @@ import pytest
 from pyrallel_consumer.config import AsyncConfig, ExecutionConfig
 from pyrallel_consumer.dto import (
     CompletionStatus,
+    EngineWorkerDiagnostics,
     ExecutionMode,
     TopicPartition,
     WorkItem,
@@ -181,6 +182,26 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
 
         assert elapsed < 1.0
         assert engine.get_in_flight_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_runtime_metrics_reports_async_worker_capacity_state(
+        self, config: ExecutionConfig, mock_timeout_work_item: WorkItem
+    ):
+        engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
+        await engine.submit(mock_timeout_work_item)
+
+        try:
+            runtime_metrics = engine.get_runtime_metrics()
+
+            assert runtime_metrics is not None
+            assert runtime_metrics.engine_type == "async"
+            assert isinstance(runtime_metrics.workers, EngineWorkerDiagnostics)
+            assert runtime_metrics.workers.total == config.max_in_flight
+            assert runtime_metrics.workers.executing == 1
+            assert runtime_metrics.workers.admitted is None
+            assert runtime_metrics.workers.top_k_loads == []
+        finally:
+            await engine.shutdown()
 
 
 class TestAsyncExecutionEngineRetries:

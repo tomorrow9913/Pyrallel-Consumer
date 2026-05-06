@@ -85,6 +85,12 @@ def test_base_execution_engine_min_inflight_offset_defaults_to_none():
     )
 
 
+def test_base_execution_engine_runtime_metrics_default_to_none():
+    engine = ConcreteExecutionEngine()
+
+    assert engine.get_runtime_metrics() is None
+
+
 def test_base_execution_engine_ordered_route_batch_capability_defaults_to_false():
     engine = ConcreteExecutionEngine()
 

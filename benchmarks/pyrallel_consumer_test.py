@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
@@ -36,7 +35,6 @@ topic = "test_topic"
 TEST_NUM_MESSAGES = 50000
 DEFAULT_TIMEOUT_SEC = 60
 ProcessFlushPolicy = Literal["size_or_timer", "demand", "demand_min_residence"]
-_LOGGER = logging.getLogger(__name__)
 
 
 conf: Dict[str, Any] = {
@@ -334,38 +332,20 @@ def _record_release_gate_metrics_from_snapshot(
     )
 
 
-def _publish_prometheus_snapshot(
-    *,
-    broker_poller: BrokerPoller,
-    prometheus_exporter: PrometheusMetricsExporter,
-    metrics: SystemMetrics,
-) -> None:
-    """Publish system and sidecar pipeline diagnostics to Prometheus."""
-    prometheus_exporter.update_from_system_metrics(metrics)
-    get_pipeline_diagnostics = getattr(broker_poller, "get_pipeline_diagnostics", None)
-    update_pipeline_diagnostics = getattr(
-        prometheus_exporter, "update_pipeline_diagnostics", None
-    )
-    if callable(get_pipeline_diagnostics) and callable(update_pipeline_diagnostics):
-        try:
-            update_pipeline_diagnostics(get_pipeline_diagnostics())
-        except Exception:
-            _LOGGER.exception("Pipeline diagnostics exporter update failed")
-
-
 async def _publish_metrics_until_stopped(
     *,
     stop_event: asyncio.Event,
     broker_poller: BrokerPoller,
     prometheus_exporter: PrometheusMetricsExporter,
+    engine_type: str,
     interval_sec: float = 0.5,
 ) -> None:
     """Publish broker metrics snapshots until the run stops."""
     while not stop_event.is_set():
-        _publish_prometheus_snapshot(
-            broker_poller=broker_poller,
-            prometheus_exporter=prometheus_exporter,
-            metrics=broker_poller.get_metrics(),
+        prometheus_exporter.update_from_system_metrics(broker_poller.get_metrics())
+        prometheus_exporter.update_pipeline_diagnostics(
+            broker_poller.get_pipeline_diagnostics(),
+            engine_type=engine_type,
         )
         await asyncio.sleep(interval_sec)
 
@@ -432,6 +412,7 @@ async def _finalize_consumer_run(
     stats: Optional[BenchmarkStats],
     prometheus_exporter: Optional[PrometheusMetricsExporter],
     metrics_start: float,
+    engine_type: str,
 ) -> None:
     """Stop poller/engine and record final benchmark metrics."""
     print("Stopping PyrallelConsumer...")
@@ -447,10 +428,10 @@ async def _finalize_consumer_run(
             getattr(final_metrics, "process_batch_metrics", None)
         )
     if prometheus_exporter is not None:
-        _publish_prometheus_snapshot(
-            broker_poller=broker_poller,
-            prometheus_exporter=prometheus_exporter,
-            metrics=final_metrics,
+        prometheus_exporter.update_from_system_metrics(final_metrics)
+        prometheus_exporter.update_pipeline_diagnostics(
+            broker_poller.get_pipeline_diagnostics(),
+            engine_type=engine_type,
         )
     await engine.shutdown()
     if stats:
@@ -681,6 +662,11 @@ async def run_pyrallel_consumer_test(
         work_manager=work_manager,
     )
     broker_poller.ORDERING_MODE = ordering_mode_value
+    if prometheus_exporter is not None:
+        # Benchmark-only observability bridge: keep the stable sidecar wired
+        # so existing completion-to-commit and pipeline diagnostics can be evaluated
+        # from Prometheus without creating a separate public benchmark API.
+        broker_poller.set_metrics_exporter(prometheus_exporter)
 
     print("Starting PyrallelConsumer test for topic '%s'." % effective_topic)
     if num_messages is not None:
@@ -703,6 +689,7 @@ async def run_pyrallel_consumer_test(
                     stop_event=stop_event,
                     broker_poller=broker_poller,
                     prometheus_exporter=prometheus_exporter,
+                    engine_type=mode_value.value,
                 )
             )
         assignment_timeout_sec = min(max(timeout_sec / 4, 1.0), 10.0)
@@ -747,6 +734,7 @@ async def run_pyrallel_consumer_test(
             stats=stats,
             prometheus_exporter=prometheus_exporter,
             metrics_start=metrics_start,
+            engine_type=mode_value.value,
         )
 
         if metrics_observer.failure_error is not None:
