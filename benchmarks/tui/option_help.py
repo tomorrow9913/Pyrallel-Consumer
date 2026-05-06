@@ -44,6 +44,10 @@ OPTION_HELP = {
         label="Ordering modes",
         description="Choose one or more ordering modes: key_hash, partition, unordered.",
     ),
+    "execution-modes": OptionHelp(
+        label="Execution modes",
+        description="Choose which engines to run: baseline, async, process.",
+    ),
     "worker-sleep-ms": OptionHelp(
         label="Worker sleep (ms)",
         description="Delay each sleep workload message by this many milliseconds.",

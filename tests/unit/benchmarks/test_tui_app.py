@@ -106,6 +106,12 @@ async def test_options_screen_orders_input_blocks_label_help_control() -> None:
             "SelectionList",
             "Static",
         ]
+        assert _block_child_types(app, "execution-modes") == [
+            "Label",
+            "Static",
+            "SelectionList",
+            "Static",
+        ]
         assert _block_child_types(app, "json-output") == [
             "Label",
             "Static",
@@ -305,6 +311,9 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
         ordering_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-ordering-modes")
         )
+        execution_ancestors = _ancestor_ids(
+            app.screen.query_one("#option-block-execution-modes")
+        )
         output_ancestors = _ancestor_ids(
             app.screen.query_one("#option-block-json-output")
         )
@@ -321,6 +330,7 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
     assert "option-section-cluster-workload" in bootstrap_ancestors
     assert "option-section-cluster-workload" in sleep_ancestors
     assert "option-section-cluster-workload" in ordering_ancestors
+    assert "option-section-cluster-workload" in execution_ancestors
     assert "option-section-output-execution" in output_ancestors
     assert "option-section-output-execution" in process_ancestors
     assert "option-section-profiling" in profiling_ancestors
@@ -335,11 +345,13 @@ async def test_options_screen_places_workload_matrix_before_detail_knobs() -> No
         await pilot.pause()
         workloads = app.screen.query_one("#option-block-workloads")
         ordering_modes = app.screen.query_one("#option-block-ordering-modes")
+        execution_modes = app.screen.query_one("#option-block-execution-modes")
         workload_options = app.screen.query_one("#workload-options")
         bootstrap = app.screen.query_one("#option-block-bootstrap-servers")
         positions = (
             workloads.region.y,
             ordering_modes.region.y,
+            execution_modes.region.y,
             workload_options.region.y,
             bootstrap.region.y,
         )
@@ -355,9 +367,25 @@ async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() 
         del pilot
         workloads = app.screen.query_one("#workloads", SelectionList)
         ordering = app.screen.query_one("#ordering-modes", SelectionList)
+        execution = app.screen.query_one("#execution-modes", SelectionList)
 
     assert workloads.selected == ["sleep"]
     assert ordering.selected == ["key_hash"]
+    assert execution.selected == ["baseline", "async", "process"]
+
+
+@pytest.mark.asyncio
+async def test_options_screen_updates_preview_from_execution_mode_selection() -> None:
+    app = BenchmarkTuiApp()
+
+    async with app.run_test() as pilot:
+        execution = app.screen.query_one("#execution-modes", SelectionList)
+        execution.deselect("process")
+        await pilot.pause()
+
+        preview = app.screen.query_one("#argv-preview", Static)
+
+    assert "--skip-process" in str(preview.content)
 
 
 @pytest.mark.asyncio
@@ -466,7 +494,7 @@ async def test_options_screen_workload_option_refresh_preserves_dynamic_draft_wh
 
 @pytest.mark.asyncio
 async def test_options_screen_renders_custom_workload_option_schema(
-    monkeypatch
+    monkeypatch,
 ) -> None:
     from benchmarks.workloads.base import WorkloadOptionMetadata
 
