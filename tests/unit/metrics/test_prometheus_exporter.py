@@ -441,6 +441,77 @@ def test_exporter_rejects_unknown_commit_failure_reason() -> None:
         )
 
 
+def test_exporter_records_rebalance_bridge_commit_failure_reason() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.record_commit_failure(
+        TopicPartition(topic="topic-a", partition=0),
+        reason="rebalance_bridge_failed",
+    )
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    assert (
+        'consumer_commit_failures_total{partition="0",reason="rebalance_bridge_failed",topic="topic-a"} 1.0'
+        in metrics_text
+    )
+
+
+def test_exporter_records_commit_coordinator_metrics_with_bounded_labels() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.set_commit_coordinator_pending_partitions("async", 2)
+    exporter.record_commit_coordinator_submitted("async", 2)
+    exporter.record_commit_coordinator_success("async", 1)
+    exporter.record_commit_coordinator_failure("async", "worker_crash", 1)
+    exporter.record_commit_coordinator_retry("async", "kafka_exception", 3)
+    exporter.record_commit_coordinator_coalesced("async", 4)
+    exporter.observe_commit_coordinator_settlement_latency("async", 0.25)
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    assert (
+        'pyrallel_commit_coordinator_pending_partitions{engine_type="async"} 2.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_commit_coordinator_submitted_total{engine_type="async"} 2.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_commit_coordinator_success_total{engine_type="async"} 1.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_commit_coordinator_failures_total{engine_type="async",reason="worker_crash"} 1.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_commit_coordinator_retries_total{engine_type="async",reason="kafka_exception"} 3.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_commit_coordinator_coalesced_total{engine_type="async"} 4.0'
+        in metrics_text
+    )
+    assert (
+        "pyrallel_commit_coordinator_settlement_latency_seconds_bucket" in metrics_text
+    )
+
+
+def test_exporter_rejects_unknown_commit_coordinator_reason() -> None:
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=CollectorRegistry()
+    )
+
+    with pytest.raises(ValueError, match="Unknown commit coordinator reason"):
+        exporter.record_commit_coordinator_failure("async", "unbounded", 1)
+
+
 def test_exporter_projects_supported_pipeline_diagnostics_as_bounded_metrics() -> None:
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(

@@ -38,7 +38,10 @@ _ADAPTIVE_BACKPRESSURE_DECISIONS = (
     "scale_down",
     "cooldown",
 )
-COMMIT_FAILURE_REASONS = ("kafka_exception",)
+COMMIT_FAILURE_REASONS = (
+    "kafka_exception",
+    "rebalance_bridge_failed",
+)
 _PIPELINE_SUPPORT_STATES = tuple(
     state.value for state in PipelineDiagnosticsSupportState
 )
@@ -50,6 +53,15 @@ _PIPELINE_SUBQUEUE_ITEM_STATES = ("queued", "eligible", "blocked")
 _PIPELINE_SUBQUEUE_STATES = ("total", "queued", "eligible", "blocked")
 _PIPELINE_SETTLEMENT_BLOCKER_REASONS = tuple(
     reason.value for reason in PipelineSettlementBlockerReason
+)
+COMMIT_COORDINATOR_FAILURE_REASONS = (
+    "kafka_exception",
+    "queue_full",
+    "worker_crash",
+    "stale_lease",
+    "shutdown_timeout",
+    "rebalance_bridge_failed",
+    "close_commit_failed",
 )
 _CounterDeltaKey = TypeVar("_CounterDeltaKey", bound=tuple[str, ...])
 
@@ -441,6 +453,48 @@ class PrometheusMetricsExporter:
             labelnames=("engine_type", "broker_kind"),
             registry=self._registry,
         )
+        self._commit_coordinator_pending_partitions = Gauge(
+            "pyrallel_commit_coordinator_pending_partitions",
+            "Commit coordinator pending topic-partitions",
+            labelnames=("engine_type",),
+            registry=self._registry,
+        )
+        self._commit_coordinator_coalesced_total = Counter(
+            "pyrallel_commit_coordinator_coalesced_total",
+            "Commit coordinator candidates superseded by newer offsets",
+            labelnames=("engine_type",),
+            registry=self._registry,
+        )
+        self._commit_coordinator_submitted_total = Counter(
+            "pyrallel_commit_coordinator_submitted_total",
+            "Commit coordinator submitted partition count",
+            labelnames=("engine_type",),
+            registry=self._registry,
+        )
+        self._commit_coordinator_success_total = Counter(
+            "pyrallel_commit_coordinator_success_total",
+            "Commit coordinator successful settlement partition count",
+            labelnames=("engine_type",),
+            registry=self._registry,
+        )
+        self._commit_coordinator_failures_total = Counter(
+            "pyrallel_commit_coordinator_failures_total",
+            "Commit coordinator failure partition count by bounded reason",
+            labelnames=("engine_type", "reason"),
+            registry=self._registry,
+        )
+        self._commit_coordinator_retries_total = Counter(
+            "pyrallel_commit_coordinator_retries_total",
+            "Commit coordinator retry partition count by bounded reason",
+            labelnames=("engine_type", "reason"),
+            registry=self._registry,
+        )
+        self._commit_coordinator_settlement_latency_hist = Histogram(
+            "pyrallel_commit_coordinator_settlement_latency_seconds",
+            "Commit coordinator broker settlement duration",
+            labelnames=("engine_type",),
+            registry=self._registry,
+        )
         self._pipeline_poll_records_total_seen: dict[tuple[str, str], int] = {}
         self._pipeline_poll_events_total_seen: dict[tuple[str, str, str], int] = {}
         self._pipeline_completed_offset_skips_total_seen: dict[
@@ -541,6 +595,66 @@ class PrometheusMetricsExporter:
         """Observe broker settlement latency after a successful commit."""
         self._validate_pipeline_engine_type(engine_type)
         self._pipeline_completion_to_commit_latency_hist.labels(
+            engine_type=engine_type
+        ).observe(duration_seconds)
+
+    def set_commit_coordinator_pending_partitions(
+        self, engine_type: str, count: int
+    ) -> None:
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_pending_partitions.labels(engine_type=engine_type).set(
+            count
+        )
+
+    def record_commit_coordinator_submitted(
+        self, engine_type: str, partition_count: int
+    ) -> None:
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_submitted_total.labels(engine_type=engine_type).inc(
+            partition_count
+        )
+
+    def record_commit_coordinator_success(
+        self, engine_type: str, partition_count: int
+    ) -> None:
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_success_total.labels(engine_type=engine_type).inc(
+            partition_count
+        )
+
+    def record_commit_coordinator_failure(
+        self, engine_type: str, reason: str, partition_count: int
+    ) -> None:
+        self._validate_commit_coordinator_reason(reason)
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_failures_total.labels(
+            engine_type=engine_type,
+            reason=reason,
+        ).inc(partition_count)
+
+    def record_commit_coordinator_retry(
+        self, engine_type: str, reason: str, partition_count: int
+    ) -> None:
+        self._validate_commit_coordinator_reason(reason)
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_retries_total.labels(
+            engine_type=engine_type,
+            reason=reason,
+        ).inc(partition_count)
+
+    def record_commit_coordinator_coalesced(
+        self, engine_type: str, count: int = 1
+    ) -> None:
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_coalesced_total.labels(engine_type=engine_type).inc(
+            count
+        )
+
+    def observe_commit_coordinator_settlement_latency(
+        self, engine_type: str, duration_seconds: float
+    ) -> None:
+        self._validate_pipeline_engine_type(engine_type)
+        self._commit_coordinator_settlement_latency_hist.labels(
             engine_type=engine_type
         ).observe(duration_seconds)
 
@@ -807,6 +921,15 @@ class PrometheusMetricsExporter:
             raise ValueError(
                 "Unknown pipeline engine_type: "
                 f"{engine_type!r}; expected one of: {allowed_engine_types}"
+            )
+
+    @staticmethod
+    def _validate_commit_coordinator_reason(reason: str) -> None:
+        if reason not in COMMIT_COORDINATOR_FAILURE_REASONS:
+            allowed_reasons = ", ".join(COMMIT_COORDINATOR_FAILURE_REASONS)
+            raise ValueError(
+                "Unknown commit coordinator reason: "
+                f"{reason!r}; expected one of: {allowed_reasons}"
             )
 
     def _update_pipeline_stage_counts(
