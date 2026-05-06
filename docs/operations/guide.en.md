@@ -55,6 +55,12 @@ Kafka's default Lag (`LogEndOffset - CommittedOffset`) alone cannot accurately r
 - **Meaning**: These counters identify release-critical failures that can otherwise appear only as lag/gap symptoms. Commit failures indicate replay-risk at the broker commit boundary; DLQ publish failures mean a terminal failed message could not be published and the offset remains pending retry.
 - **Tip**: Alert on any increase. For commit failures, check Kafka coordinator health, ACLs, and broker connectivity. For DLQ publish failures, verify DLQ topic existence, producer ACLs, payload size limits, and broker availability before restarting or scaling consumers.
 
+### 1.6b. Completed Offset Skip Counter
+- **Prometheus query**: `pyrallel_pipeline_completed_offset_skips_total`
+- **Labels**: `engine_type`, `broker_kind`
+- **Meaning**: Record-level counter projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` for consumed records skipped at dispatch because `metadata_snapshot` restore already marked the offset complete while a lower gap still blocked contiguous commit.
+- **Tip**: This is not a poll-call event and does not change poll event labels or `consumer_processed_total`. Increases after a rebalance/restart are expected when restored sparse offsets are protected from duplicate worker dispatch.
+
 ### 1.7. Process Batch Buffer Health
 - **Prometheus queries**:
     - `consumer_process_batch_avg_size`

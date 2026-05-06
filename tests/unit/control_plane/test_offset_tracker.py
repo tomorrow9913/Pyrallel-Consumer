@@ -79,6 +79,24 @@ def test_mark_complete_offset_already_committed(offset_tracker):
     )  # Should be empty as 0 is committed
 
 
+def test_is_completed_uncommitted_identifies_restored_sparse_offset(topic_partition):
+    tracker = OffsetTracker(
+        topic_partition=topic_partition,
+        starting_offset=4,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets={4, 6, 7},
+    )
+    tracker.rehydrate_assignment_state(
+        last_committed_offset=3,
+        last_fetched_offset=7,
+    )
+
+    assert tracker.is_completed_uncommitted(3) is False
+    assert tracker.is_completed_uncommitted(4) is True
+    assert tracker.is_completed_uncommitted(5) is False
+    assert tracker.is_completed_uncommitted(8) is False
+
+
 def test_mark_complete_in_flight_offset(offset_tracker):
     # Simulate offset 5 being in-flight by fetching up to offset 5
     offset_tracker.update_last_fetched_offset(5)

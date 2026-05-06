@@ -26,6 +26,7 @@ For the preserved Korean source text, see [03-design.ko.md](./03-design.ko.md).
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | completion success/failure count |
 | `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | final Kafka commit failures |
 | `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | terminal DLQ publish failures |
+| `pyrallel_pipeline_completed_offset_skips_total` | Counter | `engine_type`, `broker_kind` | record-level skip counter projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` for consumed records skipped because metadata-snapshot restore already marked the offset complete but not contiguously committed; not a poll-call event |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | submit-to-completion latency |
 | `consumer_in_flight_count` | Gauge | none | total in-flight count |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | true lag (`last_fetched_offset - last_committed_offset`) |
@@ -110,6 +111,7 @@ Interpretation rules:
 
 - Rising `consumer_parallel_lag` means real processing backlog is increasing.
 - Rising `consumer_gap_count` means out-of-order completion is delaying commit progress.
+- Rising `pyrallel_pipeline_completed_offset_skips_total` means restored `metadata_snapshot` offsets are being skipped at dispatch; the Prometheus counter is projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` and does not change poll event labels or `consumer_processed_total`.
 - Rising `consumer_oldest_task_duration_seconds` points to a hot key, poison path, or blocked downstream dependency.
 - `consumer_backpressure_active == 1` means fetch intake is paused because control-plane load exceeded the current limit.
 - A large difference between configured and effective adaptive limits means the live controller is actively tuning throughput/latency trade-offs.

@@ -26,6 +26,7 @@ from pyrallel_consumer.dto import (
     SystemMetrics,
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
+from pyrallel_consumer.dto import WorkManagerPipelineDiagnostics
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
@@ -152,6 +153,61 @@ class TestBrokerPollerMetrics:
         assert p_metrics.blocking_offset == 91
         assert p_metrics.blocking_duration_sec == 1.5
         assert p_metrics.queued_count == 5
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_includes_completed_offset_skip_count(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+
+        broker_poller_with_mocks._record_completed_offset_skip(tp, 4)
+        broker_poller_with_mocks._record_completed_offset_skip(tp, 6)
+
+        metrics = broker_poller_with_mocks.get_metrics()
+
+        assert metrics.completed_offset_skips_total == 2
+
+    @pytest.mark.asyncio
+    async def test_completed_offset_skip_callback_does_not_call_exporter_directly(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+        exporter = MagicMock()
+        broker_poller_with_mocks.set_metrics_exporter(exporter)
+
+        broker_poller_with_mocks._record_completed_offset_skip(tp, 4)
+
+        assert broker_poller_with_mocks.get_metrics().completed_offset_skips_total == 1
+        exporter.record_completed_offset_skip.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_pipeline_diagnostics_exposes_completed_offset_skip_count(
+        self, broker_poller_with_mocks
+    ):
+        tp = DtoTopicPartition("test-topic", 0)
+
+        broker_poller_with_mocks._record_completed_offset_skip(tp, 4)
+        broker_poller_with_mocks._record_completed_offset_skip(tp, 6)
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert isinstance(diagnostics, WorkManagerPipelineDiagnostics)
+        assert diagnostics.poll.completed_offset_skips_total == 2
+
+    @pytest.mark.asyncio
+    async def test_get_pipeline_diagnostics_exposes_poll_record_and_event_counts(
+        self, broker_poller_with_mocks
+    ):
+        broker_poller_with_mocks._record_pipeline_poll_result(record_count=2)
+        broker_poller_with_mocks._record_pipeline_poll_result(record_count=0)
+        broker_poller_with_mocks._record_pipeline_poll_error()
+
+        diagnostics = broker_poller_with_mocks.get_pipeline_diagnostics()
+
+        assert diagnostics.poll.records_total == 2
+        assert diagnostics.poll.nonempty_polls_total == 1
+        assert diagnostics.poll.empty_polls_total == 1
+        assert diagnostics.poll.error_polls_total == 1
 
     @pytest.mark.asyncio
     async def test_get_metrics_when_paused(self, broker_poller_with_mocks):

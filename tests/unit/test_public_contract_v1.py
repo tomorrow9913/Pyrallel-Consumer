@@ -7,12 +7,15 @@ from pyrallel_consumer.dto import (
     DlqRuntimeSnapshot,
     EngineRuntimeDiagnostics,
     PartitionRuntimeSnapshot,
+    PipelinePollDiagnostics,
     PoisonMessageRuntimeSnapshot,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     QueueRuntimeSnapshot,
     RetryPolicySnapshot,
     RuntimeSnapshot,
+    SystemMetrics,
+    WorkManagerPipelineDiagnostics,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -161,3 +164,51 @@ def test_engine_runtime_diagnostics_envelope_is_additive_to_v1_snapshot() -> Non
     assert diagnostics.engine_type == "process"
     assert diagnostics.process is not None
     assert diagnostics.process.batch_metrics.size_flush_count == 1
+
+
+def test_pipeline_poll_diagnostics_exposes_completed_offset_skip_counter() -> None:
+    assert [field.name for field in fields(PipelinePollDiagnostics)] == [
+        "records_total",
+        "nonempty_polls_total",
+        "empty_polls_total",
+        "error_polls_total",
+        "completed_offset_skips_total",
+        "broker_kind",
+        "support_state",
+    ]
+    assert PipelinePollDiagnostics().records_total == 0
+    assert PipelinePollDiagnostics().nonempty_polls_total == 0
+    assert PipelinePollDiagnostics().empty_polls_total == 0
+    assert PipelinePollDiagnostics().error_polls_total == 0
+    assert PipelinePollDiagnostics().completed_offset_skips_total == 0
+    assert PipelinePollDiagnostics().broker_kind == "kafka"
+    assert PipelinePollDiagnostics().support_state == "supported"
+
+
+def test_system_metrics_preserves_positional_default_field_compatibility() -> None:
+    process_metrics = ProcessBatchMetrics(
+        size_flush_count=1,
+        timer_flush_count=0,
+        close_flush_count=0,
+        total_flushed_items=1,
+        last_flush_size=1,
+        last_flush_wait_seconds=0.0,
+        buffered_items=0,
+        buffered_age_seconds=0.0,
+    )
+
+    metrics = SystemMetrics(0, False, [], process_metrics)
+
+    assert metrics.process_batch_metrics is process_metrics
+    assert metrics.completed_offset_skips_total == 0
+
+
+def test_work_manager_pipeline_diagnostics_exposes_poll_sidecar() -> None:
+    assert [field.name for field in fields(WorkManagerPipelineDiagnostics)] == [
+        "poll",
+    ]
+    diagnostics = WorkManagerPipelineDiagnostics(
+        poll=PipelinePollDiagnostics(completed_offset_skips_total=3)
+    )
+
+    assert diagnostics.poll.completed_offset_skips_total == 3

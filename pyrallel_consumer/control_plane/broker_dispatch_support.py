@@ -27,6 +27,8 @@ class BrokerDispatchSupport:
             Awaitable[None],
         ],
         get_min_inflight_offset: Callable[[DtoTopicPartition], int | None],
+        record_completed_offset_skip: Callable[[DtoTopicPartition, int], None]
+        | None = None,
         logger: Any,
     ) -> None:
         """Initialize this component.
@@ -38,6 +40,7 @@ class BrokerDispatchSupport:
             submit_message: Submit message value used to initialize this component.
             submit_grouped_messages: Submit grouped messages value used to initialize this component.
             get_min_inflight_offset: Get min inflight offset value used to initialize this component.
+            record_completed_offset_skip: Optional callback for skipped restored offsets.
             logger: Logger used for diagnostics.
 
         """
@@ -47,6 +50,7 @@ class BrokerDispatchSupport:
         self._submit_message = submit_message
         self._submit_grouped_messages = submit_grouped_messages
         self._get_min_inflight_offset = get_min_inflight_offset
+        self._record_completed_offset_skip = record_completed_offset_skip
         self._logger = logger
 
     async def dispatch_messages(self, messages: list[Message]) -> None:
@@ -79,6 +83,18 @@ class BrokerDispatchSupport:
             tracker = self._offset_trackers.get(tp)
             if tracker is None:
                 self._logger.warning("Untracked partition %s - skipping", tp)
+                continue
+
+            if tracker.is_completed_uncommitted(offset_val) is True:
+                if self._record_completed_offset_skip is not None:
+                    try:
+                        self._record_completed_offset_skip(tp, offset_val)
+                    except Exception:
+                        self._logger.exception(
+                            "Completed-offset skip diagnostic callback failed for %s@%d",
+                            tp,
+                            offset_val,
+                        )
                 continue
 
             self._cache_message_for_dlq(

@@ -14,6 +14,7 @@ from pyrallel_consumer.dto import (
     ExecutionMode,
     OrderingMode,
     PartitionRuntimeSnapshot,
+    PipelinePollDiagnostics,
     QueueRuntimeSnapshot,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
@@ -21,6 +22,7 @@ from pyrallel_consumer.dto import (
     RuntimeSnapshot,
     SystemMetrics,
     WorkItem,
+    WorkManagerPipelineDiagnostics,
 )
 from pyrallel_consumer.resource_signals import (
     NullResourceSignalProvider,
@@ -39,6 +41,7 @@ __all__ = [
     "OrderingMode",
     "ParallelConsumerConfig",
     "PartitionRuntimeSnapshot",
+    "PipelinePollDiagnostics",
     "PyrallelConsumer",
     "QueueRuntimeSnapshot",
     "ResourceSignalProvider",
@@ -47,6 +50,7 @@ __all__ = [
     "RetryPolicySnapshot",
     "RuntimeSnapshot",
     "SystemMetrics",
+    "WorkManagerPipelineDiagnostics",
     "WorkItem",
     "DlqRuntimeSnapshot",
     "NullResourceSignalProvider",

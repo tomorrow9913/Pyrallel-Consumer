@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Protocol, cast
+from typing import Optional, Protocol, TypeVar, cast
 
 from prometheus_client import (
     CollectorRegistry,
@@ -20,6 +20,7 @@ from pyrallel_consumer.dto import (
     ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
+    WorkManagerPipelineDiagnostics,
 )
 
 _RESOURCE_SIGNAL_STATUSES = tuple(status.value for status in ResourceSignalStatus)
@@ -31,6 +32,8 @@ _ADAPTIVE_BACKPRESSURE_DECISIONS = (
     "cooldown",
 )
 COMMIT_FAILURE_REASONS = ("kafka_exception",)
+_PIPELINE_POLL_EVENTS = ("nonempty", "empty", "error")
+_CounterDeltaKey = TypeVar("_CounterDeltaKey", bound=tuple[str, ...])
 
 
 class _Joinable(Protocol):
@@ -70,6 +73,24 @@ class PrometheusMetricsExporter:
             "consumer_dlq_publish_failures_total",
             "Number of terminal DLQ publish failures",
             labelnames=("topic", "partition"),
+            registry=self._registry,
+        )
+        self._pipeline_completed_offset_skips_total = Counter(
+            "pyrallel_pipeline_completed_offset_skips_total",
+            "Consumed records skipped because the offset was already completed but not contiguously committed",
+            labelnames=("engine_type", "broker_kind"),
+            registry=self._registry,
+        )
+        self._pipeline_poll_records_total = Counter(
+            "pyrallel_pipeline_poll_records_total",
+            "Number of broker records acquired by pipeline poll loops",
+            labelnames=("engine_type", "broker_kind"),
+            registry=self._registry,
+        )
+        self._pipeline_poll_events_total = Counter(
+            "pyrallel_pipeline_poll_events_total",
+            "Number of broker poll calls by bounded event type",
+            labelnames=("event", "engine_type", "broker_kind"),
             registry=self._registry,
         )
         self._latency_hist = Histogram(
@@ -308,6 +329,11 @@ class PrometheusMetricsExporter:
             "Whether recycle settings are supported for the active process transport",
             registry=self._registry,
         )
+        self._pipeline_poll_records_total_seen: dict[tuple[str, str], int] = {}
+        self._pipeline_poll_events_total_seen: dict[tuple[str, str, str], int] = {}
+        self._pipeline_completed_offset_skips_total_seen: dict[
+            tuple[str, str], int
+        ] = {}
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -336,6 +362,70 @@ class PrometheusMetricsExporter:
             metrics.adaptive_concurrency,
         )
         self._update_process_batch_metrics(metrics.process_batch_metrics)
+
+    def update_pipeline_diagnostics(
+        self, diagnostics: WorkManagerPipelineDiagnostics
+    ) -> None:
+        """Project pipeline diagnostics into Prometheus counters."""
+        poll = diagnostics.poll
+        engine_type = "unknown"
+        broker_kind = poll.broker_kind
+        records_key = (engine_type, broker_kind)
+        records_delta = self._positive_counter_delta(
+            self._pipeline_poll_records_total_seen,
+            records_key,
+            poll.records_total,
+        )
+        if records_delta > 0:
+            self._pipeline_poll_records_total.labels(
+                engine_type=engine_type,
+                broker_kind=broker_kind,
+            ).inc(records_delta)
+
+        event_totals = {
+            "nonempty": poll.nonempty_polls_total,
+            "empty": poll.empty_polls_total,
+            "error": poll.error_polls_total,
+        }
+        for event in _PIPELINE_POLL_EVENTS:
+            event_key = (event, engine_type, broker_kind)
+            event_delta = self._positive_counter_delta(
+                self._pipeline_poll_events_total_seen,
+                event_key,
+                event_totals[event],
+            )
+            if event_delta > 0:
+                self._pipeline_poll_events_total.labels(
+                    event=event,
+                    engine_type=engine_type,
+                    broker_kind=broker_kind,
+                ).inc(event_delta)
+
+        current_skip_total = poll.completed_offset_skips_total
+        skip_key = (engine_type, broker_kind)
+        skip_delta = self._positive_counter_delta(
+            self._pipeline_completed_offset_skips_total_seen,
+            skip_key,
+            current_skip_total,
+        )
+        if skip_delta > 0:
+            self._pipeline_completed_offset_skips_total.labels(
+                engine_type=engine_type,
+                broker_kind=broker_kind,
+            ).inc(skip_delta)
+
+    @staticmethod
+    def _positive_counter_delta(
+        seen: dict[_CounterDeltaKey, int],
+        key: _CounterDeltaKey,
+        current_total: int,
+    ) -> int:
+        """Return a non-negative counter delta while tracking previous totals."""
+        previous_total = seen.get(key, 0)
+        seen[key] = current_total
+        if current_total < previous_total:
+            return 0
+        return current_total - previous_total
 
     def observe_completion(
         self, tp: TopicPartition, status: CompletionStatus, duration_seconds: float

@@ -55,6 +55,12 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
 - **의미**: 이 counter들은 lag/gap 증상으로만 보일 수 있는 release-critical 실패를 직접 구분합니다. Commit 실패는 broker commit 경계의 replay risk를 뜻하고, DLQ publish 실패는 terminal 실패 메시지를 DLQ에 publish하지 못해 offset이 retry 대기 상태로 유지됨을 뜻합니다.
 - **운영 팁**: 값이 증가하면 즉시 알림을 권장합니다. Commit 실패는 Kafka coordinator 상태, ACL, broker 연결을 확인하십시오. DLQ publish 실패는 DLQ topic 존재 여부, producer ACL, payload size 제한, broker 가용성을 먼저 복구한 뒤 consumer 재시작/확장을 검토하십시오.
 
+### 1.6b. 완료 Offset Skip Counter
+- **Prometheus 쿼리**: `pyrallel_pipeline_completed_offset_skips_total`
+- **Labels**: `engine_type`, `broker_kind`
+- **의미**: `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level counter입니다. `metadata_snapshot` restore가 이미 완료로 표시했지만 더 낮은 gap 때문에 아직 연속 commit되지 않은 consumed record를 dispatch에서 skip한 수를 나타냅니다.
+- **운영 팁**: 이 지표는 poll-call event가 아니며 poll event label이나 `consumer_processed_total` 의미를 바꾸지 않습니다. Rebalance/restart 이후 증가하면 복원된 sparse offset의 중복 worker dispatch를 막고 있다는 뜻입니다.
+
 ### 1.7. Process Batch Buffer Health (버퍼 적체 상태)
 - **Prometheus 쿼리**:
     - `consumer_process_batch_avg_size`

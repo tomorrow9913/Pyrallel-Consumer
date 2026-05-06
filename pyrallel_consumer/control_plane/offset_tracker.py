@@ -160,6 +160,13 @@ class OffsetTracker:
             if len(self.completed_offsets) != before_size:
                 self._bump_version()
 
+    def is_completed_uncommitted(self, offset: int) -> bool:
+        """Return whether offset is complete but not contiguously committed."""
+        return (
+            self.last_committed_offset < offset <= self.last_fetched_offset
+            and offset in self.completed_offsets
+        )
+
     def get_committable_high_water_mark(
         self, min_inflight_offset: Optional[int] = None
     ) -> int:

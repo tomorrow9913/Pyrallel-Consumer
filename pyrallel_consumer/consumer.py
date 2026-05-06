@@ -180,6 +180,17 @@ class PyrallelConsumer:
             self._metrics_exporter.update_from_system_metrics(metrics)
         except Exception:
             self._logger.exception("Metrics exporter update failed")
+        get_pipeline_diagnostics = getattr(
+            self._poller, "get_pipeline_diagnostics", None
+        )
+        update_pipeline_diagnostics = getattr(
+            self._metrics_exporter, "update_pipeline_diagnostics", None
+        )
+        if callable(get_pipeline_diagnostics) and callable(update_pipeline_diagnostics):
+            try:
+                update_pipeline_diagnostics(get_pipeline_diagnostics())
+            except Exception:
+                self._logger.exception("Pipeline diagnostics exporter update failed")
 
     def _set_poller_metrics_exporter(
         self, metrics_exporter: Optional[PrometheusMetricsExporter]

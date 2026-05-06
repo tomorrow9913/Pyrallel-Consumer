@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -255,6 +255,26 @@ class EngineRuntimeDiagnostics:
     process: Optional[ProcessRuntimeDiagnostics] = None
 
 
+@dataclass(frozen=True)
+class PipelinePollDiagnostics:
+    """Pipeline poll-loop diagnostics."""
+
+    records_total: int = 0
+    nonempty_polls_total: int = 0
+    empty_polls_total: int = 0
+    error_polls_total: int = 0
+    completed_offset_skips_total: int = 0
+    broker_kind: str = "kafka"
+    support_state: str = "supported"
+
+
+@dataclass(frozen=True)
+class WorkManagerPipelineDiagnostics:
+    """Pipeline diagnostics envelope projected outside the runtime snapshot."""
+
+    poll: PipelinePollDiagnostics = field(default_factory=PipelinePollDiagnostics)
+
+
 class ResourceSignalStatus(str, Enum):
     """Represent resource signal status data used by runtime data transfer."""
 
@@ -331,6 +351,7 @@ class SystemMetrics:
     resource_signal: Optional[ResourceSignalSnapshot] = None
     adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot] = None
     adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot] = None
+    completed_offset_skips_total: int = 0
 
 
 @dataclass(frozen=True)

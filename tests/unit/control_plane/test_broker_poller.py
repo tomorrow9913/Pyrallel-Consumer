@@ -9,7 +9,7 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import ExecutionMode
+from pyrallel_consumer.dto import ExecutionMode, OrderingMode
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
 
@@ -163,6 +163,30 @@ def test_broker_poller_wires_async_route_batch_size_as_item_level(
     )
 
     assert poller._work_manager.get_route_batch_size() == 1
+
+
+def test_make_dispatch_support_wires_completed_offset_skip_callback(broker_poller):
+    with patch(
+        "pyrallel_consumer.control_plane.broker_poller.BrokerDispatchSupport"
+    ) as support_cls:
+        support = broker_poller._make_dispatch_support()
+
+    assert support is support_cls.return_value
+    assert (
+        support_cls.call_args.kwargs["record_completed_offset_skip"]
+        == broker_poller._record_completed_offset_skip
+    )
+
+
+def _make_message(topic: str, partition: int, offset: int, key: bytes, value: bytes):
+    message = MagicMock()
+    message.error.return_value = None
+    message.topic.return_value = topic
+    message.partition.return_value = partition
+    message.offset.return_value = offset
+    message.key.return_value = key
+    message.value.return_value = value
+    return message
 
 
 @pytest.mark.asyncio
@@ -918,6 +942,57 @@ async def test_commit_offsets_uses_safe_offset_without_rescanning_tracker(
 
     assert tracker.last_committed_offset == 1
     assert tracker.completed_offsets == {3}
+
+
+@pytest.mark.asyncio
+async def test_restored_sparse_offsets_skip_dispatch_and_commit_after_gap(
+    broker_poller,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=4,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets={4, 6, 7},
+    )
+    tracker.rehydrate_assignment_state(
+        last_committed_offset=3,
+        last_fetched_offset=7,
+    )
+    broker_poller._offset_trackers[tp] = tracker
+    broker_poller.ORDERING_MODE = OrderingMode.UNORDERED
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.submit_message = AsyncMock()
+    broker_poller._work_manager.get_min_in_flight_offset.return_value = None
+
+    await broker_poller._make_dispatch_support().dispatch_messages(
+        [
+            _make_message("test-topic", 0, 4, b"key-4", b"value-4"),
+            _make_message("test-topic", 0, 5, b"key-5", b"value-5"),
+            _make_message("test-topic", 0, 6, b"key-6", b"value-6"),
+            _make_message("test-topic", 0, 7, b"key-7", b"value-7"),
+        ]
+    )
+
+    submitted_offsets = [
+        call.kwargs["offset"]
+        for call in broker_poller._work_manager.submit_message.await_args_list
+    ]
+    assert submitted_offsets == [5]
+    assert broker_poller.get_metrics().completed_offset_skips_total == 3
+    assert tracker.last_committed_offset == 3
+    assert tracker.last_fetched_offset == 7
+
+    tracker.mark_complete(5)
+    high_water_mark = tracker.get_committable_high_water_mark()
+    assert high_water_mark == 7
+
+    broker_poller.consumer = MagicMock(spec=Consumer)
+    await broker_poller._commit_offsets([(tp, high_water_mark)])
+
+    committed_offsets = broker_poller.consumer.commit.call_args.kwargs["offsets"]
+    assert committed_offsets[0].offset == 8
+    assert tracker.last_committed_offset == 7
 
 
 @pytest.mark.asyncio

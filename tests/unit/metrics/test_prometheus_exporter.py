@@ -9,11 +9,13 @@ from pyrallel_consumer.dto import (  # noqa: E402
     AdaptiveConcurrencyRuntimeSnapshot,
     CompletionStatus,
     PartitionMetrics,
+    PipelinePollDiagnostics,
     ProcessBatchMetrics,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
     SystemMetrics,
     TopicPartition,
+    WorkManagerPipelineDiagnostics,
 )
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter  # noqa: E402
 
@@ -275,6 +277,135 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
     assert exporter._process_batch_timer_flush_supported_gauge._value.get() == 0
     assert exporter._process_batch_demand_flush_supported_gauge._value.get() == 0
     assert exporter._process_batch_recycle_supported_gauge._value.get() == 0
+
+
+def test_exporter_projects_completed_offset_skip_counter_from_pipeline_diagnostics() -> (
+    None
+):
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(completed_offset_skips_total=3)
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(completed_offset_skips_total=3)
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(completed_offset_skips_total=5)
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(completed_offset_skips_total=2)
+        )
+    )
+
+    skip_total = exporter._pipeline_completed_offset_skips_total.labels(
+        engine_type="unknown",
+        broker_kind="kafka",
+    )._value.get()
+    assert skip_total == 5
+
+
+def test_exporter_handles_completed_offset_skip_counter_reset() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    for total in (5, 2, 4):
+        exporter.update_pipeline_diagnostics(
+            WorkManagerPipelineDiagnostics(
+                poll=PipelinePollDiagnostics(completed_offset_skips_total=total)
+            )
+        )
+
+    skip_total = exporter._pipeline_completed_offset_skips_total.labels(
+        engine_type="unknown",
+        broker_kind="kafka",
+    )._value.get()
+    assert skip_total == 7
+
+
+def test_exporter_preserves_delta_safe_pipeline_poll_event_counters() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(
+                records_total=4,
+                nonempty_polls_total=2,
+                empty_polls_total=1,
+                error_polls_total=1,
+            )
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(
+                records_total=4,
+                nonempty_polls_total=2,
+                empty_polls_total=1,
+                error_polls_total=1,
+            )
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(
+                records_total=7,
+                nonempty_polls_total=3,
+                empty_polls_total=3,
+                error_polls_total=1,
+            )
+        )
+    )
+    exporter.update_pipeline_diagnostics(
+        WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(
+                records_total=1,
+                nonempty_polls_total=1,
+                empty_polls_total=0,
+                error_polls_total=0,
+            )
+        )
+    )
+
+    assert (
+        exporter._pipeline_poll_records_total.labels(
+            engine_type="unknown", broker_kind="kafka"
+        )._value.get()
+        == 7
+    )
+    assert (
+        exporter._pipeline_poll_events_total.labels(
+            event="nonempty", engine_type="unknown", broker_kind="kafka"
+        )._value.get()
+        == 3
+    )
+    assert (
+        exporter._pipeline_poll_events_total.labels(
+            event="empty", engine_type="unknown", broker_kind="kafka"
+        )._value.get()
+        == 3
+    )
+    assert (
+        exporter._pipeline_poll_events_total.labels(
+            event="error", engine_type="unknown", broker_kind="kafka"
+        )._value.get()
+        == 1
+    )
 
 
 def test_exporter_registers_and_increments_failure_counters() -> None:

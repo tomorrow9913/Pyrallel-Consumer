@@ -22,10 +22,12 @@ from ..dto import (
     CompletionEvent,
     DLQPayloadMode,
     OrderingMode,
+    PipelinePollDiagnostics,
     RuntimeSnapshot,
     SystemMetrics,
 )
 from ..dto import TopicPartition as DtoTopicPartition
+from ..dto import WorkManagerPipelineDiagnostics
 from ..logger import LogManager
 from .adaptive_backpressure import AdaptiveBackpressureController
 from .adaptive_concurrency import (
@@ -76,6 +78,11 @@ class BrokerPoller:
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
         self._metrics_exporter: Optional[Any] = None
+        self._pipeline_completed_offset_skips_total = 0
+        self._pipeline_poll_records_total = 0
+        self._pipeline_poll_nonempty_polls_total = 0
+        self._pipeline_poll_empty_polls_total = 0
+        self._pipeline_poll_error_polls_total = 0
 
         pc_conf = self._kafka_config.parallel_consumer
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
@@ -702,6 +709,9 @@ class BrokerPoller:
                         num_messages=1,
                         timeout=0,
                     )
+                    self._record_pipeline_poll_result(
+                        record_count=len(cadence_messages)
+                    )
                     if cadence_messages:
                         async with self._control_lock:
                             await self._make_dispatch_support().dispatch_messages(
@@ -719,6 +729,7 @@ class BrokerPoller:
                     num_messages=self._batch_size,
                     timeout=consume_timeout,
                 )
+                self._record_pipeline_poll_result(record_count=len(messages))
 
                 async with self._control_lock:
                     if messages:
@@ -733,6 +744,7 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
+            self._record_pipeline_poll_error()
             self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
@@ -1421,8 +1433,27 @@ class BrokerPoller:
             submit_message=self._work_manager.submit_message,
             submit_grouped_messages=self._submit_grouped_messages,
             get_min_inflight_offset=self._get_min_inflight_offset,
+            record_completed_offset_skip=self._record_completed_offset_skip,
             logger=logger,
         )
+
+    def _record_completed_offset_skip(
+        self, _tp: DtoTopicPartition, _offset: int
+    ) -> None:
+        """Record a restored completed-offset dispatch skip."""
+        self._pipeline_completed_offset_skips_total += 1
+
+    def _record_pipeline_poll_result(self, *, record_count: int) -> None:
+        """Record broker poll-loop result diagnostics."""
+        self._pipeline_poll_records_total += record_count
+        if record_count > 0:
+            self._pipeline_poll_nonempty_polls_total += 1
+            return
+        self._pipeline_poll_empty_polls_total += 1
+
+    def _record_pipeline_poll_error(self) -> None:
+        """Record broker poll-loop error diagnostics."""
+        self._pipeline_poll_error_polls_total += 1
 
     # ------------------------------------------------------------------
     def _on_assign(
@@ -1656,6 +1687,7 @@ class BrokerPoller:
             total_in_flight=metrics.total_in_flight,
             is_paused=metrics.is_paused,
             partitions=metrics.partitions,
+            completed_offset_skips_total=self._pipeline_completed_offset_skips_total,
             adaptive_backpressure=metrics.adaptive_backpressure,
             adaptive_concurrency=metrics.adaptive_concurrency,
             process_batch_metrics=BrokerRuntimeSupport._project_process_batch_metrics(
@@ -1671,6 +1703,18 @@ class BrokerPoller:
 
         """
         return self._make_runtime_support().build_runtime_snapshot()
+
+    def get_pipeline_diagnostics(self) -> WorkManagerPipelineDiagnostics:
+        """Return sidecar pipeline diagnostics outside RuntimeSnapshot."""
+        return WorkManagerPipelineDiagnostics(
+            poll=PipelinePollDiagnostics(
+                records_total=self._pipeline_poll_records_total,
+                nonempty_polls_total=self._pipeline_poll_nonempty_polls_total,
+                empty_polls_total=self._pipeline_poll_empty_polls_total,
+                error_polls_total=self._pipeline_poll_error_polls_total,
+                completed_offset_skips_total=self._pipeline_completed_offset_skips_total,
+            )
+        )
 
     def _make_runtime_support(self) -> BrokerRuntimeSupport:
         """Create runtime support for Kafka polling and control-plane orchestration.
