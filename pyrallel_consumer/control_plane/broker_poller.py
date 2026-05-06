@@ -717,12 +717,10 @@ class BrokerPoller:
                             had_pending_dlq_events=had_pending_dlq_events
                         )
                     await self._check_backpressure()
-                    cadence_messages: List[Message] = await asyncio.to_thread(
-                        self.consumer.consume,
+                    cadence_messages = await self._consume_messages(
                         num_messages=1,
                         timeout=0,
                     )
-                    self._record_pipeline_poll_batch(cadence_messages)
                     if cadence_messages:
                         async with self._control_lock:
                             await self._make_dispatch_support().dispatch_messages(
@@ -735,12 +733,10 @@ class BrokerPoller:
                 await self._check_backpressure()
 
                 consume_timeout = await self._get_consume_timeout_seconds()
-                messages: List[Message] = await asyncio.to_thread(
-                    self.consumer.consume,
+                messages = await self._consume_messages(
                     num_messages=self._batch_size,
                     timeout=consume_timeout,
                 )
-                self._record_pipeline_poll_batch(messages)
 
                 async with self._control_lock:
                     if messages:
@@ -755,7 +751,6 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
-            self._record_pipeline_poll_error()
             self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
@@ -770,6 +765,29 @@ class BrokerPoller:
                 await self._cleanup()
             self._shutdown_event.set()
             self._consumer_task = None
+
+    async def _consume_messages(
+        self,
+        *,
+        num_messages: int,
+        timeout: float,
+    ) -> List[Message]:
+        """Poll broker records and record poll/acquire diagnostics."""
+        if self.consumer is None:
+            raise RuntimeError("Kafka consumer must be initialized")
+
+        try:
+            messages: List[Message] = await asyncio.to_thread(
+                self.consumer.consume,
+                num_messages=num_messages,
+                timeout=timeout,
+            )
+        except Exception:
+            self._record_pipeline_poll_error()
+            raise
+
+        self._record_pipeline_poll_batch(messages)
+        return messages
 
     async def _drain_completion_events_once(self) -> bool:
         """Drain completion events once for Kafka polling and control-plane orchestration.

@@ -1231,6 +1231,41 @@ async def test_stop_reraises_terminal_consumer_loop_error(broker_poller, mock_co
         with pytest.raises(RuntimeError, match="boom"):
             await broker_poller.stop()
 
+    assert broker_poller._pipeline_poll_error_total == 1
+
+
+@pytest.mark.asyncio
+async def test_consumer_loop_downstream_exception_does_not_count_as_poll_error(
+    broker_poller,
+    mock_consumer,
+):
+    message = _make_message("test-topic", 0, 1, b"key", b"value")
+    mock_consumer.consume.return_value = [message]
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = MagicMock()
+    broker_poller._running = True
+    broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
+    broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 70
+    broker_poller.QUEUE_MAX_MESSAGES = 0
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    dispatch_support = MagicMock()
+    dispatch_support.dispatch_messages = AsyncMock(
+        side_effect=RuntimeError("dispatch boom")
+    )
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("asyncio.to_thread", new=passthrough_to_thread):
+        await broker_poller._run_consumer()
+
+    assert isinstance(broker_poller._fatal_error, RuntimeError)
+    assert broker_poller._pipeline_poll_records_total == 1
+    assert broker_poller._pipeline_poll_error_total == 0
+
 
 @pytest.mark.asyncio
 async def test_start_skips_completion_monitor_when_disabled(
