@@ -164,6 +164,7 @@ class BrokerPoller:
         self._rebalance_bridge = BrokerRebalanceBridge(
             get_event_loop=lambda: self._event_loop,
             timeout_seconds=self._rebalance_bridge_timeout_seconds,
+            assign_timeout_seconds=self._assign_bridge_timeout_seconds,
             control_lock=self._control_lock,
             assign_sync=self._assign_sync,
             prepare_revoke_sync=self._prepare_revoke_sync,
@@ -1887,6 +1888,13 @@ class BrokerPoller:
             0,
         )
         return max(0.0, float(timeout_ms) / 1000.0)
+
+    def _assign_bridge_timeout_seconds(self) -> float:
+        """Return assign bridge timeout covering committed-offset lookup budget."""
+        committed_lookup_timeout = (
+            self._rebalance_support.committed_lookup_timeout_seconds
+        )
+        return max(self._rebalance_bridge_timeout_seconds(), committed_lookup_timeout)
 
     def _record_commit_failure_for_rebalance_bridge(
         self, partitions: list[KafkaTopicPartition]

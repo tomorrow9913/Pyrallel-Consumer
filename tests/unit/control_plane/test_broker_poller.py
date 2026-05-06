@@ -457,7 +457,12 @@ def test_on_assign_bridge_failure_raises_without_partial_state(
     future = MagicMock()
     future.result.side_effect = TimeoutError("assign bridge timed out")
 
-    with patch("asyncio.run_coroutine_threadsafe", return_value=future):
+    def capture_future(coroutine, loop):
+        del loop
+        coroutine.close()
+        return future
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=capture_future):
         with pytest.raises(RuntimeError, match="Assign bridge failed"):
             broker_poller._on_assign(
                 mock_consumer,
@@ -466,6 +471,54 @@ def test_on_assign_bridge_failure_raises_without_partial_state(
 
     assert broker_poller._offset_trackers == {}
     broker_poller._work_manager.on_assign.assert_not_called()
+
+
+def test_on_assign_bridge_timeout_covers_committed_lookup_budget(
+    broker_poller, mock_consumer
+):
+    broker_poller._event_loop = MagicMock()
+    broker_poller._event_loop.is_closed.return_value = False
+    broker_poller._kafka_config.parallel_consumer.execution.max_revoke_grace_ms = 500
+    future = MagicMock()
+    future.result.return_value = None
+
+    def capture_future(coroutine, loop):
+        del loop
+        coroutine.close()
+        return future
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=capture_future):
+        assert broker_poller._assign_from_callback(
+            mock_consumer,
+            [KafkaTopicPartition("test-topic", 0, 100)],
+        )
+
+    timeout = future.result.call_args.kwargs["timeout"]
+    assert timeout >= broker_poller._rebalance_support.committed_lookup_timeout_seconds
+
+
+def test_revoke_prep_bridge_timeout_cancels_scheduled_future(
+    broker_poller,
+):
+    broker_poller._event_loop = MagicMock()
+    broker_poller._event_loop.is_closed.return_value = False
+    future = MagicMock()
+    future.result.side_effect = TimeoutError("revoke prep bridge timed out")
+
+    def capture_future(coroutine, loop):
+        del loop
+        coroutine.close()
+        return future
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=capture_future):
+        assert (
+            broker_poller._prepare_revoke_from_callback(
+                [KafkaTopicPartition("test-topic", 0)]
+            )
+            is None
+        )
+
+    future.cancel.assert_called_once_with()
 
 
 @pytest.mark.asyncio

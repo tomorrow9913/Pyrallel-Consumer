@@ -27,6 +27,7 @@ class BrokerRebalanceBridge:
         *,
         get_event_loop: Callable[[], asyncio.AbstractEventLoop | None],
         timeout_seconds: Callable[[], float],
+        assign_timeout_seconds: Callable[[], float],
         control_lock: asyncio.Lock,
         assign_sync: Callable[[Consumer, list[KafkaTopicPartition]], None],
         prepare_revoke_sync: Callable[[list[KafkaTopicPartition]], RevokePreparation],
@@ -37,6 +38,7 @@ class BrokerRebalanceBridge:
     ) -> None:
         self._get_event_loop = get_event_loop
         self._timeout_seconds = timeout_seconds
+        self._assign_timeout_seconds = assign_timeout_seconds
         self._control_lock = control_lock
         self._assign_sync = assign_sync
         self._prepare_revoke_sync = prepare_revoke_sync
@@ -51,14 +53,15 @@ class BrokerRebalanceBridge:
         if loop is None or loop.is_closed():
             self._assign_sync(consumer, partitions)
             return True
-        coroutine = self._assign_on_event_loop(consumer, partitions)
+        future = asyncio.run_coroutine_threadsafe(
+            self._assign_on_event_loop(consumer, partitions),
+            loop,
+        )
         try:
-            asyncio.run_coroutine_threadsafe(coroutine, loop).result(
-                timeout=self._timeout_seconds()
-            )
+            future.result(timeout=self._assign_timeout_seconds())
             return True
         except Exception as exc:
-            coroutine.close()
+            future.cancel()
             self._logger.warning("Rebalance assign bridge failed: %s", exc)
             return False
 
@@ -76,12 +79,14 @@ class BrokerRebalanceBridge:
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
             return self._prepare_revoke_sync(partitions)
+        future = asyncio.run_coroutine_threadsafe(
+            self._prepare_revoke_on_event_loop(partitions),
+            loop,
+        )
         try:
-            return asyncio.run_coroutine_threadsafe(
-                self._prepare_revoke_on_event_loop(partitions),
-                loop,
-            ).result(timeout=self._timeout_seconds())
+            return future.result(timeout=self._timeout_seconds())
         except Exception as exc:
+            future.cancel()
             self._logger.warning("Rebalance revoke prep bridge failed: %s", exc)
             return None
 
@@ -102,13 +107,15 @@ class BrokerRebalanceBridge:
         if loop is None or loop.is_closed():
             self._cleanup_revoke_sync(revoked_tps, failed_tps)
             return True
+        future = asyncio.run_coroutine_threadsafe(
+            self._cleanup_revoke_on_event_loop(revoked_tps, failed_tps),
+            loop,
+        )
         try:
-            asyncio.run_coroutine_threadsafe(
-                self._cleanup_revoke_on_event_loop(revoked_tps, failed_tps),
-                loop,
-            ).result(timeout=self._timeout_seconds())
+            future.result(timeout=self._timeout_seconds())
             return True
         except Exception as exc:
+            future.cancel()
             self._logger.warning("Rebalance revoke cleanup bridge failed: %s", exc)
             return False
 
