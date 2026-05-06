@@ -45,6 +45,7 @@ process-level signal로 해석할 수 있을 때가 아니라면 consumer마다 
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | completion 성공/실패 수 |
 | `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | 최종 Kafka commit 실패 수 |
 | `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | terminal DLQ publish 실패 수 |
+| `pyrallel_pipeline_completed_offset_skips_total` | Counter | `engine_type`, `broker_kind` | `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level skip counter. metadata_snapshot restore가 이미 완료로 표시했지만 아직 연속 commit되지 않은 consumed record를 dispatch에서 skip한 수. poll-call event가 아니다. |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | submit부터 completion까지 지연 |
 | `consumer_in_flight_count` | Gauge | 없음 | 전체 in-flight 수 |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | true lag |
@@ -234,6 +235,7 @@ export된다. dashboard 안정성을 위한 선택이며, 운영자는 process m
 
 - `consumer_parallel_lag` 상승: 실제 처리 backlog 증가
 - `consumer_gap_count` 상승: out-of-order completion 비용 증가
+- `pyrallel_pipeline_completed_offset_skips_total` 상승: `metadata_snapshot`에서 복원된 완료 offset이 dispatch에서 skip되고 있다는 뜻이다. Prometheus counter는 `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되며 poll event label이나 `consumer_processed_total` 의미는 바꾸지 않는다.
 - `consumer_oldest_task_duration_seconds` 상승: poison path, hot key, downstream dependency blockage 의심
 - `consumer_backpressure_active == 1`: ingress가 현재 live limit을 초과해 fetch intake가 pause됨
 - configured/effective adaptive limit 차이가 크면 live controller가 throughput/latency tradeoff를 조정 중이라는 뜻이다.

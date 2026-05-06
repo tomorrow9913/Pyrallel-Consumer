@@ -435,8 +435,17 @@ class PrometheusMetricsExporter:
             labelnames=("event", "engine_type", "broker_kind"),
             registry=self._registry,
         )
+        self._pipeline_completed_offset_skips_total = Counter(
+            "pyrallel_pipeline_completed_offset_skips_total",
+            "Consumed records skipped because the offset was already completed but not contiguously committed",
+            labelnames=("engine_type", "broker_kind"),
+            registry=self._registry,
+        )
         self._pipeline_poll_records_total_seen: dict[tuple[str, str], int] = {}
         self._pipeline_poll_events_total_seen: dict[tuple[str, str, str], int] = {}
+        self._pipeline_completed_offset_skips_total_seen: dict[
+            tuple[str, str], int
+        ] = {}
 
         if self._config.enabled:
             server = start_http_server(self._config.port, registry=self._registry)
@@ -996,6 +1005,18 @@ class PrometheusMetricsExporter:
                     broker_kind=broker_kind,
                 ).inc(event_delta)
 
+        skip_key = (engine_type, broker_kind)
+        skip_delta = self._positive_counter_delta(
+            self._pipeline_completed_offset_skips_total_seen,
+            skip_key,
+            poll.completed_offset_skips_total,
+        )
+        if skip_delta > 0:
+            self._pipeline_completed_offset_skips_total.labels(
+                engine_type=engine_type,
+                broker_kind=broker_kind,
+            ).inc(skip_delta)
+
     def _update_pipeline_settlement_blocker_state(
         self,
         diagnostics: WorkManagerPipelineDiagnostics,
@@ -1035,7 +1056,7 @@ class PrometheusMetricsExporter:
         previous_total = seen.get(key, 0)
         seen[key] = current_total
         if current_total < previous_total:
-            return 0
+            return current_total
         return current_total - previous_total
 
     @staticmethod

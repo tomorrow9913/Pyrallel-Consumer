@@ -553,6 +553,7 @@ def test_exporter_projects_pipeline_poll_counters_by_delta() -> None:
             nonempty_polls_total=2,
             empty_polls_total=3,
             error_polls_total=1,
+            completed_offset_skips_total=3,
             support_state=PipelineDiagnosticsSupportState.SUPPORTED,
         ),
     )
@@ -563,6 +564,7 @@ def test_exporter_projects_pipeline_poll_counters_by_delta() -> None:
             nonempty_polls_total=3,
             empty_polls_total=3,
             error_polls_total=2,
+            completed_offset_skips_total=5,
             support_state=PipelineDiagnosticsSupportState.SUPPORTED,
         ),
     )
@@ -588,6 +590,10 @@ def test_exporter_projects_pipeline_poll_counters_by_delta() -> None:
         'pyrallel_pipeline_poll_events_total{broker_kind="kafka",engine_type="async",event="error"} 2.0'
         in metrics_text
     )
+    assert (
+        'pyrallel_pipeline_completed_offset_skips_total{broker_kind="kafka",engine_type="async"} 5.0'
+        in metrics_text
+    )
 
 
 def test_exporter_treats_lower_pipeline_poll_snapshot_as_reset() -> None:
@@ -601,6 +607,7 @@ def test_exporter_treats_lower_pipeline_poll_snapshot_as_reset() -> None:
         poll=dto.PipelinePollDiagnostics(
             records_total=10,
             nonempty_polls_total=2,
+            completed_offset_skips_total=5,
             support_state=PipelineDiagnosticsSupportState.SUPPORTED,
         ),
     )
@@ -609,20 +616,35 @@ def test_exporter_treats_lower_pipeline_poll_snapshot_as_reset() -> None:
         poll=dto.PipelinePollDiagnostics(
             records_total=1,
             nonempty_polls_total=1,
+            completed_offset_skips_total=2,
+            support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+        ),
+    )
+    after_reset = replace(
+        _make_pipeline_diagnostics(),
+        poll=dto.PipelinePollDiagnostics(
+            records_total=3,
+            nonempty_polls_total=2,
+            completed_offset_skips_total=4,
             support_state=PipelineDiagnosticsSupportState.SUPPORTED,
         ),
     )
 
     exporter.update_pipeline_diagnostics(high, engine_type="process")
     exporter.update_pipeline_diagnostics(reset, engine_type="process")
+    exporter.update_pipeline_diagnostics(after_reset, engine_type="process")
 
     metrics_text = generate_latest(registry).decode("utf-8")
     assert (
-        'pyrallel_pipeline_poll_records_total{broker_kind="kafka",engine_type="process"} 10.0'
+        'pyrallel_pipeline_poll_records_total{broker_kind="kafka",engine_type="process"} 13.0'
         in metrics_text
     )
     assert (
-        'pyrallel_pipeline_poll_events_total{broker_kind="kafka",engine_type="process",event="nonempty"} 2.0'
+        'pyrallel_pipeline_poll_events_total{broker_kind="kafka",engine_type="process",event="nonempty"} 4.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_pipeline_completed_offset_skips_total{broker_kind="kafka",engine_type="process"} 9.0'
         in metrics_text
     )
 

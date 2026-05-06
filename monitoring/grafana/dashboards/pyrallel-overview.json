@@ -826,6 +826,18 @@
           "instant": false,
           "range": true,
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_completed_offset_skips_total",
+          "legendFormat": "restored offset skips {{engine_type}}",
+          "instant": false,
+          "range": true,
+          "refId": "E"
         }
       ],
       "title": "Pipeline blocked reasons",

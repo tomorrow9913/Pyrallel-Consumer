@@ -269,8 +269,8 @@ The dashboard is intentionally two-layered: Operator triage is a curated subset 
     - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
 - **Pipeline Subqueues, Polling, and Commit Settlement**:
     - Type: Time Series
-    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
-    - Insight: Completion-to-commit latency is a broker-owned pipeline event metric emitted alongside the sidecar projection, not a field returned by `get_pipeline_diagnostics()`.
+    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completed_offset_skips_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
+    - Insight: Completion-to-commit latency is a broker-owned pipeline event metric emitted alongside the sidecar projection, not a field returned by `get_pipeline_diagnostics()`. `pyrallel_pipeline_completed_offset_skips_total` is projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` as a record-level restored-offset skip count, not a poll-call event.
 
 ---
 © 2026 Pyrallel Consumer Project

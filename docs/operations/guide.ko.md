@@ -269,8 +269,8 @@ Kafka의 기본 Lag(`LogEndOffset - CommittedOffset`)만으로는 병렬 처리 
     - Query: `pyrallel_pipeline_section_support_state`, `pyrallel_pipeline_worker_capacity_units`
 - **Pipeline Subqueues, Polling, and Commit Settlement**:
     - Type: Time Series
-    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
-    - Insight: Completion-to-commit latency는 `get_pipeline_diagnostics()`가 반환하는 field가 아니라 sidecar projection과 함께 노출되는 BrokerPoller 소유 pipeline event metric입니다.
+    - Query: `pyrallel_pipeline_subqueue_items`, `pyrallel_pipeline_subqueues`, `pyrallel_pipeline_poll_records_total`, `pyrallel_pipeline_poll_events_total`, `pyrallel_pipeline_completed_offset_skips_total`, `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
+    - Insight: Completion-to-commit latency는 `get_pipeline_diagnostics()`가 반환하는 field가 아니라 sidecar projection과 함께 노출되는 BrokerPoller 소유 pipeline event metric입니다. `pyrallel_pipeline_completed_offset_skips_total`은 `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level restored-offset skip count이며 poll-call event가 아닙니다.
 
 ---
 © 2026 Pyrallel Consumer Project

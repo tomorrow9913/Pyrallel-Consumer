@@ -87,6 +87,7 @@ class BrokerPoller:
         self._kafka_config = kafka_config
         self._execution_engine = execution_engine
         self._metrics_exporter: Optional[Any] = None
+        self._pipeline_completed_offset_skips_total = 0
 
         pc_conf = self._kafka_config.parallel_consumer
         self._batch_size = getattr(pc_conf, "poll_batch_size", 0) or 0
@@ -716,12 +717,10 @@ class BrokerPoller:
                             had_pending_dlq_events=had_pending_dlq_events
                         )
                     await self._check_backpressure()
-                    cadence_messages: List[Message] = await asyncio.to_thread(
-                        self.consumer.consume,
+                    cadence_messages = await self._consume_messages(
                         num_messages=1,
                         timeout=0,
                     )
-                    self._record_pipeline_poll_batch(cadence_messages)
                     if cadence_messages:
                         async with self._control_lock:
                             await self._make_dispatch_support().dispatch_messages(
@@ -734,12 +733,10 @@ class BrokerPoller:
                 await self._check_backpressure()
 
                 consume_timeout = await self._get_consume_timeout_seconds()
-                messages: List[Message] = await asyncio.to_thread(
-                    self.consumer.consume,
+                messages = await self._consume_messages(
                     num_messages=self._batch_size,
                     timeout=consume_timeout,
                 )
-                self._record_pipeline_poll_batch(messages)
 
                 async with self._control_lock:
                     if messages:
@@ -754,7 +751,6 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
-            self._record_pipeline_poll_error()
             self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
@@ -769,6 +765,29 @@ class BrokerPoller:
                 await self._cleanup()
             self._shutdown_event.set()
             self._consumer_task = None
+
+    async def _consume_messages(
+        self,
+        *,
+        num_messages: int,
+        timeout: float,
+    ) -> List[Message]:
+        """Poll broker records and record poll/acquire diagnostics."""
+        if self.consumer is None:
+            raise RuntimeError("Kafka consumer must be initialized")
+
+        try:
+            messages: List[Message] = await asyncio.to_thread(
+                self.consumer.consume,
+                num_messages=num_messages,
+                timeout=timeout,
+            )
+        except Exception:
+            self._record_pipeline_poll_error()
+            raise
+
+        self._record_pipeline_poll_batch(messages)
+        return messages
 
     async def _drain_completion_events_once(self) -> bool:
         """Drain completion events once for Kafka polling and control-plane orchestration.
@@ -1529,8 +1548,15 @@ class BrokerPoller:
             submit_message=self._work_manager.submit_message,
             submit_grouped_messages=self._submit_grouped_messages,
             get_min_inflight_offset=self._get_min_inflight_offset,
+            record_completed_offset_skip=self._record_completed_offset_skip,
             logger=logger,
         )
+
+    def _record_completed_offset_skip(
+        self, _tp: DtoTopicPartition, _offset: int
+    ) -> None:
+        """Record a restored completed-offset dispatch skip."""
+        self._pipeline_completed_offset_skips_total += 1
 
     # ------------------------------------------------------------------
     def _on_assign(
@@ -1769,6 +1795,7 @@ class BrokerPoller:
             total_in_flight=metrics.total_in_flight,
             is_paused=metrics.is_paused,
             partitions=metrics.partitions,
+            completed_offset_skips_total=self._pipeline_completed_offset_skips_total,
             adaptive_backpressure=metrics.adaptive_backpressure,
             adaptive_concurrency=metrics.adaptive_concurrency,
             process_batch_metrics=BrokerRuntimeSupport._project_process_batch_metrics(
@@ -1862,6 +1889,7 @@ class BrokerPoller:
                 nonempty_polls_total=self._pipeline_poll_nonempty_total,
                 empty_polls_total=self._pipeline_poll_empty_total,
                 error_polls_total=self._pipeline_poll_error_total,
+                completed_offset_skips_total=self._pipeline_completed_offset_skips_total,
                 broker_kind="kafka",
                 support_state=PipelineDiagnosticsSupportState.SUPPORTED,
             ),

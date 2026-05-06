@@ -16,12 +16,15 @@ from benchmarks import (
     run_parallel_benchmark,
 )
 from benchmarks.stats import BenchmarkResult, BenchmarkStats
+from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.dto import (
     CompletionStatus,
     ExecutionMode,
     TopicPartition,
     WorkItem,
 )
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
 
 E2E_WORKFLOW = (
     run_parallel_benchmark.Path(__file__).resolve().parents[3]
@@ -1346,6 +1349,80 @@ def test_run_benchmark_checks_metrics_port_before_running_rounds(
         )
 
     assert events == ["kafka"]
+
+
+@pytest.mark.asyncio
+async def test_publish_metrics_until_stopped_projects_pipeline_diagnostics() -> None:
+    stop_event = asyncio.Event()
+    metrics_updates: list[Any] = []
+    diagnostics_updates: list[Any] = []
+    diagnostics = object()
+
+    class _FakePoller:
+        def get_metrics(self):
+            stop_event.set()
+            return SimpleNamespace(total_in_flight=0)
+
+        def get_pipeline_diagnostics(self):
+            return diagnostics
+
+    class _FakeExporter:
+        def update_from_system_metrics(self, metrics) -> None:
+            metrics_updates.append(metrics)
+
+        def update_pipeline_diagnostics(self, update, *, engine_type: str) -> None:
+            diagnostics_updates.append((update, engine_type))
+
+    await pyrallel_consumer_test._publish_metrics_until_stopped(
+        stop_event=stop_event,
+        broker_poller=cast(BrokerPoller, _FakePoller()),
+        prometheus_exporter=cast(PrometheusMetricsExporter, _FakeExporter()),
+        engine_type="process",
+        interval_sec=0,
+    )
+
+    assert metrics_updates
+    assert diagnostics_updates == [(diagnostics, "process")]
+
+
+@pytest.mark.asyncio
+async def test_finalize_consumer_run_projects_final_pipeline_diagnostics() -> None:
+    metrics_updates: list[Any] = []
+    diagnostics_updates: list[Any] = []
+    diagnostics = object()
+
+    class _FakePoller:
+        async def stop(self) -> None:
+            return None
+
+        def get_metrics(self):
+            return SimpleNamespace(process_batch_metrics=None, partitions=[])
+
+        def get_pipeline_diagnostics(self):
+            return diagnostics
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeExporter:
+        def update_from_system_metrics(self, metrics) -> None:
+            metrics_updates.append(metrics)
+
+        def update_pipeline_diagnostics(self, update, *, engine_type: str) -> None:
+            diagnostics_updates.append((update, engine_type))
+
+    await pyrallel_consumer_test._finalize_consumer_run(
+        broker_poller=cast(BrokerPoller, _FakePoller()),
+        engine=cast(BaseExecutionEngine, _FakeEngine()),
+        stats=None,
+        prometheus_exporter=cast(PrometheusMetricsExporter, _FakeExporter()),
+        metrics_start=0.0,
+        engine_type="process",
+    )
+
+    assert metrics_updates
+    assert diagnostics_updates == [(diagnostics, "process")]
 
 
 def test_get_or_create_prometheus_exporter_reuses_port(

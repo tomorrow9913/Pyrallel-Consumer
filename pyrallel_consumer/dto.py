@@ -369,6 +369,7 @@ class PipelinePollDiagnostics:
     nonempty_polls_total: int = 0
     empty_polls_total: int = 0
     error_polls_total: int = 0
+    completed_offset_skips_total: int = 0
     broker_kind: str = "kafka"
     support_state: (
         PipelineDiagnosticsSupportState
@@ -553,6 +554,7 @@ class SystemMetrics:
     resource_signal: Optional[ResourceSignalSnapshot] = None
     adaptive_backpressure: Optional[AdaptiveBackpressureSnapshot] = None
     adaptive_concurrency: Optional[AdaptiveConcurrencyRuntimeSnapshot] = None
+    completed_offset_skips_total: int = 0
 
 
 @dataclass(frozen=True)

@@ -280,6 +280,7 @@ def test_grafana_dashboard_is_reference_sample_for_public_metric_surface() -> No
         "pyrallel_pipeline_subqueue_items",
         "pyrallel_pipeline_subqueues",
         "pyrallel_pipeline_settlement_blocker_state",
+        "pyrallel_pipeline_completed_offset_skips_total",
         "pyrallel_pipeline_completion_to_commit_latency_seconds_bucket",
     )
     for metric_family in required_metric_families:
@@ -307,7 +308,7 @@ def test_reference_dashboard_catalog_covers_exporter_public_metric_surface() -> 
     exporter_families = _exporter_public_metric_families()
     dashboard_references = _dashboard_metric_family_references(dashboard)
 
-    assert len(exporter_families) == 67
+    assert len(exporter_families) == 68
     assert exporter_families - dashboard_references == set()
 
 
@@ -369,6 +370,7 @@ def test_catalog_reference_panels_expose_metric_families_without_selector_target
             "pyrallel_pipeline_dispatch_capacity_blocked_messages",
             "pyrallel_pipeline_poll_records_total",
             "pyrallel_pipeline_poll_events_total",
+            "pyrallel_pipeline_completed_offset_skips_total",
         },
         "Pipeline worker capacity": {
             "pyrallel_pipeline_worker_capacity_units",
@@ -1119,6 +1121,33 @@ def test_failure_counter_metric_names_are_documented() -> None:
         assert "consumer_dlq_publish_failures_total" in doc_text
 
 
+def test_completed_offset_skip_counter_metric_name_is_documented() -> None:
+    doc_paths = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.ko.md",
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "04-tooling"
+        / "01-observability-metrics"
+        / "03-design.md",
+        REPO_ROOT
+        / "docs"
+        / "blueprint"
+        / "features"
+        / "04-tooling"
+        / "01-observability-metrics"
+        / "03-design.ko.md",
+        REPO_ROOT / "docs" / "operations" / "guide.en.md",
+        REPO_ROOT / "docs" / "operations" / "guide.ko.md",
+    ]
+
+    for doc_path in doc_paths:
+        doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
+        assert "pyrallel_pipeline_completed_offset_skips_total" in doc_text
+
+
 def test_operations_guides_document_control_plane_commit_clamp_boundary() -> None:
     guide_en = (REPO_ROOT / "docs" / "operations" / "guide.en.md").read_text(
         encoding="utf-8", errors="strict"
@@ -1157,5 +1186,8 @@ def test_e2e_workflow_and_test_cover_prometheus_and_grafana_smoke_checks() -> No
     assert "http://127.0.0.1:3000/api/search?query=Pyrallel" in test_text
     assert "from confluent_kafka.admin import AdminClient" in test_text
     assert "client.list_topics(timeout=5)" in test_text
-    assert '"4000"' in test_text
+    assert "pyrallel_pipeline_poll_records_total" in test_text
+    assert "pyrallel_pipeline_poll_events_total" in test_text
+    assert '"8000"' in test_text
+    assert '"10"' in test_text
     assert '"180"' in test_text

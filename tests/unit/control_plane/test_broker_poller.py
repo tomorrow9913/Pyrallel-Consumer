@@ -9,9 +9,31 @@ from confluent_kafka.admin import AdminClient
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, ExecutionMode
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    ExecutionMode,
+    OrderingMode,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine  # Added import
+
+
+def _make_message(
+    topic: str,
+    partition: int,
+    offset: int,
+    key: bytes,
+    value: bytes,
+):
+    message = MagicMock()
+    message.topic.return_value = topic
+    message.partition.return_value = partition
+    message.offset.return_value = offset
+    message.key.return_value = key
+    message.value.return_value = value
+    message.error.return_value = None
+    return message
 
 
 @pytest.fixture
@@ -965,6 +987,62 @@ async def test_commit_offsets_uses_safe_offset_without_rescanning_tracker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ordering_mode",
+    [OrderingMode.UNORDERED, OrderingMode.KEY_HASH, OrderingMode.PARTITION],
+)
+async def test_restored_sparse_offsets_skip_dispatch_and_commit_after_gap(
+    broker_poller,
+    ordering_mode: OrderingMode,
+):
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=4,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets={4, 6, 7},
+    )
+    tracker.rehydrate_assignment_state(
+        last_committed_offset=3,
+        last_fetched_offset=7,
+    )
+    broker_poller._offset_trackers[tp] = tracker
+    broker_poller.ORDERING_MODE = ordering_mode
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.submit_message = AsyncMock()
+    broker_poller._work_manager.get_min_in_flight_offset.return_value = None
+
+    await broker_poller._make_dispatch_support().dispatch_messages(
+        [
+            _make_message("test-topic", 0, 4, b"key-4", b"value-4"),
+            _make_message("test-topic", 0, 5, b"key-5", b"value-5"),
+            _make_message("test-topic", 0, 6, b"key-6", b"value-6"),
+            _make_message("test-topic", 0, 7, b"key-7", b"value-7"),
+        ]
+    )
+
+    submitted_offsets = [
+        call.kwargs["offset"]
+        for call in broker_poller._work_manager.submit_message.await_args_list
+    ]
+    assert submitted_offsets == [5]
+    assert broker_poller.get_metrics().completed_offset_skips_total == 3
+    assert tracker.last_committed_offset == 3
+    assert tracker.last_fetched_offset == 7
+
+    tracker.mark_complete(5)
+    high_water_mark = tracker.get_committable_high_water_mark()
+    assert high_water_mark == 7
+
+    broker_poller.consumer = MagicMock(spec=Consumer)
+    await broker_poller._commit_offsets([(tp, high_water_mark)])
+
+    committed_offsets = broker_poller.consumer.commit.call_args.kwargs["offsets"]
+    assert committed_offsets[0].offset == 8
+    assert tracker.last_committed_offset == 7
+
+
+@pytest.mark.asyncio
 async def test_commit_offsets_records_final_commit_failure_for_each_partition(
     broker_poller,
 ):
@@ -1152,6 +1230,41 @@ async def test_stop_reraises_terminal_consumer_loop_error(broker_poller, mock_co
 
         with pytest.raises(RuntimeError, match="boom"):
             await broker_poller.stop()
+
+    assert broker_poller._pipeline_poll_error_total == 1
+
+
+@pytest.mark.asyncio
+async def test_consumer_loop_downstream_exception_does_not_count_as_poll_error(
+    broker_poller,
+    mock_consumer,
+):
+    message = _make_message("test-topic", 0, 1, b"key", b"value")
+    mock_consumer.consume.return_value = [message]
+    broker_poller.consumer = mock_consumer
+    broker_poller.producer = MagicMock()
+    broker_poller._running = True
+    broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
+    broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 70
+    broker_poller.QUEUE_MAX_MESSAGES = 0
+    broker_poller._work_manager = MagicMock()
+    broker_poller._work_manager.get_total_in_flight_count.return_value = 0
+    broker_poller._work_manager.get_virtual_queue_sizes.return_value = {}
+    dispatch_support = MagicMock()
+    dispatch_support.dispatch_messages = AsyncMock(
+        side_effect=RuntimeError("dispatch boom")
+    )
+    broker_poller._make_dispatch_support = MagicMock(return_value=dispatch_support)
+
+    async def passthrough_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("asyncio.to_thread", new=passthrough_to_thread):
+        await broker_poller._run_consumer()
+
+    assert isinstance(broker_poller._fatal_error, RuntimeError)
+    assert broker_poller._pipeline_poll_records_total == 1
+    assert broker_poller._pipeline_poll_error_total == 0
 
 
 @pytest.mark.asyncio

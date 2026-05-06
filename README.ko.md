@@ -54,6 +54,7 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | 완료된 메시지 수 (성공/실패 구분) |
 | `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | 고정 reason별 최종 offset commit 실패 수 |
 | `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | offset을 retry 대기 상태로 남긴 terminal DLQ publish 실패 수 |
+| `pyrallel_pipeline_completed_offset_skips_total` | Counter | `engine_type`, `broker_kind` | `PipelinePollDiagnostics.completed_offset_skips_total`에서 delta-safe로 투영되는 record-level skip counter. `metadata_snapshot` restore가 이미 완료로 표시했지만 아직 연속 commit되지 않은 record를 dispatch에서 skip한 수 |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | WorkManager 제출 → Completion 까지의 지연 |
 | `consumer_in_flight_count` | Gauge | – | 현재 인플라이트 메시지 수 |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |
@@ -87,6 +88,10 @@ snapshot을 백그라운드 task로 주기적으로 내보냅니다.
 실패 알림에는 최종 Kafka commit 실패용
 `consumer_commit_failures_total{reason="kafka_exception"}`와 terminal DLQ
 publish 실패용 `consumer_dlq_publish_failures_total`을 사용하십시오.
+`pyrallel_pipeline_completed_offset_skips_total`은
+`PipelinePollDiagnostics.completed_offset_skips_total`에서 투영되는
+record-level skip counter이며 poll-call event가 아니고 poll event label을
+바꾸지 않습니다.
 
 ### Runtime Snapshot API
 

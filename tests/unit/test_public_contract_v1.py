@@ -189,6 +189,7 @@ def test_pipeline_poll_diagnostics_are_additive_sidecar_not_runtime_snapshot() -
         "nonempty_polls_total",
         "empty_polls_total",
         "error_polls_total",
+        "completed_offset_skips_total",
         "broker_kind",
         "support_state",
     ]

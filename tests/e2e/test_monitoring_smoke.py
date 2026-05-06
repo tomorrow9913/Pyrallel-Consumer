@@ -105,6 +105,37 @@ def _grafana_provisioning_ready(grafana_auth: str) -> bool:
     )
 
 
+def _wait_for_benchmark_metrics_endpoint(
+    benchmark: subprocess.Popen[str],
+    *,
+    timeout_sec: float,
+) -> None:
+    """Wait for benchmark metrics while failing fast if the process exits."""
+    deadline = time.monotonic() + timeout_sec
+    required_metrics = (
+        "consumer_processed_total",
+        "consumer_in_flight_count",
+        "pyrallel_pipeline_poll_records_total",
+        "pyrallel_pipeline_poll_events_total",
+    )
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        if benchmark.poll() is not None:
+            output = benchmark.stdout.read() if benchmark.stdout is not None else ""
+            raise RuntimeError(
+                "benchmark exited before metrics endpoint became ready: "
+                f"returncode={benchmark.returncode}\n{output}"
+            )
+        try:
+            metrics_text = _fetch_text("http://127.0.0.1:9091/metrics")
+            if all(metric in metrics_text for metric in required_metrics):
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(2)
+    raise RuntimeError(f"benchmark metrics endpoint did not become ready: {last_error}")
+
+
 def _prometheus_target_health() -> dict[str, str]:
     """Return Prometheus active target health keyed by job name."""
     return {
@@ -177,13 +208,13 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         "--order",
         "partition",
         "--num-messages",
-        "4000",
+        "8000",
         "--num-keys",
         "200",
         "--num-partitions",
         "4",
         "--worker-sleep-ms",
-        "5",
+        "10",
         "--timeout-sec",
         "180",
         "--metrics-port",
@@ -201,15 +232,9 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         text=True,
     )
     try:
-        _wait_until(
-            "benchmark metrics endpoint",
+        _wait_for_benchmark_metrics_endpoint(
+            benchmark,
             timeout_sec=180,
-            predicate=lambda: (
-                "consumer_processed_total"
-                in _fetch_text("http://127.0.0.1:9091/metrics")
-                and "consumer_in_flight_count"
-                in _fetch_text("http://127.0.0.1:9091/metrics")
-            ),
         )
         try:
             _wait_until(
