@@ -338,20 +338,20 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
 
 
 @pytest.mark.asyncio
-async def test_options_screen_places_workload_matrix_before_detail_knobs() -> None:
+async def test_options_screen_places_mode_selectors_before_workload_options() -> None:
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        workloads = app.screen.query_one("#option-block-workloads")
         ordering_modes = app.screen.query_one("#option-block-ordering-modes")
         execution_modes = app.screen.query_one("#option-block-execution-modes")
+        workloads = app.screen.query_one("#option-block-workloads")
         workload_options = app.screen.query_one("#workload-options")
         bootstrap = app.screen.query_one("#option-block-bootstrap-servers")
         positions = (
-            workloads.region.y,
             ordering_modes.region.y,
             execution_modes.region.y,
+            workloads.region.y,
             workload_options.region.y,
             bootstrap.region.y,
         )
