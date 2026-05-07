@@ -209,8 +209,11 @@ class CommitCoordinator:
     ) -> dict[DtoTopicPartition, CommitCandidate]:
         """Return pending and in-flight candidates for shutdown fallback."""
         allowed = set(tps) if tps is not None else None
-        remaining = dict(self._pending)
-        remaining.update(self._in_flight)
+        remaining: dict[DtoTopicPartition, CommitCandidate] = {}
+        for candidate in (*self._in_flight.values(), *self._pending.values()):
+            current = remaining.get(candidate.tp)
+            if current is None or candidate.safe_offset > current.safe_offset:
+                remaining[candidate.tp] = candidate
         if allowed is None:
             return remaining
         return {tp: candidate for tp, candidate in remaining.items() if tp in allowed}
@@ -219,13 +222,13 @@ class CommitCoordinator:
         self, tp: DtoTopicPartition, assignment_epoch: int, lease_id: CommitLeaseId
     ) -> bool:
         """Return whether the supplied epoch and lease can still settle."""
-        candidate = self._pending.get(tp) or self._in_flight.get(tp)
-        if candidate is None:
+        if (tp, assignment_epoch, lease_id) in self._cancelled_leases:
             return False
-        return (
-            candidate.assignment_epoch == assignment_epoch
+        return any(
+            candidate is not None
+            and candidate.assignment_epoch == assignment_epoch
             and candidate.lease_id == lease_id
-            and (tp, assignment_epoch, lease_id) not in self._cancelled_leases
+            for candidate in (self._pending.get(tp), self._in_flight.get(tp))
         )
 
     async def drain(
