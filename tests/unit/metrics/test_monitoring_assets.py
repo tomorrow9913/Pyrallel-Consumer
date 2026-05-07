@@ -282,6 +282,13 @@ def test_grafana_dashboard_is_reference_sample_for_public_metric_surface() -> No
         "pyrallel_pipeline_settlement_blocker_state",
         "pyrallel_pipeline_completed_offset_skips_total",
         "pyrallel_pipeline_completion_to_commit_latency_seconds_bucket",
+        "pyrallel_commit_coordinator_pending_partitions",
+        "pyrallel_commit_coordinator_submitted_total",
+        "pyrallel_commit_coordinator_success_total",
+        "pyrallel_commit_coordinator_failures_total",
+        "pyrallel_commit_coordinator_retries_total",
+        "pyrallel_commit_coordinator_coalesced_total",
+        "pyrallel_commit_coordinator_settlement_latency_seconds_bucket",
     )
     for metric_family in required_metric_families:
         assert metric_family in expressions_text
@@ -308,7 +315,7 @@ def test_reference_dashboard_catalog_covers_exporter_public_metric_surface() -> 
     exporter_families = _exporter_public_metric_families()
     dashboard_references = _dashboard_metric_family_references(dashboard)
 
-    assert len(exporter_families) == 68
+    assert len(exporter_families) == 75
     assert exporter_families - dashboard_references == set()
 
 
@@ -393,6 +400,13 @@ def test_catalog_reference_panels_expose_metric_families_without_selector_target
             "consumer_process_batch_last_wait_seconds",
             "consumer_process_batch_buffered_items",
             "consumer_process_batch_buffered_age_seconds",
+            "pyrallel_commit_coordinator_pending_partitions",
+            "rate(pyrallel_commit_coordinator_submitted_total[1m])",
+            "rate(pyrallel_commit_coordinator_success_total[1m])",
+            "rate(pyrallel_commit_coordinator_failures_total[1m])",
+            "rate(pyrallel_commit_coordinator_retries_total[1m])",
+            "rate(pyrallel_commit_coordinator_coalesced_total[1m])",
+            "histogram_quantile(0.95, sum(rate(pyrallel_commit_coordinator_settlement_latency_seconds_bucket[1m])) by (le))",
         },
         "Adaptive control caps": {
             "consumer_adaptive_backpressure_configured_max_in_flight",

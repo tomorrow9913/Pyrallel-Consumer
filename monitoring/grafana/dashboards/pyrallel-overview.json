@@ -1997,7 +1997,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Reference/detail: legacy BatchAccumulator compatibility metrics shown as simultaneous bars. They are part of the public metric surface but are not primary worker-pipes diagnostics.",
+      "description": "Reference/detail: compatibility and async commit coordinator metrics shown as simultaneous bars. They are part of the public metric surface but are not primary worker-pipes diagnostics.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2109,6 +2109,90 @@
           "instant": true,
           "range": false,
           "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_commit_coordinator_pending_partitions",
+          "legendFormat": "coordinator pending partitions",
+          "instant": true,
+          "range": false,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_submitted_total[1m])",
+          "legendFormat": "coordinator submitted/s",
+          "instant": true,
+          "range": false,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_success_total[1m])",
+          "legendFormat": "coordinator success/s",
+          "instant": true,
+          "range": false,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_failures_total[1m])",
+          "legendFormat": "coordinator failures/s {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_retries_total[1m])",
+          "legendFormat": "coordinator retries/s {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_coalesced_total[1m])",
+          "legendFormat": "coordinator coalesced/s",
+          "instant": true,
+          "range": false,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_commit_coordinator_settlement_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "coordinator p95 settlement latency",
+          "instant": true,
+          "range": false,
+          "refId": "M"
         }
       ],
       "title": "Process compatibility/reference metrics",

@@ -1710,6 +1710,8 @@ async def test_run_screen_spinner_refresh_updates_only_active_summary_cell(
         await pilot.pause()
 
         run_screen = _run_screen(app)
+        if run_screen._spinner_timer is not None:
+            run_screen._spinner_timer.stop()
         run_screen._render_snapshot(
             BenchmarkProgressSnapshot(
                 completed_runs=1,

@@ -48,6 +48,13 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | Final offset commit failures by fixed reason |
 | `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | Terminal DLQ publish failures that retain offsets pending retry |
 | `pyrallel_pipeline_completed_offset_skips_total` | Counter | `engine_type`, `broker_kind` | Record-level skip counter projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` for records skipped at dispatch because `metadata_snapshot` restore already marked the offset complete but not contiguously committed |
+| `pyrallel_commit_coordinator_pending_partitions` | Gauge | `engine_type` | Topic-partitions currently pending or in-flight in the async commit coordinator |
+| `pyrallel_commit_coordinator_coalesced_total` | Counter | `engine_type` | Commit coordinator candidates superseded by newer offsets |
+| `pyrallel_commit_coordinator_submitted_total` | Counter | `engine_type` | Commit coordinator submitted partition count |
+| `pyrallel_commit_coordinator_success_total` | Counter | `engine_type` | Commit coordinator successful settlement partition count |
+| `pyrallel_commit_coordinator_failures_total` | Counter | `engine_type`, `reason` | Commit coordinator failure partition count by bounded reason |
+| `pyrallel_commit_coordinator_retries_total` | Counter | `engine_type`, `reason` | Commit coordinator retry partition count by bounded reason |
+| `pyrallel_commit_coordinator_settlement_latency_seconds` | Histogram | `engine_type` | Commit coordinator broker settlement duration |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | End-to-end processing latency (WorkManager submit → completion) |
 | `consumer_in_flight_count` | Gauge | – | Current in-flight message count |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |

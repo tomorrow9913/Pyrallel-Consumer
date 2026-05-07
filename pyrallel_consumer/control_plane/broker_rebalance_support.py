@@ -37,6 +37,11 @@ class BrokerRebalanceSupport:
         self._tracker_factory = tracker_factory
         self._committed_lookup_timeout_seconds = committed_lookup_timeout_seconds
 
+    @property
+    def committed_lookup_timeout_seconds(self) -> float:
+        """Return the configured committed-offset lookup timeout."""
+        return self._committed_lookup_timeout_seconds
+
     def _decode_assignment_completed_offsets(
         self,
         *,
