@@ -1010,6 +1010,9 @@ class BrokerPoller:
                         "Commit coordinator rejected %d candidate(s); falling back to synchronous commit",
                         len(candidates),
                     )
+                    self._commit_coordinator.cancel_leases(
+                        [candidate.tp for candidate in candidates]
+                    )
                     self._record_commit_coordinator_pending_partitions()
                 committed = await self._commit_offsets(commits_to_make)
                 if committed is not False:
@@ -1782,6 +1785,7 @@ class BrokerPoller:
 
         if not self._cleanup_revoke_from_callback(preparation.revoked_tps, failed_tps):
             self._record_commit_failure_for_rebalance_bridge(partitions)
+            raise RuntimeError("Revoke bridge failed")
 
     def _prepare_revoke_from_callback(
         self, partitions: list[KafkaTopicPartition]

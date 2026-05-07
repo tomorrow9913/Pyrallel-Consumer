@@ -435,6 +435,51 @@ async def test_commit_ready_offsets_falls_back_to_sync_commit_when_coordinator_r
 
 
 @pytest.mark.asyncio
+async def test_commit_ready_offsets_fences_coordinator_leases_before_sync_fallback(
+    broker_poller, topic_partition
+) -> None:
+    broker_poller._kafka_config.parallel_consumer.commit_coordinator.enabled = True
+    broker_poller._commit_coordinator_enabled = True
+    call_order: list[str] = []
+
+    async def enqueue_rejects(candidates, *, force=False, source="unknown"):
+        del candidates, force, source
+        return False
+
+    coordinator = MagicMock()
+    coordinator.enqueue = AsyncMock(side_effect=enqueue_rejects)
+    coordinator.cancel_leases.side_effect = lambda tps: call_order.append(
+        f"cancel:{list(tps)}"
+    )
+    broker_poller._commit_coordinator = coordinator
+
+    async def sync_fallback(commits_to_make):
+        call_order.append(f"fallback:{commits_to_make}")
+        return True
+
+    broker_poller._commit_offsets = AsyncMock(side_effect=sync_fallback)
+    tracker = _make_tracker(topic_partition)
+    tracker.last_committed_offset = -1
+    tracker.get_current_epoch.return_value = 3
+    broker_poller._offset_trackers[topic_partition] = tracker
+    broker_poller._dirty_commit_partitions.add(topic_partition)
+
+    broker_poller._make_dispatch_support = MagicMock()
+    broker_poller._make_dispatch_support.return_value.build_commit_candidates.return_value = [
+        (topic_partition, 4)
+    ]
+
+    await broker_poller._commit_ready_offsets(force=True, source="test")
+
+    coordinator.cancel_leases.assert_called_once_with([topic_partition])
+    broker_poller._commit_offsets.assert_awaited_once_with([(topic_partition, 4)])
+    assert call_order == [
+        f"cancel:{[topic_partition]}",
+        f"fallback:{[(topic_partition, 4)]}",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_commit_ready_offsets_updates_runtime_coordinator_pending_gauge(
     broker_poller, topic_partition
 ) -> None:

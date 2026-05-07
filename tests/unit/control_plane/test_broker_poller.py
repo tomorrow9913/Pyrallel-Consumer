@@ -1169,7 +1169,10 @@ class TestOnRevokeCommitExceptionDefense:
         )
         broker_poller._cleanup_revoke_from_callback = MagicMock(return_value=False)
 
-        broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+        with pytest.raises(RuntimeError, match="Revoke bridge failed"):
+            broker_poller._on_revoke(
+                mock_consumer, [KafkaTopicPartition("test-topic", 0)]
+            )
 
         exporter.record_commit_failure.assert_called_once_with(
             DtoTopicPartition(topic="test-topic", partition=0),
