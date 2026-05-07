@@ -1636,6 +1636,15 @@ class BrokerPoller:
 
     async def _cleanup(self) -> None:
         """Handle cleanup within Kafka polling and control-plane orchestration."""
+        if self._commit_coordinator is not None:
+            coordinator_timeout_ms = getattr(
+                self._kafka_config.parallel_consumer.commit_coordinator,
+                "stop_drain_timeout_ms",
+                0,
+            )
+            await self._drain_commit_coordinator_for_shutdown(
+                time.monotonic() + max(0.0, float(coordinator_timeout_ms) / 1000.0)
+            )
         if self.producer:
             await asyncio.to_thread(self.producer.flush, timeout=5)
         if self.consumer:

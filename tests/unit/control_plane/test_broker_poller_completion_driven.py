@@ -1441,6 +1441,29 @@ async def test_shutdown_timeout_still_drains_commit_coordinator_before_abort(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_drains_commit_coordinator_before_closing_consumer(
+    broker_poller,
+) -> None:
+    events: list[str] = []
+
+    async def drain_before_close(deadline: float) -> bool:
+        del deadline
+        events.append("drain")
+        return True
+
+    broker_poller.producer = None
+    broker_poller._commit_coordinator = MagicMock()
+    broker_poller._drain_commit_coordinator_for_shutdown = AsyncMock(
+        side_effect=drain_before_close
+    )
+    broker_poller.consumer.close.side_effect = lambda: events.append("close")
+
+    await BrokerPoller._cleanup(broker_poller)
+
+    assert events == ["drain", "close"]
+
+
+@pytest.mark.asyncio
 async def test_wait_closed_returns_immediately_when_not_running_and_no_task(
     broker_poller,
 ):
