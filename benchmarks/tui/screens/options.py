@@ -365,11 +365,6 @@ class OptionsScreen(Screen[None]):
                         "Configure the Kafka target and choose the workload shape to run."
                     )
                     yield from self._labeled_selection_list(
-                        option_id="workloads",
-                        selections=self._workload_selections(state),
-                        widget_id="workloads",
-                    )
-                    yield from self._labeled_selection_list(
                         option_id="ordering-modes",
                         selections=[
                             (
@@ -399,6 +394,11 @@ class OptionsScreen(Screen[None]):
                         "",
                         id=self._error_id("skip-phase-group"),
                         classes="field-error",
+                    )
+                    yield from self._labeled_selection_list(
+                        option_id="workloads",
+                        selections=self._workload_selections(state),
+                        widget_id="workloads",
                     )
                     yield from self._workload_option_controls(state)
                     yield from self._labeled_input(
