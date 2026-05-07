@@ -1732,13 +1732,7 @@ class BrokerPoller:
     def _assign_from_callback(
         self, consumer: Consumer, partitions: list[KafkaTopicPartition]
     ) -> bool:
-        """Bridge assign callback state changes onto the event loop."""
-        return self._rebalance_bridge.assign_from_callback(consumer, partitions)
-
-    def _assign_sync(
-        self, consumer: Consumer, partitions: list[KafkaTopicPartition]
-    ) -> None:
-        """Install assignment trackers and notify WorkManager."""
+        """Build assignment state off-loop and install it on the event loop."""
         work_manager_assignments = self._rebalance_support.build_assignments(
             consumer=consumer,
             partitions=partitions,
@@ -1746,6 +1740,12 @@ class BrokerPoller:
             max_revoke_grace_ms=self._kafka_config.parallel_consumer.execution.max_revoke_grace_ms,
             logger=logger,
         )
+        return self._rebalance_bridge.assign_from_callback(work_manager_assignments)
+
+    def _assign_sync(
+        self, work_manager_assignments: dict[DtoTopicPartition, OffsetTracker]
+    ) -> None:
+        """Install assignment trackers and notify WorkManager."""
         self._offset_trackers.update(work_manager_assignments)
         self._work_manager.on_assign(work_manager_assignments)
 
@@ -1767,7 +1767,7 @@ class BrokerPoller:
         preparation = self._prepare_revoke_from_callback(partitions)
         if preparation is None:
             self._record_commit_failure_for_rebalance_bridge(partitions)
-            return
+            raise RuntimeError("Revoke bridge failed")
 
         failed_tps: list[DtoTopicPartition] = []
         if preparation.offsets_to_commit:

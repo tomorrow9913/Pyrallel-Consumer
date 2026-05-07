@@ -6,10 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from confluent_kafka import Consumer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 
 from ..dto import TopicPartition as DtoTopicPartition
+from .offset_tracker import OffsetTracker
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ class BrokerRebalanceBridge:
         timeout_seconds: Callable[[], float],
         assign_timeout_seconds: Callable[[], float],
         control_lock: asyncio.Lock,
-        assign_sync: Callable[[Consumer, list[KafkaTopicPartition]], None],
+        assign_sync: Callable[[dict[DtoTopicPartition, OffsetTracker]], None],
         prepare_revoke_sync: Callable[[list[KafkaTopicPartition]], RevokePreparation],
         cleanup_revoke_sync: Callable[
             [list[DtoTopicPartition], list[DtoTopicPartition]], None
@@ -72,16 +72,16 @@ class BrokerRebalanceBridge:
         self._logger = logger
 
     def assign_from_callback(
-        self, consumer: Consumer, partitions: list[KafkaTopicPartition]
+        self, assignments: dict[DtoTopicPartition, OffsetTracker]
     ) -> bool:
         """Run assign state mutation through the bounded event-loop bridge."""
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
-            self._assign_sync(consumer, partitions)
+            self._assign_sync(assignments)
             return True
         state = _BridgeCallState()
         future = asyncio.run_coroutine_threadsafe(
-            self._assign_on_event_loop(consumer, partitions, state),
+            self._assign_on_event_loop(assignments, state),
             loop,
         )
         try:
@@ -105,15 +105,14 @@ class BrokerRebalanceBridge:
 
     async def _assign_on_event_loop(
         self,
-        consumer: Consumer,
-        partitions: list[KafkaTopicPartition],
+        assignments: dict[DtoTopicPartition, OffsetTracker],
         state: _BridgeCallState,
     ) -> None:
         """Apply assignment under the control lock on the event loop."""
         async with self._control_lock:
             if not state.mark_started():
                 raise asyncio.CancelledError
-            self._assign_sync(consumer, partitions)
+            self._assign_sync(assignments)
 
     def prepare_revoke_from_callback(
         self, partitions: list[KafkaTopicPartition]

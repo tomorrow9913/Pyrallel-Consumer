@@ -501,6 +501,43 @@ def test_on_assign_bridge_timeout_covers_committed_lookup_budget(
     assert timeout >= broker_poller._rebalance_support.committed_lookup_timeout_seconds
 
 
+def test_on_assign_committed_lookup_runs_off_event_loop(
+    broker_poller, mock_consumer
+) -> None:
+    loop = asyncio.new_event_loop()
+    loop_thread_id: list[int] = []
+    loop_ready = threading.Event()
+
+    def run_loop() -> None:
+        loop_thread_id.append(threading.get_ident())
+        loop_ready.set()
+        loop.run_forever()
+
+    def committed(
+        partitions: list[KafkaTopicPartition], *, timeout: float
+    ) -> list[KafkaTopicPartition]:
+        del timeout
+        assert threading.get_ident() != loop_thread_id[0]
+        return [
+            KafkaTopicPartition(tp.topic, tp.partition, tp.offset) for tp in partitions
+        ]
+
+    broker_poller._event_loop = loop
+    mock_consumer.committed.side_effect = committed
+    loop_thread = threading.Thread(target=run_loop)
+    loop_thread.start()
+    try:
+        assert loop_ready.wait(timeout=1.0)
+        assert broker_poller._assign_from_callback(
+            mock_consumer,
+            [KafkaTopicPartition("test-topic", 0, 100)],
+        )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1.0)
+        loop.close()
+
+
 def test_revoke_prep_bridge_timeout_cancels_scheduled_future(
     broker_poller,
 ):
@@ -551,7 +588,7 @@ def test_revoke_prep_bridge_drains_started_sync_work_after_timeout() -> None:
         timeout_seconds=lambda: 0.01,
         assign_timeout_seconds=lambda: 0.01,
         control_lock=asyncio.Lock(),
-        assign_sync=lambda consumer, partitions: None,
+        assign_sync=lambda assignments: None,
         prepare_revoke_sync=prepare_revoke_sync,
         cleanup_revoke_sync=lambda revoked_tps, failed_tps: None,
         logger=MagicMock(),
@@ -1072,7 +1109,10 @@ class TestOnRevokeCommitExceptionDefense:
         broker_poller._event_loop.is_closed.return_value = False
         broker_poller._prepare_revoke_from_callback = MagicMock(return_value=None)
 
-        broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+        with pytest.raises(RuntimeError, match="Revoke bridge failed"):
+            broker_poller._on_revoke(
+                mock_consumer, [KafkaTopicPartition("test-topic", 0)]
+            )
 
         exporter.record_commit_failure.assert_called_once_with(
             DtoTopicPartition(topic="test-topic", partition=0),
