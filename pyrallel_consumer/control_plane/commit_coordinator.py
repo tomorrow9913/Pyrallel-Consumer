@@ -142,7 +142,12 @@ class CommitCoordinator:
         if not self._accepting or not self._healthy:
             return False
 
+        pending_snapshot = dict(self._pending)
+        cancelled_snapshot = set(self._cancelled_leases)
+        lease_counter_snapshot = self._lease_counter
+        coalesced_count_snapshot = self._coalesced_count
         changed = False
+        coalesced_delta = 0
         for candidate in candidates:
             if candidate.tp in self._stopped_partitions:
                 continue
@@ -164,6 +169,10 @@ class CommitCoordinator:
                 if candidate.tp not in self._in_flight:
                     projected_size += 1
                 if projected_size > self.config.queue_max_partitions:
+                    self._pending = pending_snapshot
+                    self._cancelled_leases = cancelled_snapshot
+                    self._lease_counter = lease_counter_snapshot
+                    self._coalesced_count = coalesced_count_snapshot
                     self._failure_count += 1
                     self.record_metrics("failure", "queue_full", 1, None)
                     return False
@@ -171,8 +180,7 @@ class CommitCoordinator:
                 self._cancelled_leases.add(
                     (current.tp, current.assignment_epoch, current.lease_id)
                 )
-                self._coalesced_count += 1
-                self.record_metrics("coalesced", None, 1, None)
+                coalesced_delta += 1
             self._lease_counter += 1
             self._pending[candidate.tp] = CommitCandidate(
                 tp=candidate.tp,
@@ -185,6 +193,9 @@ class CommitCoordinator:
             self._prune_cancelled_leases()
 
         if changed:
+            if coalesced_delta:
+                self._coalesced_count += coalesced_delta
+                self.record_metrics("coalesced", None, coalesced_delta, None)
             self._ensure_worker()
         return True
 

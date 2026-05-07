@@ -54,6 +54,36 @@ async def test_enqueue_coalesces_partition_and_supersedes_old_lease() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enqueue_rolls_back_partial_batch_on_queue_full() -> None:
+    tp0 = DtoTopicPartition("topic", 0)
+    tp1 = DtoTopicPartition("topic", 1)
+    events: list[tuple[str, str | None, int]] = []
+
+    async def commit_sync(candidates: list[CommitCandidate]) -> None:
+        del candidates
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(queue_max_partitions=1),
+        commit_sync=commit_sync,
+        on_commit_success=lambda settlements: None,
+        on_commit_failure=lambda settlements, reason: None,
+        record_metrics=lambda event, reason, count, latency: events.append(
+            (event, reason, count)
+        ),
+    )
+
+    assert await coordinator.enqueue([_candidate(tp0, 3), _candidate(tp1, 4)]) is False
+
+    assert coordinator.remaining_candidates() == {}
+    assert coordinator.stats.queue_depth == 0
+    assert coordinator.stats.coalesced_count == 0
+    assert ("failure", "queue_full", 1) in events
+
+    assert await coordinator.enqueue([_candidate(tp0, 3)]) is True
+    assert coordinator.remaining_candidates()[tp0].lease_id == 1
+
+
+@pytest.mark.asyncio
 async def test_success_settlement_is_reported_once_and_advances_active_lease() -> None:
     tp = DtoTopicPartition("topic", 0)
     settlements_seen: list[CommitSettlement] = []
