@@ -1091,6 +1091,11 @@ class TestOnRevokeCommitExceptionDefense:
     ):
         """Tracker for the failed partition must be deleted even if commit throws."""
         self._setup_trackers(broker_poller)
+        revoked_tps = {
+            DtoTopicPartition(topic="test-topic", partition=0),
+            DtoTopicPartition(topic="test-topic", partition=1),
+        }
+        broker_poller._dirty_commit_partitions.update(revoked_tps)
 
         mock_consumer.commit.side_effect = KafkaException("Broker unavailable")
 
@@ -1102,6 +1107,7 @@ class TestOnRevokeCommitExceptionDefense:
 
         # Even though all commits fail, trackers must be cleaned up
         assert len(broker_poller._offset_trackers) == 0
+        assert broker_poller._dirty_commit_partitions.isdisjoint(revoked_tps)
 
     def test_on_revoke_commit_failure_logs_warning(
         self, broker_poller, mock_consumer, caplog

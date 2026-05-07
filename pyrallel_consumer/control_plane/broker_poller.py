@@ -1885,12 +1885,10 @@ class BrokerPoller:
         failed_tps: list[DtoTopicPartition],
     ) -> None:
         """Remove revoked partition state after broker revoke commit finishes."""
-        failed_set = set(failed_tps)
         for failed_tp in failed_tps:
             self._record_commit_failure_for_partition(failed_tp, "kafka_exception")
         for revoked_tp in revoked_tps:
-            if revoked_tp not in failed_set:
-                self._dirty_commit_partitions.discard(revoked_tp)
+            self._dirty_commit_partitions.discard(revoked_tp)
             self._offset_trackers.pop(revoked_tp, None)
             self._unsettled_completions_by_partition.pop(revoked_tp, None)
             self._unsettled_completion_timestamps_by_partition.pop(revoked_tp, None)
