@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,31 @@ class RevokePreparation:
 
     revoked_tps: list[DtoTopicPartition]
     offsets_to_commit: list[KafkaTopicPartition]
+
+
+class _BridgeCallState:
+    """Track whether a bridged callback has entered synchronous state mutation."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._started = False
+        self._cancelled = False
+
+    def mark_started(self) -> bool:
+        """Mark the sync mutation as started unless callback timeout cancelled it."""
+        with self._lock:
+            if self._cancelled:
+                return False
+            self._started = True
+            return True
+
+    def cancel_if_not_started(self) -> bool:
+        """Cancel future mutation only when the sync phase has not started."""
+        with self._lock:
+            if self._started:
+                return False
+            self._cancelled = True
+            return True
 
 
 class BrokerRebalanceBridge:
@@ -53,23 +79,40 @@ class BrokerRebalanceBridge:
         if loop is None or loop.is_closed():
             self._assign_sync(consumer, partitions)
             return True
+        state = _BridgeCallState()
         future = asyncio.run_coroutine_threadsafe(
-            self._assign_on_event_loop(consumer, partitions),
+            self._assign_on_event_loop(consumer, partitions, state),
             loop,
         )
         try:
             future.result(timeout=self._assign_timeout_seconds())
             return True
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not state.cancel_if_not_started():
+                try:
+                    future.result()
+                    return True
+                except Exception as drain_exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Rebalance assign bridge failed after timeout drain: %s",
+                        drain_exc,
+                    )
+                    return False
+            state.cancel_if_not_started()
             future.cancel()
             self._logger.warning("Rebalance assign bridge failed: %s", exc)
             return False
 
     async def _assign_on_event_loop(
-        self, consumer: Consumer, partitions: list[KafkaTopicPartition]
+        self,
+        consumer: Consumer,
+        partitions: list[KafkaTopicPartition],
+        state: _BridgeCallState,
     ) -> None:
         """Apply assignment under the control lock on the event loop."""
         async with self._control_lock:
+            if not state.mark_started():
+                raise asyncio.CancelledError
             self._assign_sync(consumer, partitions)
 
     def prepare_revoke_from_callback(
@@ -79,22 +122,37 @@ class BrokerRebalanceBridge:
         loop = self._get_event_loop()
         if loop is None or loop.is_closed():
             return self._prepare_revoke_sync(partitions)
+        state = _BridgeCallState()
         future = asyncio.run_coroutine_threadsafe(
-            self._prepare_revoke_on_event_loop(partitions),
+            self._prepare_revoke_on_event_loop(partitions, state),
             loop,
         )
         try:
             return future.result(timeout=self._timeout_seconds())
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not state.cancel_if_not_started():
+                try:
+                    return future.result()
+                except Exception as drain_exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Rebalance revoke prep bridge failed after timeout drain: %s",
+                        drain_exc,
+                    )
+                    return None
+            state.cancel_if_not_started()
             future.cancel()
             self._logger.warning("Rebalance revoke prep bridge failed: %s", exc)
             return None
 
     async def _prepare_revoke_on_event_loop(
-        self, partitions: list[KafkaTopicPartition]
+        self,
+        partitions: list[KafkaTopicPartition],
+        state: _BridgeCallState,
     ) -> RevokePreparation:
         """Build revoke preparation under the control lock on the event loop."""
         async with self._control_lock:
+            if not state.mark_started():
+                raise asyncio.CancelledError
             return self._prepare_revoke_sync(partitions)
 
     def cleanup_revoke_from_callback(
@@ -107,14 +165,26 @@ class BrokerRebalanceBridge:
         if loop is None or loop.is_closed():
             self._cleanup_revoke_sync(revoked_tps, failed_tps)
             return True
+        state = _BridgeCallState()
         future = asyncio.run_coroutine_threadsafe(
-            self._cleanup_revoke_on_event_loop(revoked_tps, failed_tps),
+            self._cleanup_revoke_on_event_loop(revoked_tps, failed_tps, state),
             loop,
         )
         try:
             future.result(timeout=self._timeout_seconds())
             return True
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and not state.cancel_if_not_started():
+                try:
+                    future.result()
+                    return True
+                except Exception as drain_exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Rebalance revoke cleanup bridge failed after timeout drain: %s",
+                        drain_exc,
+                    )
+                    return False
+            state.cancel_if_not_started()
             future.cancel()
             self._logger.warning("Rebalance revoke cleanup bridge failed: %s", exc)
             return False
@@ -123,7 +193,10 @@ class BrokerRebalanceBridge:
         self,
         revoked_tps: list[DtoTopicPartition],
         failed_tps: list[DtoTopicPartition],
+        state: _BridgeCallState,
     ) -> None:
         """Apply revoke cleanup under the control lock on the event loop."""
         async with self._control_lock:
+            if not state.mark_started():
+                raise asyncio.CancelledError
             self._cleanup_revoke_sync(revoked_tps, failed_tps)

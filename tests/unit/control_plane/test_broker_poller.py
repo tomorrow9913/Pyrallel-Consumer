@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,9 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import (
     BrokerPoller,
     RevokePreparation,
+)
+from pyrallel_consumer.control_plane.broker_rebalance_bridge import (
+    BrokerRebalanceBridge,
 )
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
 from pyrallel_consumer.dto import (
@@ -519,6 +523,62 @@ def test_revoke_prep_bridge_timeout_cancels_scheduled_future(
         )
 
     future.cancel.assert_called_once_with()
+
+
+def test_revoke_prep_bridge_drains_started_sync_work_after_timeout() -> None:
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever)
+    started = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+    revoked_tp = DtoTopicPartition("test-topic", 0)
+    preparation = RevokePreparation(
+        revoked_tps=[revoked_tp],
+        offsets_to_commit=[KafkaTopicPartition("test-topic", 0, 11)],
+    )
+    result: list[RevokePreparation | None] = []
+
+    def prepare_revoke_sync(
+        partitions: list[KafkaTopicPartition],
+    ) -> RevokePreparation:
+        assert partitions == [KafkaTopicPartition("test-topic", 0)]
+        started.set()
+        assert release.wait(timeout=1.0)
+        return preparation
+
+    bridge = BrokerRebalanceBridge(
+        get_event_loop=lambda: loop,
+        timeout_seconds=lambda: 0.01,
+        assign_timeout_seconds=lambda: 0.01,
+        control_lock=asyncio.Lock(),
+        assign_sync=lambda consumer, partitions: None,
+        prepare_revoke_sync=prepare_revoke_sync,
+        cleanup_revoke_sync=lambda revoked_tps, failed_tps: None,
+        logger=MagicMock(),
+    )
+
+    def invoke_bridge() -> None:
+        result.append(
+            bridge.prepare_revoke_from_callback([KafkaTopicPartition("test-topic", 0)])
+        )
+        returned.set()
+
+    loop_thread.start()
+    callback_thread = threading.Thread(target=invoke_bridge)
+    callback_thread.start()
+    try:
+        assert started.wait(timeout=1.0)
+        assert returned.wait(timeout=0.05) is False
+        release.set()
+        callback_thread.join(timeout=1.0)
+        assert returned.is_set()
+        assert result == [preparation]
+    finally:
+        release.set()
+        callback_thread.join(timeout=1.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1.0)
+        loop.close()
 
 
 @pytest.mark.asyncio
