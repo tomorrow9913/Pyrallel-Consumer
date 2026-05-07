@@ -82,6 +82,7 @@ class CommitCoordinator:
     _cancelled_leases: set[tuple[DtoTopicPartition, int, CommitLeaseId]] = field(
         default_factory=set
     )
+    _stopped_partitions: set[DtoTopicPartition] = field(default_factory=set)
     _latest_settled_offsets: dict[DtoTopicPartition, int] = field(default_factory=dict)
     _lease_counter: int = 0
     _worker_task: asyncio.Task[None] | None = None
@@ -143,6 +144,8 @@ class CommitCoordinator:
 
         changed = False
         for candidate in candidates:
+            if candidate.tp in self._stopped_partitions:
+                continue
             latest_settled = self._latest_settled_offsets.get(candidate.tp, -1)
             if candidate.safe_offset <= latest_settled:
                 continue
@@ -190,8 +193,20 @@ class CommitCoordinator:
         self._accepting = False
 
     def stop_accepting_partitions(self, tps: Iterable[DtoTopicPartition]) -> None:
-        """Stop accepting candidates for revoked partitions by cancelling leases."""
-        self.cancel_leases(tps)
+        """Stop accepting revoked partitions while preserving in-flight settlement."""
+        for tp in tps:
+            self._stopped_partitions.add(tp)
+            candidate = self._pending.pop(tp, None)
+            if candidate is not None:
+                self._cancelled_leases.add(
+                    (candidate.tp, candidate.assignment_epoch, candidate.lease_id)
+                )
+        self._prune_cancelled_leases()
+
+    def start_accepting_partitions(self, tps: Iterable[DtoTopicPartition]) -> None:
+        """Allow newly assigned partitions to enqueue coordinator work again."""
+        for tp in tps:
+            self._stopped_partitions.discard(tp)
 
     def cancel_leases(self, tps: Iterable[DtoTopicPartition]) -> None:
         """Cancel pending and in-flight leases for the supplied partitions."""

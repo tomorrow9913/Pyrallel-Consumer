@@ -1746,6 +1746,10 @@ class BrokerPoller:
         self, work_manager_assignments: dict[DtoTopicPartition, OffsetTracker]
     ) -> None:
         """Install assignment trackers and notify WorkManager."""
+        if self._commit_coordinator is not None:
+            self._commit_coordinator.start_accepting_partitions(
+                work_manager_assignments.keys()
+            )
         self._offset_trackers.update(work_manager_assignments)
         self._work_manager.on_assign(work_manager_assignments)
 
@@ -1795,7 +1799,11 @@ class BrokerPoller:
             )
             for partition in partitions
         ]
+        coordinator_candidates: dict[DtoTopicPartition, CommitCandidate] = {}
         if self._commit_coordinator is not None:
+            coordinator_candidates = self._commit_coordinator.remaining_candidates(
+                revoked_tps
+            )
             self._commit_coordinator.stop_accepting_partitions(revoked_tps)
         self._work_manager.on_revoke(revoked_tps)
 
@@ -1808,6 +1816,13 @@ class BrokerPoller:
                 continue
             tracker.advance_high_water_mark()
             safe_offset = tracker.last_committed_offset
+            coordinator_candidate = coordinator_candidates.get(tp_dto)
+            if (
+                coordinator_candidate is not None
+                and coordinator_candidate.assignment_epoch
+                == tracker.get_current_epoch()
+            ):
+                safe_offset = max(safe_offset, coordinator_candidate.safe_offset)
             if safe_offset < 0:
                 continue
             metadata = self._encode_revoke_metadata(tracker, safe_offset + 1)

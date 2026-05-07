@@ -852,6 +852,43 @@ async def test_on_revoke_commits_metadata_snapshot_when_enabled(
 
 
 @pytest.mark.asyncio
+async def test_on_revoke_uses_coordinator_candidate_to_avoid_offset_rollback(
+    mock_kafka_config, mock_execution_engine, mock_consumer
+):
+    broker_poller = BrokerPoller(
+        consume_topic="test-topic",
+        kafka_config=mock_kafka_config,
+        execution_engine=mock_execution_engine,
+        work_manager_route_batch_size=1,
+    )
+    broker_poller.consumer = mock_consumer
+
+    tp = DtoTopicPartition(topic="test-topic", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.last_committed_offset = 4
+    tracker.last_fetched_offset = 12
+    broker_poller._offset_trackers[tp] = tracker
+
+    candidate = MagicMock()
+    candidate.safe_offset = 12
+    candidate.assignment_epoch = tracker.get_current_epoch()
+    coordinator = MagicMock()
+    coordinator.remaining_candidates.return_value = {tp: candidate}
+    broker_poller._commit_coordinator = coordinator
+
+    broker_poller._on_revoke(mock_consumer, [KafkaTopicPartition("test-topic", 0)])
+
+    offsets_arg = mock_consumer.commit.call_args.kwargs["offsets"]
+    assert offsets_arg[0].offset == 13
+    coordinator.stop_accepting_partitions.assert_called_once_with([tp])
+
+
+@pytest.mark.asyncio
 async def test_on_revoke_metadata_snapshot_limits_offsets_encoded(
     mock_kafka_config, mock_execution_engine, mock_consumer
 ):

@@ -287,6 +287,56 @@ async def test_newer_pending_candidate_does_not_mask_in_flight_settlement() -> N
 
 
 @pytest.mark.asyncio
+async def test_stop_accepting_partitions_preserves_in_flight_settlement() -> None:
+    tp = DtoTopicPartition("topic", 0)
+    release_commit = asyncio.Event()
+    commit_started = asyncio.Event()
+    settled_offsets: list[int] = []
+
+    async def commit_sync(candidates: list[CommitCandidate]) -> None:
+        commit_started.set()
+        await release_commit.wait()
+
+    def on_success(settlements: list[CommitSettlement]) -> None:
+        settled_offsets.extend(settlement.safe_offset for settlement in settlements)
+
+    coordinator = CommitCoordinator(
+        config=CommitCoordinatorConfig(),
+        commit_sync=commit_sync,
+        on_commit_success=on_success,
+        on_commit_failure=lambda settlements, reason: None,
+        record_metrics=lambda event, reason, count, latency: None,
+    )
+
+    await coordinator.enqueue([_candidate(tp, 9)])
+    await asyncio.wait_for(commit_started.wait(), timeout=1.0)
+    in_flight_candidate = coordinator.remaining_candidates()[tp]
+
+    coordinator.stop_accepting_partitions([tp])
+
+    assert coordinator.is_active_lease(
+        in_flight_candidate.tp,
+        in_flight_candidate.assignment_epoch,
+        in_flight_candidate.lease_id,
+    )
+    assert await coordinator.enqueue([_candidate(tp, 12)]) is True
+    assert coordinator.remaining_candidates()[tp].safe_offset == 9
+
+    release_commit.set()
+    await coordinator.drain(timeout=1.0)
+
+    assert settled_offsets == [9]
+    assert coordinator.latest_settled_offsets[tp] == 9
+
+    coordinator.start_accepting_partitions([tp])
+    assert await coordinator.enqueue([_candidate(tp, 12)]) is True
+    await coordinator.drain(timeout=1.0)
+
+    assert settled_offsets == [9, 12]
+    assert coordinator.latest_settled_offsets[tp] == 12
+
+
+@pytest.mark.asyncio
 async def test_kafka_exception_retains_candidate_and_records_retry() -> None:
     tp = DtoTopicPartition("topic", 0)
     events: list[tuple[str, str | None, int]] = []
