@@ -90,6 +90,8 @@ class _TestOptions:
 
 
 def test_builtin_workloads_are_discovered_as_available() -> None:
+    # Given: inputs for `builtin workloads are discovered as available` are prepared.
+    # When: the workload registry code path is exercised.
     from benchmarks.workloads import (
         all_records,
         available_names,
@@ -98,6 +100,7 @@ def test_builtin_workloads_are_discovered_as_available() -> None:
     )
     from benchmarks.workloads.base import BenchmarkWorkload
 
+    # Then: the expected `builtin workloads are discovered as available` behavior is asserted.
     assert available_names() == ("sleep", "cpu", "io")
     assert records() == all_records()
 
@@ -113,15 +116,18 @@ def test_builtin_workloads_are_discovered_as_available() -> None:
 
 
 def test_builtin_workloads_expose_valid_option_schemas() -> None:
+    # Given: inputs for `builtin workloads expose valid option schemas` are prepared.
     from benchmarks.workloads import all_records
     from benchmarks.workloads.base import describe_workload_options
 
     by_name = {record.name: record for record in all_records()}
 
+    # When: the workload registry code path is exercised.
     sleep_schema = describe_workload_options(by_name["sleep"].workload_cls)
     cpu_schema = describe_workload_options(by_name["cpu"].workload_cls)
     io_schema = describe_workload_options(by_name["io"].workload_cls)
 
+    # Then: the expected `builtin workloads expose valid option schemas` behavior is asserted.
     assert sleep_schema[0].canonical_name == "sleep.sleep_ms"
     assert sleep_schema[0].default == 0.5
     assert sleep_schema[0].metadata.legacy_flags == ("--worker-sleep-ms",)
@@ -131,14 +137,17 @@ def test_builtin_workloads_expose_valid_option_schemas() -> None:
 
 
 def test_build_workload_options_coerces_and_validates_values() -> None:
+    # Given: inputs for `build workload options coerces and validates...` are prepared.
     from benchmarks.workloads.base import build_workload_options
     from benchmarks.workloads.sleep import SleepWorkload
 
+    # When: the workload registry code path is exercised.
     options = build_workload_options(
         SleepWorkload,
         workload_options={"sleep": {"sleep_ms": "1.25"}},
     )
 
+    # Then: the expected `build workload options coerces and validates...` behavior is asserted.
     assert options.sleep_ms == 1.25
 
     with pytest.raises(ValueError, match="sleep.sleep_ms"):
@@ -150,8 +159,10 @@ def test_build_workload_options_coerces_and_validates_values() -> None:
 
 @pytest.mark.parametrize("workload", ["sleep", "cpu", "io"])
 def test_select_workers_preserves_three_callable_tuple_contract(workload: str) -> None:
+    # Given: inputs for `select workers preserves three callable tuple...` are prepared.
     from benchmarks.workloads import select_workers
 
+    # When: the workload registry code path is exercised.
     baseline_worker, async_worker, process_worker = select_workers(
         workload=workload,
         sleep_ms=0,
@@ -159,6 +170,7 @@ def test_select_workers_preserves_three_callable_tuple_contract(workload: str) -
         io_sleep_ms=0,
     )
 
+    # Then: the expected `select workers preserves three callable tuple...` behavior is asserted.
     assert callable(baseline_worker)
     assert callable(async_worker)
     assert callable(process_worker)
@@ -175,6 +187,7 @@ def test_select_workers_preserves_three_callable_tuple_contract(workload: str) -
 def test_select_workers_rejects_non_callable_worker_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `select workers rejects non callable worker be...` are prepared.
     import benchmarks.workloads as workloads
     from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext
 
@@ -194,6 +207,8 @@ def test_select_workers_rejects_non_callable_worker_before_execution(
 
     monkeypatch.setattr(workloads, "get_available", lambda name: BadWorkload)
 
+    # When: the workload registry code path is exercised.
+    # Then: the expected `select workers rejects non callable worker be...` behavior is asserted.
     with pytest.raises(ValueError, match="non-callable"):
         workloads.select_workers(
             workload="bad",
@@ -206,6 +221,7 @@ def test_select_workers_rejects_non_callable_worker_before_execution(
 def test_select_workers_rejects_non_picklable_worker_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `select workers rejects non picklable worker b...` are prepared.
     import benchmarks.workloads as workloads
     from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext
 
@@ -231,6 +247,8 @@ def test_select_workers_rejects_non_picklable_worker_before_execution(
 
     monkeypatch.setattr(workloads, "get_available", lambda name: BadWorkload)
 
+    # When: the workload registry code path is exercised.
+    # Then: the expected `select workers rejects non picklable worker b...` behavior is asserted.
     with pytest.raises(ValueError, match="non-picklable"):
         workloads.select_workers(
             workload="bad",
@@ -243,6 +261,7 @@ def test_select_workers_rejects_non_picklable_worker_before_execution(
 def test_select_workers_can_skip_process_picklability_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `select workers can skip process picklability...` are prepared.
     import benchmarks.workloads as workloads
     from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext
 
@@ -268,6 +287,7 @@ def test_select_workers_can_skip_process_picklability_validation(
 
     monkeypatch.setattr(workloads, "get_available", lambda name: BaselineOnlyWorkload)
 
+    # When: the workload registry code path is exercised.
     baseline_worker, async_worker, process_worker = workloads.select_workers(
         workload="baseline_only",
         sleep_ms=0,
@@ -276,6 +296,7 @@ def test_select_workers_can_skip_process_picklability_validation(
         validate_process_worker=False,
     )
 
+    # Then: the expected `select workers can skip process picklability...` behavior is asserted.
     assert callable(baseline_worker)
     assert callable(async_worker)
     assert callable(process_worker)
@@ -284,9 +305,12 @@ def test_select_workers_can_skip_process_picklability_validation(
 def test_select_workers_allows_non_picklable_in_process_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `select workers allows non picklable in proces...` are prepared.
+    # When: the workload registry code path is exercised.
     import benchmarks.workloads as workloads
     from benchmarks.workloads.base import BenchmarkWorkload, WorkloadContext
 
+    # Then: the expected `select workers allows non picklable in proces...` behavior is asserted.
     class ClosureFriendlyWorkload(BenchmarkWorkload):
         name = "closure_friendly"
         label = "Closure Friendly"
@@ -335,8 +359,11 @@ def test_select_workers_allows_non_picklable_in_process_workers(
 
 
 def test_get_available_unknown_workload_reports_clear_error() -> None:
+    # Given: inputs for `get available unknown workload reports clear...` are prepared.
     from benchmarks.workloads import get_available
 
+    # When: the workload registry code path is exercised.
+    # Then: the expected `get available unknown workload reports clear...` behavior is asserted.
     with pytest.raises(ValueError, match="Unknown workload"):
         get_available("missing")
 
@@ -344,11 +371,13 @@ def test_get_available_unknown_workload_reports_clear_error() -> None:
 def test_workload_registry_facade_caches_discovery_until_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `workload registry facade caches discovery unt...` are prepared.
     import benchmarks.workloads as workloads
     from benchmarks.workloads.registry import WorkloadRecord, WorkloadRegistry
 
     calls = 0
 
+    # When: the workload registry code path is exercised.
     def fake_discover_workloads() -> WorkloadRegistry:
         nonlocal calls
         calls += 1
@@ -364,6 +393,7 @@ def test_workload_registry_facade_caches_discovery_until_reset(
             )
         )
 
+    # Then: the expected `workload registry facade caches discovery unt...` behavior is asserted.
     workloads.reset_registry_cache()
     monkeypatch.setattr(workloads, "discover_workloads", fake_discover_workloads)
     try:
@@ -382,6 +412,7 @@ def test_workload_registry_facade_caches_discovery_until_reset(
 def test_registry_discovers_multiple_workload_classes_in_one_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `registry discovers multiple workload classes...` are prepared.
     from benchmarks.workloads.registry import discover_workloads_from
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -394,8 +425,10 @@ def test_registry_discovers_multiple_workload_classes_in_one_module(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads_from(package_dir, package_name)
 
+    # Then: the expected `registry discovers multiple workload classes...` behavior is asserted.
     assert registry.available_names() == ("alpha", "beta")
     assert registry.get_available("alpha").name == "alpha"
     assert registry.get_available("beta").name == "beta"
@@ -404,6 +437,7 @@ def test_registry_discovers_multiple_workload_classes_in_one_module(
 def test_duplicate_workload_names_are_visible_unavailable_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `duplicate workload names are visible unavaila...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -411,8 +445,10 @@ def test_duplicate_workload_names_are_visible_unavailable_records(
     _write_module(package_dir, "second", _noop_workload_class("dupe", "Second"))
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `duplicate workload names are visible unavaila...` behavior is asserted.
     duplicate_records = [
         record for record in registry.all_records() if record.name == "dupe"
     ]
@@ -428,14 +464,17 @@ def test_duplicate_workload_names_are_visible_unavailable_records(
 def test_import_failures_are_visible_using_file_stem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `import failures are visible using file stem` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
     _write_module(package_dir, "broken_import", 'raise RuntimeError("boom")')
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `import failures are visible using file stem` behavior is asserted.
     [record] = registry.all_records()
     assert record.name == "broken_import"
     assert record.available is False
@@ -447,6 +486,7 @@ def test_import_failures_are_visible_using_file_stem(
 def test_invalid_workload_class_is_visible_with_short_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `invalid workload class is visible with short...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -471,8 +511,10 @@ def test_invalid_workload_class_is_visible_with_short_reason(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `invalid workload class is visible with short...` behavior is asserted.
     [record] = registry.all_records()
     assert record.name == "invalid"
     assert record.available is False
@@ -483,14 +525,17 @@ def test_invalid_workload_class_is_visible_with_short_reason(
 def test_hyphenated_workload_name_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `hyphenated workload name is rejected` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
     _write_module(package_dir, "bad_name", _noop_workload_class("bad-name", "BadName"))
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `hyphenated workload name is rejected` behavior is asserted.
     [record] = registry.all_records()
     assert record.name == "bad-name"
     assert record.available is False
@@ -502,14 +547,17 @@ def test_hyphenated_workload_name_is_rejected(
 def test_infrastructure_modules_are_not_exposed_as_workloads(
     module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `infrastructure modules are not exposed as wor...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
     _write_module(package_dir, module_name, _noop_workload_class(module_name, "Hidden"))
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `infrastructure modules are not exposed as wor...` behavior is asserted.
     assert registry.all_records() == ()
     assert registry.available_names() == ()
 
@@ -517,29 +565,36 @@ def test_infrastructure_modules_are_not_exposed_as_workloads(
 def test_api_module_name_is_available_for_custom_workloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `api module name is available for custom workl...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
     _write_module(package_dir, "api", _noop_workload_class("api", "Api"))
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `api module name is available for custom workl...` behavior is asserted.
     assert registry.available_names() == ("api",)
     assert registry.get_available("api").name == "api"
 
 
 def test_workload_context_carries_builtin_parameters() -> None:
+    # Given: inputs for `workload context carries builtin parameters` are prepared.
     from benchmarks.workloads.base import WorkloadContext
 
+    # When: the workload registry code path is exercised.
     context = WorkloadContext(options=_TestOptions(value=7))
 
+    # Then: the expected `workload context carries builtin parameters` behavior is asserted.
     assert context.options.value == 7
 
 
 def test_option_schema_requires_dataclass_options_type(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema requires dataclass options type` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -576,8 +631,10 @@ def test_option_schema_requires_dataclass_options_type(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema requires dataclass options type` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -587,6 +644,7 @@ def test_option_schema_requires_dataclass_options_type(
 def test_option_schema_rejects_missing_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema rejects missing metadata` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -629,8 +687,10 @@ def test_option_schema_rejects_missing_metadata(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema rejects missing metadata` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -640,6 +700,7 @@ def test_option_schema_rejects_missing_metadata(
 def test_option_schema_rejects_unsupported_field_type(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema rejects unsupported field type` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -682,8 +743,10 @@ def test_option_schema_rejects_unsupported_field_type(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema rejects unsupported field type` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -693,6 +756,7 @@ def test_option_schema_rejects_unsupported_field_type(
 def test_option_schema_marks_unresolved_forward_refs_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema marks unresolved forward refs u...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -737,8 +801,10 @@ def test_option_schema_marks_unresolved_forward_refs_unavailable(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema marks unresolved forward refs u...` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -748,6 +814,7 @@ def test_option_schema_marks_unresolved_forward_refs_unavailable(
 def test_option_schema_marks_malformed_forward_refs_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema marks malformed forward refs un...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -790,8 +857,10 @@ def test_option_schema_marks_malformed_forward_refs_unavailable(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema marks malformed forward refs un...` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -801,6 +870,7 @@ def test_option_schema_marks_malformed_forward_refs_unavailable(
 def test_option_schema_marks_forward_ref_evaluation_errors_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema marks forward ref evaluation er...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -843,8 +913,10 @@ def test_option_schema_marks_forward_ref_evaluation_errors_unavailable(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema marks forward ref evaluation er...` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -854,6 +926,7 @@ def test_option_schema_marks_forward_ref_evaluation_errors_unavailable(
 def test_option_schema_rejects_default_factory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `option schema rejects default factory` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -896,8 +969,10 @@ def test_option_schema_rejects_default_factory(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `option schema rejects default factory` behavior is asserted.
     [record] = registry.all_records()
     assert record.available is False
     assert record.error is not None
@@ -905,6 +980,7 @@ def test_option_schema_rejects_default_factory(
 
 
 def test_option_schema_rejects_init_false_fields() -> None:
+    # Given: inputs for `option schema rejects init false fields` are prepared.
     from benchmarks.workloads.base import (
         WorkloadOptionMetadata,
         describe_workload_options,
@@ -922,11 +998,14 @@ def test_option_schema_rejects_init_false_fields() -> None:
         name = "init_false"
         options_type = InitFalseOptions
 
+    # When: the workload registry code path is exercised.
+    # Then: the expected `option schema rejects init false fields` behavior is asserted.
     with pytest.raises(ValueError, match="init=True"):
         describe_workload_options(cast(Any, InitFalseWorkload))
 
 
 def test_option_schema_rejects_invalid_choice_default() -> None:
+    # Given: inputs for `option schema rejects invalid choice default` are prepared.
     from benchmarks.workloads.base import (
         WorkloadOptionMetadata,
         describe_workload_options,
@@ -947,6 +1026,8 @@ def test_option_schema_rejects_invalid_choice_default() -> None:
         name = "choice"
         options_type = ChoiceOptions
 
+    # When: the workload registry code path is exercised.
+    # Then: the expected `option schema rejects invalid choice default` behavior is asserted.
     with pytest.raises(ValueError, match="default must be in choices"):
         describe_workload_options(cast(Any, ChoiceWorkload))
 
@@ -954,6 +1035,7 @@ def test_option_schema_rejects_invalid_choice_default() -> None:
 def test_registry_marks_duplicate_legacy_flags_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `registry marks duplicate legacy flags unavail...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -1002,8 +1084,10 @@ def test_registry_marks_duplicate_legacy_flags_unavailable(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `registry marks duplicate legacy flags unavail...` behavior is asserted.
     records = registry.all_records()
     assert {record.name for record in records} == {"first_legacy", "second_legacy"}
     assert all(not record.available for record in records)
@@ -1015,6 +1099,7 @@ def test_registry_marks_duplicate_legacy_flags_unavailable(
 def test_records_are_sorted_builtins_first_then_name_for_custom_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `records are sorted builtins first then name f...` are prepared.
     from benchmarks.workloads.registry import discover_workloads
 
     package_dir, package_name = _make_workload_package(tmp_path)
@@ -1022,6 +1107,8 @@ def test_records_are_sorted_builtins_first_then_name_for_custom_registry(
     _write_module(package_dir, "alpha", _noop_workload_class("alpha", "Alpha"))
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # When: the workload registry code path is exercised.
     registry = discover_workloads(package_dir=package_dir, package_name=package_name)
 
+    # Then: the expected `records are sorted builtins first then name f...` behavior is asserted.
     assert registry.available_names() == ("alpha", "zeta")

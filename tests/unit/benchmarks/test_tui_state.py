@@ -4,10 +4,13 @@ from benchmarks.tui.state import BenchmarkTuiState
 
 
 def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
+    # Given: inputs for `tui state to argv uses tui acceptance defaults` are prepared.
     state = BenchmarkTuiState()
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv uses tui acceptance defaults` behavior is asserted.
     assert argv[:8] == [
         "--bootstrap-servers",
         "localhost:9092",
@@ -36,17 +39,21 @@ def test_tui_state_to_argv_uses_tui_acceptance_defaults() -> None:
 
 
 def test_tui_state_default_workload_uses_first_registry_available(monkeypatch) -> None:
+    # Given: inputs for `tui state default workload uses first registr...` are prepared.
     import benchmarks.workloads as workloads
 
     monkeypatch.setattr(workloads, "available_names", lambda: ("custom", "sleep"))
 
+    # When: the benchmark TUI state code path is exercised.
     state = BenchmarkTuiState()
 
+    # Then: the expected `tui state default workload uses first registr...` behavior is asserted.
     assert state.workloads == ("custom",)
     assert "custom" in state.to_argv()
 
 
 def test_tui_state_to_argv_includes_advanced_flags() -> None:
+    # Given: inputs for `tui state to argv includes advanced flags` are prepared.
     state = BenchmarkTuiState(
         workloads=("sleep", "cpu"),
         ordering_modes=("key_hash", "partition"),
@@ -65,8 +72,10 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
         route_batch_size=64,
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv includes advanced flags` behavior is asserted.
     assert "--workloads" in argv
     assert "sleep,cpu" in argv
     assert "--order" in argv
@@ -90,56 +99,69 @@ def test_tui_state_to_argv_includes_advanced_flags() -> None:
 
 
 def test_tui_state_to_argv_emits_custom_workload_options_as_generic_flags() -> None:
+    # Given: inputs for `tui state to argv emits custom workload optio...` are prepared.
     state = BenchmarkTuiState(
         workloads=("custom",),
         workload_options={"custom": {"decode_utf8": False, "endpoint": "http://a=b"}},
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv emits custom workload optio...` behavior is asserted.
     assert "--workload-option" in argv
     assert "custom.decode_utf8=false" in argv
     assert "custom.endpoint=http://a=b" in argv
 
 
 def test_tui_state_to_argv_emits_selected_builtin_options_as_legacy_flags() -> None:
+    # Given: inputs for `tui state to argv emits selected builtin opti...` are prepared.
     state = BenchmarkTuiState(
         workloads=("sleep",),
         workload_options={"sleep": {"sleep_ms": 1.25}, "cpu": {"iterations": 2000}},
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv emits selected builtin opti...` behavior is asserted.
     sleep_index = argv.index("--worker-sleep-ms")
     assert argv[sleep_index + 1] == "1.25"
     assert "cpu.iterations=2000" not in argv
 
 
 def test_tui_state_to_argv_forwards_zero_metrics_port_when_disabled() -> None:
+    # Given: inputs for `tui state to argv forwards zero metrics port...` are prepared.
     state = BenchmarkTuiState(metrics_port=0)
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv forwards zero metrics port...` behavior is asserted.
     assert "--metrics-port" in argv
     metrics_index = argv.index("--metrics-port")
     assert argv[metrics_index + 1] == "0"
 
 
 def test_tui_state_to_argv_omits_blank_process_overrides() -> None:
+    # Given: inputs for `tui state to argv omits blank process overrides` are prepared.
     state = BenchmarkTuiState(
         process_count=None,
         process_batch_size=None,
         process_max_batch_wait_ms=None,
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv omits blank process overrides` behavior is asserted.
     assert "--process-count" not in argv
     assert "--process-batch-size" not in argv
     assert "--process-max-batch-wait-ms" not in argv
 
 
 def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -> None:
+    # Given: inputs for `tui state to argv omits profiling flags when...` are prepared.
     state = BenchmarkTuiState(
         profile=True,
         profile_dir="custom/profiles",
@@ -157,8 +179,10 @@ def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -
         py_spy_top=True,
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv omits profiling flags when...` behavior is asserted.
     assert "--profile" not in argv
     assert "--profile-dir" not in argv
     assert "--profile-clock" not in argv
@@ -178,6 +202,7 @@ def test_tui_state_to_argv_omits_profiling_flags_when_master_toggle_disabled() -
 def test_tui_state_to_argv_restores_profiling_flags_when_master_toggle_enabled() -> (
     None
 ):
+    # Given: inputs for `tui state to argv restores profiling flags wh...` are prepared.
     state = BenchmarkTuiState(
         profiling_enabled=True,
         profile=True,
@@ -196,8 +221,10 @@ def test_tui_state_to_argv_restores_profiling_flags_when_master_toggle_enabled()
         py_spy_top=True,
     )
 
+    # When: the benchmark TUI state code path is exercised.
     argv = state.to_argv()
 
+    # Then: the expected `tui state to argv restores profiling flags wh...` behavior is asserted.
     assert "--profile" in argv
     assert "--profile-dir" in argv
     assert "custom/profiles" in argv

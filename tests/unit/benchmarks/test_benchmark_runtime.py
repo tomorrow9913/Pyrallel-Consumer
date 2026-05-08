@@ -88,6 +88,9 @@ def test_run_benchmark_resets_each_mode_immediately_before_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark resets each mode immediately be...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark resets each mode immediately be...` behavior is asserted.
     events: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -146,6 +149,9 @@ def test_run_benchmark_expands_selected_workloads_and_orderings(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark expands selected workloads and...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark expands selected workloads and...` behavior is asserted.
     baseline_calls: list[tuple[str, str, str]] = []
     async_calls: list[tuple[str, str, str]] = []
 
@@ -215,6 +221,9 @@ def test_run_benchmark_expands_strict_completion_monitor_modes(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark expands strict completion monit...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark expands strict completion monit...` behavior is asserted.
     async_calls: list[tuple[str, bool, str]] = []
 
     monkeypatch.setattr(
@@ -276,6 +285,9 @@ def test_run_benchmark_expands_strict_completion_monitor_modes(
 
 
 def test_build_parser_accepts_adaptive_concurrency_matrix() -> None:
+    # Given: inputs for `build parser accepts adaptive concurrency matrix` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build parser accepts adaptive concurrency matrix` behavior is asserted.
     parser = run_parallel_benchmark.build_parser()
 
     args = parser.parse_args(["--adaptive-concurrency", "off,on"])
@@ -287,6 +299,9 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark expands adaptive concurrency modes` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark expands adaptive concurrency modes` behavior is asserted.
     async_calls: list[tuple[str, bool, str, str]] = []
 
     monkeypatch.setattr(
@@ -351,6 +366,9 @@ def test_run_benchmark_expands_adaptive_concurrency_modes(
 
 
 def test_build_benchmark_run_plans_expands_selected_workloads_and_orderings() -> None:
+    # Given: inputs for `build benchmark run plans expands selected wo...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build benchmark run plans expands selected wo...` behavior is asserted.
     plans = run_parallel_benchmark._build_benchmark_run_plans(
         _build_args(
             workloads=["sleep", "cpu"],
@@ -378,6 +396,9 @@ def test_build_benchmark_run_plans_expands_selected_workloads_and_orderings() ->
 
 
 def test_build_benchmark_run_plans_preserves_mode_suffixes_and_options() -> None:
+    # Given: inputs for `build benchmark run plans preserves mode suff...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build benchmark run plans preserves mode suff...` behavior is asserted.
     plans = run_parallel_benchmark._build_benchmark_run_plans(
         _build_args(
             skip_baseline=True,
@@ -479,6 +500,9 @@ def test_run_benchmark_preserves_event_loop_per_workload_ordering(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark preserves event loop per worklo...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark preserves event loop per worklo...` behavior is asserted.
     loop_runs: list[int] = []
     real_asyncio_run = asyncio.run
 
@@ -533,6 +557,9 @@ def test_run_benchmark_preserves_event_loop_per_workload_ordering(
 
 
 def test_build_artifact_metadata_prefers_github_environment() -> None:
+    # Given: inputs for `build artifact metadata prefers github enviro...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build artifact metadata prefers github enviro...` behavior is asserted.
     metadata = run_parallel_benchmark._build_artifact_metadata(
         output_path="benchmarks/results/release-gate.json",
         environ={
@@ -579,6 +606,9 @@ def test_build_artifact_metadata_prefers_github_environment() -> None:
 
 
 def test_build_artifact_metadata_records_tui_runner_interface() -> None:
+    # Given: inputs for `build artifact metadata records tui runner in...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build artifact metadata records tui runner in...` behavior is asserted.
     metadata = run_parallel_benchmark._build_artifact_metadata(
         output_path="benchmarks/results/tui.json",
         environ={"PYRALLEL_BENCHMARK_RUNNER_INTERFACE": "tui"},
@@ -591,6 +621,9 @@ def test_run_benchmark_writes_artifact_metadata(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark writes artifact metadata` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark writes artifact metadata` behavior is asserted.
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -643,6 +676,9 @@ def test_run_benchmark_writes_artifact_metadata(
 
 
 def test_e2e_workflow_runs_monitoring_smoke_as_test_code() -> None:
+    # Given: inputs for `e2e workflow runs monitoring smoke as test code` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `e2e workflow runs monitoring smoke as test code` behavior is asserted.
     text = E2E_WORKFLOW.read_text(encoding="utf-8")
 
     assert "kafka-1 kafka-exporter prometheus grafana" in text
@@ -654,6 +690,9 @@ def test_e2e_workflow_runs_monitoring_smoke_as_test_code() -> None:
 def test_produce_messages_skips_topic_creation_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `produce messages skips topic creation when di...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `produce messages skips topic creation when di...` behavior is asserted.
     producer_instance = SimpleNamespace(
         produce=lambda *args, **kwargs: None,
         poll=lambda _timeout: None,
@@ -684,6 +723,9 @@ def test_produce_messages_skips_topic_creation_when_disabled(
 def test_run_baseline_round_preserves_workload_specific_run_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run baseline round preserves workload specifi...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run baseline round preserves workload specifi...` behavior is asserted.
     monkeypatch.setattr(
         run_parallel_benchmark, "produce_messages", lambda **kwargs: None
     )
@@ -726,6 +768,9 @@ async def test_run_pyrparallel_round_omits_process_transport_helper_argument(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run pyrparallel round omits process transport...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrparallel round omits process transport...` behavior is asserted.
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -763,6 +808,9 @@ async def test_run_pyrparallel_round_omits_process_transport_helper_argument(
 
 
 def test_benchmark_stats_summary_carries_process_transport_mode() -> None:
+    # Given: inputs for `benchmark stats summary carries process trans...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `benchmark stats summary carries process trans...` behavior is asserted.
     stats = run_parallel_benchmark.BenchmarkStats(
         run_name="process-run",
         run_type="process",
@@ -784,6 +832,9 @@ def test_benchmark_stats_summary_carries_process_transport_mode() -> None:
 
 
 def test_benchmark_stats_summary_carries_route_batch_size() -> None:
+    # Given: inputs for `benchmark stats summary carries route batch size` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `benchmark stats summary carries route batch size` behavior is asserted.
     stats = run_parallel_benchmark.BenchmarkStats(
         run_name="process-run",
         run_type="process",
@@ -805,6 +856,9 @@ def test_benchmark_stats_summary_carries_route_batch_size() -> None:
 
 
 def test_benchmark_stats_summary_carries_runtime_ipc_metrics() -> None:
+    # Given: inputs for `benchmark stats summary carries runtime ipc m...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `benchmark stats summary carries runtime ipc m...` behavior is asserted.
     stats = run_parallel_benchmark.BenchmarkStats(
         run_name="process-run",
         run_type="process",
@@ -850,6 +904,9 @@ def test_benchmark_stats_summary_carries_runtime_ipc_metrics() -> None:
 def test_baseline_consumer_logs_effective_topic_name(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Given: inputs for `baseline consumer logs effective topic name` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `baseline consumer logs effective topic name` behavior is asserted.
     class _FakeConsumer:
         def subscribe(self, topics) -> None:
             self.topics = topics
@@ -880,6 +937,9 @@ async def test_run_pyrallel_consumer_test_skips_topic_creation_after_reset(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test skips topic creati...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test skips topic creati...` behavior is asserted.
     create_calls: list[str] = []
     reset_calls: list[tuple[dict[str, Any], list[str]]] = []
 
@@ -968,6 +1028,9 @@ async def test_run_pyrallel_consumer_test_skips_topic_creation_after_reset(
 async def test_run_pyrallel_consumer_test_records_metrics_after_poller_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test records metrics af...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test records metrics af...` behavior is asserted.
     class _FakeEngine:
         async def shutdown(self) -> None:
             return None
@@ -1047,6 +1110,9 @@ async def test_run_pyrallel_consumer_test_records_metrics_after_poller_stop(
 async def test_run_pyrallel_consumer_test_stops_poller_and_engine_when_assignment_wait_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test stops poller and e...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test stops poller and e...` behavior is asserted.
     events: list[str] = []
 
     class _FakeEngine:
@@ -1102,6 +1168,9 @@ async def test_run_pyrallel_consumer_test_stops_poller_and_engine_when_assignmen
 
 @pytest.mark.asyncio
 async def test_wait_for_partition_assignment_raises_clear_error_for_topic() -> None:
+    # Given: inputs for `wait for partition assignment raises clear er...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `wait for partition assignment raises clear er...` behavior is asserted.
     class _NoAssignmentPoller:
         def get_metrics(self):
             return SimpleNamespace(partitions=[])
@@ -1115,6 +1184,9 @@ async def test_wait_for_partition_assignment_raises_clear_error_for_topic() -> N
 
 
 def test_benchmark_metrics_observer_records_success_and_stops_at_target() -> None:
+    # Given: inputs for `benchmark metrics observer records success an...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `benchmark metrics observer records success an...` behavior is asserted.
     completion_event = asyncio.Event()
     stats = BenchmarkStats(
         run_name="demo",
@@ -1149,6 +1221,9 @@ def test_benchmark_metrics_observer_records_success_and_stops_at_target() -> Non
 
 
 def test_benchmark_metrics_observer_reports_completion_failure() -> None:
+    # Given: inputs for `benchmark metrics observer reports completion...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `benchmark metrics observer reports completion...` behavior is asserted.
     completion_event = asyncio.Event()
     observer = pyrallel_consumer_test.BenchmarkMetricsObserver(
         benchmark_stats=None,
@@ -1169,6 +1244,9 @@ def test_benchmark_metrics_observer_reports_completion_failure() -> None:
 
 
 def test_record_release_gate_metrics_from_snapshot_sums_partition_metrics() -> None:
+    # Given: inputs for `record release gate metrics from snapshot sum...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `record release gate metrics from snapshot sum...` behavior is asserted.
     stats = BenchmarkStats(
         run_name="demo",
         run_type="async",
@@ -1199,6 +1277,9 @@ def test_record_release_gate_metrics_from_snapshot_sums_partition_metrics() -> N
 
 
 def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:
+    # Given: inputs for `build kafka config sets strict completion mon...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config sets strict completion mon...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config(
         strict_completion_monitor_enabled=False
     )
@@ -1207,6 +1288,9 @@ def test_build_kafka_config_sets_strict_completion_monitor_flag() -> None:
 
 
 def test_build_kafka_config_sets_process_batching_overrides() -> None:
+    # Given: inputs for `build kafka config sets process batching over...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config sets process batching over...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config(
         process_count=2,
         process_batch_size=1,
@@ -1231,6 +1315,9 @@ def test_build_kafka_config_sets_process_batching_overrides() -> None:
 def test_build_kafka_config_sets_route_batch_size_without_changing_process_batching() -> (
     None
 ):
+    # Given: inputs for `build kafka config sets route batch size with...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config sets route batch size with...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config(
         process_batch_size=1,
         route_batch_size=64,
@@ -1242,6 +1329,9 @@ def test_build_kafka_config_sets_route_batch_size_without_changing_process_batch
 
 
 def test_build_kafka_config_defaults_route_batch_size_to_worker_pipes_profile() -> None:
+    # Given: inputs for `build kafka config defaults route batch size...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config defaults route batch size...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config()
 
     assert not hasattr(config.parallel_consumer.execution, "route_batch_size")
@@ -1249,6 +1339,9 @@ def test_build_kafka_config_defaults_route_batch_size_to_worker_pipes_profile() 
 
 
 def test_build_kafka_config_defaults_to_worker_pipes_transport_profile() -> None:
+    # Given: inputs for `build kafka config defaults to worker pipes t...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config defaults to worker pipes t...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config()
 
     assert not hasattr(
@@ -1259,6 +1352,9 @@ def test_build_kafka_config_defaults_to_worker_pipes_transport_profile() -> None
 
 
 def test_build_kafka_config_has_single_worker_pipes_topology() -> None:
+    # Given: inputs for `build kafka config has single worker pipes to...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config has single worker pipes to...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config()
 
     assert not hasattr(
@@ -1269,11 +1365,17 @@ def test_build_kafka_config_has_single_worker_pipes_topology() -> None:
 
 
 def test_build_kafka_config_rejects_non_positive_process_count() -> None:
+    # Given: inputs for `build kafka config rejects non positive proce...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config rejects non positive proce...` behavior is asserted.
     with pytest.raises(ValueError, match="process_count must be greater than 0"):
         pyrallel_consumer_test.build_kafka_config(process_count=0)
 
 
 def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
+    # Given: inputs for `build kafka config sets adaptive concurrency...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config sets adaptive concurrency...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config(
         adaptive_concurrency_enabled=True
     )
@@ -1282,6 +1384,9 @@ def test_build_kafka_config_sets_adaptive_concurrency_flag() -> None:
 
 
 def test_build_kafka_config_enables_metrics_when_port_provided() -> None:
+    # Given: inputs for `build kafka config enables metrics when port...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `build kafka config enables metrics when port...` behavior is asserted.
     config = pyrallel_consumer_test.build_kafka_config(metrics_port=9091)
 
     assert config.metrics.enabled is True
@@ -1289,6 +1394,9 @@ def test_build_kafka_config_enables_metrics_when_port_provided() -> None:
 
 
 def test_normalize_metrics_port_treats_non_positive_values_as_disabled() -> None:
+    # Given: inputs for `normalize metrics port treats non positive va...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `normalize metrics port treats non positive va...` behavior is asserted.
     assert run_parallel_benchmark._normalize_metrics_port(None) is None
     assert run_parallel_benchmark._normalize_metrics_port(0) is None
     assert run_parallel_benchmark._normalize_metrics_port(-1) is None
@@ -1298,6 +1406,9 @@ def test_normalize_metrics_port_treats_non_positive_values_as_disabled() -> None
 def test_ensure_metrics_port_available_reports_listening_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `ensure metrics port available reports listeni...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `ensure metrics port available reports listeni...` behavior is asserted.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
@@ -1320,6 +1431,9 @@ def test_run_benchmark_checks_metrics_port_before_running_rounds(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark checks metrics port before runn...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark checks metrics port before runn...` behavior is asserted.
     events: list[str] = []
 
     monkeypatch.setattr(
@@ -1353,6 +1467,9 @@ def test_run_benchmark_checks_metrics_port_before_running_rounds(
 
 @pytest.mark.asyncio
 async def test_publish_metrics_until_stopped_projects_pipeline_diagnostics() -> None:
+    # Given: inputs for `publish metrics until stopped projects pipeli...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `publish metrics until stopped projects pipeli...` behavior is asserted.
     stop_event = asyncio.Event()
     metrics_updates: list[Any] = []
     diagnostics_updates: list[Any] = []
@@ -1387,6 +1504,9 @@ async def test_publish_metrics_until_stopped_projects_pipeline_diagnostics() -> 
 
 @pytest.mark.asyncio
 async def test_finalize_consumer_run_projects_final_pipeline_diagnostics() -> None:
+    # Given: inputs for `finalize consumer run projects final pipeline...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `finalize consumer run projects final pipeline...` behavior is asserted.
     metrics_updates: list[Any] = []
     diagnostics_updates: list[Any] = []
     diagnostics = object()
@@ -1428,6 +1548,9 @@ async def test_finalize_consumer_run_projects_final_pipeline_diagnostics() -> No
 def test_get_or_create_prometheus_exporter_reuses_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `get or create prometheus exporter reuses port` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `get or create prometheus exporter reuses port` behavior is asserted.
     created: list[int] = []
 
     class _FakeExporter:
@@ -1450,6 +1573,9 @@ def test_get_or_create_prometheus_exporter_reuses_port(
 async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test passes process bat...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test passes process bat...` behavior is asserted.
     captured: dict[str, Any] = {}
 
     class _FakePoller:
@@ -1528,6 +1654,9 @@ async def test_run_pyrallel_consumer_test_passes_process_batching_to_build_kafka
 async def test_run_pyrallel_consumer_test_does_not_pass_process_transport_mode_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test does not pass proc...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test does not pass proc...` behavior is asserted.
     captured: dict[str, Any] = {}
 
     class _FakePoller:
@@ -1593,6 +1722,9 @@ async def test_run_pyrallel_consumer_test_does_not_pass_process_transport_mode_t
 async def test_run_pyrallel_consumer_test_passes_route_batch_size_to_config_and_work_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test passes route batch...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test passes route batch...` behavior is asserted.
     captured_config: dict[str, Any] = {}
     captured_work_manager: dict[str, Any] = {}
 
@@ -1671,6 +1803,9 @@ async def test_run_pyrallel_consumer_test_passes_route_batch_size_to_config_and_
 async def test_run_pyrallel_consumer_test_passes_adaptive_concurrency_to_build_kafka_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test passes adaptive co...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test passes adaptive co...` behavior is asserted.
     captured: dict[str, Any] = {}
 
     class _FakePoller:
@@ -1736,6 +1871,9 @@ async def test_run_pyrallel_consumer_test_passes_adaptive_concurrency_to_build_k
 async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics_port_provided(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test wires prometheus e...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test wires prometheus e...` behavior is asserted.
     captured_metrics_exporter: Any = None
     metrics_updates: list[Any] = []
     pipeline_updates: list[tuple[Any, str]] = []
@@ -1828,6 +1966,9 @@ async def test_run_pyrallel_consumer_test_wires_prometheus_exporter_when_metrics
 
 @pytest.mark.asyncio
 async def test_publish_metrics_loop_publishes_pipeline_diagnostics() -> None:
+    # Given: inputs for `publish metrics loop publishes pipeline diagn...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `publish metrics loop publishes pipeline diagn...` behavior is asserted.
     stop_event = asyncio.Event()
     system_metrics = object()
     pipeline_diagnostics = object()
@@ -1863,6 +2004,9 @@ async def test_publish_metrics_loop_publishes_pipeline_diagnostics() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_consumer_run_publishes_final_pipeline_diagnostics() -> None:
+    # Given: inputs for `finalize consumer run publishes final pipelin...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `finalize consumer run publishes final pipelin...` behavior is asserted.
     system_metrics = SimpleNamespace(partitions=[], process_batch_metrics=None)
     pipeline_diagnostics = object()
     system_updates: list[Any] = []
@@ -1906,6 +2050,9 @@ def test_run_benchmark_passes_process_overrides_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark passes process overrides to pro...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark passes process overrides to pro...` behavior is asserted.
     process_calls: list[tuple[int, int, int, str | None, int | None]] = []
 
     monkeypatch.setattr(
@@ -1982,6 +2129,9 @@ def test_run_benchmark_does_not_pass_process_transport_mode_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark does not pass process transport...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark does not pass process transport...` behavior is asserted.
     process_calls: list[bool] = []
 
     monkeypatch.setattr(
@@ -2035,6 +2185,9 @@ def test_run_benchmark_passes_route_batch_size_to_process_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark passes route batch size to proc...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark passes route batch size to proc...` behavior is asserted.
     process_calls: list[int] = []
 
     monkeypatch.setattr(
@@ -2091,6 +2244,9 @@ def test_run_benchmark_does_not_forward_process_transport_mode_to_async_round(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark does not forward process transp...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark does not forward process transp...` behavior is asserted.
     async_calls: list[str | None] = []
 
     monkeypatch.setattr(
@@ -2145,6 +2301,9 @@ def test_run_benchmark_warns_for_tiny_partition_process_defaults(
     benchmark_result: BenchmarkResult,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Given: inputs for `run benchmark warns for tiny partition proces...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark warns for tiny partition proces...` behavior is asserted.
     monkeypatch.setattr(
         run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
     )
@@ -2201,6 +2360,9 @@ def test_run_benchmark_auto_tunes_tiny_partition_strict_process_defaults(
     benchmark_result: BenchmarkResult,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Given: inputs for `run benchmark auto tunes tiny partition stric...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark auto tunes tiny partition stric...` behavior is asserted.
     process_calls: list[tuple[int | None, int | None]] = []
 
     monkeypatch.setattr(
@@ -2270,6 +2432,9 @@ def test_run_benchmark_resolves_process_batching_per_strict_mode(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark resolves process batching per s...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark resolves process batching per s...` behavior is asserted.
     process_calls: list[tuple[str, int | None, int | None]] = []
 
     monkeypatch.setattr(
@@ -2342,6 +2507,9 @@ def test_run_benchmark_skips_tiny_partition_warning_when_batching_is_overridden(
     benchmark_result: BenchmarkResult,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Given: inputs for `run benchmark skips tiny partition warning wh...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark skips tiny partition warning wh...` behavior is asserted.
     monkeypatch.setattr(
         run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
     )
@@ -2400,6 +2568,9 @@ def test_run_benchmark_filters_workload_options_per_selected_workload(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark filters workload options per se...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark filters workload options per se...` behavior is asserted.
     selected_options: list[tuple[str, dict[str, dict[str, object]] | None]] = []
 
     monkeypatch.setattr(
@@ -2460,6 +2631,9 @@ def test_run_benchmark_skips_process_worker_validation_when_process_is_skipped(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,
 ) -> None:
+    # Given: inputs for `run benchmark skips process worker validation...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run benchmark skips process worker validation...` behavior is asserted.
     validate_process_flags: list[bool] = []
 
     monkeypatch.setattr(
@@ -2499,6 +2673,9 @@ def test_run_benchmark_skips_process_worker_validation_when_process_is_skipped(
 
 
 def test_ordering_validator_reports_key_hash_pass_summary() -> None:
+    # Given: inputs for `ordering validator reports key hash pass summary` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `ordering validator reports key hash pass summary` behavior is asserted.
     validator = pyrallel_consumer_test.OrderingValidator(
         ordering_mode="key_hash", topic_name="demo-topic"
     )
@@ -2528,6 +2705,9 @@ def test_ordering_validator_reports_key_hash_pass_summary() -> None:
 
 
 def test_ordering_validator_allows_nonzero_first_key_hash_sequence() -> None:
+    # Given: inputs for `ordering validator allows nonzero first key h...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `ordering validator allows nonzero first key h...` behavior is asserted.
     validator = pyrallel_consumer_test.OrderingValidator(
         ordering_mode="key_hash", topic_name="demo-topic"
     )
@@ -2560,6 +2740,9 @@ def test_ordering_validator_allows_nonzero_first_key_hash_sequence() -> None:
 async def test_run_pyrallel_consumer_test_validates_key_hash_ordering_in_process_mode(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test validates key hash...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test validates key hash...` behavior is asserted.
     captured_exporter: Any = None
     captured_process_worker: Callable[[WorkItem], None] | None = None
 
@@ -2661,6 +2844,9 @@ async def test_run_pyrallel_consumer_test_validates_key_hash_ordering_in_process
 async def test_run_pyrallel_consumer_test_uses_picklable_process_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test uses picklable pro...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test uses picklable pro...` behavior is asserted.
     captured_process_worker: Callable[[WorkItem], None] | None = None
 
     class _FakeEngine:
@@ -2735,6 +2921,9 @@ async def test_run_pyrallel_consumer_test_uses_picklable_process_worker(
 async def test_run_pyrallel_consumer_test_raises_on_process_ordering_violation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test raises on process...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test raises on process...` behavior is asserted.
     captured_exporter: Any = None
     captured_process_worker: Callable[[WorkItem], None] | None = None
 
@@ -2852,6 +3041,9 @@ async def test_run_pyrallel_consumer_test_raises_on_process_ordering_violation(
 async def test_run_pyrallel_consumer_test_raises_clear_error_on_completion_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `run pyrallel consumer test raises clear error...` are prepared.
+    # When: the benchmark runtime code path is exercised.
+    # Then: the expected `run pyrallel consumer test raises clear error...` behavior is asserted.
     events: list[str] = []
     captured_exporter: Any = None
 

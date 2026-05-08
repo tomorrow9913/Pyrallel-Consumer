@@ -7,9 +7,12 @@ from benchmarks.pipeline_diagnostics_evidence import build_evidence, write_evide
 
 @pytest.mark.asyncio
 async def test_pipeline_diagnostics_evidence_distinguishes_bottlenecks() -> None:
+    # Given: inputs for `pipeline diagnostics evidence distinguishes b...` are prepared.
+    # When: the pipeline diagnostics evidence code path is exercised.
     evidence = await build_evidence()
     scenarios = evidence["scenarios"]
 
+    # Then: the expected `pipeline diagnostics evidence distinguishes b...` behavior is asserted.
     assert evidence["prometheus_metrics_added"] is True
     assert evidence["runtime_snapshot_v1_changed"] is False
     assert scenarios["normal"]["subqueues"]["queued_items"] == 0
@@ -33,10 +36,13 @@ async def test_pipeline_diagnostics_evidence_distinguishes_bottlenecks() -> None
 
 
 def test_pipeline_diagnostics_evidence_writes_json_artifact(tmp_path) -> None:
+    # Given: inputs for `pipeline diagnostics evidence writes json art...` are prepared.
     output_path = tmp_path / "pipeline-diagnostics-evidence.json"
 
+    # When: the pipeline diagnostics evidence code path is exercised.
     evidence = write_evidence(output_path)
 
+    # Then: the expected `pipeline diagnostics evidence writes json art...` behavior is asserted.
     output_text = output_path.read_text(encoding="utf-8")
     assert "pipeline_diagnostics_evidence" in output_text
     assert evidence["forbidden_prometheus_labels"] == [

@@ -91,14 +91,17 @@ def _passing_summary() -> dict[str, object]:
 def test_evaluate_release_gate_passes_two_complete_threshold_runs(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate passes two complete thr...` are prepared.
     paths = []
     for index in range(2):
         path = tmp_path / ("release-gate-%d.json" % index)
         path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate passes two complete thr...` behavior is asserted.
     assert report["verdict"] == "PASS"
     assert report["summary"]["required_repetitions"] == 2
     assert all(check["status"] == "PASS" for check in report["checks"])
@@ -107,6 +110,9 @@ def test_evaluate_release_gate_passes_two_complete_threshold_runs(
 def test_evaluate_release_gate_reports_no_go_for_threshold_and_completion_failures(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate reports no go for thres...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate reports no go for thres...` behavior is asserted.
     bad = _passing_summary()
     results = bad["results"]
     assert isinstance(results, list)
@@ -139,6 +145,7 @@ def test_evaluate_release_gate_reports_no_go_for_threshold_and_completion_failur
 def test_evaluate_release_gate_reports_no_go_for_persistent_gap_observations(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate reports no go for persi...` are prepared.
     bad = _passing_summary()
     bad["metrics_observations"] = [
         {"elapsed_sec": 10, "consumer_gap_count": 1},
@@ -150,8 +157,10 @@ def test_evaluate_release_gate_reports_no_go_for_persistent_gap_observations(
         path.write_text(json.dumps(bad), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate reports no go for persi...` behavior is asserted.
     assert report["verdict"] == "NO-GO"
     failed_codes = {
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
@@ -162,6 +171,7 @@ def test_evaluate_release_gate_reports_no_go_for_persistent_gap_observations(
 def test_evaluate_release_gate_resets_persistent_gap_timer_per_run_name(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate resets persistent gap t...` are prepared.
     good = _passing_summary()
     good["metrics_observations"] = [
         {"run_name": "run-a", "elapsed_sec": 10, "consumer_gap_count": 1},
@@ -175,8 +185,10 @@ def test_evaluate_release_gate_resets_persistent_gap_timer_per_run_name(
         path.write_text(json.dumps(good), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate resets persistent gap t...` behavior is asserted.
     assert report["verdict"] == "PASS"
     assert all(
         check["code"] != "persistent_gap" or check["status"] == "PASS"
@@ -187,11 +199,14 @@ def test_evaluate_release_gate_resets_persistent_gap_timer_per_run_name(
 def test_evaluate_release_gate_requires_repeated_full_release_matrix(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate requires repeated full...` are prepared.
     path = tmp_path / "single.json"
     path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate([path])
 
+    # Then: the expected `evaluate release gate requires repeated full...` behavior is asserted.
     assert report["verdict"] == "NO-GO"
     failed_codes = {
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
@@ -202,6 +217,9 @@ def test_evaluate_release_gate_requires_repeated_full_release_matrix(
 def test_evaluate_release_gate_counts_repetitions_by_distinct_artifact(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate counts repetitions by d...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate counts repetitions by d...` behavior is asserted.
     duplicate_rows = _passing_summary()
     results = duplicate_rows["results"]
     assert isinstance(results, list)
@@ -219,9 +237,11 @@ def test_evaluate_release_gate_counts_repetitions_by_distinct_artifact(
 
 
 def test_cli_emits_machine_readable_no_go_and_nonzero_exit(tmp_path: Path) -> None:
+    # Given: inputs for `cli emits machine readable no go and nonzero...` are prepared.
     path = tmp_path / "single.json"
     path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
 
+    # When: the release gate evaluator code path is exercised.
     result = subprocess.run(
         [
             sys.executable,
@@ -236,17 +256,21 @@ def test_cli_emits_machine_readable_no_go_and_nonzero_exit(tmp_path: Path) -> No
         text=True,
     )
 
+    # Then: the expected `cli emits machine readable no go and nonzero...` behavior is asserted.
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["verdict"] == "NO-GO"
 
 
 def test_evaluate_release_gate_rejects_duplicate_artifact_paths(tmp_path: Path) -> None:
+    # Given: inputs for `evaluate release gate rejects duplicate artif...` are prepared.
     path = tmp_path / "release-gate.json"
     path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate([path, path])
 
+    # Then: the expected `evaluate release gate rejects duplicate artif...` behavior is asserted.
     assert report["verdict"] == "NO-GO"
     failed_codes = {
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
@@ -255,11 +279,14 @@ def test_evaluate_release_gate_rejects_duplicate_artifact_paths(tmp_path: Path) 
 
 
 def test_evaluate_release_gate_rejects_invalid_repetition_count(tmp_path: Path) -> None:
+    # Given: inputs for `evaluate release gate rejects invalid repetit...` are prepared.
     path = tmp_path / "release-gate.json"
     path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate([path], required_repetitions=0)
 
+    # Then: the expected `evaluate release gate rejects invalid repetit...` behavior is asserted.
     assert report["verdict"] == "NO-GO"
     assert report["checks"][0]["code"] == "repetitions"
 
@@ -267,6 +294,9 @@ def test_evaluate_release_gate_rejects_invalid_repetition_count(tmp_path: Path) 
 def test_evaluate_release_gate_reports_schema_failure_for_missing_num_messages(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate reports schema failure...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate reports schema failure...` behavior is asserted.
     bad = _passing_summary()
     options = bad["options"]
     assert isinstance(options, dict)
@@ -289,6 +319,7 @@ def test_evaluate_release_gate_reports_schema_failure_for_missing_num_messages(
 def test_evaluate_release_gate_requires_artifact_metadata_provenance_binding(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate requires artifact metad...` are prepared.
     bad = _passing_summary()
     bad.pop("artifact_metadata")
     paths = []
@@ -297,8 +328,10 @@ def test_evaluate_release_gate_requires_artifact_metadata_provenance_binding(
         path.write_text(json.dumps(bad), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate requires artifact metad...` behavior is asserted.
     assert report["verdict"] == "NO-GO"
     failed_codes = {
         check["code"] for check in report["checks"] if check["status"] == "FAIL"
@@ -309,6 +342,9 @@ def test_evaluate_release_gate_requires_artifact_metadata_provenance_binding(
 def test_evaluate_release_gate_rejects_mismatched_artifact_metadata_provenance_binding(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate rejects mismatched arti...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate rejects mismatched arti...` behavior is asserted.
     first = _passing_summary()
     second = _passing_summary()
     artifact_metadata = second["artifact_metadata"]
@@ -333,14 +369,17 @@ def test_evaluate_release_gate_rejects_mismatched_artifact_metadata_provenance_b
 def test_evaluate_release_gate_surfaces_artifact_metadata_provenance_binding_in_summary(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate surfaces artifact metad...` are prepared.
     paths = []
     for index in range(2):
         path = tmp_path / ("release-gate-provenance-summary-%d.json" % index)
         path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate surfaces artifact metad...` behavior is asserted.
     assert report["verdict"] == "PASS"
     assert report["summary"]["provenance_binding"] == {
         "repository": "mqueue/Pyrallel-Consumer",
@@ -352,6 +391,7 @@ def test_evaluate_release_gate_surfaces_artifact_metadata_provenance_binding_in_
 def test_evaluate_release_gate_accepts_legacy_artifact_provenance_binding(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate accepts legacy artifact...` are prepared.
     payload = _passing_summary()
     payload.pop("artifact_metadata")
     payload["artifact_provenance"] = {
@@ -365,22 +405,27 @@ def test_evaluate_release_gate_accepts_legacy_artifact_provenance_binding(
         path.write_text(json.dumps(payload), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate accepts legacy artifact...` behavior is asserted.
     assert report["verdict"] == "PASS"
 
 
 def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate surfaces process transp...` are prepared.
     paths = []
     for index in range(2):
         path = tmp_path / ("release-gate-transport-%d.json" % index)
         path.write_text(json.dumps(_passing_summary()), encoding="utf-8")
         paths.append(path)
 
+    # When: the release gate evaluator code path is exercised.
     report = release_gate.evaluate_release_gate(paths)
 
+    # Then: the expected `evaluate release gate surfaces process transp...` behavior is asserted.
     assert report["verdict"] == "PASS"
     assert report["summary"]["process_transport_modes"] == ["worker_pipes"]
 
@@ -388,6 +433,9 @@ def test_evaluate_release_gate_surfaces_process_transport_modes_in_summary(
 def test_evaluate_release_gate_requires_worker_pipes_transport_mode(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate requires worker pipes t...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate requires worker pipes t...` behavior is asserted.
     summary = _passing_summary()
     results = summary["results"]
     assert isinstance(results, list)
@@ -416,6 +464,9 @@ def test_evaluate_release_gate_requires_worker_pipes_transport_mode(
 def test_evaluate_release_gate_accepts_process_results_missing_transport_mode(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate accepts process results...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate accepts process results...` behavior is asserted.
     bad = _passing_summary()
     results = bad["results"]
     assert isinstance(results, list)
@@ -437,6 +488,9 @@ def test_evaluate_release_gate_accepts_process_results_missing_transport_mode(
 def test_evaluate_release_gate_rejects_unknown_process_transport_mode(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `evaluate release gate rejects unknown process...` are prepared.
+    # When: the release gate evaluator code path is exercised.
+    # Then: the expected `evaluate release gate rejects unknown process...` behavior is asserted.
     bad = _passing_summary()
     results = bad["results"]
     assert isinstance(results, list)
@@ -460,9 +514,11 @@ def test_evaluate_release_gate_rejects_unknown_process_transport_mode(
 
 
 def test_cli_emits_machine_readable_no_go_for_invalid_json(tmp_path: Path) -> None:
+    # Given: inputs for `cli emits machine readable no go for invalid...` are prepared.
     path = tmp_path / "bad.json"
     path.write_text("{", encoding="utf-8")
 
+    # When: the release gate evaluator code path is exercised.
     result = subprocess.run(
         [
             sys.executable,
@@ -477,6 +533,7 @@ def test_cli_emits_machine_readable_no_go_for_invalid_json(tmp_path: Path) -> No
         text=True,
     )
 
+    # Then: the expected `cli emits machine readable no go for invalid...` behavior is asserted.
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["verdict"] == "NO-GO"
@@ -484,8 +541,11 @@ def test_cli_emits_machine_readable_no_go_for_invalid_json(tmp_path: Path) -> No
 
 
 def test_release_verify_workflow_defers_release_gate_to_benchmark_workflow() -> None:
+    # Given: inputs for `release verify workflow defers release gate t...` are prepared.
+    # When: the release gate evaluator code path is exercised.
     text = RELEASE_VERIFY_WORKFLOW.read_text(encoding="utf-8")
 
+    # Then: the expected `release verify workflow defers release gate t...` behavior is asserted.
     assert "benchmarks.release_gate" not in text
     assert "release-gate-*.json" not in text
 
@@ -494,8 +554,11 @@ BENCHMARK_WORKFLOW = ROOT / ".github" / "workflows" / "benchmarks.yml"
 
 
 def test_benchmark_workflow_exposes_release_gate_evaluator_job() -> None:
+    # Given: inputs for `benchmark workflow exposes release gate evalu...` are prepared.
+    # When: the release gate evaluator code path is exercised.
     text = BENCHMARK_WORKFLOW.read_text(encoding="utf-8")
 
+    # Then: the expected `benchmark workflow exposes release gate evalu...` behavior is asserted.
     assert "release_gate_artifacts" in text
     assert "release_gate_artifact_run_id" in text
     assert "actions: read" in text

@@ -90,6 +90,9 @@ def _assert_text_cell(cell, plain: str, style: str) -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_orders_input_blocks_label_help_control() -> None:
+    # Given: inputs for `options screen orders input blocks label help...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen orders input blocks label help...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -122,6 +125,9 @@ async def test_options_screen_orders_input_blocks_label_help_control() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_orders_checkbox_blocks_label_help_control() -> None:
+    # Given: inputs for `options screen orders checkbox blocks label h...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen orders checkbox blocks label h...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -136,6 +142,9 @@ async def test_options_screen_orders_checkbox_blocks_label_help_control() -> Non
 
 @pytest.mark.asyncio
 async def test_option_blocks_expand_to_show_controls() -> None:
+    # Given: inputs for `option blocks expand to show controls` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `option blocks expand to show controls` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -151,6 +160,9 @@ async def test_option_blocks_expand_to_show_controls() -> None:
 
 @pytest.mark.asyncio
 async def test_options_footer_does_not_overlap_scroll_region() -> None:
+    # Given: inputs for `options footer does not overlap scroll region` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options footer does not overlap scroll region` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test(size=(100, 60)) as pilot:
@@ -165,6 +177,9 @@ async def test_options_footer_does_not_overlap_scroll_region() -> None:
 
 @pytest.mark.asyncio
 async def test_default_workload_option_is_visible_above_options_footer() -> None:
+    # Given: inputs for `default workload option is visible above opti...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `default workload option is visible above opti...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test(size=(100, 80)) as pilot:
@@ -179,6 +194,9 @@ async def test_default_workload_option_is_visible_above_options_footer() -> None
 
 @pytest.mark.asyncio
 async def test_ordering_modes_remain_visible_with_selected_workload_options() -> None:
+    # Given: inputs for `ordering modes remain visible with selected w...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `ordering modes remain visible with selected w...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test(size=(100, 80)) as pilot:
@@ -193,6 +211,9 @@ async def test_ordering_modes_remain_visible_with_selected_workload_options() ->
 
 @pytest.mark.asyncio
 async def test_workload_option_group_uses_content_height() -> None:
+    # Given: inputs for `workload option group uses content height` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `workload option group uses content height` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test(size=(100, 80)) as pilot:
@@ -208,6 +229,9 @@ async def test_workload_option_group_uses_content_height() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_hides_empty_field_errors() -> None:
+    # Given: inputs for `options screen hides empty field errors` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen hides empty field errors` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -228,6 +252,9 @@ async def test_options_screen_hides_empty_field_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_benchmark_tui_app_mounts_with_run_button() -> None:
+    # Given: inputs for `benchmark tui app mounts with run button` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `benchmark tui app mounts with run button` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -238,6 +265,9 @@ async def test_benchmark_tui_app_mounts_with_run_button() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_shows_human_readable_field_labels() -> None:
+    # Given: inputs for `options screen shows human readable field labels` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen shows human readable field labels` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -259,6 +289,9 @@ async def test_options_screen_shows_human_readable_field_labels() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_uses_prominent_title_and_helper_text() -> None:
+    # Given: inputs for `options screen uses prominent title and helpe...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen uses prominent title and helpe...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -280,6 +313,9 @@ async def test_options_screen_uses_prominent_title_and_helper_text() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_groups_fields_under_section_headings() -> None:
+    # Given: inputs for `options screen groups fields under section he...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen groups fields under section he...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -300,6 +336,9 @@ async def test_options_screen_groups_fields_under_section_headings() -> None:
 async def test_options_screen_places_representative_fields_in_expected_sections() -> (
     None
 ):
+    # Given: inputs for `options screen places representative fields i...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen places representative fields i...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -339,6 +378,9 @@ async def test_options_screen_places_representative_fields_in_expected_sections(
 
 @pytest.mark.asyncio
 async def test_options_screen_places_mode_selectors_before_workload_options() -> None:
+    # Given: inputs for `options screen places mode selectors before w...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen places mode selectors before w...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -361,6 +403,9 @@ async def test_options_screen_places_mode_selectors_before_workload_options() ->
 
 @pytest.mark.asyncio
 async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() -> None:
+    # Given: inputs for `options screen uses selection lists for workl...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen uses selection lists for workl...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -376,6 +421,9 @@ async def test_options_screen_uses_selection_lists_for_workloads_and_ordering() 
 
 @pytest.mark.asyncio
 async def test_options_screen_updates_preview_from_execution_mode_selection() -> None:
+    # Given: inputs for `options screen updates preview from execution...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen updates preview from execution...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -390,6 +438,9 @@ async def test_options_screen_updates_preview_from_execution_mode_selection() ->
 
 @pytest.mark.asyncio
 async def test_options_screen_renders_selected_workload_option_controls() -> None:
+    # Given: inputs for `options screen renders selected workload opti...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen renders selected workload opti...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -405,6 +456,9 @@ async def test_options_screen_renders_selected_workload_option_controls() -> Non
 async def test_options_screen_does_not_render_legacy_builtin_workload_option_inputs() -> (
     None
 ):
+    # Given: inputs for `options screen does not render legacy builtin...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen does not render legacy builtin...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -422,6 +476,9 @@ async def test_options_screen_does_not_render_legacy_builtin_workload_option_inp
 
 @pytest.mark.asyncio
 async def test_options_screen_updates_preview_with_dynamic_workload_option() -> None:
+    # Given: inputs for `options screen updates preview with dynamic w...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen updates preview with dynamic w...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -438,6 +495,9 @@ async def test_options_screen_updates_preview_with_dynamic_workload_option() -> 
 async def test_options_screen_updates_workload_option_controls_when_selection_changes() -> (
     None
 ):
+    # Given: inputs for `options screen updates workload option contro...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen updates workload option contro...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -454,6 +514,9 @@ async def test_options_screen_updates_workload_option_controls_when_selection_ch
 async def test_options_screen_workload_option_refresh_preserves_unrelated_inputs() -> (
     None
 ):
+    # Given: inputs for `options screen workload option refresh preser...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen workload option refresh preser...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -474,6 +537,9 @@ async def test_options_screen_workload_option_refresh_preserves_unrelated_inputs
 async def test_options_screen_workload_option_refresh_preserves_dynamic_draft_when_form_invalid() -> (
     None
 ):
+    # Given: inputs for `options screen workload option refresh preser...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen workload option refresh preser...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -496,6 +562,9 @@ async def test_options_screen_workload_option_refresh_preserves_dynamic_draft_wh
 async def test_options_screen_renders_custom_workload_option_schema(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `options screen renders custom workload option...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen renders custom workload option...` behavior is asserted.
     from benchmarks.workloads.base import WorkloadOptionMetadata
 
     @dataclass(frozen=True, slots=True)
@@ -538,6 +607,9 @@ async def test_options_screen_renders_custom_workload_option_schema(
 
 @pytest.mark.asyncio
 async def test_options_screen_invalid_dynamic_workload_option_blocks_run() -> None:
+    # Given: inputs for `options screen invalid dynamic workload optio...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen invalid dynamic workload optio...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -556,6 +628,9 @@ async def test_options_screen_invalid_dynamic_workload_option_blocks_run() -> No
 async def test_options_screen_validates_dynamic_workload_options_together(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `options screen validates dynamic workload opt...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen validates dynamic workload opt...` behavior is asserted.
     from benchmarks.workloads.base import WorkloadOptionMetadata
 
     @dataclass(frozen=True, slots=True)
@@ -606,6 +681,9 @@ async def test_options_screen_validates_dynamic_workload_options_together(
 
 
 def test_options_screen_builds_workloads_from_registry(monkeypatch) -> None:
+    # Given: inputs for `options screen builds workloads from registry` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen builds workloads from registry` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.screens.options.all_records",
         lambda: (
@@ -630,6 +708,9 @@ def test_options_screen_builds_workloads_from_registry(monkeypatch) -> None:
 def test_options_screen_deduplicates_duplicate_unavailable_workload_records(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `options screen deduplicates duplicate unavail...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen deduplicates duplicate unavail...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.screens.options.all_records",
         lambda: (
@@ -649,6 +730,9 @@ def test_options_screen_deduplicates_duplicate_unavailable_workload_records(
 
 
 def test_run_screen_uses_custom_selected_workloads() -> None:
+    # Given: inputs for `run screen uses custom selected workloads` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen uses custom selected workloads` behavior is asserted.
     screen = RunScreen(BenchmarkTuiState(workloads=("custom",)))
 
     assert screen._active_workloads == ("custom",)
@@ -656,6 +740,9 @@ def test_run_screen_uses_custom_selected_workloads() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_exposes_output_path_fields_with_browse_buttons() -> None:
+    # Given: inputs for `options screen exposes output path fields wit...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen exposes output path fields wit...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -680,6 +767,9 @@ async def test_options_screen_exposes_output_path_fields_with_browse_buttons() -
 
 @pytest.mark.asyncio
 async def test_options_screen_exposes_process_route_batch_controls() -> None:
+    # Given: inputs for `options screen exposes process route batch co...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen exposes process route batch co...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -701,6 +791,9 @@ async def test_options_screen_exposes_process_route_batch_controls() -> None:
 async def test_options_screen_updates_preview_with_process_route_batch_controls() -> (
     None
 ):
+    # Given: inputs for `options screen updates preview with process r...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen updates preview with process r...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -728,6 +821,9 @@ async def test_options_screen_updates_preview_with_process_route_batch_controls(
 
 @pytest.mark.asyncio
 async def test_options_screen_copies_full_cli_command(monkeypatch) -> None:
+    # Given: inputs for `options screen copies full cli command` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen copies full cli command` behavior is asserted.
     app = BenchmarkTuiApp()
     copied_values: list[str] = []
 
@@ -759,6 +855,9 @@ async def test_options_screen_copies_full_cli_command(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_shell_quotes_copied_cli_command(monkeypatch) -> None:
+    # Given: inputs for `options screen shell quotes copied cli command` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen shell quotes copied cli command` behavior is asserted.
     state = BenchmarkTuiState(json_output="benchmarks/results/space path.json")
     app = BenchmarkTuiApp()
     copied_values: list[str] = []
@@ -793,6 +892,9 @@ async def test_options_screen_shell_quotes_copied_cli_command(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_browse_button_opens_directory_picker_modal() -> None:
+    # Given: inputs for `browse button opens directory picker modal` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `browse button opens directory picker modal` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -812,6 +914,9 @@ async def test_browse_button_opens_directory_picker_modal() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_disables_run_for_invalid_numeric_input() -> None:
+    # Given: inputs for `options screen disables run for invalid numer...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen disables run for invalid numer...` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -832,6 +937,9 @@ async def test_options_screen_disables_run_for_invalid_numeric_input() -> None:
 
 @pytest.mark.asyncio
 async def test_options_screen_hides_error_summary_until_needed() -> None:
+    # Given: inputs for `options screen hides error summary until needed` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `options screen hides error summary until needed` behavior is asserted.
     app = BenchmarkTuiApp()
 
     async with app.run_test() as pilot:
@@ -854,6 +962,9 @@ async def test_options_screen_hides_error_summary_until_needed() -> None:
 async def test_success_modal_returns_to_options_with_existing_values(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `success modal returns to options with existin...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `success modal returns to options with existin...` behavior is asserted.
     results_path = tmp_path / "results.json"
     results_path.write_text('{"options": {}, "results": []}', encoding="utf-8")
 
@@ -901,6 +1012,9 @@ async def test_success_modal_returns_to_options_with_existing_values(
 async def test_failed_run_returns_to_options_with_existing_values(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `failed run returns to options with existing v...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `failed run returns to options with existing v...` behavior is asserted.
     class _FailedController:
         def __init__(self, *, state, on_output, on_progress, on_complete) -> None:
             del state
@@ -938,6 +1052,9 @@ async def test_failed_run_returns_to_options_with_existing_values(
 
 @pytest.mark.asyncio
 async def test_run_screen_back_stays_on_active_benchmark(monkeypatch) -> None:
+    # Given: inputs for `run screen back stays on active benchmark` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen back stays on active benchmark` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -958,6 +1075,9 @@ async def test_run_screen_back_stays_on_active_benchmark(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_run_screen_preserves_cancelled_status(monkeypatch) -> None:
+    # Given: inputs for `run screen preserves cancelled status` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen preserves cancelled status` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -979,6 +1099,9 @@ async def test_run_screen_preserves_cancelled_status(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
+    # Given: inputs for `run screen mounts dashboard widgets` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen mounts dashboard widgets` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1054,6 +1177,9 @@ async def test_run_screen_mounts_dashboard_widgets(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) -> None:
+    # Given: inputs for `run screen updates progress bar and summary t...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen updates progress bar and summary t...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1134,6 +1260,9 @@ async def test_run_screen_updates_progress_bar_and_summary_table(monkeypatch) ->
 async def test_run_screen_marks_results_below_workload_baseline_average_yellow(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen marks results below workload basel...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen marks results below workload basel...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1203,6 +1332,9 @@ async def test_run_screen_marks_results_below_workload_baseline_average_yellow(
 async def test_run_screen_keeps_baseline_comparison_for_comma_formatted_tps(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen keeps baseline comparison for comm...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen keeps baseline comparison for comm...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1271,6 +1403,9 @@ async def test_run_screen_keeps_baseline_comparison_for_comma_formatted_tps(
 
 @pytest.mark.asyncio
 async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -> None:
+    # Given: inputs for `run screen formats ordering status for readab...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen formats ordering status for readab...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1362,6 +1497,9 @@ async def test_run_screen_formats_ordering_status_for_readability(monkeypatch) -
 async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_rows_only(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen spotlight uses single progress sem...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen spotlight uses single progress sem...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1453,6 +1591,9 @@ async def test_run_screen_spotlight_uses_single_progress_semantics_and_selected_
 
 @pytest.mark.asyncio
 async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
+    # Given: inputs for `run screen uses lifecycle progress value` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen uses lifecycle progress value` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1483,6 +1624,9 @@ async def test_run_screen_uses_lifecycle_progress_value(monkeypatch) -> None:
 async def test_run_screen_formats_status_and_tps_cells_for_readability(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen formats status and tps cells for r...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen formats status and tps cells for r...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1573,6 +1717,9 @@ async def test_run_screen_formats_status_and_tps_cells_for_readability(
 
 @pytest.mark.asyncio
 async def test_run_screen_back_does_not_leave_screen_while_running(monkeypatch) -> None:
+    # Given: inputs for `run screen back does not leave screen while r...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen back does not leave screen while r...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1594,6 +1741,9 @@ async def test_run_screen_back_does_not_leave_screen_while_running(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
+    # Given: inputs for `run screen marks failed cell in soft red` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen marks failed cell in soft red` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1641,6 +1791,9 @@ async def test_run_screen_marks_failed_cell_in_soft_red(monkeypatch) -> None:
 async def test_run_screen_animates_running_summary_cell_without_loading_widget(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen animates running summary cell with...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen animates running summary cell with...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1691,6 +1844,9 @@ async def test_run_screen_animates_running_summary_cell_without_loading_widget(
 async def test_run_screen_spinner_refresh_updates_only_active_summary_cell(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen spinner refresh updates only activ...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen spinner refresh updates only activ...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1747,6 +1903,9 @@ async def test_run_screen_spinner_refresh_updates_only_active_summary_cell(
 async def test_run_screen_surfaces_last_error_line_in_failure_status(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen surfaces last error line in failur...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen surfaces last error line in failur...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1772,6 +1931,9 @@ async def test_run_screen_surfaces_last_error_line_in_failure_status(
 async def test_run_screen_shows_kill_button_for_metrics_port_pid_error(
     monkeypatch,
 ) -> None:
+    # Given: inputs for `run screen shows kill button for metrics port...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen shows kill button for metrics port...` behavior is asserted.
     monkeypatch.setattr(
         "benchmarks.tui.app.BenchmarkProcessController", _FakeController
     )
@@ -1814,6 +1976,9 @@ async def test_run_screen_shows_kill_button_for_metrics_port_pid_error(
 async def test_run_screen_exposes_report_and_exit_controls_after_success(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `run screen exposes report and exit controls a...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen exposes report and exit controls a...` behavior is asserted.
     results_path = tmp_path / "results.json"
     results_path.write_text('{"options": {}, "results": []}', encoding="utf-8")
 
@@ -1860,6 +2025,9 @@ async def test_run_screen_exposes_report_and_exit_controls_after_success(
 async def test_run_screen_reopens_results_modal_from_terminal_report_button(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `run screen reopens results modal from termina...` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen reopens results modal from termina...` behavior is asserted.
     results_path = tmp_path / "results.json"
     results_path.write_text('{"options": {}, "results": []}', encoding="utf-8")
 
@@ -1902,6 +2070,9 @@ async def test_run_screen_reopens_results_modal_from_terminal_report_button(
 async def test_run_screen_exit_control_quits_app_after_success(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `run screen exit control quits app after success` are prepared.
+    # When: the benchmark TUI app code path is exercised.
+    # Then: the expected `run screen exit control quits app after success` behavior is asserted.
     results_path = tmp_path / "results.json"
     results_path.write_text('{"options": {}, "results": []}', encoding="utf-8")
 
