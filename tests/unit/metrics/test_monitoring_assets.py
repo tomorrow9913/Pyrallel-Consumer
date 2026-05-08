@@ -57,8 +57,11 @@ def _image_value_is_immutable(image_value: str) -> bool:
 
 
 def test_e2e_compose_includes_prometheus_and_grafana_services() -> None:
+    # Given: inputs for `e2e compose includes prometheus and grafana s...` are prepared.
+    # When: the monitoring asset code path is exercised.
     compose_text = (REPO_ROOT / ".github" / "e2e.compose.yml").read_text()
 
+    # Then: the expected `e2e compose includes prometheus and grafana s...` behavior is asserted.
     assert "kafka-exporter:" in compose_text
     assert "restart: unless-stopped" in compose_text
     assert "prometheus:" in compose_text
@@ -69,11 +72,14 @@ def test_e2e_compose_includes_prometheus_and_grafana_services() -> None:
 
 
 def test_compose_files_do_not_use_latest_images() -> None:
+    # Given: inputs for `compose files do not use latest images` are prepared.
+    # When: the monitoring asset code path is exercised.
     compose_files = [
         REPO_ROOT / ".github" / "e2e.compose.yml",
         REPO_ROOT / "docker-compose.yml",
     ]
 
+    # Then: the expected `compose files do not use latest images` behavior is asserted.
     for compose_file in compose_files:
         for service_name, image_value in _extract_compose_image_values(compose_file):
             assert _image_value_is_immutable(
@@ -82,6 +88,8 @@ def test_compose_files_do_not_use_latest_images() -> None:
 
 
 def test_grafana_prometheus_datasource_uses_stable_uid() -> None:
+    # Given: inputs for `grafana prometheus datasource uses stable uid` are prepared.
+    # When: the monitoring asset code path is exercised.
     datasource_text = (
         REPO_ROOT
         / "monitoring"
@@ -91,6 +99,7 @@ def test_grafana_prometheus_datasource_uses_stable_uid() -> None:
         / "datasource.yml"
     ).read_text()
 
+    # Then: the expected `grafana prometheus datasource uses stable uid` behavior is asserted.
     assert "uid: prometheus" in datasource_text
 
 
@@ -214,10 +223,13 @@ def _section_row_y(dashboard: dict, section_title: str) -> int:
 
 
 def test_grafana_dashboard_is_reference_sample_for_public_metric_surface() -> None:
+    # Given: inputs for `grafana dashboard is reference sample for pub...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     dashboard_text = json.dumps(dashboard)
+    # When: the monitoring asset code path is exercised.
     expressions_text = "\n".join(sorted(_dashboard_expressions(dashboard)))
 
+    # Then: the expected `grafana dashboard is reference sample for pub...` behavior is asserted.
     assert "Reference / sample" in dashboard["title"]
     required_metric_families = (
         "consumer_processed_total",
@@ -311,18 +323,24 @@ def test_grafana_dashboard_is_reference_sample_for_public_metric_surface() -> No
 
 
 def test_reference_dashboard_catalog_covers_exporter_public_metric_surface() -> None:
+    # Given: inputs for `reference dashboard catalog covers exporter p...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     exporter_families = _exporter_public_metric_families()
+    # When: the monitoring asset code path is exercised.
     dashboard_references = _dashboard_metric_family_references(dashboard)
 
+    # Then: the expected `reference dashboard catalog covers exporter p...` behavior is asserted.
     assert len(exporter_families) == 75
     assert exporter_families - dashboard_references == set()
 
 
 def test_reference_catalog_does_not_use_dropdown_or_selector_hiding() -> None:
+    # Given: inputs for `reference catalog does not use dropdown or se...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     dashboard_values = _walk_json_values(dashboard)
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `reference catalog does not use dropdown or se...` behavior is asserted.
     assert dashboard.get("templating", {}).get("list", []) == []
     for panel in dashboard["panels"]:
         assert panel.get("transformations", []) == []
@@ -348,11 +366,14 @@ def test_reference_catalog_does_not_use_dropdown_or_selector_hiding() -> None:
 
 
 def test_reference_dashboard_does_not_use_table_panels() -> None:
+    # Given: inputs for `reference dashboard does not use table panels` are prepared.
     dashboard = _load_pyrallel_dashboard()
 
+    # When: the monitoring asset code path is exercised.
     table_panel_titles = [
         panel["title"] for panel in dashboard["panels"] if panel.get("type") == "table"
     ]
+    # Then: the expected `reference dashboard does not use table panels` behavior is asserted.
     assert table_panel_titles == []
 
     for panel in dashboard["panels"]:
@@ -365,6 +386,8 @@ def test_reference_dashboard_does_not_use_table_panels() -> None:
 def test_catalog_reference_panels_expose_metric_families_without_selector_targets() -> (
     None
 ):
+    # Given: inputs for `catalog reference panels expose metric famili...` are prepared.
+    # When: the monitoring asset code path is exercised.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
     expected_expressions_by_panel = {
@@ -418,6 +441,7 @@ def test_catalog_reference_panels_expose_metric_families_without_selector_target
         },
     }
 
+    # Then: the expected `catalog reference panels expose metric famili...` behavior is asserted.
     for panel_title, expected_expressions in expected_expressions_by_panel.items():
         assert _panel_expressions(panels[panel_title]) == expected_expressions
         for target in panels[panel_title].get("targets", []):
@@ -425,8 +449,10 @@ def test_catalog_reference_panels_expose_metric_families_without_selector_target
 
 
 def test_adaptive_catalog_splits_dense_parameters_without_selector() -> None:
+    # Given: inputs for `adaptive catalog splits dense parameters with...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
+    # When: the monitoring asset code path is exercised.
     expected_expressions_by_panel = {
         "Adaptive scale steps": {
             "consumer_adaptive_backpressure_scale_up_step",
@@ -446,6 +472,7 @@ def test_adaptive_catalog_splits_dense_parameters_without_selector() -> None:
         },
     }
 
+    # Then: the expected `adaptive catalog splits dense parameters with...` behavior is asserted.
     assert "Adaptive detailed parameters" not in panels
     for panel_title, expected_expressions in expected_expressions_by_panel.items():
         panel = panels[panel_title]
@@ -458,6 +485,7 @@ def test_adaptive_catalog_splits_dense_parameters_without_selector() -> None:
 
 
 def test_process_compatibility_metrics_are_reference_not_operator_primary() -> None:
+    # Given: inputs for `process compatibility metrics are reference n...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
     compatibility_panel = panels["Process compatibility/reference metrics"]
@@ -470,6 +498,8 @@ def test_process_compatibility_metrics_are_reference_not_operator_primary() -> N
         "consumer_process_batch_buffered_age_seconds",
     }
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `process compatibility metrics are reference n...` behavior is asserted.
     assert (
         _section_for_panel(dashboard, "Process compatibility/reference metrics")
         == "Metric catalog / reference"
@@ -484,9 +514,12 @@ def test_process_compatibility_metrics_are_reference_not_operator_primary() -> N
 
 
 def test_reference_dashboard_separates_operator_triage_from_catalog() -> None:
+    # Given: inputs for `reference dashboard separates operator triage...` are prepared.
     dashboard = _load_pyrallel_dashboard()
+    # When: the monitoring asset code path is exercised.
     panels = _dashboard_panels_by_title(dashboard)
 
+    # Then: the expected `reference dashboard separates operator triage...` behavior is asserted.
     assert "Reference / sample" in dashboard["title"]
     assert "Operator overview" in _section_titles_before_panel(
         dashboard, "Success throughput (1m rate)"
@@ -534,13 +567,16 @@ def test_reference_dashboard_separates_operator_triage_from_catalog() -> None:
 
 
 def test_reference_dashboard_uses_requested_information_architecture_order() -> None:
+    # Given: inputs for `reference dashboard uses requested informatio...` are prepared.
     dashboard = _load_pyrallel_dashboard()
+    # When: the monitoring asset code path is exercised.
     section_order = [
         panel["title"]
         for panel in sorted(dashboard["panels"], key=_panel_sort_key)
         if panel.get("type") == "row"
     ]
 
+    # Then: the expected `reference dashboard uses requested informatio...` behavior is asserted.
     assert section_order == [
         "Operator overview",
         "Internal pipeline summary",
@@ -554,6 +590,7 @@ def test_reference_dashboard_uses_requested_information_architecture_order() -> 
 
 
 def test_operator_overview_first_screen_has_compact_glanceable_panels() -> None:
+    # Given: inputs for `operator overview first screen has compact gl...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
     first_row_titles = (
@@ -570,7 +607,9 @@ def test_operator_overview_first_screen_has_compact_glanceable_panels() -> None:
     for title in first_row_titles + second_row_titles:
         assert _section_for_panel(dashboard, title) == "Operator overview"
 
+    # When: the monitoring asset code path is exercised.
     first_row_x = [panels[title]["gridPos"]["x"] for title in first_row_titles]
+    # Then: the expected `operator overview first screen has compact gl...` behavior is asserted.
     assert first_row_x == sorted(first_row_x)
     for title in ("Backpressure current", "Resource status current"):
         panel = panels[title]
@@ -583,6 +622,7 @@ def test_operator_overview_first_screen_has_compact_glanceable_panels() -> None:
 
 
 def test_operator_overview_does_not_include_catalog_or_large_no_data_panels() -> None:
+    # Given: inputs for `operator overview does not include catalog or...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     catalog_y = _section_row_y(dashboard, "Metric catalog / reference")
     pipeline_titles = {
@@ -593,6 +633,8 @@ def test_operator_overview_does_not_include_catalog_or_large_no_data_panels() ->
         "Pipeline settlement blockers",
     }
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `operator overview does not include catalog or...` behavior is asserted.
     assert catalog_y > _section_row_y(dashboard, "Adaptive diagnostics")
     for panel in dashboard["panels"]:
         if panel.get("type") == "row":
@@ -603,10 +645,13 @@ def test_operator_overview_does_not_include_catalog_or_large_no_data_panels() ->
 
 
 def test_reference_dashboard_catalog_queries_live_public_metric_families() -> None:
+    # Given: inputs for `reference dashboard catalog queries live publ...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
+    # When: the monitoring asset code path is exercised.
     expressions = _dashboard_expressions(dashboard)
 
+    # Then: the expected `reference dashboard catalog queries live publ...` behavior is asserted.
     assert "pyrallel_pipeline_poll_records_total" in expressions
     assert "pyrallel_pipeline_poll_events_total" in expressions
     assert "pyrallel_pipeline_subqueue_items" in expressions
@@ -623,10 +668,13 @@ def test_reference_dashboard_catalog_queries_live_public_metric_families() -> No
 def test_reference_dashboard_uses_current_value_panel_for_pipeline_support_state() -> (
     None
 ):
+    # Given: inputs for `reference dashboard uses current value panel...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
+    # When: the monitoring asset code path is exercised.
     support_panel = panels["Pipeline support matrix"]
 
+    # Then: the expected `reference dashboard uses current value panel...` behavior is asserted.
     assert support_panel["type"] == "stat"
     target = _panel_targets_by_expr(support_panel)[
         "pyrallel_pipeline_section_support_state"
@@ -642,6 +690,8 @@ def test_reference_dashboard_uses_current_value_panel_for_pipeline_support_state
 
 
 def test_reference_dashboard_classifies_pipeline_no_data_causes_in_panel_text() -> None:
+    # Given: inputs for `reference dashboard classifies pipeline no da...` are prepared.
+    # When: the monitoring asset code path is exercised.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
@@ -663,6 +713,7 @@ def test_reference_dashboard_classifies_pipeline_no_data_causes_in_panel_text() 
             "unsupported settlement relies on pipeline support matrix",
         ),
     }
+    # Then: the expected `reference dashboard classifies pipeline no da...` behavior is asserted.
     for title, required_fragments in cause_text_by_panel.items():
         description = panels[title].get("description", "").lower()
         for fragment in required_fragments:
@@ -670,12 +721,15 @@ def test_reference_dashboard_classifies_pipeline_no_data_causes_in_panel_text() 
 
 
 def test_reference_dashboard_splits_success_throughput_from_failure_signals() -> None:
+    # Given: inputs for `reference dashboard splits success throughput...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
     success_panel = panels["Success throughput (1m rate)"]
+    # When: the monitoring asset code path is exercised.
     failure_panel = panels["Terminal failures (1m rate and 5m count)"]
 
+    # Then: the expected `reference dashboard splits success throughput...` behavior is asserted.
     assert success_panel["type"] == "timeseries"
     assert failure_panel["type"] == "timeseries"
     assert _panel_expressions(success_panel) == {
@@ -692,13 +746,16 @@ def test_reference_dashboard_splits_success_throughput_from_failure_signals() ->
 def test_reference_dashboard_sets_units_mappings_and_thresholds_for_status_panels() -> (
     None
 ):
+    # Given: inputs for `reference dashboard sets units mappings and t...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
     backpressure_panel = panels["Backpressure current"]
     defaults = backpressure_panel["fieldConfig"]["defaults"]
     mapping_text = json.dumps(defaults.get("mappings", [])).lower()
+    # When: the monitoring asset code path is exercised.
     threshold_text = json.dumps(defaults.get("thresholds", {})).lower()
+    # Then: the expected `reference dashboard sets units mappings and t...` behavior is asserted.
     assert backpressure_panel["type"] == "stat"
     assert defaults["min"] == 0
     assert defaults["max"] == 1
@@ -719,6 +776,8 @@ def test_reference_dashboard_sets_units_mappings_and_thresholds_for_status_panel
 
 
 def test_reference_dashboard_does_not_graph_boolean_or_config_state() -> None:
+    # Given: inputs for `reference dashboard does not graph boolean or...` are prepared.
+    # When: the monitoring asset code path is exercised.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
@@ -733,14 +792,18 @@ def test_reference_dashboard_does_not_graph_boolean_or_config_state() -> None:
         "Pipeline settlement blockers",
         "Process-only support boundary",
     )
+    # Then: the expected `reference dashboard does not graph boolean or...` behavior is asserted.
     for title in state_or_config_panels:
         assert panels[title]["type"] != "timeseries"
 
 
 def test_reference_dashboard_uses_current_value_views_for_one_hot_state() -> None:
+    # Given: inputs for `reference dashboard uses current value views...` are prepared.
+    # When: the monitoring asset code path is exercised.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
+    # Then: the expected `reference dashboard uses current value views...` behavior is asserted.
     for title in (
         "Backpressure current",
         "Pipeline support matrix",
@@ -756,10 +819,13 @@ def test_reference_dashboard_uses_current_value_views_for_one_hot_state() -> Non
 
 
 def test_reference_dashboard_plots_processing_latency_percentiles() -> None:
+    # Given: inputs for `reference dashboard plots processing latency...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
+    # When: the monitoring asset code path is exercised.
     latency_panel = panels["Processing latency percentiles (seconds)"]
 
+    # Then: the expected `reference dashboard plots processing latency...` behavior is asserted.
     assert latency_panel["type"] == "timeseries"
     expressions = _panel_expressions(latency_panel)
     assert (
@@ -781,6 +847,7 @@ def test_reference_dashboard_plots_processing_latency_percentiles() -> None:
 
 
 def test_reference_dashboard_marks_process_only_and_pipeline_support_sections() -> None:
+    # Given: inputs for `reference dashboard marks process only and pi...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
@@ -798,6 +865,8 @@ def test_reference_dashboard_marks_process_only_and_pipeline_support_sections() 
         assert "process-mode" in description
         assert "worker-pipes" in description or title == "Process-only support boundary"
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `reference dashboard marks process only and pi...` behavior is asserted.
     assert (
         "worker-pipes bypasses batchaccumulator flush counts"
         in panels["Process-only route batch rate"].get("description", "").lower()
@@ -810,6 +879,7 @@ def test_reference_dashboard_marks_process_only_and_pipeline_support_sections() 
 
 
 def test_process_primary_panels_use_rates_for_cumulative_counters() -> None:
+    # Given: inputs for `process primary panels use rates for cumulati...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
@@ -817,6 +887,8 @@ def test_process_primary_panels_use_rates_for_cumulative_counters() -> None:
     payload_panel = panels["Process-only IPC payload efficiency"]
     size_panel = panels["Process-only route batch sizing"]
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `process primary panels use rates for cumulati...` behavior is asserted.
     assert _section_for_panel(dashboard, "Process-only route batch rate") == (
         "Process-only diagnostics"
     )
@@ -844,9 +916,12 @@ def test_process_primary_panels_use_rates_for_cumulative_counters() -> None:
 
 
 def test_adaptive_primary_is_compact_and_details_are_reference_only() -> None:
+    # Given: inputs for `adaptive primary is compact and details are r...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
 
+    # When: the monitoring asset code path is exercised.
+    # Then: the expected `adaptive primary is compact and details are r...` behavior is asserted.
     assert _section_for_panel(dashboard, "Adaptive last decision") == (
         "Adaptive diagnostics"
     )
@@ -865,6 +940,8 @@ def test_adaptive_primary_is_compact_and_details_are_reference_only() -> None:
 
 
 def test_monitoring_docs_describe_dashboard_as_reference_sample() -> None:
+    # Given: inputs for `monitoring docs describe dashboard as referen...` are prepared.
+    # When: the monitoring asset code path is exercised.
     doc_paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -872,6 +949,7 @@ def test_monitoring_docs_describe_dashboard_as_reference_sample() -> None:
         REPO_ROOT / "docs" / "operations" / "guide.ko.md",
     ]
 
+    # Then: the expected `monitoring docs describe dashboard as referen...` behavior is asserted.
     for doc_path in doc_paths:
         doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
         assert "reference/sample" in doc_text
@@ -883,6 +961,8 @@ def test_monitoring_docs_describe_dashboard_as_reference_sample() -> None:
 
 
 def test_monitoring_docs_describe_pipeline_metrics_surface() -> None:
+    # Given: inputs for `monitoring docs describe pipeline metrics sur...` are prepared.
+    # When: the monitoring asset code path is exercised.
     doc_paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -890,6 +970,7 @@ def test_monitoring_docs_describe_pipeline_metrics_surface() -> None:
         REPO_ROOT / "docs" / "operations" / "guide.ko.md",
     ]
 
+    # Then: the expected `monitoring docs describe pipeline metrics sur...` behavior is asserted.
     for doc_path in doc_paths:
         doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
         assert "pyrallel_pipeline_stage_messages" in doc_text
@@ -911,10 +992,13 @@ def test_monitoring_docs_describe_pipeline_metrics_surface() -> None:
 
 
 def test_grafana_dashboard_includes_process_batch_panels() -> None:
+    # Given: inputs for `grafana dashboard includes process batch panels` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panel_titles = {panel["title"] for panel in dashboard["panels"]}
+    # When: the monitoring asset code path is exercised.
     expressions = _dashboard_expressions(dashboard)
 
+    # Then: the expected `grafana dashboard includes process batch panels` behavior is asserted.
     assert "Process-only route batch rate" in panel_titles
     assert "Process-only IPC payload efficiency" in panel_titles
     assert "Process-only route batch sizing" in panel_titles
@@ -951,11 +1035,14 @@ def test_grafana_dashboard_includes_process_batch_panels() -> None:
 
 
 def test_grafana_dashboard_includes_pipeline_diagnostics_panels() -> None:
+    # Given: inputs for `grafana dashboard includes pipeline diagnosti...` are prepared.
     dashboard = _load_pyrallel_dashboard()
     panels = _dashboard_panels_by_title(dashboard)
     panel_titles = {panel["title"] for panel in dashboard["panels"]}
+    # When: the monitoring asset code path is exercised.
     expressions = _dashboard_expressions(dashboard)
 
+    # Then: the expected `grafana dashboard includes pipeline diagnosti...` behavior is asserted.
     assert "Pipeline stage messages" in panel_titles
     assert "Pipeline blocked reasons" in panel_titles
     assert "Pipeline support matrix" in panel_titles
@@ -990,6 +1077,8 @@ def test_grafana_dashboard_includes_pipeline_diagnostics_panels() -> None:
 
 
 def test_observability_blueprints_document_pipeline_diagnostics_projection() -> None:
+    # Given: inputs for `observability blueprints document pipeline di...` are prepared.
+    # When: the monitoring asset code path is exercised.
     design_paths = [
         REPO_ROOT
         / "docs"
@@ -1007,6 +1096,7 @@ def test_observability_blueprints_document_pipeline_diagnostics_projection() -> 
         / "03-design.ko.md",
     ]
 
+    # Then: the expected `observability blueprints document pipeline di...` behavior is asserted.
     for design_path in design_paths:
         design_text = design_path.read_text(encoding="utf-8", errors="strict")
         assert "pyrallel_pipeline_stage_messages" in design_text
@@ -1044,6 +1134,8 @@ def test_observability_blueprints_document_pipeline_diagnostics_projection() -> 
 
 
 def test_observability_design_docs_define_triage_first_metric_ownership() -> None:
+    # Given: inputs for `observability design docs define triage first...` are prepared.
+    # When: the monitoring asset code path is exercised.
     design_paths = [
         REPO_ROOT
         / "docs"
@@ -1075,6 +1167,7 @@ def test_observability_design_docs_define_triage_first_metric_ownership() -> Non
         "settlement-path diagnostic",
         "must not use Kafka broker timestamp as a substitute",
     )
+    # Then: the expected `observability design docs define triage first...` behavior is asserted.
     for design_path in design_paths:
         design_text = design_path.read_text(encoding="utf-8", errors="strict")
         for phrase in required_phrases:
@@ -1082,11 +1175,14 @@ def test_observability_design_docs_define_triage_first_metric_ownership() -> Non
 
 
 def test_operations_guides_use_regex_for_process_flush_reason_set() -> None:
+    # Given: inputs for `operations guides use regex for process flush...` are prepared.
+    # When: the monitoring asset code path is exercised.
     guide_paths = [
         REPO_ROOT / "docs" / "operations" / "guide.en.md",
         REPO_ROOT / "docs" / "operations" / "guide.ko.md",
     ]
 
+    # Then: the expected `operations guides use regex for process flush...` behavior is asserted.
     for guide_path in guide_paths:
         guide_text = guide_path.read_text(encoding="utf-8", errors="strict")
         assert (
@@ -1100,6 +1196,8 @@ def test_operations_guides_use_regex_for_process_flush_reason_set() -> None:
 
 
 def test_operations_guides_prioritize_worker_pipes_process_metrics() -> None:
+    # Given: inputs for `operations guides prioritize worker pipes pro...` are prepared.
+    # When: the monitoring asset code path is exercised.
     guide_paths = [
         REPO_ROOT / "docs" / "operations" / "guide.en.md",
         REPO_ROOT / "docs" / "operations" / "guide.ko.md",
@@ -1112,6 +1210,7 @@ def test_operations_guides_prioritize_worker_pipes_process_metrics() -> None:
         "consumer_process_ipc_items_per_input_payload",
         "consumer_process_ipc_items_per_completion_payload",
     )
+    # Then: the expected `operations guides prioritize worker pipes pro...` behavior is asserted.
     for guide_path in guide_paths:
         guide_text = guide_path.read_text(encoding="utf-8", errors="strict")
         for phrase in required_phrases:
@@ -1119,6 +1218,8 @@ def test_operations_guides_prioritize_worker_pipes_process_metrics() -> None:
 
 
 def test_failure_counter_metric_names_are_documented() -> None:
+    # Given: inputs for `failure counter metric names are documented` are prepared.
+    # When: the monitoring asset code path is exercised.
     doc_paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -1127,6 +1228,7 @@ def test_failure_counter_metric_names_are_documented() -> None:
         REPO_ROOT / "docs" / "operations" / "playbooks.md",
     ]
 
+    # Then: the expected `failure counter metric names are documented` behavior is asserted.
     for doc_path in doc_paths:
         doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
         assert "consumer_commit_failures_total" in doc_text
@@ -1136,6 +1238,8 @@ def test_failure_counter_metric_names_are_documented() -> None:
 
 
 def test_completed_offset_skip_counter_metric_name_is_documented() -> None:
+    # Given: inputs for `completed offset skip counter metric name is...` are prepared.
+    # When: the monitoring asset code path is exercised.
     doc_paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -1157,19 +1261,23 @@ def test_completed_offset_skip_counter_metric_name_is_documented() -> None:
         REPO_ROOT / "docs" / "operations" / "guide.ko.md",
     ]
 
+    # Then: the expected `completed offset skip counter metric name is...` behavior is asserted.
     for doc_path in doc_paths:
         doc_text = doc_path.read_text(encoding="utf-8", errors="strict")
         assert "pyrallel_pipeline_completed_offset_skips_total" in doc_text
 
 
 def test_operations_guides_document_control_plane_commit_clamp_boundary() -> None:
+    # Given: inputs for `operations guides document control plane comm...` are prepared.
     guide_en = (REPO_ROOT / "docs" / "operations" / "guide.en.md").read_text(
         encoding="utf-8", errors="strict"
     )
+    # When: the monitoring asset code path is exercised.
     guide_ko = (REPO_ROOT / "docs" / "operations" / "guide.ko.md").read_text(
         encoding="utf-8", errors="strict"
     )
 
+    # Then: the expected `operations guides document control plane comm...` behavior is asserted.
     assert (
         "Commit clamping is computed from the control-plane `WorkManager` "
         "dispatch ledger"
@@ -1184,9 +1292,12 @@ def test_operations_guides_document_control_plane_commit_clamp_boundary() -> Non
 
 
 def test_e2e_workflow_and_test_cover_prometheus_and_grafana_smoke_checks() -> None:
+    # Given: inputs for `e2e workflow and test cover prometheus and gr...` are prepared.
     workflow_text = (REPO_ROOT / ".github" / "workflows" / "e2e.yml").read_text()
+    # When: the monitoring asset code path is exercised.
     test_text = (REPO_ROOT / "tests" / "e2e" / "test_monitoring_smoke.py").read_text()
 
+    # Then: the expected `e2e workflow and test cover prometheus and gr...` behavior is asserted.
     assert (
         "docker compose -f .github/e2e.compose.yml up -d kafka-1 kafka-exporter prometheus grafana"
         in workflow_text

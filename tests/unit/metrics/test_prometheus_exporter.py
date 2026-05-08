@@ -116,20 +116,24 @@ def _make_pipeline_diagnostics() -> WorkManagerPipelineDiagnostics:
 
 
 def test_exporter_uses_provided_registry_and_no_http_when_disabled(monkeypatch):
+    # Given: inputs for `exporter uses provided registry and no http w...` are prepared.
     registry = CollectorRegistry()
     monkeypatch.setattr(
         "pyrallel_consumer.metrics_exporter.start_http_server",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not start")),
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False, port=9100), registry=registry
     )
 
+    # Then: the expected `exporter uses provided registry and no http w...` behavior is asserted.
     assert exporter._registry is registry
 
 
 def test_exporter_updates_metrics_and_observes_completion():
+    # Given: inputs for `exporter updates metrics and observes completion` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -192,8 +196,10 @@ def test_exporter_updates_metrics_and_observes_completion():
         ),
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_from_system_metrics(metrics)
 
+    # Then: the expected `exporter updates metrics and observes completion` behavior is asserted.
     assert exporter._in_flight_gauge._value.get() == 5
     assert exporter._backpressure_gauge._value.get() == 1
     assert (
@@ -335,6 +341,7 @@ def test_exporter_updates_metrics_and_observes_completion():
 
 
 def test_exporter_projects_worker_pipe_route_batch_metrics() -> None:
+    # Given: inputs for `exporter projects worker pipe route batch met...` are prepared.
     exporter = PrometheusMetricsExporter(MetricsConfig(enabled=False))
     metrics = ProcessBatchMetrics(
         size_flush_count=0,
@@ -355,8 +362,10 @@ def test_exporter_projects_worker_pipe_route_batch_metrics() -> None:
         completion_batch_payload_count=6,
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter._update_process_batch_metrics(metrics)
 
+    # Then: the expected `exporter projects worker pipe route batch met...` behavior is asserted.
     assert exporter._process_route_batch_count_gauge._value.get() == 7
     assert exporter._process_route_batch_items_gauge._value.get() == 28
     assert exporter._process_route_batch_avg_size_gauge._value.get() == 4.0
@@ -368,15 +377,18 @@ def test_exporter_projects_worker_pipe_route_batch_metrics() -> None:
 
 
 def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> None:
+    # Given: inputs for `exporter treats missing resource signal as fa...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_from_system_metrics(
         SystemMetrics(total_in_flight=0, is_paused=False, partitions=[])
     )
 
+    # Then: the expected `exporter treats missing resource signal as fa...` behavior is asserted.
     assert (
         exporter._resource_signal_status_gauge.labels(status="unavailable")._value.get()
         == 1
@@ -408,12 +420,14 @@ def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> N
 
 
 def test_exporter_registers_and_increments_failure_counters() -> None:
+    # Given: inputs for `exporter registers and increments failure cou...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
     tp = TopicPartition(topic="topic-a", partition=0)
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.record_commit_failure(tp, reason="kafka_exception")
     exporter.record_commit_failure(tp, reason="kafka_exception")
     exporter.record_dlq_publish_failure(tp)
@@ -425,16 +439,20 @@ def test_exporter_registers_and_increments_failure_counters() -> None:
         topic="topic-a", partition="0"
     )._value.get()
 
+    # Then: the expected `exporter registers and increments failure cou...` behavior is asserted.
     assert commit_failure == 2
     assert dlq_failure == 1
 
 
 def test_exporter_rejects_unknown_commit_failure_reason() -> None:
+    # Given: inputs for `exporter rejects unknown commit failure reason` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter rejects unknown commit failure reason` behavior is asserted.
     with pytest.raises(ValueError, match="Unknown commit failure reason"):
         exporter.record_commit_failure(
             TopicPartition(topic="topic-a", partition=0), reason="exception text"
@@ -442,17 +460,20 @@ def test_exporter_rejects_unknown_commit_failure_reason() -> None:
 
 
 def test_exporter_records_rebalance_bridge_commit_failure_reason() -> None:
+    # Given: inputs for `exporter records rebalance bridge commit fail...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.record_commit_failure(
         TopicPartition(topic="topic-a", partition=0),
         reason="rebalance_bridge_failed",
     )
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter records rebalance bridge commit fail...` behavior is asserted.
     assert (
         'consumer_commit_failures_total{partition="0",reason="rebalance_bridge_failed",topic="topic-a"} 1.0'
         in metrics_text
@@ -460,11 +481,13 @@ def test_exporter_records_rebalance_bridge_commit_failure_reason() -> None:
 
 
 def test_exporter_records_commit_coordinator_metrics_with_bounded_labels() -> None:
+    # Given: inputs for `exporter records commit coordinator metrics w...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.set_commit_coordinator_pending_partitions("async", 2)
     exporter.record_commit_coordinator_submitted("async", 2)
     exporter.record_commit_coordinator_success("async", 1)
@@ -474,6 +497,7 @@ def test_exporter_records_commit_coordinator_metrics_with_bounded_labels() -> No
     exporter.observe_commit_coordinator_settlement_latency("async", 0.25)
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter records commit coordinator metrics w...` behavior is asserted.
     assert (
         'pyrallel_commit_coordinator_pending_partitions{engine_type="async"} 2.0'
         in metrics_text
@@ -504,25 +528,31 @@ def test_exporter_records_commit_coordinator_metrics_with_bounded_labels() -> No
 
 
 def test_exporter_rejects_unknown_commit_coordinator_reason() -> None:
+    # Given: inputs for `exporter rejects unknown commit coordinator r...` are prepared.
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=CollectorRegistry()
     )
 
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter rejects unknown commit coordinator r...` behavior is asserted.
     with pytest.raises(ValueError, match="Unknown commit coordinator reason"):
         exporter.record_commit_coordinator_failure("async", "unbounded", 1)
 
 
 def test_exporter_projects_supported_pipeline_diagnostics_as_bounded_metrics() -> None:
+    # Given: inputs for `exporter projects supported pipeline diagnost...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(
         _make_pipeline_diagnostics(), engine_type="process"
     )
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter projects supported pipeline diagnost...` behavior is asserted.
     assert (
         'pyrallel_pipeline_stage_messages{engine_type="process",stage="queued"} 5.0'
         in metrics_text
@@ -600,11 +630,14 @@ def test_exporter_projects_supported_pipeline_diagnostics_as_bounded_metrics() -
 
 
 def test_exporter_rejects_unknown_pipeline_engine_type() -> None:
+    # Given: inputs for `exporter rejects unknown pipeline engine type` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter rejects unknown pipeline engine type` behavior is asserted.
     with pytest.raises(ValueError, match="Unknown pipeline engine_type"):
         exporter.update_pipeline_diagnostics(
             _make_pipeline_diagnostics(), engine_type="tenant-42"
@@ -612,6 +645,9 @@ def test_exporter_rejects_unknown_pipeline_engine_type() -> None:
 
 
 def test_exporter_projects_pipeline_poll_counters_by_delta() -> None:
+    # Given: inputs for `exporter projects pipeline poll counters by d...` are prepared.
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter projects pipeline poll counters by d...` behavior is asserted.
     assert hasattr(dto, "PipelinePollDiagnostics")
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
@@ -668,6 +704,9 @@ def test_exporter_projects_pipeline_poll_counters_by_delta() -> None:
 
 
 def test_exporter_treats_lower_pipeline_poll_snapshot_as_reset() -> None:
+    # Given: inputs for `exporter treats lower pipeline poll snapshot...` are prepared.
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter treats lower pipeline poll snapshot...` behavior is asserted.
     assert hasattr(dto, "PipelinePollDiagnostics")
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
@@ -721,6 +760,7 @@ def test_exporter_treats_lower_pipeline_poll_snapshot_as_reset() -> None:
 
 
 def test_exporter_skips_pipeline_poll_counters_when_poll_section_unsupported() -> None:
+    # Given: inputs for `exporter skips pipeline poll counters when po...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -746,10 +786,12 @@ def test_exporter_skips_pipeline_poll_counters_when_poll_section_unsupported() -
         ),
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(supported, engine_type="async")
     exporter.update_pipeline_diagnostics(unsupported, engine_type="async")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter skips pipeline poll counters when po...` behavior is asserted.
     assert (
         'pyrallel_pipeline_section_support_state{engine_type="async",section="poll",state="not_implemented"} 1.0'
         in metrics_text
@@ -766,16 +808,19 @@ def test_exporter_skips_pipeline_poll_counters_when_poll_section_unsupported() -
 
 
 def test_exporter_observes_completion_to_commit_latency_by_engine_type() -> None:
+    # Given: inputs for `exporter observes completion to commit latenc...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.observe_completion_to_commit_latency(
         engine_type="process",
         duration_seconds=0.75,
     )
 
+    # Then: the expected `exporter observes completion to commit latenc...` behavior is asserted.
     assert (
         exporter._pipeline_completion_to_commit_latency_hist.labels(
             engine_type="process"
@@ -793,6 +838,7 @@ def test_exporter_observes_completion_to_commit_latency_by_engine_type() -> None
 
 
 def test_exporter_projects_settlement_blocker_state_as_bounded_one_hot() -> None:
+    # Given: inputs for `exporter projects settlement blocker state as...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -811,9 +857,11 @@ def test_exporter_projects_settlement_blocker_state_as_bounded_one_hot() -> None
         },
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(diagnostics, engine_type="process")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter projects settlement blocker state as...` behavior is asserted.
     assert (
         'pyrallel_pipeline_settlement_blocker_state{engine_type="process",reason="commit_pending"} 1.0'
         in metrics_text
@@ -835,6 +883,8 @@ def test_exporter_projects_settlement_blocker_state_as_bounded_one_hot() -> None
 
 
 def test_exporter_emits_zero_settlement_blocker_state_when_supported_healthy() -> None:
+    # Given: inputs for `exporter emits zero settlement blocker state...` are prepared.
+    # When: the Prometheus exporter code path is exercised.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -856,6 +906,7 @@ def test_exporter_emits_zero_settlement_blocker_state_when_supported_healthy() -
     exporter.update_pipeline_diagnostics(diagnostics, engine_type="async")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter emits zero settlement blocker state...` behavior is asserted.
     for reason in (
         "commit_pending",
         "dlq_publish_pending",
@@ -872,6 +923,7 @@ def test_exporter_emits_zero_settlement_blocker_state_when_supported_healthy() -
 
 
 def test_exporter_removes_stale_settlement_blocker_state_when_unsupported() -> None:
+    # Given: inputs for `exporter removes stale settlement blocker sta...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -904,10 +956,12 @@ def test_exporter_removes_stale_settlement_blocker_state_when_unsupported() -> N
         },
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(supported, engine_type="process")
     exporter.update_pipeline_diagnostics(unsupported, engine_type="process")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter removes stale settlement blocker sta...` behavior is asserted.
     assert "pyrallel_pipeline_settlement_blocker_state{" not in metrics_text
     assert (
         'pyrallel_pipeline_section_support_state{engine_type="process",section="settlement",state="not_implemented"} 1.0'
@@ -918,8 +972,11 @@ def test_exporter_removes_stale_settlement_blocker_state_when_unsupported() -> N
 def test_exporter_rejects_unknown_engine_type_for_completion_to_commit_latency() -> (
     None
 ):
+    # Given: inputs for `exporter rejects unknown engine type for comp...` are prepared.
     exporter = PrometheusMetricsExporter(MetricsConfig(enabled=False))
 
+    # When: the Prometheus exporter code path is exercised.
+    # Then: the expected `exporter rejects unknown engine type for comp...` behavior is asserted.
     with pytest.raises(ValueError, match="Unknown pipeline engine_type"):
         exporter.observe_completion_to_commit_latency(
             engine_type="tenant-42",
@@ -928,6 +985,7 @@ def test_exporter_rejects_unknown_engine_type_for_completion_to_commit_latency()
 
 
 def test_exporter_omits_observed_pipeline_counts_for_unsupported_sections() -> None:
+    # Given: inputs for `exporter omits observed pipeline counts for u...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -962,9 +1020,11 @@ def test_exporter_omits_observed_pipeline_counts_for_unsupported_sections() -> N
         scope=PipelineDiagnosticsScope.WORK_MANAGER_ONLY,
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(unsupported, engine_type="async")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter omits observed pipeline counts for u...` behavior is asserted.
     assert "pyrallel_pipeline_stage_messages{" not in metrics_text
     assert "pyrallel_pipeline_blocked_messages{" not in metrics_text
     assert "pyrallel_pipeline_dispatch_capacity_blocked_messages{" not in metrics_text
@@ -979,6 +1039,7 @@ def test_exporter_omits_observed_pipeline_counts_for_unsupported_sections() -> N
 
 
 def test_exporter_removes_stale_pipeline_subqueue_metrics_when_unsupported() -> None:
+    # Given: inputs for `exporter removes stale pipeline subqueue metr...` are prepared.
     registry = CollectorRegistry()
     exporter = PrometheusMetricsExporter(
         MetricsConfig(enabled=False), registry=registry
@@ -994,15 +1055,18 @@ def test_exporter_removes_stale_pipeline_subqueue_metrics_when_unsupported() -> 
         },
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.update_pipeline_diagnostics(supported, engine_type="async")
     exporter.update_pipeline_diagnostics(unsupported, engine_type="async")
 
     metrics_text = generate_latest(registry).decode("utf-8")
+    # Then: the expected `exporter removes stale pipeline subqueue metr...` behavior is asserted.
     assert "pyrallel_pipeline_subqueue_items{" not in metrics_text
     assert "pyrallel_pipeline_subqueues{" not in metrics_text
 
 
 def test_remove_labeled_metric_uses_positional_label_api() -> None:
+    # Given: inputs for `remove labeled metric uses positional label api` are prepared.
     class _PositionalRemoveGauge:
         _labelnames = ("stage", "engine_type")
 
@@ -1014,15 +1078,18 @@ def test_remove_labeled_metric_uses_positional_label_api() -> None:
 
     metric = _PositionalRemoveGauge()
 
+    # When: the Prometheus exporter code path is exercised.
     PrometheusMetricsExporter._remove_labeled_metric(  # type: ignore[arg-type]
         metric,
         {"engine_type": "async", "stage": "queued"},
     )
 
+    # Then: the expected `remove labeled metric uses positional label api` behavior is asserted.
     assert metric.removed == ("queued", "async")
 
 
 def test_exporter_closes_http_server_when_enabled(monkeypatch):
+    # Given: inputs for `exporter closes http server when enabled` are prepared.
     registry = CollectorRegistry()
     closed = {"shutdown": 0, "server_close": 0, "join": 0}
 
@@ -1046,7 +1113,9 @@ def test_exporter_closes_http_server_when_enabled(monkeypatch):
         MetricsConfig(enabled=True, port=9100), registry=registry
     )
 
+    # When: the Prometheus exporter code path is exercised.
     exporter.close()
     exporter.close()
 
+    # Then: the expected `exporter closes http server when enabled` behavior is asserted.
     assert closed == {"shutdown": 1, "server_close": 1, "join": 1}
