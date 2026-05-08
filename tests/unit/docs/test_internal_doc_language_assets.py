@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 HANGUL_PATTERN = re.compile(r"[가-힣]")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 POLICY_DOC = REPO_ROOT / "docs" / "internal-doc-language-policy.md"
@@ -52,27 +52,36 @@ def _iter_local_markdown_links(path: Path) -> list[str]:
 
 
 def test_unsuffixed_internal_docs_are_english_only() -> None:
+    # Given: inputs for `unsuffixed internal docs are english only` are prepared.
+    # When: the internal documentation language asset code path is exercised.
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in UNSUFFIXED_DOCS
         if HANGUL_PATTERN.search(_read_text(path))
     ]
 
+    # Then: the expected `unsuffixed internal docs are english only` behavior is asserted.
     assert offenders == []
 
 
 def test_internal_prd_docs_have_korean_mirrors() -> None:
+    # Given: inputs for `internal prd docs have korean mirrors` are prepared.
+    # When: the internal documentation language asset code path is exercised.
     missing = [
         str(path.relative_to(REPO_ROOT)) for path in KOREAN_MIRRORS if not path.exists()
     ]
 
+    # Then: the expected `internal prd docs have korean mirrors` behavior is asserted.
     assert missing == []
 
 
 def test_internal_doc_language_policy_lists_rule_and_exemptions() -> None:
+    # Given: inputs for `internal doc language policy lists rule and e...` are prepared.
     text = _read_text(POLICY_DOC)
+    # When: the internal documentation language asset code path is exercised.
     operations_text = _read_text(OPERATIONS_POLICY_DOC)
 
+    # Then: the expected `internal doc language policy lists rule and e...` behavior is asserted.
     assert "unsuffixed `.md` files are the English canonical documents" in text
     assert "Korean mirrors must use the sibling `*.ko.md` filename" in text
     assert "`GEMINI.md`" in text
@@ -88,6 +97,9 @@ def test_internal_doc_language_policy_lists_rule_and_exemptions() -> None:
 
 
 def test_internal_doc_language_policy_is_linked_from_readmes_and_docs() -> None:
+    # Given: inputs for `internal doc language policy is linked from r...` are prepared.
+    # When: the internal documentation language asset code path is exercised.
+    # Then: the expected `internal doc language policy is linked from r...` behavior is asserted.
     for path in POLICY_LINK_SURFACES:
         text = _read_text(path)
         assert "internal-doc-language-policy.md" in text
@@ -95,12 +107,15 @@ def test_internal_doc_language_policy_is_linked_from_readmes_and_docs() -> None:
 
 
 def test_internal_doc_language_links_resolve() -> None:
+    # Given: inputs for `internal doc language links resolve` are prepared.
     missing_targets: list[str] = []
 
+    # When: the internal documentation language asset code path is exercised.
     for path in LINK_CHECK_DOCS:
         for target in _iter_local_markdown_links(path):
             resolved = (path.parent / target).resolve()
             if not resolved.exists():
                 missing_targets.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
 
+    # Then: the expected `internal doc language links resolve` behavior is asserted.
     assert missing_targets == []

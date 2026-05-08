@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 BLUEPRINT_ROOT = REPO_ROOT / "docs" / "blueprint"
 HANGUL_PATTERN = re.compile(r"[가-힣]")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
@@ -40,32 +40,41 @@ def _iter_local_markdown_links(path: Path) -> list[str]:
 
 
 def test_unsuffixed_blueprint_docs_are_english_only() -> None:
+    # Given: inputs for `unsuffixed blueprint docs are english only` are prepared.
+    # When: the blueprint documentation language asset code path is exercised.
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in _iter_unsuffixed_blueprint_docs()
         if HANGUL_PATTERN.search(_read_text(path))
     ]
 
+    # Then: the expected `unsuffixed blueprint docs are english only` behavior is asserted.
     assert offenders == []
 
 
 def test_unsuffixed_blueprint_docs_have_korean_mirrors() -> None:
+    # Given: inputs for `unsuffixed blueprint docs have korean mirrors` are prepared.
+    # When: the blueprint documentation language asset code path is exercised.
     missing = [
         str(path.relative_to(REPO_ROOT))
         for path in _iter_unsuffixed_blueprint_docs()
         if not _ko_mirror_for(path).exists()
     ]
 
+    # Then: the expected `unsuffixed blueprint docs have korean mirrors` behavior is asserted.
     assert missing == []
 
 
 def test_blueprint_markdown_links_resolve_to_local_files() -> None:
+    # Given: inputs for `blueprint markdown links resolve to local files` are prepared.
     missing_targets: list[str] = []
 
+    # When: the blueprint documentation language asset code path is exercised.
     for path in sorted(BLUEPRINT_ROOT.rglob("*.md")):
         for target in _iter_local_markdown_links(path):
             resolved = (path.parent / target).resolve()
             if not resolved.exists():
                 missing_targets.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
 
+    # Then: the expected `blueprint markdown links resolve to local files` behavior is asserted.
     assert missing_targets == []

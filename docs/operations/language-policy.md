@@ -30,7 +30,7 @@ legacy markdown surfaces.
 
 ## Validation
 
-- [`../../tests/unit/test_internal_doc_language_assets.py`](../../tests/unit/test_internal_doc_language_assets.py)
+- [`../../tests/unit/docs/test_internal_doc_language_assets.py`](../../tests/unit/docs/test_internal_doc_language_assets.py)
   verifies the PRD mirror pair, policy wording, surface links, and local link
   integrity for this policy.
 - [`../internal-doc-language-policy.md`](../internal-doc-language-policy.md)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 PROCESS_MODE_METRICS = [
     "consumer_process_batch_flush_count",
@@ -32,6 +32,7 @@ RESOURCE_SIGNAL_METRICS = [
 
 
 def test_stable_operations_evidence_reference_is_linked_from_entrypoints() -> None:
+    # Given: inputs for `stable operations evidence reference is linke...` are prepared.
     reference_doc = REPO_ROOT / "docs" / "operations" / "stable-operations-evidence.md"
     docs_index = (REPO_ROOT / "docs" / "index.md").read_text()
     operations_index = (REPO_ROOT / "docs" / "operations" / "index.md").read_text()
@@ -43,6 +44,8 @@ def test_stable_operations_evidence_reference_is_linked_from_entrypoints() -> No
     readme = (REPO_ROOT / "README.md").read_text()
     readme_ko = (REPO_ROOT / "README.ko.md").read_text()
 
+    # When: the operations evidence documentation asset code path is exercised.
+    # Then: the expected `stable operations evidence reference is linke...` behavior is asserted.
     assert reference_doc.exists()
     assert "soak-restart-evidence.md" in reference_doc.read_text()
     assert "playbooks.md" in reference_doc.read_text()
@@ -70,12 +73,15 @@ def test_stable_operations_evidence_reference_is_linked_from_entrypoints() -> No
 
 
 def test_release_gate_contract_and_pinned_evidence_remain_visible() -> None:
+    # Given: inputs for `release gate contract and pinned evidence rem...` are prepared.
     release_readiness = (
         REPO_ROOT / "docs" / "operations" / "release-readiness.md"
     ).read_text()
     readme = (REPO_ROOT / "README.md").read_text()
+    # When: the operations evidence documentation asset code path is exercised.
     readme_ko = (REPO_ROOT / "README.ko.md").read_text()
 
+    # Then: the expected `release gate contract and pinned evidence rem...` behavior is asserted.
     assert "operations/public-contract-v1.md" in readme
     assert "operations/public-contract-v1.md" in readme_ko
     assert "24546725840" in release_readiness
@@ -83,6 +89,8 @@ def test_release_gate_contract_and_pinned_evidence_remain_visible() -> None:
 
 
 def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
+    # Given: inputs for `process mode metrics operator guidance lists...` are prepared.
+    # When: the operations evidence documentation asset code path is exercised.
     docs = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -97,6 +105,7 @@ def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
                 metric in text
             ), f"{metric} missing from {path.relative_to(REPO_ROOT)}"
 
+    # Then: the expected `process mode metrics operator guidance lists...` behavior is asserted.
     for path in docs[2:]:
         text = path.read_text()
         assert (
@@ -112,6 +121,8 @@ def test_process_mode_metrics_operator_guidance_lists_exposed_metrics() -> None:
 
 
 def test_benchmark_docs_describe_json_observability_evidence_fields() -> None:
+    # Given: inputs for `benchmark docs describe json observability ev...` are prepared.
+    # When: the operations evidence documentation asset code path is exercised.
     docs = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -123,6 +134,7 @@ def test_benchmark_docs_describe_json_observability_evidence_fields() -> None:
         "final_gap_count",
     ]
 
+    # Then: the expected `benchmark docs describe json observability ev...` behavior is asserted.
     for path in docs:
         text = path.read_text(encoding="utf-8", errors="strict")
         for field in expected_fields:
@@ -130,6 +142,8 @@ def test_benchmark_docs_describe_json_observability_evidence_fields() -> None:
 
 
 def test_runtime_boundary_docs_describe_control_plane_commit_clamp_contract() -> None:
+    # Given: inputs for `runtime boundary docs describe control plane...` are prepared.
+    # When: the operations evidence documentation asset code path is exercised.
     docs = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "docs" / "operations" / "guide.en.md",
@@ -143,6 +157,7 @@ def test_runtime_boundary_docs_describe_control_plane_commit_clamp_contract() ->
         "compatibility projection",
     ]
 
+    # Then: the expected `runtime boundary docs describe control plane...` behavior is asserted.
     for path in docs:
         text = path.read_text()
         for term in expected_terms:
@@ -150,6 +165,8 @@ def test_runtime_boundary_docs_describe_control_plane_commit_clamp_contract() ->
 
 
 def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> None:
+    # Given: inputs for `resource signal metrics operator guidance lis...` are prepared.
+    # When: the operations evidence documentation asset code path is exercised.
     docs = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.ko.md",
@@ -164,6 +181,7 @@ def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> No
                 metric in text
             ), f"{metric} missing from {path.relative_to(REPO_ROOT)}"
 
+    # Then: the expected `resource signal metrics operator guidance lis...` behavior is asserted.
     for path in docs:
         text = path.read_text()
         assert "first_sample_pending" in text
@@ -173,11 +191,14 @@ def test_resource_signal_metrics_operator_guidance_lists_exposed_metrics() -> No
 def test_release_performance_gate_evaluator_is_documented_separately_from_soak() -> (
     None
 ):
+    # Given: inputs for `release performance gate evaluator is documen...` are prepared.
     playbooks = (REPO_ROOT / "docs" / "operations" / "playbooks.md").read_text()
+    # When: the operations evidence documentation asset code path is exercised.
     evidence = (
         REPO_ROOT / "docs" / "operations" / "stable-operations-evidence.md"
     ).read_text()
 
+    # Then: the expected `release performance gate evaluator is documen...` behavior is asserted.
     assert "python -m benchmarks.release_gate" in playbooks
     assert "Performance release gate verdict" in evidence
     assert "Soak/restart evidence verdict" in evidence

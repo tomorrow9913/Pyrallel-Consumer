@@ -119,7 +119,7 @@ not be interpreted as commit-safety or DLQ-publish authority.
 
 The v1 frozen contract is guarded by the following regression tests.
 
-- `tests/unit/test_public_contract_v1.py`
+- `tests/unit/docs/test_public_contract_v1.py`
 - `tests/unit/test_consumer.py`
 - `tests/unit/control_plane/test_broker_poller_dlq.py`
 - `tests/unit/control_plane/test_broker_poller_metrics.py`

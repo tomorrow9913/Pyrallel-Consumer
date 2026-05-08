@@ -2,22 +2,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_DOC = (
     REPO_ROOT / "docs" / "operations" / "development-verification-workflow.md"
 )
 
 
 def test_development_verification_workflow_is_linked_from_doc_indexes() -> None:
+    # Given: inputs for `development verification workflow is linked f...` are prepared.
     docs_index = (REPO_ROOT / "docs" / "index.md").read_text()
     operations_index = (REPO_ROOT / "docs" / "operations" / "index.md").read_text()
 
+    # When: the development workflow documentation asset code path is exercised.
+    # Then: the expected `development verification workflow is linked f...` behavior is asserted.
     assert WORKFLOW_DOC.exists()
     assert "operations/development-verification-workflow.md" in docs_index
     assert "development-verification-workflow.md" in operations_index
 
 
 def test_development_verification_workflow_lists_canonical_commands() -> None:
+    # Given: inputs for `development verification workflow lists canon...` are prepared.
     text = WORKFLOW_DOC.read_text()
 
     required_commands = [
@@ -37,9 +41,11 @@ def test_development_verification_workflow_lists_canonical_commands() -> None:
         "pre-commit run --all-files",
     ]
 
+    # When: the development workflow documentation asset code path is exercised.
     for command in required_commands:
         assert command in text
 
+    # Then: the expected `development verification workflow lists canon...` behavior is asserted.
     assert "No Makefile, justfile, or task runner is currently tracked" in text
     assert "requirements.txt and dev-requirements.txt are not tracked" in text
     assert "`uv sync` creates the project `.venv`" in text
@@ -47,6 +53,8 @@ def test_development_verification_workflow_lists_canonical_commands() -> None:
 
 
 def test_development_verification_workflow_defines_parallel_worktree_rules() -> None:
+    # Given: inputs for `development verification workflow defines par...` are prepared.
+    # When: the development workflow documentation asset code path is exercised.
     text = WORKFLOW_DOC.read_text()
 
     required_phrases = [
@@ -61,5 +69,6 @@ def test_development_verification_workflow_defines_parallel_worktree_rules() -> 
         "Never remove a worktree with uncommitted work",
     ]
 
+    # Then: the expected `development verification workflow defines par...` behavior is asserted.
     for phrase in required_phrases:
         assert phrase in text

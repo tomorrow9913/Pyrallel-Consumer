@@ -5,15 +5,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_compatibility_manifest_covers_supported_python_and_client_rows() -> None:
+    # Given: inputs for `compatibility manifest covers supported pytho...` are prepared.
     manifest = json.loads(
         (REPO_ROOT / ".github" / "compatibility-matrix.json").read_text()
     )
     rows = manifest["include"]
 
+    # When: the compatibility matrix documentation asset code path is exercised.
     row_signatures = {
         (
             row["python-version"],
@@ -24,6 +26,7 @@ def test_compatibility_manifest_covers_supported_python_and_client_rows() -> Non
         for row in rows
     }
 
+    # Then: the expected `compatibility manifest covers supported pytho...` behavior is asserted.
     assert (
         "3.12",
         "2.13.0",
@@ -39,10 +42,13 @@ def test_compatibility_manifest_covers_supported_python_and_client_rows() -> Non
 
 
 def test_compatibility_workflow_uses_manifest_and_generated_docs() -> None:
+    # Given: inputs for `compatibility workflow uses manifest and gene...` are prepared.
+    # When: the compatibility matrix documentation asset code path is exercised.
     workflow_text = (
         REPO_ROOT / ".github" / "workflows" / "compatibility-matrix.yml"
     ).read_text()
 
+    # Then: the expected `compatibility workflow uses manifest and gene...` behavior is asserted.
     assert ".github/compatibility-matrix.json" in workflow_text
     assert "fromJSON(needs.plan.outputs.matrix)" in workflow_text
     assert "scripts/compatibility_matrix.py --check" in workflow_text
@@ -54,10 +60,13 @@ def test_compatibility_workflow_uses_manifest_and_generated_docs() -> None:
 
 
 def test_release_verify_checks_compatibility_matrix_drift() -> None:
+    # Given: inputs for `release verify checks compatibility matrix drift` are prepared.
+    # When: the compatibility matrix documentation asset code path is exercised.
     release_workflow = (
         REPO_ROOT / ".github" / "workflows" / "release-verify.yml"
     ).read_text()
 
+    # Then: the expected `release verify checks compatibility matrix drift` behavior is asserted.
     assert ".github/compatibility-matrix.json" in release_workflow
     assert "scripts/compatibility_matrix.py" in release_workflow
     assert ".github/workflows/compatibility-matrix.yml" in release_workflow
@@ -65,6 +74,7 @@ def test_release_verify_checks_compatibility_matrix_drift() -> None:
 
 
 def test_operations_docs_publish_verified_compatibility_rows() -> None:
+    # Given: inputs for `operations docs publish verified compatibilit...` are prepared.
     compatibility_doc = (
         REPO_ROOT / "docs" / "operations" / "compatibility-matrix.md"
     ).read_text()
@@ -74,8 +84,10 @@ def test_operations_docs_publish_verified_compatibility_rows() -> None:
         REPO_ROOT / "docs" / "operations" / "support-policy.md"
     ).read_text()
     readme = (REPO_ROOT / "README.md").read_text()
+    # When: the compatibility matrix documentation asset code path is exercised.
     readme_ko = (REPO_ROOT / "README.ko.md").read_text()
 
+    # Then: the expected `operations docs publish verified compatibilit...` behavior is asserted.
     assert (
         "| Python | Kafka baseline | Client | Verification | Workflow | Notes |"
         in compatibility_doc
@@ -97,13 +109,16 @@ def test_operations_docs_publish_verified_compatibility_rows() -> None:
 
 
 def test_support_policy_matches_stable_package_metadata() -> None:
+    # Given: inputs for `support policy matches stable package metadata` are prepared.
     pyproject = (REPO_ROOT / "pyproject.toml").read_text()
     readme = (REPO_ROOT / "README.md").read_text()
     readme_ko = (REPO_ROOT / "README.ko.md").read_text()
+    # When: the compatibility matrix documentation asset code path is exercised.
     support_policy = (
         REPO_ROOT / "docs" / "operations" / "support-policy.md"
     ).read_text()
 
+    # Then: the expected `support policy matches stable package metadata` behavior is asserted.
     assert "Development Status :: 5 - Production/Stable" in pyproject
     assert 'version = "1.0.0"' in pyproject
     assert "current published version is stable (`1.0.0`)" in readme
@@ -117,6 +132,8 @@ def test_support_policy_matches_stable_package_metadata() -> None:
 
 
 def test_generator_check_accepts_tracked_markdown() -> None:
+    # Given: inputs for `generator check accepts tracked markdown` are prepared.
+    # When: the compatibility matrix documentation asset code path is exercised.
     result = subprocess.run(
         [sys.executable, "scripts/compatibility_matrix.py", "--check"],
         cwd=REPO_ROOT,
@@ -125,6 +142,7 @@ def test_generator_check_accepts_tracked_markdown() -> None:
         check=False,
     )
 
+    # Then: the expected `generator check accepts tracked markdown` behavior is asserted.
     assert result.returncode == 0, result.stderr or result.stdout
     assert "compatibility-matrix.md is up to date" in result.stdout
 
@@ -132,10 +150,12 @@ def test_generator_check_accepts_tracked_markdown() -> None:
 def test_generator_supports_explicit_output_for_alternate_manifest(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `generator supports explicit output for altern...` are prepared.
     alternate_manifest = tmp_path / "alternate-matrix.json"
     alternate_output = tmp_path / "alternate-matrix.md"
     tracked_doc = REPO_ROOT / "docs" / "operations" / "compatibility-matrix.md"
     tracked_before = tracked_doc.read_text(encoding="utf-8")
+    # When: the compatibility matrix documentation asset code path is exercised.
     alternate_manifest.write_text(
         json.dumps(
             {
@@ -171,6 +191,7 @@ def test_generator_supports_explicit_output_for_alternate_manifest(
         check=False,
     )
 
+    # Then: the expected `generator supports explicit output for altern...` behavior is asserted.
     assert result.returncode == 0, result.stderr or result.stdout
     assert "alternate client" in alternate_output.read_text(encoding="utf-8")
     assert tracked_doc.read_text(encoding="utf-8") == tracked_before

@@ -33,26 +33,31 @@ from pyrallel_consumer.dto import (
     WorkManagerPipelineDiagnostics,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PUBLIC_CONTRACT_DOC = ROOT / "docs" / "operations" / "public-contract-v1.md"
 
 
 def test_public_contract_doc_lists_runtime_snapshot_regression_tests() -> None:
+    # Given: inputs for `public contract doc lists runtime snapshot re...` are prepared.
+    # When: the public contract documentation code path is exercised.
     document = PUBLIC_CONTRACT_DOC.read_text(encoding="utf-8")
 
     expected_tests = [
-        "tests/unit/test_public_contract_v1.py",
+        "tests/unit/docs/test_public_contract_v1.py",
         "tests/unit/test_consumer.py",
         "tests/unit/control_plane/test_broker_poller_metrics.py",
         "tests/unit/control_plane/test_broker_runtime_support.py",
     ]
 
+    # Then: the expected `public contract doc lists runtime snapshot re...` behavior is asserted.
     for expected_test in expected_tests:
         assert expected_test in document
         assert (ROOT / expected_test).exists()
 
 
 def test_public_contract_doc_freezes_runtime_snapshot_field_boundary() -> None:
+    # Given: inputs for `public contract doc freezes runtime snapshot...` are prepared.
+    # When: the public contract documentation code path is exercised.
     document = PUBLIC_CONTRACT_DOC.read_text(encoding="utf-8")
 
     expected_terms = [
@@ -81,11 +86,15 @@ def test_public_contract_doc_freezes_runtime_snapshot_field_boundary() -> None:
         "not be interpreted as commit-safety or DLQ-publish authority",
     ]
 
+    # Then: the expected `public contract doc freezes runtime snapshot...` behavior is asserted.
     for expected_term in expected_terms:
         assert expected_term in document
 
 
 def test_runtime_snapshot_public_field_names_remain_stable() -> None:
+    # Given: inputs for `runtime snapshot public field names remain st...` are prepared.
+    # When: the public contract documentation code path is exercised.
+    # Then: the expected `runtime snapshot public field names remain st...` behavior is asserted.
     assert [field.name for field in fields(RuntimeSnapshot)] == [
         "queue",
         "retry",
@@ -162,6 +171,8 @@ def test_runtime_snapshot_public_field_names_remain_stable() -> None:
 
 
 def test_engine_runtime_diagnostics_envelope_is_additive_to_v1_snapshot() -> None:
+    # Given: inputs for `engine runtime diagnostics envelope is additi...` are prepared.
+    # When: the public contract documentation code path is exercised.
     diagnostics = EngineRuntimeDiagnostics(
         engine_type="process",
         process=ProcessRuntimeDiagnostics(
@@ -178,12 +189,16 @@ def test_engine_runtime_diagnostics_envelope_is_additive_to_v1_snapshot() -> Non
         ),
     )
 
+    # Then: the expected `engine runtime diagnostics envelope is additi...` behavior is asserted.
     assert diagnostics.engine_type == "process"
     assert diagnostics.process is not None
     assert diagnostics.process.batch_metrics.size_flush_count == 1
 
 
 def test_pipeline_poll_diagnostics_are_additive_sidecar_not_runtime_snapshot() -> None:
+    # Given: inputs for `pipeline poll diagnostics are additive sideca...` are prepared.
+    # When: the public contract documentation code path is exercised.
+    # Then: the expected `pipeline poll diagnostics are additive sideca...` behavior is asserted.
     assert [field.name for field in fields(PipelinePollDiagnostics)] == [
         "records_total",
         "nonempty_polls_total",
@@ -198,6 +213,9 @@ def test_pipeline_poll_diagnostics_are_additive_sidecar_not_runtime_snapshot() -
 
 
 def test_pipeline_diagnostics_public_sidecar_field_names_remain_stable() -> None:
+    # Given: inputs for `pipeline diagnostics public sidecar field nam...` are prepared.
+    # When: the public contract documentation code path is exercised.
+    # Then: the expected `pipeline diagnostics public sidecar field nam...` behavior is asserted.
     assert PipelineDiagnostics is WorkManagerPipelineDiagnostics
     assert PipelineDiagnosticsSnapshot is WorkManagerPipelineDiagnostics
     assert ExportedPipelineDiagnosticsSnapshot is WorkManagerPipelineDiagnostics
@@ -251,6 +269,9 @@ def test_pipeline_diagnostics_public_sidecar_field_names_remain_stable() -> None
 
 
 def test_pipeline_diagnostics_public_sidecar_uses_bounded_enums() -> None:
+    # Given: inputs for `pipeline diagnostics public sidecar uses boun...` are prepared.
+    # When: the public contract documentation code path is exercised.
+    # Then: the expected `pipeline diagnostics public sidecar uses boun...` behavior is asserted.
     assert [stage.value for stage in PipelineStage] == [
         "acquired",
         "buffered",
@@ -290,6 +311,9 @@ def test_pipeline_diagnostics_public_sidecar_uses_bounded_enums() -> None:
 def test_pipeline_diagnostics_public_api_docstrings_are_stable_not_experimental() -> (
     None
 ):
+    # Given: inputs for `pipeline diagnostics public api docstrings ar...` are prepared.
+    # When: the public contract documentation code path is exercised.
+    # Then: the expected `pipeline diagnostics public api docstrings ar...` behavior is asserted.
     for docstring in (
         PyrallelConsumer.get_pipeline_diagnostics.__doc__,
         BrokerPoller.get_pipeline_diagnostics.__doc__,
