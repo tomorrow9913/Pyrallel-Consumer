@@ -209,3 +209,99 @@ class BrokerCommitCoordinatorSupport:
                 ]
             )
         return not remaining
+
+
+class BrokerCommitCadenceSupport:
+    """Track commit cadence gates and diagnostic counters for BrokerPoller."""
+
+    def __init__(
+        self,
+        *,
+        get_dirty_commit_partitions: Callable[[], set[DtoTopicPartition]],
+        has_pending_dlq_events: Callable[[], bool],
+        get_total_in_flight_count: Callable[[], int],
+        get_total_queued_messages: Callable[[], Awaitable[int]],
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Initialize commit cadence support."""
+        self._get_dirty_commit_partitions = get_dirty_commit_partitions
+        self._has_pending_dlq_events = has_pending_dlq_events
+        self._get_total_in_flight_count = get_total_in_flight_count
+        self._get_total_queued_messages = get_total_queued_messages
+        self._now = now
+        self._invocations_total = 0
+        self._empty_candidate_scans_total = 0
+        self._commit_calls_total = 0
+        self._partitions_advanced_total = 0
+        self._invocations_by_source: dict[str, int] = {}
+        self._empty_candidate_scans_by_source: dict[str, int] = {}
+        self._commit_calls_by_source: dict[str, int] = {}
+        self._partitions_advanced_by_source: dict[str, int] = {}
+
+    def record_invocation(self, source: str) -> None:
+        """Record that commit-ready evaluation was invoked."""
+        self._invocations_total += 1
+        self._invocations_by_source[source] = (
+            self._invocations_by_source.get(source, 0) + 1
+        )
+
+    def record_empty_candidate_scan(self, source: str) -> None:
+        """Record a cadence-gated commit scan that produced no commit attempt."""
+        self._empty_candidate_scans_total += 1
+        self._empty_candidate_scans_by_source[source] = (
+            self._empty_candidate_scans_by_source.get(source, 0) + 1
+        )
+
+    def record_commit_success(self, source: str, partition_count: int) -> None:
+        """Record a successful synchronous commit attempt."""
+        self._commit_calls_total += 1
+        self._commit_calls_by_source[source] = (
+            self._commit_calls_by_source.get(source, 0) + 1
+        )
+        self._partitions_advanced_total += partition_count
+        self._partitions_advanced_by_source[source] = (
+            self._partitions_advanced_by_source.get(source, 0) + partition_count
+        )
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return commit cadence diagnostic counters."""
+        return {
+            "invocations_total": self._invocations_total,
+            "empty_candidate_scans_total": self._empty_candidate_scans_total,
+            "commit_calls_total": self._commit_calls_total,
+            "partitions_advanced_total": self._partitions_advanced_total,
+            "invocations_by_source": dict(self._invocations_by_source),
+            "empty_candidate_scans_by_source": dict(
+                self._empty_candidate_scans_by_source
+            ),
+            "commit_calls_by_source": dict(self._commit_calls_by_source),
+            "partitions_advanced_by_source": dict(self._partitions_advanced_by_source),
+        }
+
+    def should_attempt_ready_commit(
+        self,
+        *,
+        completions_since_last_commit: int,
+        completion_threshold: int,
+        interval_seconds: float,
+        last_attempt_monotonic: float,
+    ) -> bool:
+        """Return whether ready offsets should be scanned for commit."""
+        if not self._get_dirty_commit_partitions():
+            return False
+        if completions_since_last_commit >= completion_threshold:
+            return True
+        if interval_seconds <= 0:
+            return True
+        elapsed = self._now() - last_attempt_monotonic
+        return elapsed >= interval_seconds
+
+    async def should_force_idle_commit(self) -> bool:
+        """Return whether idle broker state should force a final commit scan."""
+        if not self._get_dirty_commit_partitions():
+            return False
+        if self._has_pending_dlq_events():
+            return False
+        if self._get_total_in_flight_count() > 0:
+            return False
+        return await self._get_total_queued_messages() <= 0
