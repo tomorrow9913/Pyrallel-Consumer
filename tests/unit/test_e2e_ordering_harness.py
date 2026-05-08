@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# File: tests/unit/test_e2e_ordering_harness.py
+# Role: Verifies E2E ordering harness worker selection without starting real Kafka infrastructure.
+# Extend here for ordering harness defaults or fake-infrastructure test coverage changes.
+
 from typing import Any, Literal
 
 import pytest
@@ -19,6 +24,7 @@ async def test_run_ordering_test_uses_sync_process_worker_by_default(
     ordering_mode: OrderingMode,
     expected_worker_name: str,
 ) -> None:
+    # Given: the E2E ordering module is patched with fake manager, process, engine, work manager, and poller types.
     from tests.e2e import test_ordering as module
 
     captured: dict[str, Any] = {}
@@ -95,6 +101,8 @@ async def test_run_ordering_test_uses_sync_process_worker_by_default(
         num_keys=1,
     )
 
+    # When: run_ordering_test executes in process mode for the parameterized ordering mode.
+    # Then: the process engine receives the expected sync worker type and one result is tracked.
     assert captured["config_mode"] == ExecutionMode.PROCESS
     assert captured["worker_fn"].__class__.__name__ == expected_worker_name
     assert result_tracker.get_processed_count() == 1
