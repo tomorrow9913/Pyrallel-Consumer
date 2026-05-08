@@ -29,6 +29,7 @@ class DummyExecutionEngine:
 
 @pytest.mark.asyncio
 async def test_commit_clamped_by_inflight_registry():
+    # Given: inputs for `commit clamped by inflight registry` are prepared.
     kafka_config = KafkaConfig()
     kafka_config.parallel_consumer.poll_batch_size = 1
     kafka_config.parallel_consumer.worker_pool_size = 1
@@ -90,4 +91,6 @@ async def test_commit_clamped_by_inflight_registry():
         return commits_to_make
 
     commits = await run_once()
+    # When: the broker poller in-flight clamp code path is exercised.
+    # Then: the expected `commit clamped by inflight registry` behavior is asserted.
     assert commits == [(DtoTopicPartition("test-topic", 0), 4)]

@@ -29,6 +29,7 @@ class _FakeEngine(BaseExecutionEngine):
 
 @pytest.mark.asyncio
 async def test_handle_blocking_timeout_forces_failure_and_dlq_path():
+    # Given: inputs for `handle blocking timeout forces failure and dl...` are prepared.
     tp = TopicPartition(topic="demo", partition=0)
     tracker = OffsetTracker(
         topic_partition=tp, starting_offset=0, max_revoke_grace_ms=500
@@ -60,6 +61,8 @@ async def test_handle_blocking_timeout_forces_failure_and_dlq_path():
     await asyncio.sleep(0.01)
 
     timeout_events = await poller._handle_blocking_timeouts()
+    # When: the blocking timeout handler code path is exercised.
+    # Then: the expected `handle blocking timeout forces failure and dl...` behavior is asserted.
     assert len(timeout_events) == 1
 
     await poller._process_completed_events(timeout_events)
@@ -72,6 +75,7 @@ async def test_handle_blocking_timeout_forces_failure_and_dlq_path():
 
 @pytest.mark.asyncio
 async def test_handle_blocking_timeout_noop_when_threshold_disabled():
+    # Given: inputs for `handle blocking timeout noop when threshold d...` are prepared.
     tp = TopicPartition(topic="demo", partition=1)
     tracker = OffsetTracker(
         topic_partition=tp, starting_offset=0, max_revoke_grace_ms=500
@@ -91,6 +95,8 @@ async def test_handle_blocking_timeout_noop_when_threshold_disabled():
     )
 
     poller._offset_trackers[tp] = tracker  # type: ignore[attr-defined]
+    # When: the blocking timeout handler code path is exercised.
     timeout_events = await poller._handle_blocking_timeouts()
 
+    # Then: the expected `handle blocking timeout noop when threshold d...` behavior is asserted.
     assert timeout_events == []

@@ -67,6 +67,7 @@ def _make_restored_tracker(tp: DtoTopicPartition) -> OffsetTracker:
 
 @pytest.mark.asyncio
 async def test_dispatch_messages_groups_ordered_messages_and_uses_bulk_submit() -> None:
+    # Given: inputs for `dispatch messages groups ordered messages and...` are prepared.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -95,7 +96,9 @@ async def test_dispatch_messages_groups_ordered_messages_and_uses_bulk_submit() 
     )
 
     submit_message.assert_not_awaited()
+    # When: the broker dispatch support code path is exercised.
     submit_grouped_messages.assert_awaited_once()
+    # Then: the expected `dispatch messages groups ordered messages and...` behavior is asserted.
     assert submit_grouped_messages.await_args is not None
     grouped_messages = submit_grouped_messages.await_args.args[0]
     assert grouped_messages == {
@@ -107,6 +110,7 @@ async def test_dispatch_messages_groups_ordered_messages_and_uses_bulk_submit() 
 
 @pytest.mark.asyncio
 async def test_dispatch_messages_partition_mode_groups_by_partition_not_key() -> None:
+    # Given: inputs for `dispatch messages partition mode groups by pa...` are prepared.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -137,7 +141,9 @@ async def test_dispatch_messages_partition_mode_groups_by_partition_not_key() ->
     )
 
     submit_message.assert_not_awaited()
+    # When: the broker dispatch support code path is exercised.
     submit_grouped_messages.assert_awaited_once()
+    # Then: the expected `dispatch messages partition mode groups by pa...` behavior is asserted.
     assert submit_grouped_messages.await_args is not None
     grouped_messages = submit_grouped_messages.await_args.args[0]
     assert grouped_messages == {
@@ -153,6 +159,7 @@ async def test_dispatch_messages_partition_mode_groups_by_partition_not_key() ->
 async def test_dispatch_messages_unordered_submits_directly_and_skips_invalid_messages() -> (
     None
 ):
+    # Given: inputs for `dispatch messages unordered submits directly...` are prepared.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -184,6 +191,7 @@ async def test_dispatch_messages_unordered_submits_directly_and_skips_invalid_me
     )
 
     submit_grouped_messages.assert_not_awaited()
+    # When: the broker dispatch support code path is exercised.
     submit_message.assert_awaited_once_with(
         tp=tp,
         offset=5,
@@ -191,10 +199,12 @@ async def test_dispatch_messages_unordered_submits_directly_and_skips_invalid_me
         key=b"direct-key",
         payload=b"direct-payload",
     )
+    # Then: the expected `dispatch messages unordered submits directly...` behavior is asserted.
     assert logger.warning.call_count >= 2
 
 
 def test_build_commit_candidates_clamps_safe_offset_by_min_inflight() -> None:
+    # Given: inputs for `build commit candidates clamps safe offset by...` are prepared.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -214,8 +224,10 @@ def test_build_commit_candidates_clamps_safe_offset_by_min_inflight() -> None:
         logger=MagicMock(),
     )
 
+    # When: the broker dispatch support code path is exercised.
     commits_to_make = support.build_commit_candidates()
 
+    # Then: the expected `build commit candidates clamps safe offset by...` behavior is asserted.
     assert commits_to_make == [(tp, 4)]
 
 
@@ -227,6 +239,7 @@ def test_build_commit_candidates_clamps_safe_offset_by_min_inflight() -> None:
 async def test_dispatch_messages_skips_restored_completed_uncommitted_offsets(
     ordering_mode: OrderingMode,
 ) -> None:
+    # Given: inputs for `dispatch messages skips restored completed un...` are prepared.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -250,10 +263,12 @@ async def test_dispatch_messages_skips_restored_completed_uncommitted_offsets(
         logger=MagicMock(),
     )
 
+    # When: the broker dispatch support code path is exercised.
     await support.dispatch_messages(
         [_make_message(offset=offset, key=b"key-a") for offset in (4, 5, 6, 7)]
     )
 
+    # Then: the expected `dispatch messages skips restored completed un...` behavior is asserted.
     assert skipped_offsets == [(tp, 4), (tp, 6), (tp, 7)]
     cache_message_for_dlq.assert_called_once_with(
         tp=tp,
@@ -283,6 +298,8 @@ async def test_dispatch_messages_skips_restored_completed_uncommitted_offsets(
 
 @pytest.mark.asyncio
 async def test_dispatch_messages_skips_when_skip_callback_raises() -> None:
+    # Given: inputs for `dispatch messages skips when skip callback ra...` are prepared.
+    # When: the broker dispatch support code path is exercised.
     from pyrallel_consumer.control_plane.broker_dispatch_support import (
         BrokerDispatchSupport,
     )
@@ -321,6 +338,7 @@ async def test_dispatch_messages_skips_when_skip_callback_raises() -> None:
         key=b"key-a",
         value=b"payload",
     )
+    # Then: the expected `dispatch messages skips when skip callback ra...` behavior is asserted.
     submit_message.assert_awaited_once_with(
         tp=tp,
         offset=5,

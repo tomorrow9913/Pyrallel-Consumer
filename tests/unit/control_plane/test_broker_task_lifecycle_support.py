@@ -8,6 +8,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_start_runtime_skips_completion_monitor_when_disabled() -> None:
+    # Given: inputs for `start runtime skips completion monitor when d...` are prepared.
     from pyrallel_consumer.control_plane.broker_task_lifecycle_support import (
         BrokerTaskLifecycleSupport,
     )
@@ -27,6 +28,7 @@ async def test_start_runtime_skips_completion_monitor_when_disabled() -> None:
         task_factory=task_factory,
     )
 
+    # When: the broker task lifecycle support code path is exercised.
     producer, admin, consumer, consumer_task, completion_task = support.start_runtime(
         consume_topic="test-topic",
         producer_conf={"bootstrap.servers": "broker:9092"},
@@ -39,6 +41,7 @@ async def test_start_runtime_skips_completion_monitor_when_disabled() -> None:
         strict_completion_monitor_enabled=False,
     )
 
+    # Then: the expected `start runtime skips completion monitor when d...` behavior is asserted.
     assert producer is not None
     assert admin is not None
     assert consumer is not None
@@ -49,6 +52,8 @@ async def test_start_runtime_skips_completion_monitor_when_disabled() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_runtime_cancels_consumer_task_after_timeout() -> None:
+    # Given: inputs for `stop runtime cancels consumer task after timeout` are prepared.
+    # When: the broker task lifecycle support code path is exercised.
     from pyrallel_consumer.control_plane.broker_task_lifecycle_support import (
         BrokerTaskLifecycleSupport,
     )
@@ -92,11 +97,13 @@ async def test_stop_runtime_cancels_consumer_task_after_timeout() -> None:
     )
 
     consumer_task.cancel.assert_called_once_with()
+    # Then: the expected `stop runtime cancels consumer task after timeout` behavior is asserted.
     gather.assert_awaited_once_with(consumer_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 async def test_wait_closed_reraises_error_after_shutdown() -> None:
+    # Given: inputs for `wait closed reraises error after shutdown` are prepared.
     from pyrallel_consumer.control_plane.broker_task_lifecycle_support import (
         BrokerTaskLifecycleSupport,
     )
@@ -123,6 +130,8 @@ async def test_wait_closed_reraises_error_after_shutdown() -> None:
     shutdown_event = asyncio.Event()
     shutdown_event.set()
 
+    # When: the broker task lifecycle support code path is exercised.
+    # Then: the expected `wait closed reraises error after shutdown` behavior is asserted.
     with pytest.raises(RuntimeError, match="closed-boom"):
         await support.wait_closed(
             shutdown_event=shutdown_event,

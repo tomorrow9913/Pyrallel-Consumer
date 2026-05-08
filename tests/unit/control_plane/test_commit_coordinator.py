@@ -30,6 +30,7 @@ def _candidate(
 
 @pytest.mark.asyncio
 async def test_enqueue_coalesces_partition_and_supersedes_old_lease() -> None:
+    # Given: inputs for `enqueue coalesces partition and supersedes ol...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     submitted: list[list[CommitCandidate]] = []
 
@@ -45,8 +46,10 @@ async def test_enqueue_coalesces_partition_and_supersedes_old_lease() -> None:
     )
 
     await coordinator.enqueue([_candidate(tp, 3)])
+    # When: the commit coordinator code path is exercised.
     await coordinator.enqueue([_candidate(tp, 5)])
 
+    # Then: the expected `enqueue coalesces partition and supersedes ol...` behavior is asserted.
     assert coordinator.stats.coalesced_count == 1
     assert coordinator.remaining_candidates()[tp].safe_offset == 5
     assert not coordinator.is_active_lease(tp, 1, 1)
@@ -55,6 +58,7 @@ async def test_enqueue_coalesces_partition_and_supersedes_old_lease() -> None:
 
 @pytest.mark.asyncio
 async def test_enqueue_rolls_back_partial_batch_on_queue_full() -> None:
+    # Given: inputs for `enqueue rolls back partial batch on queue full` are prepared.
     tp0 = DtoTopicPartition("topic", 0)
     tp1 = DtoTopicPartition("topic", 1)
     events: list[tuple[str, str | None, int]] = []
@@ -72,6 +76,8 @@ async def test_enqueue_rolls_back_partial_batch_on_queue_full() -> None:
         ),
     )
 
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `enqueue rolls back partial batch on queue full` behavior is asserted.
     assert await coordinator.enqueue([_candidate(tp0, 3), _candidate(tp1, 4)]) is False
 
     assert coordinator.remaining_candidates() == {}
@@ -85,6 +91,7 @@ async def test_enqueue_rolls_back_partial_batch_on_queue_full() -> None:
 
 @pytest.mark.asyncio
 async def test_success_settlement_is_reported_once_and_advances_active_lease() -> None:
+    # Given: inputs for `success settlement is reported once and advan...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     settlements_seen: list[CommitSettlement] = []
 
@@ -105,6 +112,8 @@ async def test_success_settlement_is_reported_once_and_advances_active_lease() -
     await coordinator.enqueue([_candidate(tp, 4)])
     await coordinator.drain(timeout=1.0)
 
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `success settlement is reported once and advan...` behavior is asserted.
     assert len(settlements_seen) == 1
     assert settlements_seen[0].tp == tp
     assert settlements_seen[0].safe_offset == 4
@@ -115,6 +124,7 @@ async def test_success_settlement_is_reported_once_and_advances_active_lease() -
 
 @pytest.mark.asyncio
 async def test_success_callback_runs_while_lease_is_still_active() -> None:
+    # Given: inputs for `success callback runs while lease is still ac...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     active_during_callback = False
 
@@ -139,13 +149,16 @@ async def test_success_callback_runs_while_lease_is_still_active() -> None:
     )
 
     await coordinator.enqueue([_candidate(tp, 9)])
+    # When: the commit coordinator code path is exercised.
     await coordinator.drain(timeout=1.0)
 
+    # Then: the expected `success callback runs while lease is still ac...` behavior is asserted.
     assert active_during_callback is True
 
 
 @pytest.mark.asyncio
 async def test_success_metrics_refresh_cleared_pending_depth() -> None:
+    # Given: inputs for `success metrics refresh cleared pending depth` are prepared.
     tp = DtoTopicPartition("topic", 0)
     pending_depths: list[int] = []
 
@@ -168,13 +181,16 @@ async def test_success_metrics_refresh_cleared_pending_depth() -> None:
     )
 
     await coordinator.enqueue([_candidate(tp, 9)])
+    # When: the commit coordinator code path is exercised.
     await coordinator.drain(timeout=1.0)
 
+    # Then: the expected `success metrics refresh cleared pending depth` behavior is asserted.
     assert pending_depths[-1] == 0
 
 
 @pytest.mark.asyncio
 async def test_aborted_batch_does_not_report_success_settlement() -> None:
+    # Given: inputs for `aborted batch does not report success settlement` are prepared.
     tp = DtoTopicPartition("topic", 0)
     settlements_seen: list[CommitSettlement] = []
     failures_seen: list[tuple[list[CommitSettlement], str]] = []
@@ -194,8 +210,10 @@ async def test_aborted_batch_does_not_report_success_settlement() -> None:
     )
 
     await coordinator.enqueue([_candidate(tp, 9)])
+    # When: the commit coordinator code path is exercised.
     await coordinator.drain(timeout=1.0)
 
+    # Then: the expected `aborted batch does not report success settlement` behavior is asserted.
     assert settlements_seen == []
     assert failures_seen[0][1] == "stale_lease"
     assert coordinator.latest_settled_offsets == {}
@@ -204,6 +222,7 @@ async def test_aborted_batch_does_not_report_success_settlement() -> None:
 
 @pytest.mark.asyncio
 async def test_success_callback_error_does_not_strand_in_flight_candidate() -> None:
+    # Given: inputs for `success callback error does not strand in fli...` are prepared.
     tp = DtoTopicPartition("topic", 0)
 
     async def commit_sync(candidates: list[CommitCandidate]) -> None:
@@ -223,12 +242,15 @@ async def test_success_callback_error_does_not_strand_in_flight_candidate() -> N
 
     await coordinator.enqueue([_candidate(tp, 9)])
 
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `success callback error does not strand in fli...` behavior is asserted.
     assert await coordinator.drain(timeout=1.0) is True
     assert coordinator.remaining_candidates() == {}
 
 
 @pytest.mark.asyncio
 async def test_enqueue_ignores_duplicate_candidate_while_commit_is_in_flight() -> None:
+    # Given: inputs for `enqueue ignores duplicate candidate while com...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     release_commit = asyncio.Event()
     submitted: list[list[CommitCandidate]] = []
@@ -246,10 +268,12 @@ async def test_enqueue_ignores_duplicate_candidate_while_commit_is_in_flight() -
     )
 
     await coordinator.enqueue([_candidate(tp, 9)])
+    # When: the commit coordinator code path is exercised.
     for _ in range(10):
         if submitted:
             break
         await asyncio.sleep(0)
+    # Then: the expected `enqueue ignores duplicate candidate while com...` behavior is asserted.
     assert submitted
     assert coordinator.stats.queue_depth == 1
     in_flight_candidate = submitted[0][0]
@@ -271,6 +295,7 @@ async def test_enqueue_ignores_duplicate_candidate_while_commit_is_in_flight() -
 
 @pytest.mark.asyncio
 async def test_newer_pending_candidate_does_not_mask_in_flight_settlement() -> None:
+    # Given: inputs for `newer pending candidate does not mask in flig...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     release_first_commit = asyncio.Event()
     submitted_offsets: list[int] = []
@@ -293,10 +318,12 @@ async def test_newer_pending_candidate_does_not_mask_in_flight_settlement() -> N
     )
 
     await coordinator.enqueue([_candidate(tp, 9)])
+    # When: the commit coordinator code path is exercised.
     for _ in range(10):
         if submitted_offsets:
             break
         await asyncio.sleep(0)
+    # Then: the expected `newer pending candidate does not mask in flig...` behavior is asserted.
     assert submitted_offsets == [9]
     in_flight_candidate = coordinator.remaining_candidates()[tp]
 
@@ -318,6 +345,7 @@ async def test_newer_pending_candidate_does_not_mask_in_flight_settlement() -> N
 
 @pytest.mark.asyncio
 async def test_stop_accepting_partitions_preserves_in_flight_settlement() -> None:
+    # Given: inputs for `stop accepting partitions preserves in flight...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     release_commit = asyncio.Event()
     commit_started = asyncio.Event()
@@ -344,6 +372,8 @@ async def test_stop_accepting_partitions_preserves_in_flight_settlement() -> Non
 
     coordinator.stop_accepting_partitions([tp])
 
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `stop accepting partitions preserves in flight...` behavior is asserted.
     assert coordinator.is_active_lease(
         in_flight_candidate.tp,
         in_flight_candidate.assignment_epoch,
@@ -368,6 +398,7 @@ async def test_stop_accepting_partitions_preserves_in_flight_settlement() -> Non
 
 @pytest.mark.asyncio
 async def test_kafka_exception_retains_candidate_and_records_retry() -> None:
+    # Given: inputs for `kafka exception retains candidate and records...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     events: list[tuple[str, str | None, int]] = []
 
@@ -386,6 +417,8 @@ async def test_kafka_exception_retains_candidate_and_records_retry() -> None:
 
     await coordinator.enqueue([_candidate(tp, 7)])
     await asyncio.sleep(0.02)
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `kafka exception retains candidate and records...` behavior is asserted.
     assert tp in coordinator.remaining_candidates()
     assert coordinator.stats.retry_count >= 1
     assert ("retry", "kafka_exception", 1) in events
@@ -398,6 +431,7 @@ async def test_kafka_exception_retains_candidate_and_records_retry() -> None:
 
 @pytest.mark.asyncio
 async def test_kafka_exception_invokes_failure_callback_for_active_lease() -> None:
+    # Given: inputs for `kafka exception invokes failure callback for...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     failures_seen: list[tuple[list[CommitSettlement], str]] = []
 
@@ -417,8 +451,10 @@ async def test_kafka_exception_invokes_failure_callback_for_active_lease() -> No
     await coordinator.enqueue([_candidate(tp, 7)])
     await asyncio.sleep(0.01)
     coordinator.stop_accepting()
+    # When: the commit coordinator code path is exercised.
     coordinator.cancel_leases([tp])
 
+    # Then: the expected `kafka exception invokes failure callback for...` behavior is asserted.
     assert failures_seen
     assert failures_seen[0][1] == "kafka_exception"
     assert failures_seen[0][0][0].tp == tp
@@ -426,6 +462,7 @@ async def test_kafka_exception_invokes_failure_callback_for_active_lease() -> No
 
 @pytest.mark.asyncio
 async def test_cancelled_lease_settlement_is_ignored() -> None:
+    # Given: inputs for `cancelled lease settlement is ignored` are prepared.
     tp = DtoTopicPartition("topic", 0)
     success_called = False
     release_commit: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -448,14 +485,17 @@ async def test_cancelled_lease_settlement_is_ignored() -> None:
     await coordinator.enqueue([_candidate(tp, 2)])
     coordinator.cancel_leases([tp])
     release_commit.set_result(None)
+    # When: the commit coordinator code path is exercised.
     await coordinator.drain(timeout=1.0)
 
+    # Then: the expected `cancelled lease settlement is ignored` behavior is asserted.
     assert success_called is False
     assert coordinator.remaining_candidates() == {}
 
 
 @pytest.mark.asyncio
 async def test_cancelled_lease_marker_is_pruned_after_candidate_removal() -> None:
+    # Given: inputs for `cancelled lease marker is pruned after candid...` are prepared.
     tp = DtoTopicPartition("topic", 0)
     release_commit: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
@@ -475,12 +515,15 @@ async def test_cancelled_lease_marker_is_pruned_after_candidate_removal() -> Non
     release_commit.set_result(None)
     await coordinator.drain(timeout=1.0)
 
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `cancelled lease marker is pruned after candid...` behavior is asserted.
     assert coordinator.remaining_candidates() == {}
     assert coordinator._cancelled_leases == set()
 
 
 @pytest.mark.asyncio
 async def test_worker_crash_marks_unhealthy_and_stops_accepting() -> None:
+    # Given: inputs for `worker crash marks unhealthy and stops accepting` are prepared.
     tp = DtoTopicPartition("topic", 0)
     events: list[tuple[str, str | None, int]] = []
 
@@ -498,14 +541,19 @@ async def test_worker_crash_marks_unhealthy_and_stops_accepting() -> None:
     )
 
     await coordinator.enqueue([_candidate(tp, 1)])
+    # When: the commit coordinator code path is exercised.
     await coordinator.drain(timeout=1.0)
 
+    # Then: the expected `worker crash marks unhealthy and stops accepting` behavior is asserted.
     assert coordinator.healthy is False
     assert coordinator.accepting is False
     assert ("failure", "worker_crash", 1) in events
 
 
 def test_failure_reason_set_is_bounded() -> None:
+    # Given: inputs for `failure reason set is bounded` are prepared.
+    # When: the commit coordinator code path is exercised.
+    # Then: the expected `failure reason set is bounded` behavior is asserted.
     assert COMMIT_COORDINATOR_FAILURE_REASONS == (
         "kafka_exception",
         "queue_full",

@@ -14,6 +14,7 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 @pytest.mark.asyncio
 async def test_handle_blocking_timeouts_forces_failure_and_polls_completion() -> None:
+    # Given: inputs for `handle blocking timeouts forces failure and p...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -54,8 +55,10 @@ async def test_handle_blocking_timeouts_forces_failure_and_polls_completion() ->
         logger=MagicMock(),
     )
 
+    # When: the broker completion support code path is exercised.
     timeout_events = await support.handle_blocking_timeouts(max_blocking_duration_ms=1)
 
+    # Then: the expected `handle blocking timeouts forces failure and p...` behavior is asserted.
     assert timeout_events == [forced_event]
     work_manager.force_fail.assert_awaited_once()
     work_manager.poll_completed_events.assert_awaited_once_with()
@@ -63,6 +66,7 @@ async def test_handle_blocking_timeouts_forces_failure_and_polls_completion() ->
 
 @pytest.mark.asyncio
 async def test_process_completed_events_marks_complete_and_clears_cache() -> None:
+    # Given: inputs for `process completed events marks complete and c...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -89,6 +93,7 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
         logger=MagicMock(),
     )
 
+    # When: the broker completion support code path is exercised.
     result = await support.process_completed_events(
         [
             CompletionEvent(
@@ -103,6 +108,7 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
         ]
     )
 
+    # Then: the expected `process completed events marks complete and c...` behavior is asserted.
     assert 0 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 0)]
     assert result.completed_offsets_by_partition == {tp: (0,)}
@@ -110,6 +116,7 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
 
 @pytest.mark.asyncio
 async def test_process_completed_events_returns_only_newly_completed_offsets() -> None:
+    # Given: inputs for `process completed events returns only newly c...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -133,6 +140,7 @@ async def test_process_completed_events_returns_only_newly_completed_offsets() -
         logger=MagicMock(),
     )
 
+    # When: the broker completion support code path is exercised.
     result = await support.process_completed_events(
         [
             CompletionEvent(
@@ -156,6 +164,7 @@ async def test_process_completed_events_returns_only_newly_completed_offsets() -
         ]
     )
 
+    # Then: the expected `process completed events returns only newly c...` behavior is asserted.
     assert result.processed_count == 1
     assert result.completed_counts_by_partition == {tp: 1}
     assert result.completed_offsets_by_partition == {tp: (1,)}
@@ -163,6 +172,8 @@ async def test_process_completed_events_returns_only_newly_completed_offsets() -
 
 @pytest.mark.asyncio
 async def test_process_completed_events_falls_back_to_metadata_only_dlq() -> None:
+    # Given: inputs for `process completed events falls back to metada...` are prepared.
+    # When: the broker completion support code path is exercised.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -205,6 +216,7 @@ async def test_process_completed_events_falls_back_to_metadata_only_dlq() -> Non
         ]
     )
 
+    # Then: the expected `process completed events falls back to metada...` behavior is asserted.
     publish_to_dlq.assert_awaited_once_with(
         tp=tp,
         offset=100,
@@ -218,6 +230,7 @@ async def test_process_completed_events_falls_back_to_metadata_only_dlq() -> Non
 
 @pytest.mark.asyncio
 async def test_shutdown_preserved_failure_completion_uses_normal_dlq_boundary() -> None:
+    # Given: inputs for `shutdown preserved failure completion uses no...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -261,6 +274,7 @@ async def test_shutdown_preserved_failure_completion_uses_normal_dlq_boundary() 
         ]
     )
 
+    # When: the broker completion support code path is exercised.
     publish_to_dlq.assert_awaited_once_with(
         tp=tp,
         offset=100,
@@ -270,12 +284,14 @@ async def test_shutdown_preserved_failure_completion_uses_normal_dlq_boundary() 
         error="boom",
         attempt=3,
     )
+    # Then: the expected `shutdown preserved failure completion uses no...` behavior is asserted.
     assert 100 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 100)]
 
 
 @pytest.mark.asyncio
 async def test_shutdown_preserved_stale_failure_completion_is_epoch_fenced() -> None:
+    # Given: inputs for `shutdown preserved stale failure completion i...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -320,7 +336,9 @@ async def test_shutdown_preserved_stale_failure_completion_is_epoch_fenced() -> 
         ]
     )
 
+    # When: the broker completion support code path is exercised.
     publish_to_dlq.assert_not_awaited()
+    # Then: the expected `shutdown preserved stale failure completion i...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -329,6 +347,7 @@ async def test_shutdown_preserved_stale_failure_completion_is_epoch_fenced() -> 
 async def test_shutdown_preserved_stale_success_completion_does_not_mark_complete() -> (
     None
 ):
+    # Given: inputs for `shutdown preserved stale success completion d...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -355,6 +374,7 @@ async def test_shutdown_preserved_stale_success_completion_does_not_mark_complet
         logger=MagicMock(),
     )
 
+    # When: the broker completion support code path is exercised.
     await support.process_completed_events(
         [
             CompletionEvent(
@@ -369,6 +389,7 @@ async def test_shutdown_preserved_stale_success_completion_does_not_mark_complet
         ]
     )
 
+    # Then: the expected `shutdown preserved stale success completion d...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
     assert tracker.last_committed_offset == 99
     assert popped_cache_keys == []
@@ -378,6 +399,7 @@ async def test_shutdown_preserved_stale_success_completion_does_not_mark_complet
 async def test_process_completed_events_retries_pending_dlq_failure_and_marks_complete() -> (
     None
 ):
+    # Given: inputs for `process completed events retries pending dlq...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -418,8 +440,10 @@ async def test_process_completed_events_retries_pending_dlq_failure_and_marks_co
         attempt=3,
     )
 
+    # When: the broker completion support code path is exercised.
     await support.process_completed_events([failed_event])
 
+    # Then: the expected `process completed events retries pending dlq...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -442,6 +466,7 @@ async def test_process_completed_events_retries_pending_dlq_failure_and_marks_co
 
 @pytest.mark.asyncio
 async def test_process_completed_events_records_dlq_publish_failure_metric() -> None:
+    # Given: inputs for `process completed events records dlq publish...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -486,7 +511,9 @@ async def test_process_completed_events_records_dlq_publish_failure_metric() -> 
         ]
     )
 
+    # When: the broker completion support code path is exercised.
     metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
+    # Then: the expected `process completed events records dlq publish...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
 
     await support.process_completed_events([])
@@ -497,6 +524,7 @@ async def test_process_completed_events_records_dlq_publish_failure_metric() -> 
 
 @pytest.mark.asyncio
 async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() -> None:
+    # Given: inputs for `dlq publish failure metric error does not dro...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -544,7 +572,9 @@ async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() ->
         ]
     )
 
+    # When: the broker completion support code path is exercised.
     metrics_exporter.record_dlq_publish_failure.assert_called_once_with(tp)
+    # Then: the expected `dlq publish failure metric error does not dro...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
 
     await support.process_completed_events([])
@@ -555,6 +585,7 @@ async def test_dlq_publish_failure_metric_error_does_not_drop_pending_retry() ->
 
 @pytest.mark.asyncio
 async def test_stale_completion_does_not_drop_pending_dlq_retry() -> None:
+    # Given: inputs for `stale completion does not drop pending dlq retry` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -607,7 +638,9 @@ async def test_stale_completion_does_not_drop_pending_dlq_retry() -> None:
 
     await support.process_completed_events([pending_event])
 
+    # When: the broker completion support code path is exercised.
     await support.process_completed_events([stale_event])
+    # Then: the expected `stale completion does not drop pending dlq retry` behavior is asserted.
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -620,6 +653,7 @@ async def test_stale_completion_does_not_drop_pending_dlq_retry() -> None:
 async def test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry() -> (
     None
 ):
+    # Given: inputs for `fresh duplicate completion does not supersede...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -672,7 +706,9 @@ async def test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry()
 
     await support.process_completed_events([pending_event])
 
+    # When: the broker completion support code path is exercised.
     await support.process_completed_events([duplicate_success])
+    # Then: the expected `fresh duplicate completion does not supersede...` behavior is asserted.
     assert 100 not in tracker.completed_offsets
     assert popped_cache_keys == []
 
@@ -685,6 +721,7 @@ async def test_fresh_duplicate_completion_does_not_supersede_pending_dlq_retry()
 async def test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_success() -> (
     None
 ):
+    # Given: inputs for `duplicate failure in same batch does not read...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (
         BrokerCompletionSupport,
     )
@@ -741,8 +778,10 @@ async def test_duplicate_failure_in_same_batch_does_not_readd_pending_after_dlq_
         attempt=3,
     )
 
+    # When: the broker completion support code path is exercised.
     await support.process_completed_events([duplicate_failure])
 
+    # Then: the expected `duplicate failure in same batch does not read...` behavior is asserted.
     assert 100 in tracker.completed_offsets
     assert popped_cache_keys == [(tp, 100)]
     publish_to_dlq.assert_awaited_once()

@@ -99,6 +99,7 @@ def broker_poller_no_dlq(kafka_config_no_dlq, mock_execution_engine):
 @pytest.mark.asyncio
 async def test_publish_to_dlq_success_first_attempt(broker_poller_with_dlq):
     """Test successful DLQ publish on first attempt."""
+    # Given: inputs for `publish to dlq success first attempt` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     offset = 100
     epoch = 1
@@ -111,6 +112,7 @@ async def test_publish_to_dlq_success_first_attempt(broker_poller_with_dlq):
     broker_poller_with_dlq.producer.produce = MagicMock()
     broker_poller_with_dlq.producer.flush = MagicMock()
 
+    # When: the broker poller DLQ code path is exercised.
     result = await broker_poller_with_dlq._publish_to_dlq(
         tp=tp,
         offset=offset,
@@ -121,6 +123,7 @@ async def test_publish_to_dlq_success_first_attempt(broker_poller_with_dlq):
         attempt=attempt,
     )
 
+    # Then: the expected `publish to dlq success first attempt` behavior is asserted.
     assert result is True
 
     # Verify produce was called with correct parameters
@@ -148,6 +151,7 @@ async def test_publish_to_dlq_success_first_attempt(broker_poller_with_dlq):
 @pytest.mark.asyncio
 async def test_publish_to_dlq_retry_with_exponential_backoff(broker_poller_with_dlq):
     """Test DLQ publish retries with exponential backoff."""
+    # Given: inputs for `publish to dlq retry with exponential backoff` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
 
     # Mock produce to fail twice, then succeed
@@ -160,6 +164,7 @@ async def test_publish_to_dlq_retry_with_exponential_backoff(broker_poller_with_
     )
     broker_poller_with_dlq.producer.flush = MagicMock()
 
+    # When: the broker poller DLQ code path is exercised.
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await broker_poller_with_dlq._publish_to_dlq(
             tp=tp,
@@ -171,6 +176,7 @@ async def test_publish_to_dlq_retry_with_exponential_backoff(broker_poller_with_
             attempt=1,
         )
 
+    # Then: the expected `publish to dlq retry with exponential backoff` behavior is asserted.
     assert result is True
     assert broker_poller_with_dlq.producer.produce.call_count == 3
 
@@ -190,6 +196,7 @@ async def test_publish_to_dlq_retry_with_exponential_backoff(broker_poller_with_
 @pytest.mark.asyncio
 async def test_publish_to_dlq_failure_after_max_retries(broker_poller_with_dlq):
     """Test DLQ publish failure after exhausting all retries."""
+    # Given: inputs for `publish to dlq failure after max retries` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
 
     # Mock produce to always fail
@@ -197,6 +204,7 @@ async def test_publish_to_dlq_failure_after_max_retries(broker_poller_with_dlq):
         side_effect=KafkaException("Persistent error")
     )
 
+    # When: the broker poller DLQ code path is exercised.
     with patch("asyncio.sleep", new_callable=AsyncMock):
         result = await broker_poller_with_dlq._publish_to_dlq(
             tp=tp,
@@ -208,6 +216,7 @@ async def test_publish_to_dlq_failure_after_max_retries(broker_poller_with_dlq):
             attempt=1,
         )
 
+    # Then: the expected `publish to dlq failure after max retries` behavior is asserted.
     assert result is False
     # Should attempt max_retries times (3)
     assert broker_poller_with_dlq.producer.produce.call_count == 3
@@ -219,6 +228,7 @@ async def test_publish_to_dlq_linear_backoff(
 ):
     """Test DLQ publish with linear backoff strategy."""
     # Configure linear backoff
+    # Given: inputs for `publish to dlq linear backoff` are prepared.
     kafka_config_with_dlq.parallel_consumer.execution.exponential_backoff = False
     kafka_config_with_dlq.parallel_consumer.execution.retry_backoff_ms = 50
 
@@ -241,6 +251,7 @@ async def test_publish_to_dlq_linear_backoff(
     )
     poller.producer.flush = MagicMock()
 
+    # When: the broker poller DLQ code path is exercised.
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await poller._publish_to_dlq(
             tp=DtoTopicPartition(topic="test-topic", partition=0),
@@ -252,6 +263,7 @@ async def test_publish_to_dlq_linear_backoff(
             attempt=1,
         )
 
+    # Then: the expected `publish to dlq linear backoff` behavior is asserted.
     assert result is True
     assert mock_sleep.call_count == 2
 
@@ -267,6 +279,7 @@ async def test_publish_to_dlq_max_backoff_cap(
 ):
     """Test that exponential backoff is capped at max_retry_backoff_ms."""
     # Configure very large exponential backoff but with a cap
+    # Given: inputs for `publish to dlq max backoff cap` are prepared.
     kafka_config_with_dlq.parallel_consumer.execution.retry_backoff_ms = 1000
     kafka_config_with_dlq.parallel_consumer.execution.max_retry_backoff_ms = 2000
     kafka_config_with_dlq.parallel_consumer.execution.exponential_backoff = True
@@ -301,8 +314,10 @@ async def test_publish_to_dlq_max_backoff_cap(
     # First retry: 1000 * 2^0 = 1000ms = 1.0s (no jitter)
     # Second retry: 1000 * 2^1 = 2000ms = 2.0s (capped, no jitter)
     first_sleep = mock_sleep.call_args_list[0][0][0]
+    # When: the broker poller DLQ code path is exercised.
     second_sleep = mock_sleep.call_args_list[1][0][0]
 
+    # Then: the expected `publish to dlq max backoff cap` behavior is asserted.
     assert first_sleep == 1.0
     assert second_sleep == 2.0  # Capped at max
 
@@ -310,6 +325,7 @@ async def test_publish_to_dlq_max_backoff_cap(
 @pytest.mark.asyncio
 async def test_publish_to_dlq_raises_if_producer_not_initialized():
     """Test that _publish_to_dlq raises error if producer is None."""
+    # Given: inputs for `publish to dlq raises if producer not initial...` are prepared.
     config = KafkaConfig()
     config.dlq_enabled = True
     mock_engine = AsyncMock(spec=BaseExecutionEngine)
@@ -323,6 +339,8 @@ async def test_publish_to_dlq_raises_if_producer_not_initialized():
     # Explicitly set producer to None
     poller.producer = None
 
+    # When: the broker poller DLQ code path is exercised.
+    # Then: the expected `publish to dlq raises if producer not initial...` behavior is asserted.
     with pytest.raises(RuntimeError, match="Producer must be initialized"):
         await poller._publish_to_dlq(
             tp=DtoTopicPartition(topic="test-topic", partition=0),
@@ -338,6 +356,7 @@ async def test_publish_to_dlq_raises_if_producer_not_initialized():
 @pytest.mark.asyncio
 async def test_completion_event_dlq_disabled_skips_publish(broker_poller_no_dlq):
     """Test that DLQ publish is skipped when dlq_enabled is False."""
+    # Given: inputs for `completion event dlq disabled skips publish` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     offset = 100
 
@@ -365,17 +384,21 @@ async def test_completion_event_dlq_disabled_skips_publish(broker_poller_no_dlq)
 
     await broker_poller_no_dlq._process_completed_events([event])
 
+    # When: the broker poller DLQ code path is exercised.
     broker_poller_no_dlq._publish_to_dlq.assert_not_called()
+    # Then: the expected `completion event dlq disabled skips publish` behavior is asserted.
     assert offset in tracker.completed_offsets
     assert (tp, offset) not in broker_poller_no_dlq._message_cache
 
 
 @pytest.mark.asyncio
 async def test_publish_to_dlq_metadata_only(broker_poller_with_dlq):
+    # Given: inputs for `publish to dlq metadata only` are prepared.
     broker_poller_with_dlq._kafka_config.dlq_payload_mode = DLQPayloadMode.METADATA_ONLY
     broker_poller_with_dlq.producer.produce = MagicMock()
     broker_poller_with_dlq.producer.flush = MagicMock()
 
+    # When: the broker poller DLQ code path is exercised.
     result = await broker_poller_with_dlq._publish_to_dlq(
         tp=DtoTopicPartition(topic="test-topic", partition=0),
         offset=1,
@@ -386,6 +409,7 @@ async def test_publish_to_dlq_metadata_only(broker_poller_with_dlq):
         attempt=1,
     )
 
+    # Then: the expected `publish to dlq metadata only` behavior is asserted.
     assert result is True
     _, kwargs = broker_poller_with_dlq.producer.produce.call_args
     assert kwargs["key"] is None
@@ -394,7 +418,10 @@ async def test_publish_to_dlq_metadata_only(broker_poller_with_dlq):
 
 @pytest.mark.asyncio
 async def test_publish_to_dlq_invalid_suffix_raises(broker_poller_with_dlq):
+    # Given: inputs for `publish to dlq invalid suffix raises` are prepared.
     broker_poller_with_dlq._kafka_config.DLQ_TOPIC_SUFFIX = "bad suffix!"
+    # When: the broker poller DLQ code path is exercised.
+    # Then: the expected `publish to dlq invalid suffix raises` behavior is asserted.
     with pytest.raises(ValueError):
         await broker_poller_with_dlq._publish_to_dlq(
             tp=DtoTopicPartition(topic="test-topic", partition=0),
@@ -410,9 +437,12 @@ async def test_publish_to_dlq_invalid_suffix_raises(broker_poller_with_dlq):
 def test_cache_message_for_dlq_respects_mode_and_byte_budget(
     broker_poller_with_dlq, broker_poller_no_dlq
 ):
+    # Given: inputs for `cache message for dlq respects mode and byte...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
 
+    # When: the broker poller DLQ code path is exercised.
     broker_poller_no_dlq._cache_message_for_dlq(tp, 1, b"k", b"value")
+    # Then: the expected `cache message for dlq respects mode and byte...` behavior is asserted.
     assert broker_poller_no_dlq._message_cache == {}
 
     broker_poller_with_dlq._kafka_config.dlq_payload_mode = DLQPayloadMode.METADATA_ONLY
@@ -433,6 +463,7 @@ def test_cache_message_for_dlq_respects_mode_and_byte_budget(
 async def test_drain_completion_events_retries_pending_dlq_without_new_completions(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `drain completion events retries pending dlq w...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -451,8 +482,10 @@ async def test_drain_completion_events_retries_pending_dlq_without_new_completio
     broker_poller_with_dlq._process_completed_events = AsyncMock()
     broker_poller_with_dlq._work_manager.schedule = AsyncMock()
 
+    # When: the broker poller DLQ code path is exercised.
     drained = await broker_poller_with_dlq._drain_completion_events_once()
 
+    # Then: the expected `drain completion events retries pending dlq w...` behavior is asserted.
     assert drained is True
     broker_poller_with_dlq._process_completed_events.assert_awaited_once_with([])
     broker_poller_with_dlq._work_manager.schedule.assert_awaited_once_with()
@@ -462,6 +495,7 @@ async def test_drain_completion_events_retries_pending_dlq_without_new_completio
 async def test_graceful_shutdown_drain_times_out_while_pending_dlq_remains(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `graceful shutdown drain times out while pendi...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -480,8 +514,10 @@ async def test_graceful_shutdown_drain_times_out_while_pending_dlq_remains(
     broker_poller_with_dlq._drain_completion_events_once = AsyncMock(return_value=True)
     broker_poller_with_dlq._commit_ready_offsets = AsyncMock()
 
+    # When: the broker poller DLQ code path is exercised.
     drained = await broker_poller_with_dlq._drain_shutdown_work(timeout_seconds=0)
 
+    # Then: the expected `graceful shutdown drain times out while pendi...` behavior is asserted.
     assert drained is False
     broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
     broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
@@ -491,6 +527,7 @@ async def test_graceful_shutdown_drain_times_out_while_pending_dlq_remains(
 async def test_graceful_shutdown_drain_throttles_persistent_pending_dlq(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `graceful shutdown drain throttles persistent...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -512,11 +549,13 @@ async def test_graceful_shutdown_drain_throttles_persistent_pending_dlq(
     async def clear_pending_after_sleep(_timeout):
         broker_poller_with_dlq._pending_dlq_events.clear()
 
+    # When: the broker poller DLQ code path is exercised.
     with patch(
         "asyncio.sleep", new=AsyncMock(side_effect=clear_pending_after_sleep)
     ) as sleep:
         drained = await broker_poller_with_dlq._drain_shutdown_work(timeout_seconds=1)
 
+    # Then: the expected `graceful shutdown drain throttles persistent...` behavior is asserted.
     assert drained is True
     sleep.assert_awaited_once()
     sleep_duration = sleep.await_args.args[0]
@@ -527,6 +566,8 @@ async def test_graceful_shutdown_drain_throttles_persistent_pending_dlq(
 async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `completion monitor retries pending dlq withou...` are prepared.
+    # When: the broker poller DLQ code path is exercised.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -562,6 +603,7 @@ async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
     await broker_poller_with_dlq._run_completion_monitor()
 
     broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
+    # Then: the expected `completion monitor retries pending dlq withou...` behavior is asserted.
     broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
 
 
@@ -569,6 +611,8 @@ async def test_completion_monitor_retries_pending_dlq_without_engine_completion(
 async def test_completion_monitor_throttles_persistent_pending_dlq_retries(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `completion monitor throttles persistent pendi...` are prepared.
+    # When: the broker poller DLQ code path is exercised.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -608,11 +652,13 @@ async def test_completion_monitor_throttles_persistent_pending_dlq_retries(
     broker_poller_with_dlq._execution_engine.wait_for_completion.assert_not_awaited()
     broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
     broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
+    # Then: the expected `completion monitor throttles persistent pendi...` behavior is asserted.
     sleep.assert_awaited_once_with(broker_poller_with_dlq._idle_consume_timeout_seconds)
 
 
 @pytest.mark.asyncio
 async def test_cleanup_clears_pending_dlq_events(broker_poller_with_dlq):
+    # Given: inputs for `cleanup clears pending dlq events` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     broker_poller_with_dlq._pending_dlq_events = OrderedDict(
         {
@@ -634,6 +680,8 @@ async def test_cleanup_clears_pending_dlq_events(broker_poller_with_dlq):
 
     await broker_poller_with_dlq._cleanup()
 
+    # When: the broker poller DLQ code path is exercised.
+    # Then: the expected `cleanup clears pending dlq events` behavior is asserted.
     assert broker_poller_with_dlq._pending_dlq_events == OrderedDict()
     assert broker_poller_with_dlq._message_cache == OrderedDict()
 
@@ -642,6 +690,8 @@ async def test_cleanup_clears_pending_dlq_events(broker_poller_with_dlq):
 async def test_consumer_loop_polls_without_fetching_new_work_while_pending_dlq_exists(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `consumer loop polls without fetching new work...` are prepared.
+    # When: the broker poller DLQ code path is exercised.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -674,6 +724,7 @@ async def test_consumer_loop_polls_without_fetching_new_work_while_pending_dlq_e
         timeout=0,
     )
     broker_poller_with_dlq._drain_completion_events_once.assert_awaited_once()
+    # Then: the expected `consumer loop polls without fetching new work...` behavior is asserted.
     broker_poller_with_dlq._commit_ready_offsets.assert_awaited_once()
 
 
@@ -681,6 +732,8 @@ async def test_consumer_loop_polls_without_fetching_new_work_while_pending_dlq_e
 async def test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending_dlq_exists(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `consumer loop dispatches zero timeout poll me...` are prepared.
+    # When: the broker poller DLQ code path is exercised.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -727,6 +780,7 @@ async def test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending
         timeout=0,
     )
     dispatch_support.dispatch_messages.assert_awaited_once_with([message])
+    # Then: the expected `consumer loop dispatches zero timeout poll me...` behavior is asserted.
     broker_poller_with_dlq._work_manager.schedule.assert_awaited_once()
 
 
@@ -734,6 +788,8 @@ async def test_consumer_loop_dispatches_zero_timeout_poll_messages_while_pending
 async def test_consumer_loop_dispatches_buffered_cadence_messages_after_backpressure_check(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `consumer loop dispatches buffered cadence mes...` are prepared.
+    # When: the broker poller DLQ code path is exercised.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     pending_event = CompletionEvent(
         id="pending-work-id",
@@ -781,6 +837,7 @@ async def test_consumer_loop_dispatches_buffered_cadence_messages_after_backpres
         timeout=0,
     )
     dispatch_support.dispatch_messages.assert_awaited_once_with([message])
+    # Then: the expected `consumer loop dispatches buffered cadence mes...` behavior is asserted.
     broker_poller_with_dlq._work_manager.schedule.assert_awaited_once()
 
 
@@ -788,6 +845,7 @@ async def test_consumer_loop_dispatches_buffered_cadence_messages_after_backpres
 async def test_process_completed_events_falls_back_to_metadata_only_when_cache_missing(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `process completed events falls back to metada...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     offset = 100
 
@@ -814,6 +872,7 @@ async def test_process_completed_events_falls_back_to_metadata_only_when_cache_m
 
     await broker_poller_with_dlq._process_completed_events([event])
 
+    # When: the broker poller DLQ code path is exercised.
     broker_poller_with_dlq._publish_to_dlq.assert_called_once_with(
         tp=tp,
         offset=offset,
@@ -823,6 +882,7 @@ async def test_process_completed_events_falls_back_to_metadata_only_when_cache_m
         error="Test error",
         attempt=3,
     )
+    # Then: the expected `process completed events falls back to metada...` behavior is asserted.
     assert offset in tracker.completed_offsets
 
 
@@ -830,6 +890,7 @@ async def test_process_completed_events_falls_back_to_metadata_only_when_cache_m
 async def test_dlq_publish_failure_is_retried_without_duplicate_completion_event(
     broker_poller_with_dlq,
 ):
+    # Given: inputs for `dlq publish failure is retried without duplic...` are prepared.
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     offset = 101
 
@@ -856,7 +917,9 @@ async def test_dlq_publish_failure_is_retried_without_duplicate_completion_event
         attempt=broker_poller_with_dlq._kafka_config.parallel_consumer.execution.max_retries,
     )
 
+    # When: the broker poller DLQ code path is exercised.
     await broker_poller_with_dlq._process_completed_events([event])
+    # Then: the expected `dlq publish failure is retried without duplic...` behavior is asserted.
     assert offset not in tracker.completed_offsets
     assert (tp, offset) in broker_poller_with_dlq._message_cache
 

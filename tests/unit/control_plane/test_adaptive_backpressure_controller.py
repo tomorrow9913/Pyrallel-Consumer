@@ -5,6 +5,7 @@ from pyrallel_consumer.control_plane.adaptive_backpressure import (
 
 
 def test_controller_scales_down_when_paused_or_latency_is_high() -> None:
+    # Given: inputs for `controller scales down when paused or latency...` are prepared.
     controller = AdaptiveBackpressureController(
         configured_max_in_flight=100,
         config=AdaptiveBackpressureConfig(
@@ -16,6 +17,8 @@ def test_controller_scales_down_when_paused_or_latency_is_high() -> None:
         ),
     )
 
+    # When: the adaptive backpressure controller code path is exercised.
+    # Then: the expected `controller scales down when paused or latency...` behavior is asserted.
     assert (
         controller.evaluate(
             total_true_lag=0,
@@ -40,6 +43,7 @@ def test_controller_scales_down_when_paused_or_latency_is_high() -> None:
 
 
 def test_controller_scales_up_when_lag_is_high_and_latency_is_healthy() -> None:
+    # Given: inputs for `controller scales up when lag is high and lat...` are prepared.
     controller = AdaptiveBackpressureController(
         configured_max_in_flight=120,
         config=AdaptiveBackpressureConfig(
@@ -53,6 +57,8 @@ def test_controller_scales_up_when_lag_is_high_and_latency_is_healthy() -> None:
     )
     controller._effective_max_in_flight = 60
 
+    # When: the adaptive backpressure controller code path is exercised.
+    # Then: the expected `controller scales up when lag is high and lat...` behavior is asserted.
     assert (
         controller.evaluate(
             total_true_lag=300,
@@ -76,11 +82,14 @@ def test_controller_scales_up_when_lag_is_high_and_latency_is_healthy() -> None:
 
 
 def test_controller_holds_when_disabled_or_in_cooldown() -> None:
+    # Given: inputs for `controller holds when disabled or in cooldown` are prepared.
     disabled = AdaptiveBackpressureController(
         configured_max_in_flight=100,
         config=AdaptiveBackpressureConfig(enabled=False),
     )
 
+    # When: the adaptive backpressure controller code path is exercised.
+    # Then: the expected `controller holds when disabled or in cooldown` behavior is asserted.
     assert (
         disabled.evaluate(
             total_true_lag=1000,
@@ -124,6 +133,7 @@ def test_controller_holds_when_disabled_or_in_cooldown() -> None:
 
 
 def test_controller_does_not_start_cooldown_for_noop_scale_up_at_max() -> None:
+    # Given: inputs for `controller does not start cooldown for noop s...` are prepared.
     controller = AdaptiveBackpressureController(
         configured_max_in_flight=100,
         config=AdaptiveBackpressureConfig(
@@ -138,6 +148,8 @@ def test_controller_does_not_start_cooldown_for_noop_scale_up_at_max() -> None:
         ),
     )
 
+    # When: the adaptive backpressure controller code path is exercised.
+    # Then: the expected `controller does not start cooldown for noop s...` behavior is asserted.
     assert (
         controller.evaluate(
             total_true_lag=0,
