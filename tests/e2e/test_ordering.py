@@ -345,9 +345,11 @@ async def test_key_hash_ordering(
     base_kafka_config: KafkaConfig, execution_mode: ExecutionMode
 ):
     """KEY_HASH 모드에서 키별 순서 보장을 테스트합니다."""
+    # Given: 2,000 messages spread across 200 keys in the selected execution mode.
     num_messages = 2000
     num_keys = 200
 
+    # When: the consumer processes the topic with KEY_HASH ordering enabled.
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
         ordering_mode=OrderingMode.KEY_HASH,
@@ -356,6 +358,7 @@ async def test_key_hash_ordering(
         num_keys=num_keys,
     )
 
+    # Then: every message is processed and each key's sequence remains sorted.
     assert result_tracker.get_processed_count() == num_messages
     result_tracker.verify_key_hash_ordering()
 
@@ -370,9 +373,11 @@ async def test_partition_ordering(
     base_kafka_config: KafkaConfig, execution_mode: ExecutionMode
 ):
     """PARTITION 모드에서 파티션별 순서 보장을 테스트합니다."""
+    # Given: 500 messages spread across 50 keys in the selected execution mode.
     num_messages = 500
     num_keys = 50
 
+    # When: the consumer processes the topic with PARTITION ordering enabled.
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
         ordering_mode=OrderingMode.PARTITION,
@@ -381,6 +386,7 @@ async def test_partition_ordering(
         num_keys=num_keys,
     )
 
+    # Then: every message is processed and offsets remain sorted per partition.
     assert result_tracker.get_processed_count() == num_messages
     result_tracker.verify_partition_ordering()
 
@@ -388,9 +394,11 @@ async def test_partition_ordering(
 @pytest.mark.asyncio
 async def test_unordered(base_kafka_config: KafkaConfig):
     """UNORDERED 모드에서 모든 메시지가 처리되는지 테스트합니다."""
+    # Given: 2,000 messages spread across 200 keys without ordering constraints.
     num_messages = 2000
     num_keys = 200
 
+    # When: the consumer processes the topic with UNORDERED mode enabled.
     result_tracker, _ = await run_ordering_test(
         kafka_config=base_kafka_config,
         ordering_mode=OrderingMode.UNORDERED,
@@ -398,12 +406,14 @@ async def test_unordered(base_kafka_config: KafkaConfig):
         num_keys=num_keys,
     )
 
+    # Then: all produced messages are observed as processed.
     assert result_tracker.get_processed_count() == num_messages
 
 
 @pytest.mark.asyncio
 async def test_backpressure(base_kafka_config: KafkaConfig):
     """Backpressure pause/resume 동작을 검증합니다."""
+    # Given: a slow worker and a low max-in-flight limit of 20 for 500 messages.
     num_messages = 500
     num_keys = 50
     max_in_flight = 20
@@ -448,6 +458,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
         E2E_TOPIC,
     )
 
+    # When: the poller runs under sustained load until all messages complete.
     await poller.start()
 
     try:
@@ -456,6 +467,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
         await poller.stop()
         await producer_process.wait()
 
+    # Then: all messages complete and the poller keeps the configured thresholds.
     assert result_tracker.get_processed_count() == num_messages
     assert poller.MAX_IN_FLIGHT_MESSAGES == max_in_flight
     assert poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME == max(1, int(max_in_flight * 0.7))
@@ -464,6 +476,7 @@ async def test_backpressure(base_kafka_config: KafkaConfig):
 @pytest.mark.asyncio
 async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
     """Gap 기반 오프셋 커밋의 정확성을 검증합니다."""
+    # Given: 500 messages with random worker delay and per-partition max offsets tracked.
     num_messages = 500
     num_keys = 50
 
@@ -514,6 +527,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
         E2E_TOPIC,
     )
 
+    # When: the poller processes every message and has time to publish commits.
     await poller.start()
 
     try:
@@ -524,6 +538,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
         await poller.stop()
         await producer_process.wait()
 
+    # Then: processing completes before commit validation reads the group offsets.
     assert result_tracker.get_processed_count() == num_messages
 
     verify_consumer = Consumer(
@@ -546,6 +561,7 @@ async def test_offset_commit_correctness(base_kafka_config: KafkaConfig):
 
             max_processed = partition_max_offsets.get(partition_id, -1)
             if max_processed >= 0:
+                # Then: committed offsets never move beyond the processed offset boundary.
                 assert committed_offset <= max_processed + 1, (
                     f"Partition {partition_id}: committed offset {committed_offset} "
                     f"exceeds max processed offset {max_processed} + 1"

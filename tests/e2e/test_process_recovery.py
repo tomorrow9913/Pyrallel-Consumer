@@ -756,6 +756,7 @@ def _read_attempt_log(path: Path) -> list[tuple[int, int, int]]:
 async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
     execution_mode: ExecutionMode,
 ) -> None:
+    # Given: one partition has blocked in-flight work and another poller can rebalance in.
     _require_kafka()
     mode_label = execution_mode.value
     topic = _topic_name(f"{mode_label}-recovery-rebalance")
@@ -822,6 +823,7 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
 
         await primary_poller.start()
         try:
+            # When: the primary poller starts work that remains blocked during rebalance.
             await _wait_for_event(
                 started_event,
                 timeout_seconds=20,
@@ -846,6 +848,7 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
             }
             await asyncio.sleep(2)
 
+            # When: the blocked primary work is released after secondary assignment.
             release_event.set()
             await _wait_until(
                 lambda: (
@@ -888,6 +891,7 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
             _delete_topic(admin, topic)
 
     completed_offsets = [entry[3] for entry in completed_entries]
+    # Then: every produced offset completes and the committed offset reaches the safe boundary.
     assert set(completed_offsets) == set(range(produced_count))
     assert final_committed_offset == produced_count
     assert secondary_assignments, (
@@ -898,6 +902,7 @@ async def test_process_rebalance_keeps_commit_safe_while_work_is_inflight(
 
 @pytest.mark.asyncio
 async def test_process_graceful_stop_drains_inflight_before_close() -> None:
+    # Given: process-mode work is blocked while three messages are available.
     _require_kafka()
     topic = _topic_name("process-recovery-stop-drain")
     group_id = _topic_name("process-recovery-group")
@@ -938,6 +943,7 @@ async def test_process_graceful_stop_drains_inflight_before_close() -> None:
 
         await poller.start()
         try:
+            # When: graceful stop begins while the first in-flight item is still blocked.
             await _wait_for_event(
                 started_event,
                 timeout_seconds=20,
@@ -961,6 +967,7 @@ async def test_process_graceful_stop_drains_inflight_before_close() -> None:
                 f"offset={blocked_commit}"
             )
 
+            # When: the blocked work is released and shutdown can drain completions.
             release_event.set()
             await asyncio.wait_for(stop_task, timeout=30)
             await _wait_until(
@@ -990,6 +997,7 @@ async def test_process_graceful_stop_drains_inflight_before_close() -> None:
         for entry in all_entries
         if entry[0] == "completed" and entry[2] == partition
     ]
+    # Then: graceful stop completes all offsets before the runtime closes.
     assert set(completed_offsets) == set(range(produced_count))
     assert final_committed_offset == produced_count
 
@@ -1003,6 +1011,7 @@ async def test_process_graceful_stop_drains_inflight_before_close() -> None:
 async def test_process_restart_preserves_offset_continuity(
     execution_mode: ExecutionMode,
 ) -> None:
+    # Given: the first runtime processes three offsets before a restart.
     _require_kafka()
     mode_label = execution_mode.value
     topic = _topic_name(f"{mode_label}-recovery-restart")
@@ -1056,6 +1065,7 @@ async def test_process_restart_preserves_offset_continuity(
 
         await first_poller.start()
         try:
+            # When: the first poller completes and commits the pre-restart subset.
             await _wait_until(
                 lambda: (
                     len(
@@ -1093,6 +1103,7 @@ async def test_process_restart_preserves_offset_continuity(
             start_sequence=restart_after_commit,
         )
 
+        # When: a second runtime starts from the same group after more messages arrive.
         await second_poller.start()
         try:
             await _wait_until(
@@ -1153,6 +1164,7 @@ async def test_process_restart_preserves_offset_continuity(
         offset for offset, count in Counter(completed_offsets).items() if count > 1
     ]
 
+    # Then: the restart resumes at the committed boundary and completes the full range.
     assert committed_before_restart == restart_after_commit
     assert set(completed_offsets) == set(range(produced_count))
     post_restart_message = f"expected post-restart work, got entries={all_entries}"
@@ -1180,6 +1192,7 @@ async def test_process_retry_path_commits_only_after_success(
     execution_mode: ExecutionMode,
     tmp_path: Path,
 ) -> None:
+    # Given: offset 0 fails once, then blocks on its successful retry attempt.
     _require_kafka()
     mode_label = execution_mode.value
     topic = _topic_name(f"{mode_label}-recovery-retry")
@@ -1241,6 +1254,7 @@ async def test_process_retry_path_commits_only_after_success(
                 message="retry scenario never reached the blocked success attempt",
             )
             blocked_commit = _fetch_committed_offset(group_id, topic, partition)
+            # Then: the commit has not advanced while the retry success is blocked.
             assert blocked_commit in (-1001, 0), (
                 "commit advanced before the retrying offset completed successfully: "
                 f"offset={blocked_commit}"
@@ -1248,6 +1262,7 @@ async def test_process_retry_path_commits_only_after_success(
 
             final_commit_timeout = 30 if execution_mode == ExecutionMode.PROCESS else 15
 
+            # When: the successful retry is released.
             success_release_path.write_text("release", encoding="utf-8")
             await _wait_until(
                 lambda: (
@@ -1271,6 +1286,7 @@ async def test_process_retry_path_commits_only_after_success(
         for attempt_partition, attempt_offset, attempt in attempts
         if attempt_partition == partition and attempt_offset == target_offset
     )
+    # Then: the target offset commits only after the retry succeeds.
     assert target_attempts == fail_first_attempts + 1
     assert final_committed_offset == produced_count
 
@@ -1284,6 +1300,7 @@ async def test_process_retry_path_commits_only_after_success(
 async def test_process_dlq_path_commits_after_retry_exhaustion(
     execution_mode: ExecutionMode,
 ) -> None:
+    # Given: offset 0 always fails and DLQ handling is enabled for the topic.
     _require_kafka()
     mode_label = execution_mode.value
     topic = _topic_name(f"{mode_label}-recovery-dlq")
@@ -1328,6 +1345,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
 
         await poller.start()
         try:
+            # When: retries are exhausted and the poller advances past the DLQ-handled offset.
             await _wait_until(
                 lambda: (
                     _fetch_committed_offset(group_id, topic, partition)
@@ -1367,6 +1385,7 @@ async def test_process_dlq_path_commits_after_retry_exhaustion(
     dlq_payload = json.loads(dlq_msg.value().decode("utf-8"))
     target_attempts = int(headers["x-retry-attempt"].decode("utf-8"))
 
+    # Then: the failed target offset is excluded from normal completions and appears in the DLQ.
     assert target_attempts >= max_retries
     assert set(completed_offsets) == {1, 2}
     assert not target_completions

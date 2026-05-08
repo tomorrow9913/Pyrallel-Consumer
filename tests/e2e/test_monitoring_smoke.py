@@ -149,6 +149,7 @@ def _prometheus_target_health() -> dict[str, str]:
 def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
     tmp_path: Path,
 ) -> None:
+    # Given: Kafka, Prometheus, Grafana, and required provisioning are available.
     try:
         _wait_for_kafka_metadata(timeout_sec=90 if _strict_e2e_gate() else 5)
         _wait_until(
@@ -224,6 +225,7 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         "--json-output",
         str(json_output),
     ]
+    # When: a process-mode benchmark run exposes consumer metrics on port 9091.
     benchmark = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
@@ -251,6 +253,7 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
                 f"test: {exc}"
             )
         output, _ = benchmark.communicate(timeout=220)
+        # Then: Prometheus scrapes both Kafka and pyrallel-consumer targets successfully.
         assert benchmark.returncode == 0, output
         assert json_output.exists()
     finally:
