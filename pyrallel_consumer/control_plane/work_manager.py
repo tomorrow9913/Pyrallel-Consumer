@@ -946,15 +946,15 @@ class WorkManager:
             self._dispatch_timestamps.pop(event.id, None)
             return False
 
-        if event.tp not in self._shared_offset_trackers:
-            offset_tracker.mark_complete(event.offset)
-            self._invalidate_blocking_cache()
-
         if event.id not in self._in_flight_work_items:
             self._dispatch_timestamps.pop(event.id, None)
             return False
 
         completed_item = self._in_flight_work_items[event.id]
+        if event.tp not in self._shared_offset_trackers:
+            offset_tracker.mark_complete(event.offset)
+            self._invalidate_blocking_cache()
+
         if self._poison_message_circuit is not None:
             self._poison_message_circuit.record_completion(event, completed_item)
         _, dispatch_time = self._release_in_flight_item(event.id)

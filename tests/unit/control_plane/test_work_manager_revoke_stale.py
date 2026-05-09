@@ -6,6 +6,7 @@
 from tests.unit.control_plane._work_manager_support import (
     CompletionEvent,
     CompletionStatus,
+    MagicMock,
     OffsetTracker,
     OrderingMode,
     WorkItem,
@@ -299,6 +300,40 @@ async def test_stale_completion_after_reassign_does_not_touch_new_epoch_state(
     assert work_manager._current_in_flight_count == 1
     assert (mock_dto_topic_partition, b"key-A") in work_manager._keys_in_flight
     assert new_tracker.last_committed_offset == -1
+
+
+@pytest.mark.asyncio
+async def test_same_epoch_inactive_completion_does_not_mark_offset_complete(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    # Given: a completion arrives for the current epoch but no active work id.
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+    tracker = work_manager._offset_trackers[mock_dto_topic_partition]
+    tracker.mark_complete = MagicMock(wraps=tracker.mark_complete)
+
+    inactive_completion = CompletionEvent(
+        id="inactive-work",
+        tp=mock_dto_topic_partition,
+        offset=10,
+        epoch=tracker.get_current_epoch(),
+        status=CompletionStatus.SUCCESS,
+        error=None,
+        attempt=1,
+    )
+    mock_execution_engine.poll_completed_events.return_value = [inactive_completion]
+
+    # When: the stale-but-current-epoch completion is processed.
+    completed_events = await work_manager.poll_completed_events()
+
+    # Then: it is ignored before offset completion side effects.
+    assert completed_events == [inactive_completion]
+    tracker.mark_complete.assert_not_called()
+    assert inactive_completion.offset not in tracker.completed_offsets
+    assert tracker.last_committed_offset == -1
 
 
 @pytest.mark.asyncio
