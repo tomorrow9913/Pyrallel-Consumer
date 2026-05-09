@@ -3,8 +3,13 @@
 # Role: Verifies the PyrallelConsumer facade lifecycle, metrics wiring, resource signals, and poller delegation.
 # Extend here for public consumer facade lifecycle or sidecar integration changes.
 
+import asyncio
+import queue
+import time
+from collections import deque
+from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -12,12 +17,46 @@ from _pytest.monkeypatch import MonkeyPatch
 from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.dto import (
+    BatchCompletion,
+    CompletionStatus,
     ExecutionMode,
     OrderingMode,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
+    RouteBatch,
+    TopicPartition,
+    WorkItem,
 )
+from pyrallel_consumer.execution_plane.process_codec import (
+    batch_completion_from_dict,
+    decode_batch_completion_payload,
+    serialize_batch_completion_payload,
+    serialize_batch_payload,
+    work_item_to_dict,
+)
+from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.execution_plane.process_worker_runtime import _worker_loop
 from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
+from pyrallel_consumer.worker import BatchItemOutcome, BatchWorkerContractError
+
+_PROCESS_BATCH_FACADE_SEEN_IDS: list[list[str]] = []
+
+
+def _process_batch_facade_mixed_worker(
+    items: Sequence[WorkItem],
+) -> dict[str, BatchItemOutcome]:
+    _PROCESS_BATCH_FACADE_SEEN_IDS.append([item.id for item in items])
+    return {
+        "work-success": BatchItemOutcome.success(),
+        "work-retry": BatchItemOutcome.failure("retryable failure"),
+        "work-terminal": BatchItemOutcome.failure("terminal failure"),
+    }
+
+
+def _process_batch_facade_invalid_worker(
+    items: Sequence[WorkItem],
+) -> dict[str, BatchItemOutcome]:
+    return {items[0].id: BatchItemOutcome.success()}
 
 
 class _DummyEngine:
@@ -279,6 +318,211 @@ def test_pyrallel_consumer_from_batch_worker_opens_process_runtime_path(
     assert captured_worker.callable is batch_worker
     assert captured_worker.batch_runtime is not None
     assert consumer._work_manager._batch_dispatch_enabled is True
+
+
+def test_pyrallel_consumer_process_batch_facade_contract_handles_mixed_and_stale(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: the public facade creates a process batch-worker runtime path.
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+    config.parallel_consumer.execution.max_retries = 3
+    config.parallel_consumer.ordering_mode = OrderingMode.UNORDERED
+    _PROCESS_BATCH_FACADE_SEEN_IDS.clear()
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=_process_batch_facade_mixed_worker,
+        topic="demo",
+    )
+    engine = cast(ProcessExecutionEngine, consumer._execution_engine)
+    engine_any = cast(Any, engine)
+    worker_spec = cast(WorkerSpec, engine_any._worker_fn)
+    items = [
+        WorkItem("work-success", TopicPartition("topic", 1), 50, 7, b"key", b"a"),
+        WorkItem("work-retry", TopicPartition("topic", 1), 51, 7, b"key", b"b"),
+        WorkItem("work-terminal", TopicPartition("topic", 1), 52, 7, b"key", b"c"),
+    ]
+
+    # When: the facade WorkerSpec is exercised by the process batch runtime.
+    task_source: queue.Queue[object] = queue.Queue()
+    worker_completion_queue: queue.Queue[object] = queue.Queue()
+    worker_registry_queue: queue.Queue[object] = queue.Queue()
+    task_source.put(
+        serialize_batch_payload(
+            RouteBatch("batch-facade-worker", ("topic", 1, b"key"), 0, items),
+            time.monotonic(),
+        )
+    )
+    task_source.put(None)
+    _worker_loop(
+        task_source,
+        worker_completion_queue,  # type: ignore[arg-type]
+        worker_registry_queue,  # type: ignore[arg-type]
+        worker_spec,
+        0,
+        config.parallel_consumer.execution,
+    )
+    worker_payload = decode_batch_completion_payload(
+        worker_completion_queue.get_nowait(),
+        config.parallel_consumer.execution.process_config.msgpack_max_bytes,
+    )
+    worker_completion = batch_completion_from_dict(worker_payload["completion"])
+
+    # Then: the process batch worker receives list[WorkItem] through the facade path.
+    assert worker_spec.kind == "batch"
+    assert consumer._work_manager._batch_dispatch_enabled is True
+    assert _PROCESS_BATCH_FACADE_SEEN_IDS == [
+        ["work-success", "work-retry", "work-terminal"]
+    ]
+    assert [(event.id, event.status) for event in worker_completion.results] == [
+        ("work-success", CompletionStatus.SUCCESS),
+        ("work-retry", CompletionStatus.FAILURE),
+        ("work-terminal", CompletionStatus.FAILURE),
+    ]
+
+    # When: parent finalization sees success, retryable failure, terminal failure,
+    # and a child done event for the retryable failure before completion.
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: object,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    success_payload = work_item_to_dict(items[0])
+    retry_payload = work_item_to_dict(items[1])
+    terminal_payload = work_item_to_dict(items[2])
+    terminal_payload["requeue_attempts"] = 3
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 50): success_payload,
+        (0, "topic", 1, 51): retry_payload,
+        (0, "topic", 1, 52): terminal_payload,
+    }
+    engine_any._in_flight_count = 3
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-facade-parent"}
+    engine_any._process_control_events = deque()
+    engine_any._registry_event_queue.put(
+        {"kind": "done", "key": (0, "topic", 1, 51), "payload": retry_payload}
+    )
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-facade-parent",
+                route_identity=("topic", 1, b"key"),
+                results=worker_completion.results,
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: success is committable, retryable failure redispatches, terminal failure finalizes.
+    assert [
+        (event.id, event.status, event.error, event.attempt)
+        for event in completed_events
+    ] == [
+        ("work-success", CompletionStatus.SUCCESS, None, 1),
+        ("work-terminal", CompletionStatus.FAILURE, "terminal failure", 3),
+    ]
+    assert [
+        (item.id, item.requeue_attempts) for item in dispatched_batches[0].items
+    ] == [("work-retry", 1)]
+
+    # When: a stale batch completion arrives after parent ownership moved on.
+    engine_any._active_process_batch_ids = {"batch-current"}
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-stale",
+                route_identity=("topic", 1, b"key"),
+                results=[worker_completion.results[1]],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    # Then: stale completions do not create completion, retry, or finalization output.
+    assert asyncio.run(engine.poll_completed_events()) == []
+    assert len(dispatched_batches) == 1
+
+
+def test_pyrallel_consumer_process_batch_facade_invalid_result_is_fatal_only(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: a process batch worker created through the facade returns an invalid result.
+    monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=_process_batch_facade_invalid_worker,
+        topic="demo",
+    )
+    engine = cast(ProcessExecutionEngine, consumer._execution_engine)
+    engine_any = cast(Any, engine)
+    worker_spec = cast(WorkerSpec, engine_any._worker_fn)
+    items = [
+        WorkItem("work-invalid-a", TopicPartition("topic", 1), 60, 7, b"key", b"a"),
+        WorkItem("work-invalid-b", TopicPartition("topic", 1), 61, 7, b"key", b"b"),
+    ]
+    task_source: queue.Queue[object] = queue.Queue()
+    worker_completion_queue: queue.Queue[object] = queue.Queue()
+    worker_registry_queue: queue.Queue[object] = queue.Queue()
+    task_source.put(
+        serialize_batch_payload(
+            RouteBatch("batch-invalid-facade", ("topic", 1, b"key"), 0, items),
+            time.monotonic(),
+        )
+    )
+    task_source.put(None)
+
+    # When: the invalid batch result is executed by the process worker runtime.
+    _worker_loop(
+        task_source,
+        worker_completion_queue,  # type: ignore[arg-type]
+        worker_registry_queue,  # type: ignore[arg-type]
+        worker_spec,
+        0,
+        config.parallel_consumer.execution,
+    )
+    engine_any._transport = type(
+        "NoopTransport",
+        (),
+        {"handle_registry_event": lambda self, event: None},
+    )()
+    engine_any._process_control_events = deque()
+    for _ in range(worker_registry_queue.qsize()):
+        engine._apply_registry_event(
+            cast(dict[str, Any], worker_registry_queue.get_nowait())
+        )
+
+    control_events = asyncio.run(engine.poll_control_events())
+
+    # Then: invalid contracts surface only as fatal control events.
+    assert worker_completion_queue.empty()
+    assert len(control_events) == 1
+    assert control_events[0].kind == "fatal"
+    assert isinstance(control_events[0].error, BatchWorkerContractError)
 
 
 @pytest.mark.asyncio
