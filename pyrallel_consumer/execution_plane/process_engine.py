@@ -182,6 +182,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
         self._process_batch_manifests: dict[str, dict[str, Any]] = {}
+        self._active_process_batch_ids: set[str] = set()
+        self._stale_process_batch_completion_count: int = 0
         self._workers: List[Process] = []
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
         self._in_flight_count: int = 0
@@ -628,6 +630,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._process_control_events = control_events
         return control_events
 
+    def _get_active_process_batch_ids(self) -> set[str]:
+        """Return parent-owned active process batch identifiers."""
+        batch_ids = getattr(self, "_active_process_batch_ids", None)
+        if batch_ids is None:
+            batch_ids = set()
+            self._active_process_batch_ids = batch_ids
+        return batch_ids
+
     def _record_process_batch_manifest(
         self,
         *,
@@ -647,6 +657,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             "items": [_work_item_to_dict(item) for item in items],
             "start_ack_deadline_at": time.monotonic() + timeout_seconds,
         }
+        self._get_active_process_batch_ids().add(batch_id)
 
     def _recover_expired_batch_start_acks(self, *, now: float) -> int:
         """Recover route batches whose child batch_start ack did not arrive in time."""
@@ -662,10 +673,33 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 if isinstance(payload, dict)
             ]
             manifests.pop(batch_id, None)
+            self._get_active_process_batch_ids().discard(str(batch_id))
             if payloads:
                 self._requeue_recovered_payloads(payloads)
             recovered += 1
         return recovered
+
+    def _quarantine_stale_batch_completion(self, batch_id: str) -> bool:
+        """Return True after recording a stale process batch completion."""
+        active_batch_ids = getattr(self, "_active_process_batch_ids", None)
+        if active_batch_ids is None:
+            return False
+        if batch_id in active_batch_ids:
+            return False
+        self._stale_process_batch_completion_count = (
+            getattr(self, "_stale_process_batch_completion_count", 0) + 1
+        )
+        self._logger.warning(
+            "Quarantined stale process batch completion batch_id=%s",
+            batch_id,
+        )
+        return True
+
+    def _retire_active_process_batch_id(self, batch_id: str) -> None:
+        """Retire an active process batch identifier after accepted completion decode."""
+        active_batch_ids = getattr(self, "_active_process_batch_ids", None)
+        if active_batch_ids is not None:
+            active_batch_ids.discard(batch_id)
 
     def _apply_batch_start_event(self, event: dict[str, Any]) -> bool:
         """Seed per-item recovery registry from parent manifest on batch_start ack."""
@@ -1500,11 +1534,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 batch_completion = _batch_completion_from_dict(
                     decoded_payload["completion"]
                 )
+                batch_id = str(batch_completion.batch_id)
+                if self._quarantine_stale_batch_completion(batch_id):
+                    self._record_completion_ipc(0, batch_payload=True)
+                    return []
                 results = self._redispatch_retryable_batch_failures(
-                    batch_id=str(batch_completion.batch_id),
+                    batch_id=batch_id,
                     route_identity=batch_completion.route_identity,
                     results=list(batch_completion.results),
                 )
+                self._retire_active_process_batch_id(batch_id)
                 self._record_completion_ipc(len(results), batch_payload=True)
                 return results
             completion_enqueued_at = payload.get("completion_enqueued_at")

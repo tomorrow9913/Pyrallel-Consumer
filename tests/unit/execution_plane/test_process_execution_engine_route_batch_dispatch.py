@@ -63,6 +63,7 @@ def test_process_engine_redispatches_retryable_failed_batch_subset_with_new_batc
     engine_any._in_flight_lock = threading.Lock()
     engine_any._in_flight_count = 2
     engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-original"}
     engine_any._logger = logging.getLogger(__name__)
     engine._initialize_runtime_timing_state()
 
@@ -136,6 +137,82 @@ def test_process_engine_redispatches_retryable_failed_batch_subset_with_new_batc
     assert (0, "topic", 1, 43) not in engine_any._in_flight_registry
     retry_manifest = engine_any._process_batch_manifests[retry_batch.batch_id]
     assert retry_manifest["items"] == [_work_item_to_dict(retry_batch.items[0])]
+
+
+def test_process_engine_quarantines_stale_batch_completion_without_promotion_or_retry() -> (
+    None
+):
+    # Given: a stale batch completion arrives after parent ownership moved on.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-current"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+
+    stale_item = WorkItem("work-stale", TopicPartition("topic", 1), 44, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 44): _work_item_to_dict(stale_item)
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-stale",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        stale_item.id,
+                        stale_item.tp,
+                        stale_item.offset,
+                        stale_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "stale failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: stale completions are observable but do not settle, promote, or retry.
+    assert completed_events == []
+    assert dispatched_batches == []
+    assert engine_any._in_flight_registry == {
+        (0, "topic", 1, 44): _work_item_to_dict(stale_item)
+    }
+    assert engine_any._stale_process_batch_completion_count == 1
 
 
 def test_worker_pipe_route_batch_slot_acquire_uses_representative_payload(
