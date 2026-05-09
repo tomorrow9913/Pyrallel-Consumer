@@ -288,9 +288,25 @@ def test_process_engine_finalizes_retry_exhausted_batch_failure_as_terminal_comp
     # Then: exhausted failures finalize as ordinary terminal completion events.
     assert dispatched_batches == []
     assert [
-        (event.id, event.status, event.error, event.attempt)
+        (
+            event.id,
+            event.status,
+            event.error,
+            event.attempt,
+            event.terminal,
+            event.failure_class,
+        )
         for event in completed_events
-    ] == [("work-terminal", CompletionStatus.FAILURE, "terminal failure", 3)]
+    ] == [
+        (
+            "work-terminal",
+            CompletionStatus.FAILURE,
+            "terminal failure",
+            3,
+            True,
+            "WORKER_FAILURE",
+        )
+    ]
     assert asyncio.run(engine.poll_control_events()) == []
     assert engine_any._in_flight_registry == {}
 

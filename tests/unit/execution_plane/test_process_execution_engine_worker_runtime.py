@@ -10,7 +10,11 @@ from pyrallel_consumer.execution_plane.worker_spec import (
     BatchWorkerRuntimeSpec,
     WorkerSpec,
 )
-from pyrallel_consumer.worker import BatchItemOutcome, BatchWorkerContractError
+from pyrallel_consumer.worker import (
+    BATCH_WORKER_ERROR_MAX_CHARS,
+    BatchItemOutcome,
+    BatchWorkerContractError,
+)
 from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     CompletionStatus,
@@ -221,6 +225,54 @@ def test_worker_runtime_batch_worker_timeout_exits_without_success_completion(
     # Then: timeout does not create committable success or invalid-result fatal control.
     assert completion_queue.empty()
     assert [event for event in registry_events if event.get("kind") == "control"] == []
+
+
+def test_worker_runtime_bounds_batch_worker_thrown_exception_errors() -> None:
+    # Given: a public process batch worker raises an oversized exception string.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-oversized-exception", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    oversized_error = "x" * (BATCH_WORKER_ERROR_MAX_CHARS + 99)
+
+    def batch_worker(_batch: list[WorkItem]) -> None:
+        raise RuntimeError(oversized_error)
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.UNORDERED,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payload = msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+    completion = batch_completion_from_dict(raw_payload["completion"])
+
+    # Then: exception text is bounded before crossing process runtime queues.
+    assert completion.results[0].error is not None
+    assert len(completion.results[0].error) == BATCH_WORKER_ERROR_MAX_CHARS
 
 
 def test_worker_runtime_executes_route_batch_items_in_order() -> None:
@@ -465,6 +517,79 @@ def test_worker_runtime_emits_not_started_diagnostic_for_route_batch_remainder()
             "kind": "not_started",
             "reason": "ordered_batch_failure",
             "batch_id": "batch-remainder",
+            "payloads": [_work_item_to_dict(items[2])],
+        }
+    ]
+
+
+def test_worker_runtime_batch_worker_ordered_prefix_blocked_tail_is_not_started() -> (
+    None
+):
+    # Given: a public ordered batch worker reports a failed item and a blocked tail.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-public-blocked-tail", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def batch_worker(batch: list[WorkItem]) -> dict[str, BatchItemOutcome]:
+        return {
+            batch[0].id: BatchItemOutcome.success(),
+            batch[1].id: BatchItemOutcome.failure("sink rejected"),
+            batch[2].id: BatchItemOutcome.ordered_prefix_blocked(),
+        }
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payload = msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+    completion = batch_completion_from_dict(raw_payload["completion"])
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    not_started_events = [
+        event for event in registry_events if event.get("kind") == "not_started"
+    ]
+
+    # Then: the failed prefix is reported, while blocked tail ownership remains retryable.
+    assert [(event.id, event.status) for event in completion.results] == [
+        ("work-1", CompletionStatus.SUCCESS),
+        ("work-2", CompletionStatus.FAILURE),
+    ]
+    assert not_started_events == [
+        {
+            "kind": "not_started",
+            "reason": "ordered_batch_failure",
+            "batch_id": "batch-public-blocked-tail",
             "payloads": [_work_item_to_dict(items[2])],
         }
     ]

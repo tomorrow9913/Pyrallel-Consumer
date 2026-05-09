@@ -356,3 +356,28 @@ def test_batch_worker_public_contract_exports_helpers_and_error_type() -> None:
     assert error.reason == "invalid_batch_worker_result:missing_item_id"
     assert str(error) == error.reason
     assert error.args == (error.reason,)
+
+
+def test_public_contract_doc_freezes_batch_worker_v1_contract() -> None:
+    # Given: the v1 public contract document is the release contract source.
+    document = PUBLIC_CONTRACT_DOC.read_text(encoding="utf-8")
+
+    expected_terms = [
+        "Batch-worker v1 public contract",
+        "BatchItemOutcome.success()",
+        "BatchItemOutcome.failure(error)",
+        "BatchItemOutcome.ordered_prefix_blocked()",
+        "ordered_prefix_blocked is only valid for the not-started tail after the first failure",
+        "worker-owned tail retry",
+        "BATCH_WORKER_ERROR_MAX_CHARS",
+        "CompletionEvent.terminal",
+        "CompletionEvent.failure_class",
+        "process codec preserves terminal and failure_class",
+        "tests/unit/execution_plane/test_batch_result.py",
+        "tests/unit/execution_plane/test_process_execution_engine_worker_runtime.py",
+        "tests/unit/execution_plane/test_process_execution_engine_route_batch_dispatch.py",
+    ]
+
+    # Then: public docs expose the stable helper/status/codec/error contract and evidence.
+    for expected_term in expected_terms:
+        assert expected_term in document

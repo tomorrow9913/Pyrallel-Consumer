@@ -23,9 +23,19 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
-from pyrallel_consumer.execution_plane.batch_result import normalize_batch_worker_result
-from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
-from pyrallel_consumer.worker import BatchWorkerContractError, BatchWorkerResult
+from pyrallel_consumer.execution_plane.batch_result import (
+    normalize_batch_worker_result,
+    ordered_prefix_blocked_tail_items,
+)
+from pyrallel_consumer.execution_plane.worker_spec import (
+    CompletionFailureClass,
+    WorkerSpec,
+)
+from pyrallel_consumer.worker import (
+    BatchWorkerContractError,
+    BatchWorkerResult,
+    _bound_batch_worker_error_reason,
+)
 
 
 class AsyncExecutionEngine(BaseExecutionEngine):
@@ -160,7 +170,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
                     await self._apply_backoff(attempt)
             except Exception as e:
                 status = CompletionStatus.FAILURE
-                error = str(e)
+                error = _bound_batch_worker_error_reason(str(e))
                 self._logger.exception(
                     "Task for offset %d failed with exception: %s"
                     % (work_item.offset, error)
@@ -187,7 +197,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         await self._control_queue.put(event)
         self._activity_event.set()
 
-    async def _execute_batch_worker_task(self, work_items: list[WorkItem]) -> None:
+    async def _execute_batch_worker_task(
+        self, work_items: list[WorkItem], *, first_attempt: int = 1
+    ) -> None:
         result: BatchWorkerResult = None
         error: Optional[str] = None
         attempt = 0
@@ -198,7 +210,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             self._worker_fn,
         )
 
-        for attempt in range(1, self._config.max_retries + 1):
+        for attempt in range(first_attempt, self._config.max_retries + 1):
             try:
                 maybe_result = batch_worker(list(work_items))
                 if inspect.isawaitable(maybe_result):
@@ -211,12 +223,12 @@ class AsyncExecutionEngine(BaseExecutionEngine):
                 error = None
                 break
             except asyncio.TimeoutError:
-                error = "Batch task timed out."
+                error = _bound_batch_worker_error_reason("Batch task timed out.")
                 self._logger.error(error)
                 if attempt < self._config.max_retries:
                     await self._apply_backoff(attempt)
             except Exception as exc:
-                error = str(exc)
+                error = _bound_batch_worker_error_reason(str(exc))
                 self._logger.exception("Batch task failed with exception: %s", error)
                 if attempt < self._config.max_retries:
                     await self._apply_backoff(attempt)
@@ -255,6 +267,31 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             return
         for event in events:
             await self._put_completion_event(event)
+        blocked_tail = ordered_prefix_blocked_tail_items(
+            pending_items=work_items,
+            result=result,
+        )
+        if not blocked_tail:
+            return
+        if attempt < self._config.max_retries:
+            await self._execute_batch_worker_task(
+                blocked_tail, first_attempt=attempt + 1
+            )
+            return
+        for item in blocked_tail:
+            await self._put_completion_event(
+                CompletionEvent(
+                    id=item.id,
+                    tp=item.tp,
+                    offset=item.offset,
+                    epoch=item.epoch,
+                    status=CompletionStatus.FAILURE,
+                    error="ordered_prefix_blocked",
+                    attempt=attempt,
+                    terminal=True,
+                    failure_class=CompletionFailureClass.WORKER_FAILURE.value,
+                )
+            )
 
     async def _apply_backoff(self, attempt: int) -> None:
         """Handle apply backoff within async execution.

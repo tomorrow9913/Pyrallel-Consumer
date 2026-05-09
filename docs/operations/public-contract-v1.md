@@ -25,6 +25,7 @@ operators and downstream users can rely on across the v1 release line.
 | Commit public surface | completion-driven (`on_complete`) only | no explicit public knob for periodic commit | Adding a periodic commit option to facade/config changes the contract |
 | Runtime diagnostics facade (`PyrallelConsumer.get_runtime_snapshot()`) | read-only structured snapshot | queue summary, retry policy, DLQ status, per-partition assignment/runtime state | Additive read-only fields are backward-compatible; renaming/removing existing snapshot fields is breaking once documented |
 | Pipeline diagnostics sidecar (`PyrallelConsumer.get_pipeline_diagnostics()`) | read-only supported sidecar snapshot | bounded pipeline stages, blocked reasons, support state, subqueues, dispatch capacity, admission, workers, settlement, poll counters | Additive read-only fields are backward-compatible; support-state semantics and bounded enum values are stable once documented |
+| Batch-worker v1 public contract | opt-in batch worker helper surface | `BatchItemOutcome.success()`, `BatchItemOutcome.failure(error)`, `BatchItemOutcome.ordered_prefix_blocked()`, `BatchWorkerContractError` | Helper names, status values, and ordered-tail semantics are frozen for v1; additive helpers are minor if existing helpers keep value semantics |
 
 Operational rules:
 
@@ -115,12 +116,39 @@ post-join `passes`, and `residual_in_flight_registry`, but those values are not
 part of the frozen `RuntimeSnapshot` contract, are not a retry ledger, and must
 not be interpreted as commit-safety or DLQ-publish authority.
 
+### Batch-worker v1 public contract
+
+The public batch-worker helper surface is value based and stable for v1:
+
+- `BatchItemOutcome.success()` marks an item-level success.
+- `BatchItemOutcome.failure(error)` marks an item-level failure. Runtime-visible
+  failure text is bounded by `BATCH_WORKER_ERROR_MAX_CHARS` before completion
+  events cross execution/runtime queues.
+- `BatchItemOutcome.ordered_prefix_blocked()` is only valid in ordered modes for
+  work that the batch worker did not start after the first failed item.
+- `BatchWorkerContractError` surfaces fatal invalid batch-worker result shapes
+  with bounded `invalid_batch_worker_result:*` reasons.
+
+For ordered batch workers, `ordered_prefix_blocked is only valid for the not-started tail after the first failure`.
+The tail remains worker-owned for retry accounting: the parent runtime must
+retry the blocked tail as work that was not started by the worker, rather than
+converting it into terminal item failures. This is the worker-owned tail retry
+boundary for ordered-prefix batches.
+
+Process-worker completion IPC is append-only. `CompletionEvent.terminal` and
+`CompletionEvent.failure_class` are optional additive fields, and the `process codec preserves terminal and failure_class`
+while defaulting missing legacy payload fields to non-terminal / unclassified
+failure semantics.
+
 ## 3) Contract Regression Tests
 
 The v1 frozen contract is guarded by the following regression tests.
 
 - `tests/unit/docs/test_public_contract_v1.py`
 - `tests/unit/test_consumer.py`
+- `tests/unit/execution_plane/test_batch_result.py`
+- `tests/unit/execution_plane/test_process_execution_engine_worker_runtime.py`
+- `tests/unit/execution_plane/test_process_execution_engine_route_batch_dispatch.py`
 - `tests/unit/control_plane/test_broker_poller_dlq.py`
 - `tests/unit/control_plane/test_broker_poller_metrics.py`
 - `tests/unit/control_plane/test_broker_runtime_support.py`

@@ -6,7 +6,11 @@ from pyrallel_consumer.dto import (
     OrderingMode,
     WorkItem,
 )
-from pyrallel_consumer.worker import BatchItemOutcome, BatchWorkerContractError
+from pyrallel_consumer.worker import (
+    BatchItemOutcome,
+    BatchWorkerContractError,
+    _bound_batch_worker_error_reason,
+)
 
 _DEFAULT_BATCH_ITEM_FAILURE = "batch_worker_item_failed"
 
@@ -33,13 +37,16 @@ def _completion_event(
     error: str | None,
     attempt: int,
 ) -> CompletionEvent:
+    bounded_error = (
+        _bound_batch_worker_error_reason(error) if error is not None else None
+    )
     return CompletionEvent(
         id=item.id,
         tp=item.tp,
         offset=item.offset,
         epoch=item.epoch,
         status=status,
-        error=error,
+        error=bounded_error,
         attempt=attempt,
     )
 
@@ -71,6 +78,29 @@ def _validate_outcome(outcome: object) -> BatchItemOutcome:
             raise _contract_error("ordered_prefix_blocked_with_error")
         return outcome
     raise _contract_error("unknown_status")
+
+
+def ordered_prefix_blocked_tail_items(
+    *,
+    pending_items: Sequence[WorkItem],
+    result: Mapping[str, BatchItemOutcome] | None,
+) -> list[WorkItem]:
+    """Return ordered batch-worker tail items explicitly reported as not started."""
+    if result is None or not isinstance(result, Mapping):
+        return []
+    saw_failure = False
+    tail_items: list[WorkItem] = []
+    for item in pending_items:
+        outcome = result.get(item.id)
+        if outcome is None:
+            continue
+        if saw_failure:
+            if outcome.status == "ordered_prefix_blocked":
+                tail_items.append(item)
+            continue
+        if outcome.status == "failure":
+            saw_failure = True
+    return tail_items
 
 
 def normalize_batch_worker_result(

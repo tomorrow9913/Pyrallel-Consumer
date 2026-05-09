@@ -16,7 +16,7 @@ from pyrallel_consumer.execution_plane.worker_spec import (
     BatchWorkerRuntimeSpec,
     WorkerSpec,
 )
-from pyrallel_consumer.worker import BatchItemOutcome
+from pyrallel_consumer.worker import BATCH_WORKER_ERROR_MAX_CHARS, BatchItemOutcome
 from tests.unit.execution_plane.test_execution_engine_contract import (
     BaseExecutionEngineContractTest,
 )
@@ -369,6 +369,80 @@ async def test_async_batch_worker_explicit_result_normalizes_item_outcomes() -> 
         ("a", CompletionStatus.SUCCESS, None),
         ("b", CompletionStatus.FAILURE, "sink rejected"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_retries_ordered_prefix_blocked_tail() -> None:
+    # Given: an ordered batch worker leaves the tail unstarted after a prefix failure.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(calls) == 1:
+            return {
+                items[0].id: BatchItemOutcome.success(),
+                items[1].id: BatchItemOutcome.failure("sink rejected"),
+                items[2].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+        WorkItem("c", TopicPartition("orders", 0), 3, 1, "k", b"c"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: prefix/failure are reported and only the blocked tail is retried.
+    assert calls == [["a", "b", "c"], ["c"]]
+    assert [(event.id, event.status, event.attempt) for event in events] == [
+        ("a", CompletionStatus.SUCCESS, 1),
+        ("b", CompletionStatus.FAILURE, 1),
+        ("c", CompletionStatus.SUCCESS, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_bounds_thrown_exception_errors() -> None:
+    # Given: a batch worker raises an oversized exception string.
+    oversized_error = "x" * (BATCH_WORKER_ERROR_MAX_CHARS + 99)
+
+    async def batch_worker(_items: list[WorkItem]):
+        raise RuntimeError(oversized_error)
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.UNORDERED,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    items = [WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a")]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: exception text is bounded before crossing runtime queues.
+    assert events[0].error is not None
+    assert len(events[0].error) == BATCH_WORKER_ERROR_MAX_CHARS
 
 
 @pytest.mark.asyncio

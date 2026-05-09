@@ -7,7 +7,11 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.batch_result import normalize_batch_worker_result
-from pyrallel_consumer.worker import BatchItemOutcome, BatchWorkerContractError
+from pyrallel_consumer.worker import (
+    BATCH_WORKER_ERROR_MAX_CHARS,
+    BatchItemOutcome,
+    BatchWorkerContractError,
+)
 
 
 def _item(item_id: str, offset: int) -> WorkItem:
@@ -132,3 +136,21 @@ def test_batch_result_ordered_prefix_requires_blocked_tail_after_first_failure()
             ordering_mode=OrderingMode.KEY_HASH,
             attempt=1,
         )
+
+
+def test_batch_result_bounds_large_item_failure_errors() -> None:
+    # Given: a public batch worker returns an oversized item-level failure reason.
+    oversized_error = "worker failure: " + ("x" * (BATCH_WORKER_ERROR_MAX_CHARS + 128))
+    items = [_item("a", 10)]
+
+    events = normalize_batch_worker_result(
+        pending_items=items,
+        result={"a": BatchItemOutcome.failure(oversized_error)},
+        ordering_mode=OrderingMode.UNORDERED,
+        attempt=1,
+    )
+
+    # Then: normalized completion errors remain bounded before crossing runtime queues.
+    assert events[0].error is not None
+    assert len(events[0].error) == BATCH_WORKER_ERROR_MAX_CHARS
+    assert events[0].error == oversized_error[:BATCH_WORKER_ERROR_MAX_CHARS]

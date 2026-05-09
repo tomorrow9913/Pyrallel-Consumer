@@ -103,7 +103,10 @@ from pyrallel_consumer.execution_plane.process_worker_supervisor import (
     ProcessWorkerSupervisor,
     ProcessWorkerSupervisorContext,
 )
-from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
+from pyrallel_consumer.execution_plane.worker_spec import (
+    CompletionFailureClass,
+    WorkerSpec,
+)
 from pyrallel_consumer.logger import LogManager
 from pyrallel_consumer.worker import BatchWorkerContractError
 
@@ -930,6 +933,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                         status=event.status,
                         error=event.error,
                         attempt=self._config.max_retries,
+                        terminal=True,
+                        failure_class=(
+                            event.failure_class
+                            or CompletionFailureClass.WORKER_FAILURE.value
+                        ),
                     )
                 )
                 continue

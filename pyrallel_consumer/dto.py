@@ -70,6 +70,8 @@ class CompletionEvent:
         status (CompletionStatus): 완료 상태
         error (Optional[str]): 오류 메시지 (실패 시)
         attempt (int): 시도 횟수 (1-based)
+        terminal (bool): Whether this failure exhausted retry ownership.
+        failure_class (Optional[str]): Optional bounded machine-readable failure class.
     """
 
     id: str
@@ -80,6 +82,8 @@ class CompletionEvent:
     status: CompletionStatus
     error: Optional[str]
     attempt: int
+    terminal: bool = False
+    failure_class: Optional[str] = None
 
 
 @dataclass(frozen=True)

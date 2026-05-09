@@ -7,6 +7,7 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     AsyncGenerator,
     BaseExecutionEngineContractTest,
+    CompletionEvent,
     CompletionStatus,
     EngineWorkerDiagnostics,
     ExecutionConfig,
@@ -22,6 +23,7 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     _async_worker,
     _BrokenPipeSender,
     _completion_event_from_dict,
+    _completion_event_to_dict,
     _contract_worker,
     _DeadWorker,
     _FakeProcess,
@@ -84,6 +86,39 @@ def test_process_work_item_serialization_preserves_poison_key() -> None:
     # When: the relevant core process execution engine code path is exercised.
     # Then: the assertions confirm that process work item serialization preserves poison key.
     assert decoded.poison_key == b"original-key"
+
+
+def test_process_completion_codec_preserves_terminal_failure_class_and_legacy_defaults() -> (
+    None
+):
+    # Given: a completion event carries additive terminal/failure classification fields.
+    event = CompletionEvent(
+        id="work-1",
+        tp=TopicPartition("topic", 1),
+        offset=42,
+        epoch=7,
+        status=CompletionStatus.FAILURE,
+        error="worker failed",
+        attempt=2,
+        terminal=True,
+        failure_class="WORKER_FAILURE",
+    )
+
+    payload = _completion_event_to_dict(event)
+    decoded = _completion_event_from_dict(payload)
+
+    # Then: process IPC preserves the additive fields.
+    assert payload["terminal"] is True
+    assert payload["failure_class"] == "WORKER_FAILURE"
+    assert decoded.terminal is True
+    assert decoded.failure_class == "WORKER_FAILURE"
+
+    # And: legacy payloads missing those fields decode to safe defaults.
+    payload.pop("terminal")
+    payload.pop("failure_class")
+    legacy_decoded = _completion_event_from_dict(payload)
+    assert legacy_decoded.terminal is False
+    assert legacy_decoded.failure_class is None
 
 
 def test_ensure_workers_alive_does_not_requeue_timed_out_work(

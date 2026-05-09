@@ -140,6 +140,8 @@ def completion_event_to_dict(
         "status": event.status.value,
         "error": event.error,
         "attempt": event.attempt,
+        "terminal": event.terminal,
+        "failure_class": event.failure_class,
     }
     if extra_fields:
         payload.update(extra_fields)
@@ -166,6 +168,8 @@ def completion_event_from_dict(
         status=CompletionStatus(payload["status"]),
         error=payload.get("error"),
         attempt=payload["attempt"],
+        terminal=bool(payload.get("terminal", False)),
+        failure_class=payload.get("failure_class"),
     )
 
 

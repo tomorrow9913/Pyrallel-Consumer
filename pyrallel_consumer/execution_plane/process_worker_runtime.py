@@ -9,7 +9,7 @@ import os
 import random
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from multiprocessing import Queue
 from typing import Any, Optional, cast
 
@@ -41,7 +41,11 @@ from pyrallel_consumer.execution_plane.process_codec import (
 )
 from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 from pyrallel_consumer.logger import LogManager
-from pyrallel_consumer.worker import BatchWorkerContractError, BatchWorkerResult
+from pyrallel_consumer.worker import (
+    BatchWorkerContractError,
+    BatchWorkerResult,
+    _bound_batch_worker_error_reason,
+)
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
@@ -151,6 +155,30 @@ def _flush_route_batch_completion(
                     process_idx,
                     fallback_exc,
                 )
+
+
+def _ordered_prefix_blocked_tail_payloads(
+    *,
+    payloads: list[dict[str, Any]],
+    result: BatchWorkerResult,
+) -> list[dict[str, Any]]:
+    """Return public batch-worker tail payloads marked as not-started."""
+    if not isinstance(result, Mapping):
+        return []
+    saw_failure = False
+    tail_payloads: list[dict[str, Any]] = []
+    for payload in payloads:
+        item_id = str(payload.get("id", ""))
+        outcome = result.get(item_id)
+        if outcome is None:
+            continue
+        if saw_failure:
+            if outcome.status == "ordered_prefix_blocked":
+                tail_payloads.append(dict(payload))
+            continue
+        if outcome.status == "failure":
+            saw_failure = True
+    return tail_payloads
 
 
 def _worker_loop(
@@ -312,7 +340,7 @@ def _worker_loop(
                 )
                 os._exit(1)
             except Exception as exc:
-                batch_error = str(exc)
+                batch_error = _bound_batch_worker_error_reason(str(exc))
 
             if batch_error is None:
                 batch_runtime = worker_fn.batch_runtime
@@ -335,6 +363,19 @@ def _worker_loop(
                         }
                     )
                     continue
+                blocked_tail_payloads = _ordered_prefix_blocked_tail_payloads(
+                    payloads=payloads,
+                    result=result,
+                )
+                if blocked_tail_payloads:
+                    registry_event_queue.put(
+                        {
+                            "kind": "not_started",
+                            "reason": "ordered_batch_failure",
+                            "batch_id": route_batch_id,
+                            "payloads": blocked_tail_payloads,
+                        }
+                    )
             else:
                 batch_completion_results = [
                     CompletionEvent(
@@ -483,7 +524,7 @@ def _worker_loop(
                     break
                 except Exception as e:
                     status = CompletionStatus.FAILURE
-                    error = str(e)
+                    error = _bound_batch_worker_error_reason(str(e))
                     if attempt < max_child_attempts:
                         backoff_sec = _calculate_backoff(
                             attempt,
