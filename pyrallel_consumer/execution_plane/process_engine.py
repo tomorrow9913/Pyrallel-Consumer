@@ -87,6 +87,7 @@ from pyrallel_consumer.execution_plane.process_shutdown_support import (
 from pyrallel_consumer.execution_plane.process_transport import (
     ProcessTransport,
     resolve_route_identity,
+    stable_worker_index_for_route,
 )
 from pyrallel_consumer.execution_plane.process_transport_worker_pipes import (
     WorkerPipesProcessTransport,
@@ -168,15 +169,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._registry_event_queue: Queue[Any] = Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._seen_completion_identities: set[tuple[str, str, int, int, int]] = set()
-        self._seen_completion_identity_order: Deque[tuple[str, str, int, int, int]] = (
-            deque()
-        )
+        self._seen_completion_identity_order: Deque[
+            tuple[str, str, int, int, int]
+        ] = deque()
         self._completion_buffer = self._build_completion_buffer()
         self._shutdown_support = ProcessShutdownSupport(_logger)
         self._worker_supervisor = ProcessWorkerSupervisor()
         self._in_flight_registry: dict[
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
+        self._process_batch_manifests: dict[str, dict[str, Any]] = {}
         self._workers: List[Process] = []
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
         self._in_flight_count: int = 0
@@ -607,6 +609,77 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
         self._transport.requeue_payloads(payloads)
 
+    def _get_process_batch_manifests(self) -> dict[str, dict[str, Any]]:
+        """Return parent-owned process batch manifests."""
+        manifests = getattr(self, "_process_batch_manifests", None)
+        if manifests is None:
+            manifests = {}
+            self._process_batch_manifests = manifests
+        return manifests
+
+    def _record_process_batch_manifest(
+        self,
+        *,
+        batch_id: str,
+        worker_index: int,
+        items: list[WorkItem],
+    ) -> None:
+        """Record parent-owned membership for a process route-batch attempt."""
+        timeout_seconds = max(
+            0.001,
+            float(getattr(self._config.process_config, "task_timeout_ms", 30000))
+            / 1000.0,
+        )
+        self._get_process_batch_manifests()[batch_id] = {
+            "batch_id": batch_id,
+            "worker_index": worker_index,
+            "items": [_work_item_to_dict(item) for item in items],
+            "start_ack_deadline_at": time.monotonic() + timeout_seconds,
+        }
+
+    def _recover_expired_batch_start_acks(self, *, now: float) -> int:
+        """Recover route batches whose child batch_start ack did not arrive in time."""
+        recovered = 0
+        manifests = self._get_process_batch_manifests()
+        for batch_id, manifest in list(manifests.items()):
+            deadline = manifest.get("start_ack_deadline_at")
+            if not isinstance(deadline, (int, float)) or now <= float(deadline):
+                continue
+            payloads = [
+                dict(payload)
+                for payload in manifest.get("items", [])
+                if isinstance(payload, dict)
+            ]
+            manifests.pop(batch_id, None)
+            if payloads:
+                self._requeue_recovered_payloads(payloads)
+            recovered += 1
+        return recovered
+
+    def _apply_batch_start_event(self, event: dict[str, Any]) -> bool:
+        """Seed per-item recovery registry from parent manifest on batch_start ack."""
+        if event.get("kind") != "batch_start":
+            return False
+        batch_id = event.get("batch_id")
+        worker_index = event.get("worker_index")
+        if batch_id is None or worker_index is None:
+            return True
+        manifest = self._get_process_batch_manifests().pop(str(batch_id), None)
+        if manifest is None:
+            return True
+        manifest_worker_index = int(manifest.get("worker_index", worker_index))
+        for payload in manifest.get("items", []):
+            if not isinstance(payload, dict):
+                continue
+            key = (
+                manifest_worker_index,
+                str(payload["topic"]),
+                int(payload["partition"]),
+                int(payload["offset"]),
+            )
+            self._in_flight_registry[key] = dict(payload)
+        return True
+
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
         """Handle apply registry event within multiprocessing execution.
 
@@ -618,6 +691,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         transport = getattr(self, "_transport", None)
         if transport is not None:
             transport.handle_registry_event(event)
+        if self._apply_batch_start_event(event):
+            return
         if self._recover_not_started_payloads(event):
             return
         ProcessRegistrySupport.apply_registry_event(
@@ -1001,6 +1076,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if getattr(self, "_is_shutdown", False):
             raise RuntimeError("ProcessExecutionEngine is shutting down")
         self._drain_registry_events()
+        self._recover_expired_batch_start_acks(now=time.monotonic())
         await asyncio.to_thread(self._ensure_workers_alive, force=True)
         await self._transport.submit_work_item(
             work_item,
@@ -1025,7 +1101,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
 
         self._drain_registry_events()
+        self._recover_expired_batch_start_acks(now=time.monotonic())
         await asyncio.to_thread(self._ensure_workers_alive, force=True)
+        worker_index = stable_worker_index_for_route(
+            route_identity,
+            self._config.process_config.process_count,
+        )
         route_batch = RouteBatch(
             batch_id=uuid.uuid4().hex,
             route_identity=(
@@ -1033,16 +1114,25 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 route_identity.partition,
                 route_identity.key,
             ),
-            worker_index=None,
+            worker_index=worker_index,
             items=work_items,
         )
         dispatch_route_batch = getattr(self._transport, "dispatch_route_batch")
-        await asyncio.to_thread(
-            dispatch_route_batch,
-            route_batch,
-            route_identity=route_identity,
-            count_in_flight=True,
+        self._record_process_batch_manifest(
+            batch_id=route_batch.batch_id,
+            worker_index=worker_index,
+            items=work_items,
         )
+        try:
+            await asyncio.to_thread(
+                dispatch_route_batch,
+                route_batch,
+                route_identity=route_identity,
+                count_in_flight=True,
+            )
+        except Exception:
+            self._process_batch_manifests.pop(route_batch.batch_id, None)
+            raise
         self._record_input_ipc(len(work_items), route_batch=True)
 
     async def poll_completed_events(

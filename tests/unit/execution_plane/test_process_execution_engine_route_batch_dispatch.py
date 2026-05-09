@@ -154,6 +154,45 @@ def test_worker_pipe_route_batch_start_keeps_unstarted_tail_recoverable() -> Non
     assert transport._pending_dispatch == {}
 
 
+def test_worker_pipe_batch_start_ack_clears_pending_route_batch() -> None:
+    # Given: a route-batch dispatch is pending worker acknowledgment.
+    sender = _PipeSender()
+    transport = WorkerPipesProcessTransport(
+        process_count=1,
+        queue_size=1,
+        max_payload_bytes=4096,
+        serialize_work_item=_work_item_to_dict,
+        serialize_batch_payload=_serialize_batch_payload,
+        work_item_from_dict=_work_item_from_dict,
+        get_worker_pipe_senders=lambda: [sender],
+        increment_in_flight=lambda: None,
+        pipe_sentinel=b"sentinel",
+    )
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (42, 43)
+    ]
+    transport.dispatch_route_batch(
+        RouteBatch("batch-start", ("topic", 1, b"key"), None, items),
+        route_identity=RouteIdentity("topic", 1, b"key"),
+        count_in_flight=False,
+    )
+
+    transport.handle_registry_event(
+        {
+            "kind": "batch_start",
+            "batch_id": "batch-start",
+            "worker_index": 0,
+            "item_ids": [item.id for item in items],
+            "item_count": len(items),
+        }
+    )
+
+    # Then: batch_start, not per-item start, releases the pending route-batch slot.
+    assert transport._pending_dispatch == {}
+    assert transport._worker_pipe_queue_slots.acquire(blocking=False) is True
+
+
 def test_worker_pipe_not_started_event_clears_pending_route_batch_tail() -> None:
     # Given: route-batch dispatch inputs and fakes are prepared for worker pipe not-started event clears pending route batch tail.
     sender = _PipeSender()

@@ -216,6 +216,9 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         if kind == "not_started":
             self._handle_not_started_route_batch_event(event)
             return
+        if kind == "batch_start":
+            self._handle_batch_start_event(event)
+            return
         if kind != "start":
             return
         key = event.get("key")
@@ -247,6 +250,22 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
                     return
             if pending_key is None:
                 return
+        if release_slot:
+            self._release_worker_pipe_queue_slot()
+
+    def _handle_batch_start_event(self, event: dict[str, Any]) -> None:
+        """Clear a pending route-batch dispatch after child batch_start ack."""
+        worker_idx = event.get("worker_index")
+        batch_id = event.get("batch_id")
+        if worker_idx is None or batch_id is None:
+            return
+        pending_key = (int(worker_idx), batch_id)
+        release_slot = False
+        with self._pending_dispatch_lock:
+            pending_payload = self._pending_dispatch.pop(pending_key, None)
+            if pending_payload is None:
+                return
+            release_slot = not pending_payload.get("slot_released", False)
         if release_slot:
             self._release_worker_pipe_queue_slot()
 

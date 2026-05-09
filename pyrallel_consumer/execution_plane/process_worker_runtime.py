@@ -254,6 +254,16 @@ def _worker_loop(
         batch_completed_sent = False
         batch_completion_results: list[CompletionEvent] = []
         deferred_done_events: list[dict[str, Any]] = []
+        if route_batch_id is not None:
+            registry_event_queue.put(
+                {
+                    "kind": "batch_start",
+                    "batch_id": route_batch_id,
+                    "worker_index": process_idx,
+                    "item_ids": [str(payload.get("id", "")) for payload in payloads],
+                    "item_count": len(payloads),
+                }
+            )
 
         for idx, payload in enumerate(payloads):
             work_item = _work_item_from_dict(payload)
@@ -264,13 +274,14 @@ def _worker_loop(
                 work_item.offset,
             )
             payload["requeue_attempts"] = payload.get("requeue_attempts", 0)
-            registry_event_queue.put(
-                {
-                    "kind": "start",
-                    "key": in_flight_key,
-                    "payload": payload,
-                }
-            )
+            if route_batch_id is None:
+                registry_event_queue.put(
+                    {
+                        "kind": "start",
+                        "key": in_flight_key,
+                        "payload": payload,
+                    }
+                )
             status = CompletionStatus.FAILURE
             error: Optional[str] = None
             attempt = 0
@@ -279,7 +290,10 @@ def _worker_loop(
             timeout_ms = getattr(execution_config.process_config, "task_timeout_ms", 0)
             timeout_sec = timeout_ms / 1000.0
 
-            for attempt in range(1, execution_config.max_retries + 1):
+            max_child_attempts = (
+                1 if route_batch_id is not None else execution_config.max_retries
+            )
+            for attempt in range(1, max_child_attempts + 1):
                 try:
                     if batch_run_started_at is None:
                         batch_run_started_at = time.monotonic()
@@ -348,7 +362,7 @@ def _worker_loop(
                 except Exception as e:
                     status = CompletionStatus.FAILURE
                     error = str(e)
-                    if attempt < execution_config.max_retries:
+                    if attempt < max_child_attempts:
                         backoff_sec = _calculate_backoff(
                             attempt,
                             execution_config.retry_backoff_ms,

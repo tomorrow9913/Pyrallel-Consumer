@@ -64,6 +64,104 @@ def test_worker_runtime_executes_route_batch_items_in_order() -> None:
     assert executed_offsets == [1, 2, 3]
 
 
+def test_worker_runtime_route_batch_emits_batch_start_without_item_starts() -> None:
+    # Given: a route batch is delivered to a worker process.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-start", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        lambda _item: None,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events = []
+    while not registry_event_queue.empty():
+        registry_events.append(cast(dict[str, Any], registry_event_queue.get_nowait()))
+
+    # Then: route batches acknowledge membership once and do not use per-item start.
+    assert [event.get("kind") for event in registry_events].count("batch_start") == 1
+    assert [event for event in registry_events if event.get("kind") == "start"] == []
+    batch_start = next(
+        event for event in registry_events if event.get("kind") == "batch_start"
+    )
+    assert batch_start["batch_id"] == "batch-start"
+    assert batch_start["worker_index"] == 0
+    assert batch_start["item_ids"] == [item.id for item in items]
+    assert batch_start["item_count"] == len(items)
+    assert "payloads" not in batch_start
+
+
+def test_worker_runtime_route_batch_failure_uses_one_child_attempt() -> None:
+    # Given: a route batch worker fails and process max_retries is greater than one.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-one-attempt", ("topic", 1, b"key"), 0, [item]),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    calls = 0
+
+    def fail_once_per_parent_attempt(_item: WorkItem) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("boom")
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        fail_once_per_parent_attempt,
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=3,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payloads = []
+    while not completion_queue.empty():
+        raw_payloads.append(msgpack.unpackb(completion_queue.get_nowait(), raw=False))
+    completion = batch_completion_from_dict(
+        next(
+            payload
+            for payload in raw_payloads
+            if payload.get("kind") == "batch_completion"
+        )["completion"]
+    )
+
+    # Then: child-local retries are bypassed for process route-batch attempts.
+    assert calls == 1
+    assert [
+        (event.offset, event.status, event.attempt) for event in completion.results
+    ] == [(1, CompletionStatus.FAILURE, 1)]
+
+
 def test_worker_runtime_stops_route_batch_after_first_failure() -> None:
     # Given: worker runtime route batch and completion payloads are prepared for worker runtime stops route batch after first failure.
     task_source: queue.Queue[object] = queue.Queue()

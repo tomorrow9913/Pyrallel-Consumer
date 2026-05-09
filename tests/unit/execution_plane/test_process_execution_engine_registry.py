@@ -19,6 +19,7 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     _BrokenPipeSender,
     _CountingAliveWorker,
     _PipeSender,
+    _RequeueRecordingTransport,
     _work_item_from_dict,
     _work_item_to_dict,
     cast,
@@ -67,6 +68,86 @@ def test_registry_start_event_ignores_older_identity_when_identity_differs() -> 
     # When: the relevant worker registry event or operation is applied.
     # Then: the test asserts that registry start event ignores older identity when identity differs.
     assert engine_any._in_flight_registry == {(0, "topic", 1, 42): current_payload}
+
+
+def test_registry_batch_start_seeds_in_flight_from_parent_manifest() -> None:
+    # Given: the parent has recorded a route-batch manifest before worker ack.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    parent_payloads = [
+        {
+            "id": f"work-{offset}",
+            "topic": "topic",
+            "partition": 1,
+            "offset": offset,
+            "epoch": 7,
+            "key": b"key",
+            "payload": b"parent",
+            "requeue_attempts": 0,
+        }
+        for offset in (42, 43)
+    ]
+    child_payloads = [dict(payload, payload=b"child") for payload in parent_payloads]
+    engine_any._in_flight_registry = {}
+    engine_any._process_batch_manifests = {
+        "batch-parent": {
+            "worker_index": 0,
+            "items": parent_payloads,
+        }
+    }
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    engine._apply_registry_event(
+        {
+            "kind": "batch_start",
+            "batch_id": "batch-parent",
+            "worker_index": 0,
+            "item_ids": [payload["id"] for payload in child_payloads],
+            "item_count": len(child_payloads),
+        }
+    )
+
+    # Then: recovery state is seeded from the parent manifest, not child payloads.
+    assert engine_any._in_flight_registry == {
+        (0, "topic", 1, 42): parent_payloads[0],
+        (0, "topic", 1, 43): parent_payloads[1],
+    }
+    assert engine_any._process_batch_manifests == {}
+
+
+def test_expired_batch_start_ack_requeues_parent_manifest() -> None:
+    # Given: a parent batch manifest has not received batch_start before its deadline.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    payload = {
+        "id": "work-42",
+        "topic": "topic",
+        "partition": 1,
+        "offset": 42,
+        "epoch": 7,
+        "key": b"key",
+        "payload": b"parent",
+        "requeue_attempts": 0,
+    }
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+    engine_any._process_batch_manifests = {
+        "batch-timeout": {
+            "worker_index": 0,
+            "items": [payload],
+            "start_ack_deadline_at": 10.0,
+        }
+    }
+
+    recovered = engine._recover_expired_batch_start_acks(now=11.0)
+
+    # Then: the bounded ack path recovers from the parent manifest exactly once.
+    assert recovered == 1
+    assert transport.requeued_payloads == [[payload]]
+    assert engine_any._process_batch_manifests == {}
 
 
 def test_registry_start_event_overwrites_stale_identity_when_epoch_advances() -> None:
