@@ -3,6 +3,12 @@
 # Role: Verifies worker-pipe route-batch dispatch, not-started recovery, and identity-aware completion handling.
 # Extend here for focused process execution engine regression coverage in this area.
 
+import asyncio
+
+from pyrallel_consumer.dto import BatchCompletion
+from pyrallel_consumer.execution_plane.process_codec import (
+    serialize_batch_completion_payload,
+)
 from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     CompletionEvent,
@@ -36,6 +42,100 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     threading,
     time,
 )
+
+
+def test_process_engine_redispatches_retryable_failed_batch_subset_with_new_batch_id() -> (
+    None
+):
+    # Given: a process route-batch completion contains a retryable failed subset.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    engine_any._process_batch_manifests = {}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+
+    success_item = WorkItem("work-a", TopicPartition("topic", 1), 42, 7, b"key", b"a")
+    failed_item = WorkItem("work-b", TopicPartition("topic", 1), 43, 7, b"key", b"b")
+    failed_payload = _work_item_to_dict(failed_item)
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 42): _work_item_to_dict(success_item),
+        (0, "topic", 1, 43): failed_payload,
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity
+            assert count_in_flight is False
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-original",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        success_item.id,
+                        success_item.tp,
+                        success_item.offset,
+                        success_item.epoch,
+                        CompletionStatus.SUCCESS,
+                        None,
+                        1,
+                    ),
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retry me",
+                        1,
+                    ),
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: only successful prefix is committable; failed subset is parent-redispatched.
+    assert [(event.id, event.status) for event in completed_events] == [
+        ("work-a", CompletionStatus.SUCCESS)
+    ]
+    assert len(dispatched_batches) == 1
+    retry_batch = dispatched_batches[0]
+    assert retry_batch.batch_id != "batch-original"
+    assert [(item.id, item.requeue_attempts) for item in retry_batch.items] == [
+        ("work-b", 1)
+    ]
+    assert (0, "topic", 1, 43) not in engine_any._in_flight_registry
+    retry_manifest = engine_any._process_batch_manifests[retry_batch.batch_id]
+    assert retry_manifest["items"] == [_work_item_to_dict(retry_batch.items[0])]
 
 
 def test_worker_pipe_route_batch_slot_acquire_uses_representative_payload(

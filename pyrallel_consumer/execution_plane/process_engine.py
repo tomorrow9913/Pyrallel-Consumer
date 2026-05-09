@@ -764,6 +764,81 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 break
         return True
 
+    def _pop_registry_payload_for_completion(
+        self, event: CompletionEvent
+    ) -> tuple[int, SerializedWorkItem] | None:
+        """Remove and return registry ownership matching a completion event."""
+        registry = getattr(self, "_in_flight_registry", None)
+        if registry is None:
+            return None
+        for key, payload in list(registry.items()):
+            if (
+                str(payload.get("id")) == event.id
+                and str(payload.get("topic")) == event.tp.topic
+                and int(payload.get("partition")) == event.tp.partition
+                and int(payload.get("offset")) == event.offset
+                and int(payload.get("epoch")) == event.epoch
+            ):
+                registry.pop(key, None)
+                return int(key[0]), dict(payload)
+        return None
+
+    def _redispatch_retryable_batch_failures(
+        self,
+        *,
+        batch_id: str,
+        route_identity: tuple[Any, ...],
+        results: list[CompletionEvent],
+    ) -> list[CompletionEvent]:
+        """Redispatch retryable failed batch subset and return visible completions."""
+        visible_events: list[CompletionEvent] = []
+        retry_items: list[WorkItem] = []
+        retry_worker_index: int | None = None
+        for event in results:
+            if event.status != CompletionStatus.FAILURE:
+                visible_events.append(event)
+                continue
+            registry_entry = self._pop_registry_payload_for_completion(event)
+            if registry_entry is None:
+                visible_events.append(event)
+                continue
+            worker_index, payload = registry_entry
+            attempts = int(payload.get("requeue_attempts", 0))
+            if attempts >= self._config.max_retries:
+                visible_events.append(event)
+                continue
+            payload["requeue_attempts"] = attempts + 1
+            retry_items.append(_work_item_from_dict(payload))
+            retry_worker_index = worker_index
+        if not retry_items:
+            return visible_events
+        retry_route_identity = resolve_route_identity(retry_items[0])
+        retry_batch = RouteBatch(
+            batch_id=uuid.uuid4().hex,
+            route_identity=route_identity,
+            worker_index=retry_worker_index,
+            items=retry_items,
+        )
+        self._record_process_batch_manifest(
+            batch_id=retry_batch.batch_id,
+            worker_index=stable_worker_index_for_route(
+                retry_route_identity,
+                self._config.process_config.process_count,
+            ),
+            items=retry_items,
+        )
+        try:
+            dispatch_route_batch = getattr(self._transport, "dispatch_route_batch")
+            dispatch_route_batch(
+                retry_batch,
+                route_identity=retry_route_identity,
+                count_in_flight=False,
+            )
+        except Exception:
+            self._get_process_batch_manifests().pop(retry_batch.batch_id, None)
+            raise
+        return visible_events
+
     def _drain_registry_events(self) -> None:
         """Drain registry events for multiprocessing execution."""
         self._drain_registry_event_queue()
@@ -1422,8 +1497,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     self._record_worker_to_main_ipc(
                         time.monotonic() - float(completion_enqueued_at)
                     )
-                results = list(
-                    _batch_completion_from_dict(decoded_payload["completion"]).results
+                batch_completion = _batch_completion_from_dict(
+                    decoded_payload["completion"]
+                )
+                results = self._redispatch_retryable_batch_failures(
+                    batch_id=str(batch_completion.batch_id),
+                    route_identity=batch_completion.route_identity,
+                    results=list(batch_completion.results),
                 )
                 self._record_completion_ipc(len(results), batch_payload=True)
                 return results
