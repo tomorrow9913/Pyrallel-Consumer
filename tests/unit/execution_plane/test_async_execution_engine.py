@@ -393,9 +393,11 @@ async def test_async_batch_worker_invalid_result_emits_fatal_control_event() -> 
 
     await engine.submit_batch(items)
     assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
 
     # Then: invalid contract results do not become committable item completions.
     assert await engine.poll_completed_events() == []
+    assert engine.get_in_flight_count() == 0
     control_events = await engine.poll_control_events()
     await engine.shutdown()
 

@@ -764,12 +764,7 @@ class BrokerPoller:
 
     async def _drain_execution_control_events_once(self) -> bool:
         """Drain fatal execution-control events before item completions."""
-        poll_control_events = getattr(
-            self._execution_engine, "poll_control_events", None
-        )
-        if not callable(poll_control_events):
-            return False
-        control_events = await poll_control_events()
+        control_events = await self._execution_engine.poll_control_events()
         if not control_events:
             return False
         error = control_events[0].error
