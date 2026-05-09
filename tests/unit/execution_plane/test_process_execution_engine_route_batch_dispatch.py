@@ -215,6 +215,237 @@ def test_process_engine_quarantines_stale_batch_completion_without_promotion_or_
     assert engine_any._stale_process_batch_completion_count == 1
 
 
+def test_process_engine_finalizes_retry_exhausted_batch_failure_as_terminal_completion() -> (
+    None
+):
+    # Given: a failed batch item has already consumed the parent retry budget.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-terminal"}
+    engine_any._process_control_events = deque()
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+
+    failed_item = WorkItem(
+        "work-terminal", TopicPartition("topic", 1), 45, 7, b"key", b""
+    )
+    exhausted_payload = _work_item_to_dict(failed_item)
+    exhausted_payload["requeue_attempts"] = 3
+    engine_any._in_flight_registry = {(0, "topic", 1, 45): exhausted_payload}
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-terminal",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "terminal failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: exhausted failures finalize as ordinary terminal completion events.
+    assert dispatched_batches == []
+    assert [
+        (event.id, event.status, event.error, event.attempt)
+        for event in completed_events
+    ] == [("work-terminal", CompletionStatus.FAILURE, "terminal failure", 3)]
+    assert asyncio.run(engine.poll_control_events()) == []
+    assert engine_any._in_flight_registry == {}
+
+
+def test_process_engine_retryable_batch_failure_is_not_finalized() -> None:
+    # Given: a failed batch item still has parent retry budget remaining.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-retryable"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+
+    failed_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 46): _work_item_to_dict(failed_item)
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-retryable",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: retryable failure is redispatched, not finalized.
+    assert completed_events == []
+    assert len(dispatched_batches) == 1
+
+
+def test_process_engine_retryable_batch_failure_survives_child_done_before_completion() -> (
+    None
+):
+    # Given: the child has queued a done registry event before parent reads completion.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-done-before-completion"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+
+    failed_item = WorkItem("work-done", TopicPartition("topic", 1), 47, 7, b"key", b"")
+    failed_payload = _work_item_to_dict(failed_item)
+    engine_any._in_flight_registry = {(0, "topic", 1, 47): failed_payload}
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._registry_event_queue.put(
+        {
+            "kind": "done",
+            "key": (0, "topic", 1, 47),
+            "payload": failed_payload,
+        }
+    )
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-done-before-completion",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: parent-owned retry still redispatches instead of leaking a terminal failure.
+    assert completed_events == []
+    assert len(dispatched_batches) == 1
+    assert [
+        (item.id, item.requeue_attempts) for item in dispatched_batches[0].items
+    ] == [("work-done", 1)]
+
+
 def test_worker_pipe_route_batch_slot_acquire_uses_representative_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

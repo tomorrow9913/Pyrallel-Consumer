@@ -5,7 +5,7 @@
 import inspect
 import pickle
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
@@ -94,10 +94,8 @@ def create_execution_engine(
         worker if isinstance(worker, WorkerSpec) else WorkerSpec.single(worker)
     )
     _ensure_worker_matches_mode(config, worker_spec)
-    worker_fn = cast(Callable[[WorkItem], Any], worker_spec.callable)
-
     if mode == ExecutionMode.ASYNC:
         return AsyncExecutionEngine(config=config, worker_fn=worker_spec)
     if mode == ExecutionMode.PROCESS:
-        return ProcessExecutionEngine(config=config, worker_fn=worker_fn)
+        return ProcessExecutionEngine(config=config, worker_fn=worker_spec)
     raise ValueError(f"Unknown execution mode: {mode}")

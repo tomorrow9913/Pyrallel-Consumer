@@ -246,21 +246,39 @@ def test_pyrallel_consumer_from_batch_worker_opens_async_runtime_path(
     assert consumer._work_manager._batch_dispatch_enabled is True
 
 
-def test_pyrallel_consumer_from_batch_worker_process_mode_fails_closed() -> None:
-    # Given: process mode is configured before process batch runtime support lands.
+def test_pyrallel_consumer_from_batch_worker_opens_process_runtime_path(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: process mode is configured after process batch runtime support lands.
+    captured_worker: WorkerSpec | None = None
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        nonlocal captured_worker
+        captured_worker = worker
+        return _DummyEngine()
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
     config = KafkaConfig()
     config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
 
-    # When/Then: process public batch workers remain fail-closed for this async slice.
-    with pytest.raises(
-        NotImplementedError,
-        match="batch_worker_process_runtime_path_not_implemented",
-    ):
-        PyrallelConsumer.from_batch_worker(
-            config=config,
-            batch_worker=lambda items: None,
-            topic="demo",
-        )
+    def batch_worker(items):
+        return None
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=batch_worker,
+        topic="demo",
+    )
+
+    # Then: process public batch workers use the same batch WorkerSpec runtime path.
+    assert consumer._execution_engine is not None
+    assert captured_worker is not None
+    assert captured_worker.kind == "batch"
+    assert captured_worker.callable is batch_worker
+    assert captured_worker.batch_runtime is not None
+    assert consumer._work_manager._batch_dispatch_enabled is True
 
 
 @pytest.mark.asyncio

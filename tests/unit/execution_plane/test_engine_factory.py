@@ -126,9 +126,9 @@ def test_create_process_execution_engine_accepts_picklable_batch_worker_spec(
     # When: the execution engine is created through the WorkerSpec boundary.
     engine = create_execution_engine(config, worker_spec)
 
-    # Then: process mode accepts a synchronous picklable batch worker.
+    # Then: process mode preserves the batch WorkerSpec for child batch invocation.
     assert isinstance(engine, ProcessExecutionEngine)
-    assert engine._worker_fn is sync_batch_worker
+    assert engine._worker_fn is worker_spec
 
 
 def test_create_execution_engine_rejects_sync_batch_worker_in_async_mode() -> None:

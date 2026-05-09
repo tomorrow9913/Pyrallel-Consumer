@@ -202,10 +202,6 @@ class PyrallelConsumer:
             raise ValueError(
                 "batch_worker_adaptive_backpressure_unsupported_until_live_capacity_gate"
             )
-        if parallel_config.execution.mode == ExecutionMode.PROCESS:
-            raise NotImplementedError(
-                "batch_worker_process_runtime_path_not_implemented"
-            )
         batch_runtime = BatchWorkerRuntimeSpec.from_config(
             ordering_mode=parallel_config.ordering_mode,
             batch_worker_config=parallel_config.batch_worker,

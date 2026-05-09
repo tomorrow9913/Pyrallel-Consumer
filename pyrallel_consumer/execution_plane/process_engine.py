@@ -103,6 +103,7 @@ from pyrallel_consumer.execution_plane.process_worker_supervisor import (
     ProcessWorkerSupervisor,
     ProcessWorkerSupervisorContext,
 )
+from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 from pyrallel_consumer.logger import LogManager
 from pyrallel_consumer.worker import BatchWorkerContractError
 
@@ -136,7 +137,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
     """
 
-    def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+    def __init__(
+        self,
+        config: ExecutionConfig,
+        worker_fn: Callable[[WorkItem], Any] | WorkerSpec,
+    ):
         """Initialize this component.
 
         Args:
@@ -148,22 +153,29 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             RuntimeError: If initialization fails.
 
         """
-        if inspect.iscoroutinefunction(worker_fn) or inspect.iscoroutinefunction(
-            getattr(worker_fn, "__call__", None)
+        worker_callable = (
+            worker_fn.callable if isinstance(worker_fn, WorkerSpec) else worker_fn
+        )
+        if inspect.iscoroutinefunction(worker_callable) or inspect.iscoroutinefunction(
+            getattr(worker_callable, "__call__", None)
         ):
             raise TypeError(
                 "Process execution mode requires a synchronous picklable worker"
             )
         if getattr(config.process_config, "require_picklable_worker", False):
             try:
-                pickle.dumps(worker_fn)
+                pickle.dumps(worker_callable)
             except Exception as exc:
                 raise TypeError(
                     "Process execution mode requires a synchronous picklable worker"
                 ) from exc
 
         self._config = config
-        self._worker_fn = worker_fn
+        self._worker_fn = (
+            worker_fn
+            if isinstance(worker_fn, WorkerSpec) and worker_fn.kind == "batch"
+            else worker_callable
+        )
         self._validate_transport_config()
         self._task_queue: Optional[Queue[Optional[WorkItem]]] = None
         self._batch_accumulator: _BatchAccumulator | _NoOpBatchAccumulator
@@ -183,6 +195,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         ] = {}
         self._process_batch_manifests: dict[str, dict[str, Any]] = {}
         self._active_process_batch_ids: set[str] = set()
+        self._completed_process_batch_payloads: dict[
+            tuple[str, str, int, int, int], tuple[int, SerializedWorkItem]
+        ] = {}
         self._stale_process_batch_completion_count: int = 0
         self._workers: List[Process] = []
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
@@ -701,6 +716,68 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if active_batch_ids is not None:
             active_batch_ids.discard(batch_id)
 
+    def _completion_payload_identity(
+        self,
+        payload: SerializedWorkItem,
+    ) -> tuple[str, str, int, int, int]:
+        """Return the logical completion identity for a serialized payload."""
+        return (
+            str(payload.get("id")),
+            str(payload.get("topic")),
+            int(payload.get("partition", 0)),
+            int(payload.get("offset", -1)),
+            int(payload.get("epoch", 0)),
+        )
+
+    def _completion_event_identity(
+        self,
+        event: CompletionEvent,
+    ) -> tuple[str, str, int, int, int]:
+        """Return the logical completion identity for a completion event."""
+        return (
+            event.id,
+            event.tp.topic,
+            event.tp.partition,
+            event.offset,
+            event.epoch,
+        )
+
+    def _get_completed_process_batch_payloads(
+        self,
+    ) -> dict[tuple[str, str, int, int, int], tuple[int, SerializedWorkItem]]:
+        """Return payload tombstones for batch done events drained before completion."""
+        completed_payloads = getattr(self, "_completed_process_batch_payloads", None)
+        if completed_payloads is None:
+            completed_payloads = {}
+            self._completed_process_batch_payloads = completed_payloads
+        return completed_payloads
+
+    def _capture_completed_batch_payload(self, event: dict[str, Any]) -> None:
+        """Preserve batch payload ownership before child done events pop registry."""
+        if event.get("kind") != "done":
+            return
+        if not self._get_active_process_batch_ids():
+            return
+        key = event.get("key")
+        if not isinstance(key, tuple) or not key:
+            return
+        payload = self._in_flight_registry.get(key)
+        if payload is None:
+            return
+        self._get_completed_process_batch_payloads()[
+            self._completion_payload_identity(payload)
+        ] = (int(key[0]), dict(payload))
+
+    def _discard_completed_batch_payload_for_completion(
+        self,
+        event: CompletionEvent,
+    ) -> None:
+        """Discard a preserved batch payload after its completion becomes visible."""
+        self._get_completed_process_batch_payloads().pop(
+            self._completion_event_identity(event),
+            None,
+        )
+
     def _apply_batch_start_event(self, event: dict[str, Any]) -> bool:
         """Seed per-item recovery registry from parent manifest on batch_start ack."""
         if event.get("kind") != "batch_start":
@@ -758,6 +835,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
         if self._recover_not_started_payloads(event):
             return
+        self._capture_completed_batch_payload(event)
         ProcessRegistrySupport.apply_registry_event(
             event=event,
             in_flight_registry=self._in_flight_registry,
@@ -815,7 +893,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             ):
                 registry.pop(key, None)
                 return int(key[0]), dict(payload)
-        return None
+        return self._get_completed_process_batch_payloads().pop(
+            self._completion_event_identity(event),
+            None,
+        )
 
     def _redispatch_retryable_batch_failures(
         self,
@@ -830,6 +911,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         retry_worker_index: int | None = None
         for event in results:
             if event.status != CompletionStatus.FAILURE:
+                self._discard_completed_batch_payload_for_completion(event)
                 visible_events.append(event)
                 continue
             registry_entry = self._pop_registry_payload_for_completion(event)
@@ -839,7 +921,17 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker_index, payload = registry_entry
             attempts = int(payload.get("requeue_attempts", 0))
             if attempts >= self._config.max_retries:
-                visible_events.append(event)
+                visible_events.append(
+                    CompletionEvent(
+                        id=event.id,
+                        tp=event.tp,
+                        offset=event.offset,
+                        epoch=event.epoch,
+                        status=event.status,
+                        error=event.error,
+                        attempt=self._config.max_retries,
+                    )
+                )
                 continue
             payload["requeue_attempts"] = attempts + 1
             retry_items.append(_work_item_from_dict(payload))
