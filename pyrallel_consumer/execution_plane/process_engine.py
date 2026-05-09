@@ -74,8 +74,15 @@ from pyrallel_consumer.execution_plane.process_codec import (
 from pyrallel_consumer.execution_plane.process_codec import (
     work_item_to_dict as _work_item_to_dict,
 )
+from pyrallel_consumer.execution_plane.process_completion_buffer import (
+    ProcessCompletionBuffer,
+)
 from pyrallel_consumer.execution_plane.process_registry_support import (
     ProcessRegistrySupport,
+)
+from pyrallel_consumer.execution_plane.process_shutdown_support import (
+    ProcessShutdownContext,
+    ProcessShutdownSupport,
 )
 from pyrallel_consumer.execution_plane.process_transport import (
     ProcessTransport,
@@ -90,11 +97,12 @@ from pyrallel_consumer.execution_plane.process_worker_runtime import (
     _receive_task_payload,
     _worker_loop,
 )
+from pyrallel_consumer.execution_plane.process_worker_supervisor import (
+    ProcessWorkerSupervisor,
+    ProcessWorkerSupervisorContext,
+)
 from pyrallel_consumer.logger import LogManager
 
-_SHUTDOWN_DRAIN_SLEEP_SECONDS = 0.01
-_POST_JOIN_SHUTDOWN_DRAIN_SECONDS = 0.05
-_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES = 2
 _DEFAULT_MSGPACK_MAX_BYTES = 1_000_000
 _MAX_SEEN_COMPLETION_IDENTITIES = 100_000
 _logger = logging.getLogger(__name__)
@@ -160,9 +168,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._registry_event_queue: Queue[Any] = Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._seen_completion_identities: set[tuple[str, str, int, int, int]] = set()
-        self._seen_completion_identity_order: Deque[
-            tuple[str, str, int, int, int]
-        ] = deque()
+        self._seen_completion_identity_order: Deque[tuple[str, str, int, int, int]] = (
+            deque()
+        )
+        self._completion_buffer = self._build_completion_buffer()
+        self._shutdown_support = ProcessShutdownSupport(_logger)
+        self._worker_supervisor = ProcessWorkerSupervisor()
         self._in_flight_registry: dict[
             tuple[int, str, int, int], SerializedWorkItem
         ] = {}
@@ -293,29 +304,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker: Worker process being managed.
 
         """
-        timeout_sec = self._config.process_config.worker_join_timeout_ms / 1000.0
-        worker.join(timeout=timeout_sec)
-        if not worker.is_alive():
-            return
-
-        self._logger.warning(
-            "ProcessWorker[%s] did not shut down gracefully after %.3fs. Terminating.",
-            worker.pid,
-            timeout_sec,
+        self._get_shutdown_support().join_worker_with_escalation(
+            worker,
+            timeout_seconds=(
+                self._config.process_config.worker_join_timeout_ms / 1000.0
+            ),
         )
-        worker.terminate()
-        worker.join(timeout=timeout_sec)
-        if not worker.is_alive():
-            return
-
-        kill = getattr(worker, "kill", None)
-        if callable(kill):
-            self._logger.warning(
-                "ProcessWorker[%s] still alive after terminate(). Killing.",
-                worker.pid,
-            )
-            kill()
-            worker.join(timeout=timeout_sec)
 
     def _emit_completion_event(self, completion_event: CompletionEvent) -> None:
         """Handle emit completion event within multiprocessing execution.
@@ -424,13 +418,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             restart_exc: Exception raised while attempting to restart a worker.
 
         """
-        for payload in payloads:
-            self._emit_worker_recovery_failure(
-                idx,
-                payload,
-                error=f"worker_restart_failed: {restart_exc}",
-                attempt=self._config.max_retries,
-            )
+        self._get_worker_supervisor().emit_worker_restart_failures(
+            self._build_worker_supervisor_context(),
+            idx,
+            payloads,
+            restart_exc,
+        )
 
     def _drain_registry_event_queue(self) -> int:
         """Drain registry event queue for multiprocessing execution.
@@ -454,24 +447,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """
         if getattr(self, "_is_shutdown", False):
             return
-        self._drain_visible_worker_events()
-        if not self._should_run_worker_liveness_scan(force=force):
-            return
-
-        for idx, exitcode in self._collect_dead_worker_recovery_candidates():
-            to_requeue = self._collect_recoverable_worker_payloads(idx)
-            self._logger.error(
-                "ProcessWorker[%d] died (exitcode=%s). Restarting worker.",
-                idx,
-                exitcode,
-            )
-            if self._restart_dead_worker(idx, exitcode, to_requeue):
-                self._publish_recovered_worker_payloads(idx, to_requeue)
+        self._get_worker_supervisor().ensure_workers_alive(
+            self._build_worker_supervisor_context(),
+            force=force,
+        )
 
     def _drain_visible_worker_events(self) -> None:
         """Drain visible worker events for multiprocessing execution."""
-        self._drain_registry_events()
-        self._prefetch_completed_events_from_queue()
+        self._get_worker_supervisor().drain_visible_worker_events(
+            self._build_worker_supervisor_context()
+        )
 
     def _should_run_worker_liveness_scan(self, *, force: bool) -> bool:
         """Return whether run worker liveness scan should run in multiprocessing execution.
@@ -483,21 +468,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             True when the operation succeeds or the condition is met; otherwise False.
 
         """
-        liveness_interval = getattr(
-            self,
-            "_worker_liveness_check_interval_seconds",
-            0.0,
+        return self._get_worker_supervisor().should_run_liveness_scan(
+            self._build_worker_supervisor_context(),
+            force=force,
+            monotonic=time.monotonic,
         )
-        if liveness_interval > 0 and not force:
-            now = time.monotonic()
-            last_check = getattr(self, "_last_worker_liveness_check", 0.0)
-            if now - last_check < liveness_interval:
-                return False
-            self._last_worker_liveness_check = now
-            return True
-        if force:
-            self._last_worker_liveness_check = time.monotonic()
-        return True
 
     def _collect_dead_worker_recovery_candidates(self) -> list[tuple[int, Any]]:
         """Handle collect dead worker recovery candidates within multiprocessing execution.
@@ -506,11 +481,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             list[tuple[int, Any]] result produced by this function.
 
         """
-        candidates: list[tuple[int, Any]] = []
-        for idx, worker in enumerate(self._workers):
-            if not worker.is_alive():
-                candidates.append((idx, worker.exitcode))
-        return candidates
+        return self._get_worker_supervisor().collect_dead_worker_recovery_candidates(
+            self._build_worker_supervisor_context()
+        )
 
     def _collect_recoverable_worker_payloads(
         self,
@@ -525,24 +498,10 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             list[SerializedWorkItem] result produced by this function.
 
         """
-        to_requeue: list[SerializedWorkItem] = []
-        try:
-            to_requeue.extend(self._recover_dead_worker_items(idx))
-        except Exception as recovery_exc:
-            self._logger.error(
-                "Failed to recover in-flight work from worker %d: %s",
-                idx,
-                recovery_exc,
-            )
-        try:
-            to_requeue.extend(self._recover_pending_pipe_dispatches(idx))
-        except Exception as recovery_exc:
-            self._logger.error(
-                "Failed to recover pending dispatches from worker %d: %s",
-                idx,
-                recovery_exc,
-            )
-        return to_requeue
+        return self._get_worker_supervisor().collect_recoverable_worker_payloads(
+            self._build_worker_supervisor_context(),
+            idx,
+        )
 
     def _restart_dead_worker(
         self,
@@ -561,19 +520,12 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             True when the operation succeeds or the condition is met; otherwise False.
 
         """
-        try:
-            new_worker = self._start_worker(idx)
-        except Exception as restart_exc:
-            self._logger.error(
-                "Failed to restart worker %d after exitcode=%s: %s",
-                idx,
-                exitcode,
-                restart_exc,
-            )
-            self._emit_worker_restart_failures(idx, recovered_payloads, restart_exc)
-            return False
-        self._workers[idx] = new_worker
-        return True
+        return self._get_worker_supervisor().restart_dead_worker(
+            self._build_worker_supervisor_context(),
+            idx,
+            exitcode,
+            recovered_payloads,
+        )
 
     def _publish_recovered_worker_payloads(
         self,
@@ -587,33 +539,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             payloads: Serialized payloads handled by this function.
 
         """
-        if not payloads:
-            return
-        requeued_offsets: list[Any] = []
-        for payload in payloads:
-            try:
-                self._requeue_recovered_payloads([payload])
-                requeued_offsets.append(payload.get("offset"))
-            except Exception as requeue_exc:
-                self._logger.error(
-                    "Failed to requeue recovered work from worker %d offset=%s: %s",
-                    idx,
-                    payload.get("offset"),
-                    requeue_exc,
-                )
-                self._emit_worker_recovery_failure(
-                    idx,
-                    payload,
-                    error="worker_requeue_failed: %s" % requeue_exc,
-                    attempt=self._config.max_retries,
-                )
-        if requeued_offsets:
-            self._logger.warning(
-                "Requeued %d lost work item(s) offsets=%s from dead worker %d",
-                len(requeued_offsets),
-                requeued_offsets,
-                idx,
-            )
+        self._get_worker_supervisor().publish_recovered_worker_payloads(
+            self._build_worker_supervisor_context(),
+            idx,
+            payloads,
+        )
 
     def _recover_pending_pipe_dispatches(self, idx: int) -> list[SerializedWorkItem]:
         """Recover pending pipe dispatches for multiprocessing execution.
@@ -625,22 +555,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             list[SerializedWorkItem] result produced by this function.
 
         """
-        transport = getattr(self, "_transport", None)
-        if transport is None:
-            return []
-        capabilities = getattr(transport, "capabilities", None)
-        if capabilities is None or not capabilities.pending_dispatch_recovery:
-            return []
-        recovered_dispatches = transport.recover_pending_dispatches(idx)
-        if recovered_dispatches:
-            identities = [entry.identity for entry in recovered_dispatches]
-            self._logger.warning(
-                "Recovered %d pending worker-pipe dispatch(es) identities=%s",
-                len(recovered_dispatches),
-                identities,
-            )
-        return self._filter_recoverable_pending_pipe_dispatches(
-            idx, [entry.payload for entry in recovered_dispatches]
+        return self._get_worker_supervisor().recover_pending_pipe_dispatches(
+            self._build_worker_supervisor_context(),
+            idx,
         )
 
     def _signal_worker_pipe_slot_wait(self) -> None:
@@ -673,22 +590,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             list[SerializedWorkItem] result produced by this function.
 
         """
-        recoverable: list[SerializedWorkItem] = []
-        max_retries = self._config.max_retries
-        for payload in payloads:
-            attempts = payload.get("requeue_attempts", 0)
-            if attempts >= max_retries:
-                self._emit_worker_recovery_failure(
-                    idx,
-                    payload,
-                    error="worker_died_max_retries",
-                    attempt=attempts,
-                )
-                continue
-            recovered_payload = dict(payload)
-            recovered_payload["requeue_attempts"] = attempts + 1
-            recoverable.append(recovered_payload)
-        return recoverable
+        return self._get_worker_supervisor().filter_recoverable_pending_pipe_dispatches(
+            self._build_worker_supervisor_context(),
+            idx,
+            payloads,
+        )
 
     def _requeue_recovered_payloads(self, payloads: list[SerializedWorkItem]) -> None:
         """Requeue recovered payloads for multiprocessing execution.
@@ -758,6 +664,90 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         """Drain registry events for multiprocessing execution."""
         self._drain_registry_event_queue()
 
+    def _build_completion_buffer(self) -> ProcessCompletionBuffer:
+        """Build the parent-side completion buffer around current engine state."""
+        return ProcessCompletionBuffer(
+            completion_queue=getattr(self, "_completion_queue", None),
+            prefetched_events=self._prefetched_completion_events,
+            seen_identities=self._seen_completion_identities,
+            seen_identity_order=self._seen_completion_identity_order,
+            decode_queue_item_events=self._decode_completion_queue_item_events,
+            discard_registry_entry_for_completion=(
+                self._discard_registry_entry_for_completion
+            ),
+            max_seen_identities=_MAX_SEEN_COMPLETION_IDENTITIES,
+        )
+
+    def _get_completion_buffer(self) -> ProcessCompletionBuffer:
+        """Return a completion buffer matching the current test/runtime state."""
+        prefetched_events = getattr(self, "_prefetched_completion_events", None)
+        if prefetched_events is None:
+            prefetched_events = deque()
+            self._prefetched_completion_events = prefetched_events
+        seen_identities = getattr(self, "_seen_completion_identities", None)
+        if seen_identities is None:
+            seen_identities = set()
+            self._seen_completion_identities = seen_identities
+        seen_identity_order = getattr(self, "_seen_completion_identity_order", None)
+        if seen_identity_order is None:
+            seen_identity_order = deque()
+            self._seen_completion_identity_order = seen_identity_order
+
+        completion_queue = getattr(self, "_completion_queue", None)
+        buffer = getattr(self, "_completion_buffer", None)
+        if not isinstance(buffer, ProcessCompletionBuffer) or not buffer.uses(
+            completion_queue=completion_queue,
+            prefetched_events=prefetched_events,
+            seen_identities=seen_identities,
+            seen_identity_order=seen_identity_order,
+        ):
+            buffer = self._build_completion_buffer()
+            self._completion_buffer = buffer
+        return buffer
+
+    def _get_shutdown_support(self) -> ProcessShutdownSupport:
+        """Return the shutdown support object, rebuilding it for __new__ tests."""
+        support = getattr(self, "_shutdown_support", None)
+        if not isinstance(support, ProcessShutdownSupport):
+            support = ProcessShutdownSupport(_logger)
+            self._shutdown_support = support
+        return support
+
+    def _get_worker_supervisor(self) -> ProcessWorkerSupervisor:
+        """Return the worker supervisor, rebuilding it for __new__ tests."""
+        supervisor = getattr(self, "_worker_supervisor", None)
+        if not isinstance(supervisor, ProcessWorkerSupervisor):
+            supervisor = ProcessWorkerSupervisor()
+            self._worker_supervisor = supervisor
+        return supervisor
+
+    def _build_worker_supervisor_context(self) -> ProcessWorkerSupervisorContext:
+        """Build a worker supervisor context over current engine state."""
+        return ProcessWorkerSupervisorContext(
+            workers=getattr(self, "_workers", []),
+            transport=getattr(self, "_transport", None),
+            max_retries=getattr(getattr(self, "_config", None), "max_retries", 0),
+            logger=getattr(self, "_logger", _logger),
+            is_shutdown=lambda: getattr(self, "_is_shutdown", False),
+            drain_registry_events=self._drain_registry_events,
+            prefetch_completed_events=self._prefetch_completed_events_from_queue,
+            get_last_liveness_check=lambda: getattr(
+                self,
+                "_last_worker_liveness_check",
+                0.0,
+            ),
+            set_last_liveness_check=self._set_last_worker_liveness_check,
+            liveness_interval_seconds=getattr(
+                self,
+                "_worker_liveness_check_interval_seconds",
+                0.0,
+            ),
+            recover_dead_worker_items=self._recover_dead_worker_items,
+            start_worker=self._start_worker,
+            requeue_recovered_payloads=self._requeue_recovered_payloads,
+            emit_worker_recovery_failure=self._emit_worker_recovery_failure,
+        )
+
     def _prefetch_completed_events_from_queue(self) -> int:
         """Build prefetch completed events from queue.
 
@@ -766,25 +756,11 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         with self._get_registry_state_lock():
-            completion_queue = getattr(self, "_completion_queue", None)
-            prefetched_events = getattr(self, "_prefetched_completion_events", None)
-            if completion_queue is None or prefetched_events is None:
-                return 0
-            prefetched = 0
-            while True:
-                try:
-                    raw_event = completion_queue.get_nowait()
-                except queue.Empty:
-                    return prefetched
-                if self._prefetch_completion_queue_item(raw_event):
-                    prefetched += 1
+            return self._get_completion_buffer().drain_queue()
 
     def _prefetch_completion_queue_item(self, raw_event: Any) -> bool:
         """Decode one completion queue item and prefetch any visible events."""
-        accepted = False
-        for event in self._decode_completion_queue_item_events(raw_event):
-            accepted = self._prefetch_completion_event(event) or accepted
-        return accepted
+        return self._get_completion_buffer().prefetch_queue_item(raw_event)
 
     def _prefetch_completion_event(self, event: CompletionEvent) -> bool:
         """Handle prefetch completion event within multiprocessing execution.
@@ -793,50 +769,16 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             event: Completion or registry event being processed.
 
         """
-        if self._is_duplicate_completion_event(event):
-            return False
-        self._prefetched_completion_events.append(event)
-        self._discard_registry_entry_for_completion(event)
-        return True
+        return self._get_completion_buffer().prefetch_event(event)
 
     def _is_duplicate_completion_event(self, event: CompletionEvent) -> bool:
         """Return True when this item completion was already surfaced."""
-        if self._is_synthetic_failure_completion_event(event):
-            return False
-        seen = getattr(self, "_seen_completion_identities", None)
-        if seen is None:
-            seen = set()
-            self._seen_completion_identities = seen
-        order = getattr(self, "_seen_completion_identity_order", None)
-        if order is None:
-            order = deque()
-            self._seen_completion_identity_order = order
-        identity = (
-            event.id,
-            event.tp.topic,
-            event.tp.partition,
-            event.offset,
-            event.epoch,
-        )
-        if identity in seen:
-            return True
-        seen.add(identity)
-        order.append(identity)
-        max_seen = max(1, _MAX_SEEN_COMPLETION_IDENTITIES)
-        while len(order) > max_seen:
-            seen.discard(order.popleft())
-        return False
+        return self._get_completion_buffer().is_duplicate_event(event)
 
     @staticmethod
     def _is_synthetic_failure_completion_event(event: CompletionEvent) -> bool:
         """Return whether a failure has no stable work identity to dedupe by."""
-        return (
-            event.status == CompletionStatus.FAILURE
-            and event.id == ""
-            and event.tp.topic == ""
-            and event.offset < 0
-            and event.epoch == 0
-        )
+        return ProcessCompletionBuffer.is_synthetic_failure_event(event)
 
     def _discard_registry_entry_for_completion(self, event: CompletionEvent) -> None:
         """Handle discard registry entry for completion within multiprocessing execution.
@@ -862,16 +804,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         drained_registry = self._drain_registry_event_queue()
-        drained_completion = 0
-
-        while True:
-            try:
-                raw_event = self._completion_queue.get_nowait()
-            except queue.Empty:
-                break
-            drained_completion += 1
-            for event in self._decode_completion_queue_item_events(raw_event):
-                self._prefetch_completion_event(event)
+        drained_completion = self._get_completion_buffer().drain_queue()
 
         return drained_registry, drained_completion
 
@@ -891,50 +824,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             tuple[int, int, int] result produced by this function.
 
         """
-        deadline = time.monotonic() + max(0.0, max_seconds)
-        hard_deadline = deadline + (
-            _SHUTDOWN_DRAIN_SLEEP_SECONDS * max(1, stable_empty_passes + 2)
+        return await self._get_shutdown_support().drain_until_stable_empty(
+            drain_once=self._drain_shutdown_ipc_once,
+            max_seconds=max_seconds,
+            stable_empty_passes=stable_empty_passes,
+            monotonic=time.monotonic,
+            sleep=asyncio.sleep,
         )
-        total_registry_drained = 0
-        total_completion_drained = 0
-        total_passes = 0
-        empty_passes = 0
-
-        while True:
-            drained_registry, drained_completion = self._drain_shutdown_ipc_once()
-            total_registry_drained += drained_registry
-            total_completion_drained += drained_completion
-            total_passes += 1
-
-            if drained_registry == 0 and drained_completion == 0:
-                empty_passes += 1
-            else:
-                empty_passes = 0
-
-            if empty_passes >= stable_empty_passes:
-                break
-            now = time.monotonic()
-            remaining_seconds = deadline - now
-            # The shutdown safety boundary is stable-empty observation, not
-            # merely the original time budget.  A multiprocessing.Queue feeder
-            # can make the first late IPC event visible just after the budget,
-            # so still perform non-zero post-deadline waits until the queue has
-            # been observed empty for the configured consecutive passes.  Keep
-            # that post-deadline grace bounded so shutdown cannot hang forever
-            # if a buggy or hostile queue source never reaches stable-empty.
-            if remaining_seconds > 0:
-                sleep_seconds = min(_SHUTDOWN_DRAIN_SLEEP_SECONDS, remaining_seconds)
-            else:
-                remaining_grace_seconds = hard_deadline - now
-                if remaining_grace_seconds <= 0:
-                    break
-                sleep_seconds = min(
-                    _SHUTDOWN_DRAIN_SLEEP_SECONDS,
-                    remaining_grace_seconds,
-                )
-            await asyncio.sleep(sleep_seconds)
-
-        return total_registry_drained, total_completion_drained, total_passes
 
     def get_min_inflight_offset(self, tp: TopicPartition) -> Optional[int]:
         """Expose the deprecated process-private in-flight offset hook.
@@ -1165,36 +1061,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             await asyncio.to_thread(self._ensure_workers_alive)
             self._drain_registry_events()
 
-        completed_events: List[CompletionEvent] = []
-        while (
-            len(completed_events) < batch_limit and self._prefetched_completion_events
-        ):
-            completed_events.append(self._prefetched_completion_events.popleft())
-            with self._in_flight_lock:
-                self._in_flight_count -= 1
+        completion_buffer = self._get_completion_buffer()
+        completed_events: List[CompletionEvent] = completion_buffer.poll_prefetched(
+            batch_limit=batch_limit,
+            decrement_in_flight=self._decrement_in_flight_count,
+        )
         if getattr(self, "_is_shutdown", False):
             return completed_events
-        while len(completed_events) < batch_limit:
-            try:
-                raw_event = self._completion_queue.get_nowait()
-                for event in self._decode_completion_queue_item_events(raw_event):
-                    if self._is_duplicate_completion_event(event):
-                        continue
-                    if len(completed_events) >= batch_limit:
-                        self._prefetched_completion_events.append(event)
-                        self._discard_registry_entry_for_completion(event)
-                        continue
-                    self._discard_registry_entry_for_completion(event)
-                    completed_events.append(event)
-                    with self._in_flight_lock:
-                        self._in_flight_count -= 1
-            except queue.Empty:
-                break
-            except Exception as e:
-                _logger.error(
-                    "Error getting item from completion queue: %r", e, exc_info=True
-                )
-                break
+        completed_events.extend(
+            completion_buffer.poll_available(
+                batch_limit=batch_limit - len(completed_events),
+                decrement_in_flight=self._decrement_in_flight_count,
+                logger=_logger,
+            )
+        )
         return completed_events
 
     async def wait_for_completion(
@@ -1210,12 +1090,13 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         if getattr(self, "_is_shutdown", False):
-            return bool(self._prefetched_completion_events)
+            return self._get_completion_buffer().has_prefetched_events
 
         await asyncio.to_thread(self._ensure_workers_alive)
         self._drain_registry_events()
 
-        if self._prefetched_completion_events:
+        completion_buffer = self._get_completion_buffer()
+        if completion_buffer.has_prefetched_events:
             return True
 
         deadline = (
@@ -1227,7 +1108,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             try:
                 raw_event = self._completion_queue.get_nowait()
             except queue.Empty:
-                if self._prefetched_completion_events:
+                if completion_buffer.has_prefetched_events:
                     return True
                 if deadline is None:
                     remaining_timeout = None
@@ -1242,9 +1123,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                         remaining_timeout,
                     )
                 except queue.Empty:
-                    return bool(self._prefetched_completion_events)
+                    return completion_buffer.has_prefetched_events
 
-            if self._prefetch_completion_queue_item(raw_event):
+            if completion_buffer.prefetch_queue_item(raw_event):
                 return True
 
     def _initialize_runtime_timing_state(self) -> None:
@@ -1481,104 +1362,42 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             return
         self._is_shutdown = True
 
-        self._drain_registry_events()
-        prefetched_count = len(self._prefetched_completion_events)
-        in_flight_registry_size = len(self._in_flight_registry)
-        worker_count = len(self._workers)
-        _logger.debug(
-            "Initiating ProcessExecutionEngine shutdown. prefetched_completion_events=%d in_flight_registry=%d worker_count=%d",
-            prefetched_count,
-            in_flight_registry_size,
-            worker_count,
+        await self._get_shutdown_support().shutdown(
+            ProcessShutdownContext(
+                workers=self._workers,
+                batch_accumulator=self._batch_accumulator,
+                transport=self._transport,
+                task_queue=self._task_queue,
+                completion_queue=self._completion_queue,
+                registry_event_queue=self._registry_event_queue,
+                log_listener=self._log_listener,
+                prefetched_completion_events=self._prefetched_completion_events,
+                in_flight_registry=self._in_flight_registry,
+                worker_pid_by_index=self._worker_pid_by_index,
+                drain_registry_events=self._drain_registry_events,
+                drain_shutdown_ipc_once=self._drain_shutdown_ipc_once,
+                join_worker=self._join_worker_with_escalation,
+                set_in_flight_count=self._set_in_flight_count,
+            ),
+            monotonic=time.monotonic,
+            sleep=asyncio.sleep,
         )
-        self._batch_accumulator.close()
-        self._transport.signal_shutdown(len(self._workers))
-
-        shutdown_drain_deadline = time.monotonic() + 1.0
-        total_registry_drained = 0
-        total_completion_drained = 0
-        while time.monotonic() < shutdown_drain_deadline:
-            drained_registry, drained_completion = self._drain_shutdown_ipc_once()
-            total_registry_drained += drained_registry
-            total_completion_drained += drained_completion
-            if (
-                drained_registry == 0
-                and drained_completion == 0
-                and not self._in_flight_registry
-            ):
-                break
-            await asyncio.sleep(_SHUTDOWN_DRAIN_SLEEP_SECONDS)
-        _logger.debug(
-            "ProcessExecutionEngine shutdown pre-join drain: registry_events=%d completion_events=%d residual_in_flight_registry=%d",
-            total_registry_drained,
-            total_completion_drained,
-            len(self._in_flight_registry),
-        )
-
-        # Wait for all workers to finish
-        for worker in self._workers:
-            self._join_worker_with_escalation(worker)
-
-        (
-            post_join_registry_drained,
-            post_join_completion_drained,
-            post_join_drain_passes,
-        ) = await self._drain_shutdown_ipc_until_stable_empty(
-            max_seconds=_POST_JOIN_SHUTDOWN_DRAIN_SECONDS,
-            stable_empty_passes=_POST_JOIN_SHUTDOWN_STABLE_EMPTY_PASSES,
-        )
-        _logger.debug(
-            "ProcessExecutionEngine shutdown post-join drain: registry_events=%d completion_events=%d passes=%d residual_in_flight_registry=%d",
-            post_join_registry_drained,
-            post_join_completion_drained,
-            post_join_drain_passes,
-            len(self._in_flight_registry),
-        )
-        if self._in_flight_registry:
-            registry_summary = []
-            for (worker_idx, topic, partition, offset), payload in sorted(
-                self._in_flight_registry.items(),
-                key=lambda item: item[0],
-            ):
-                registry_summary.append(
-                    "%d(pid=%s):%s-%d@%d id=%s epoch=%s timed_out=%s attempts=%s"
-                    % (
-                        worker_idx,
-                        self._worker_pid_by_index.get(worker_idx),
-                        topic,
-                        partition,
-                        offset,
-                        payload.get("id", ""),
-                        payload.get("epoch", 0),
-                        payload.get("timed_out", False),
-                        payload.get("requeue_attempts", 0),
-                    )
-                )
-            _logger.warning(
-                "Residual in-flight registry after shutdown drain: %s",
-                "; ".join(registry_summary),
-            )
-
-        self._in_flight_registry.clear()
-        self._transport.clear_pending_dispatches()
-        with self._in_flight_lock:
-            self._in_flight_count = len(self._prefetched_completion_events)
-
-        _logger.debug("ProcessExecutionEngine shutdown complete.")
-        self._log_listener.stop()
-        for queue_obj in (
-            self._task_queue,
-            self._completion_queue,
-            self._registry_event_queue,
-        ):
-            if queue_obj is None:
-                continue
-            close = getattr(queue_obj, "close", None)
-            if callable(close):
-                close()
-        self._transport.close()
 
     def _increment_in_flight_count(self) -> None:
         """Increment in flight count for multiprocessing execution."""
         with self._in_flight_lock:
             self._in_flight_count += 1
+
+    def _decrement_in_flight_count(self) -> None:
+        """Decrement in-flight count after surfacing one completion event."""
+        with self._in_flight_lock:
+            self._in_flight_count -= 1
+
+    def _set_in_flight_count(self, value: int) -> None:
+        """Set in-flight count while holding the engine accounting lock."""
+        with self._in_flight_lock:
+            self._in_flight_count = value
+
+    def _set_last_worker_liveness_check(self, value: float) -> None:
+        """Set the last worker liveness scan timestamp."""
+        self._last_worker_liveness_check = value
