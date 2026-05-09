@@ -281,8 +281,36 @@ def _worker_loop(
                 batch_callable = cast(
                     Callable[[list[WorkItem]], Any], worker_fn.callable
                 )
-                maybe_result = batch_callable(list(pending_items))
+                timeout_ms = getattr(
+                    execution_config.process_config, "task_timeout_ms", 0
+                )
+                timeout_sec = timeout_ms / 1000.0
+                if timeout_sec > 0:
+
+                    def _handle_timeout(signum, frame):
+                        """Handle public batch-worker invocation timeout."""
+                        raise TimeoutError(
+                            "Batch task batch_id=%s exceeded %.3fs"
+                            % (route_batch_id, timeout_sec)
+                        )
+
+                    signal.signal(signal.SIGALRM, _handle_timeout)
+                    signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+                    try:
+                        maybe_result = batch_callable(list(pending_items))
+                    finally:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+                else:
+                    maybe_result = batch_callable(list(pending_items))
                 result = cast(BatchWorkerResult, maybe_result)
+            except TimeoutError as exc:
+                worker_logger.error(
+                    "Batch task batch_id=%s timed out in ProcessWorker[%d]: %s",
+                    route_batch_id,
+                    process_idx,
+                    exc,
+                )
+                os._exit(1)
             except Exception as exc:
                 batch_error = str(exc)
 

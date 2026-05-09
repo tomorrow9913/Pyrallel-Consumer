@@ -30,6 +30,7 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     msgpack,
     pytest,
     queue,
+    time,
     worker_runtime_module,
 )
 
@@ -160,6 +161,66 @@ def test_worker_runtime_invalid_batch_result_surfaces_parent_fatal_control() -> 
     assert "invalid_batch_worker_result:missing_item_ids" in str(
         control_events[0].error
     )
+
+
+def test_worker_runtime_batch_worker_timeout_exits_without_success_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a public process batch worker exceeds the per-invocation timeout.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-timeout", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    def batch_worker(batch: list[WorkItem]) -> None:
+        time.sleep(0.05)
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+    monkeypatch.setattr(worker_runtime_module.os, "_exit", fake_exit)
+
+    # When: the batch invocation exceeds task_timeout_ms.
+    with pytest.raises(SystemExit):
+        _worker_loop(
+            task_source,
+            completion_queue,  # type: ignore[arg-type]
+            registry_event_queue,  # type: ignore[arg-type]
+            worker_spec,  # type: ignore[arg-type]
+            0,
+            ExecutionConfig(
+                mode=ExecutionMode.PROCESS,
+                max_retries=1,
+                process_config=ProcessConfig(process_count=1, task_timeout_ms=10),
+            ),
+        )
+
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+
+    # Then: timeout does not create committable success or invalid-result fatal control.
+    assert completion_queue.empty()
+    assert [event for event in registry_events if event.get("kind") == "control"] == []
 
 
 def test_worker_runtime_executes_route_batch_items_in_order() -> None:
