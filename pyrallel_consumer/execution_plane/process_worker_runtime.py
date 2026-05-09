@@ -11,7 +11,7 @@ import signal
 import time
 from collections.abc import Callable
 from multiprocessing import Queue
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import msgpack  # type: ignore[import-untyped]
 
@@ -23,6 +23,7 @@ from pyrallel_consumer.dto import (
     TopicPartition,
     WorkItem,
 )
+from pyrallel_consumer.execution_plane.batch_result import normalize_batch_worker_result
 from pyrallel_consumer.execution_plane.process_codec import (
     completion_event_to_dict as _completion_event_to_dict,
 )
@@ -38,7 +39,9 @@ from pyrallel_consumer.execution_plane.process_codec import (
 from pyrallel_consumer.execution_plane.process_codec import (
     work_item_identity_payload as _work_item_identity_payload,
 )
+from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 from pyrallel_consumer.logger import LogManager
+from pyrallel_consumer.worker import BatchWorkerResult
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
@@ -154,7 +157,7 @@ def _worker_loop(
     task_source: Any,
     completion_queue: Queue,
     registry_event_queue: Queue,
-    worker_fn: Callable[[WorkItem], Any],
+    worker_fn: Callable[[WorkItem], Any] | WorkerSpec,
     process_idx: int,
     execution_config: ExecutionConfig,
     log_queue: Optional[Queue] = None,
@@ -265,6 +268,86 @@ def _worker_loop(
                 }
             )
 
+        if (
+            route_batch_id is not None
+            and isinstance(worker_fn, WorkerSpec)
+            and worker_fn.kind == "batch"
+        ):
+            pending_items = [_work_item_from_dict(payload) for payload in payloads]
+            batch_run_started_at = time.monotonic()
+            result: BatchWorkerResult = None
+            batch_error: Optional[str] = None
+            try:
+                batch_callable = cast(
+                    Callable[[list[WorkItem]], Any], worker_fn.callable
+                )
+                maybe_result = batch_callable(list(pending_items))
+                result = cast(BatchWorkerResult, maybe_result)
+            except Exception as exc:
+                batch_error = str(exc)
+
+            if batch_error is None:
+                batch_runtime = worker_fn.batch_runtime
+                if batch_runtime is None:
+                    raise RuntimeError("batch worker runtime spec is required")
+                batch_completion_results = normalize_batch_worker_result(
+                    pending_items=pending_items,
+                    result=result,
+                    ordering_mode=batch_runtime.ordering_mode,
+                    attempt=1,
+                )
+            else:
+                batch_completion_results = [
+                    CompletionEvent(
+                        id=work_item.id,
+                        tp=work_item.tp,
+                        offset=work_item.offset,
+                        epoch=work_item.epoch,
+                        status=CompletionStatus.FAILURE,
+                        error=batch_error,
+                        attempt=1,
+                    )
+                    for work_item in pending_items
+                ]
+            registry_event_queue.put(
+                {
+                    "kind": "batch_completed",
+                    "worker_exec_seconds": max(
+                        0.0, time.monotonic() - batch_run_started_at
+                    ),
+                }
+            )
+            _flush_route_batch_completion(
+                completion_queue=completion_queue,
+                registry_event_queue=registry_event_queue,
+                worker_logger=worker_logger,
+                process_idx=process_idx,
+                route_batch_id=route_batch_id,
+                route_identity=route_identity,
+                batch_completion_results=batch_completion_results,
+            )
+            payload_by_id = {
+                str(payload.get("id", "")): payload for payload in payloads
+            }
+            for completion_event in batch_completion_results:
+                payload = payload_by_id.get(completion_event.id)
+                if payload is None:
+                    continue
+                registry_event_queue.put(
+                    {
+                        "kind": "done",
+                        "key": (
+                            process_idx,
+                            completion_event.tp.topic,
+                            completion_event.tp.partition,
+                            completion_event.offset,
+                        ),
+                        "payload": _work_item_identity_payload(payload),
+                    }
+                )
+            continue
+
+        single_worker = cast(Callable[[WorkItem], Any], worker_fn)
         for idx, payload in enumerate(payloads):
             work_item = _work_item_from_dict(payload)
             in_flight_key = (
@@ -300,7 +383,7 @@ def _worker_loop(
 
                     def _run_with_timeout() -> None:
                         """Run with timeout for process worker runtime."""
-                        worker_fn(work_item)
+                        single_worker(work_item)
 
                     if timeout_sec > 0:
 

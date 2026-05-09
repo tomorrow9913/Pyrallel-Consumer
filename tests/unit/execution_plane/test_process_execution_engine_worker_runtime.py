@@ -3,6 +3,11 @@
 # Role: Verifies worker runtime route-batch execution, batch completion envelopes, and fatal flush behavior.
 # Extend here for focused process execution engine regression coverage in this area.
 
+from pyrallel_consumer.dto import OrderingMode
+from pyrallel_consumer.execution_plane.worker_spec import (
+    BatchWorkerRuntimeSpec,
+    WorkerSpec,
+)
 from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     CompletionStatus,
@@ -23,6 +28,63 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     queue,
     worker_runtime_module,
 )
+
+
+def test_worker_runtime_route_batch_invokes_batch_worker_once() -> None:
+    # Given: a process route batch is handled by a public batch-worker spec.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2, 3)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-public-worker", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+    seen_batches: list[list[WorkItem]] = []
+
+    def batch_worker(batch: list[WorkItem]) -> None:
+        seen_batches.append(list(batch))
+        return None
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payload = msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+    completion = batch_completion_from_dict(raw_payload["completion"])
+
+    # Then: process route-batch runtime invokes the batch worker once with all items.
+    assert seen_batches == [items]
+    assert raw_payload["kind"] == "batch_completion"
+    assert [(event.id, event.status) for event in completion.results] == [
+        ("work-1", CompletionStatus.SUCCESS),
+        ("work-2", CompletionStatus.SUCCESS),
+        ("work-3", CompletionStatus.SUCCESS),
+    ]
 
 
 def test_worker_runtime_executes_route_batch_items_in_order() -> None:
