@@ -320,6 +320,34 @@ def test_pyrallel_consumer_from_batch_worker_opens_process_runtime_path(
     assert consumer._work_manager._batch_dispatch_enabled is True
 
 
+def test_pyrallel_consumer_process_batch_worker_clamps_route_batch_size(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: public batch size is smaller than the process transport route batch size.
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return _DummyEngine()
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+    config.parallel_consumer.batch_worker.max_batch_size = 5
+    config.parallel_consumer.execution.process_config.route_batch_size = 64
+
+    def batch_worker(items):
+        return None
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=batch_worker,
+        topic="demo",
+    )
+
+    # Then: process public batch-worker leases are capped by the public max size.
+    assert consumer._work_manager._route_batch_size == 5
+
+
 def test_pyrallel_consumer_process_batch_facade_contract_handles_mixed_and_stale(
     monkeypatch: MonkeyPatch,
 ) -> None:

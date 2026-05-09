@@ -153,8 +153,14 @@ class PyrallelConsumer:
                 cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=execution_config.max_retries,
             )
-        if worker_spec.kind == "batch" and execution_config.mode == ExecutionMode.ASYNC:
-            resolved_route_batch_size = parallel_config.batch_worker.max_batch_size
+        if worker_spec.kind == "batch":
+            if execution_config.mode == ExecutionMode.PROCESS:
+                resolved_route_batch_size = min(
+                    parallel_config.batch_worker.max_batch_size,
+                    execution_config.process_config.route_batch_size,
+                )
+            else:
+                resolved_route_batch_size = parallel_config.batch_worker.max_batch_size
         else:
             resolved_route_batch_size = resolve_work_manager_route_batch_size(
                 parallel_config
