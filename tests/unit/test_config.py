@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 import pyrallel_consumer.config as config_module
 from pyrallel_consumer.config import (
+    BatchWorkerConfig,
     CommitCoordinatorConfig,
     ExecutionConfig,
     KafkaConfig,
@@ -42,6 +43,7 @@ BENCHMARK_RUNTIME_ENV_SAMPLE_KEYS = {
     "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__MIN_IN_FLIGHT",
     "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__SCALE_DOWN_STEP",
     "PARALLEL_CONSUMER_ADAPTIVE_CONCURRENCY__SCALE_UP_STEP",
+    "PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE",
     "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_COMPLETION_THRESHOLD",
     "PARALLEL_CONSUMER_COMMIT_DEBOUNCE_INTERVAL_MS",
     "PARALLEL_CONSUMER_MAX_BLOCKING_DURATION_MS",
@@ -120,12 +122,52 @@ def test_parallel_consumer_config_defaults():
     assert config.poison_message.enabled is False
     assert config.poison_message.failure_threshold == 3
     assert config.poison_message.cooldown_ms == 30000
+    assert isinstance(config.batch_worker, BatchWorkerConfig)
+    assert config.batch_worker.max_batch_size == 64
     assert isinstance(config.commit_coordinator, CommitCoordinatorConfig)
     assert config.commit_coordinator.enabled is False
     assert config.commit_coordinator.queue_max_partitions == 1024
     assert config.commit_coordinator.retry_backoff_ms == 100
     assert config.commit_coordinator.max_retry_backoff_ms == 5000
     assert config.commit_coordinator.stop_drain_timeout_ms == 5000
+
+
+def test_batch_worker_config_exposes_only_static_batch_size() -> None:
+    # Given: the v1 public batch-worker config is instantiated.
+    config = BatchWorkerConfig()
+
+    # When: its public field names are inspected.
+    # Then: v1 exposes only static max_batch_size and no enable/wait-to-fill knob.
+    assert config.max_batch_size == 64
+    assert set(BatchWorkerConfig.model_fields) == {"max_batch_size"}
+    assert not hasattr(config, "enabled")
+    assert not hasattr(config, "max_batch_wait_ms")
+
+
+def test_parallel_consumer_config_batch_worker_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: the nested batch-worker max size env var is set.
+    monkeypatch.setenv("PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE", "17")
+
+    config = ParallelConsumerConfig()
+
+    # When: ParallelConsumerConfig loads nested batch-worker settings.
+    # Then: max_batch_size reflects the env override.
+    assert config.batch_worker.max_batch_size == 17
+
+    monkeypatch.delenv("PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE", raising=False)
+
+
+def test_env_sample_documents_batch_worker_max_size_without_enabled_flag() -> None:
+    # Given: .env.sample is available for public config surface inspection.
+    sample_keys = _env_sample_keys()
+
+    # When: the batch-worker env names are inspected.
+    # Then: v1 documents max_batch_size but not a duplicate enabled/wait flag.
+    assert "PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE" in sample_keys
+    assert "PARALLEL_CONSUMER_BATCH_WORKER__ENABLED" not in sample_keys
+    assert "PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_WAIT_MS" not in sample_keys
 
 
 def test_parallel_consumer_config_commit_coordinator_env_override(

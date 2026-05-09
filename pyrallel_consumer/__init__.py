@@ -1,6 +1,7 @@
 from pyrallel_consumer.config import (
     AdaptiveBackpressureConfig,
     AdaptiveConcurrencyConfig,
+    BatchWorkerConfig,
     ExecutionConfig,
     KafkaConfig,
     ParallelConsumerConfig,
@@ -28,11 +29,25 @@ from pyrallel_consumer.resource_signals import (
     NullResourceSignalProvider,
     ResourceSignalProvider,
 )
+from pyrallel_consumer.worker import (
+    AsyncBatchWorker,
+    BatchItemOutcome,
+    BatchItemStatus,
+    BatchWorkerContractError,
+    BatchWorkerResult,
+    SyncBatchWorker,
+)
 
 __all__ = [
     "AdaptiveBackpressureConfig",
     "AdaptiveBackpressureSnapshot",
     "AdaptiveConcurrencyConfig",
+    "AsyncBatchWorker",
+    "BatchItemOutcome",
+    "BatchItemStatus",
+    "BatchWorkerConfig",
+    "BatchWorkerContractError",
+    "BatchWorkerResult",
     "DLQPayloadMode",
     "AdaptiveConcurrencyRuntimeSnapshot",
     "ExecutionConfig",
@@ -51,6 +66,7 @@ __all__ = [
     "RetryPolicySnapshot",
     "RuntimeSnapshot",
     "SystemMetrics",
+    "SyncBatchWorker",
     "WorkItem",
     "DlqRuntimeSnapshot",
     "NullResourceSignalProvider",

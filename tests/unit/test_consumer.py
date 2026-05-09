@@ -17,6 +17,7 @@ from pyrallel_consumer.dto import (
     ResourceSignalSnapshot,
     ResourceSignalStatus,
 )
+from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 
 
 class _DummyEngine:
@@ -153,6 +154,113 @@ def test_pyrallel_consumer_constructor_docstring_documents_resource_signals():
     assert "NullResourceSignalProvider" in docstring
     assert "fail-open" in docstring
     assert "must not raise" in docstring
+
+
+def test_pyrallel_consumer_from_batch_worker_rejects_partition_mode() -> None:
+    # Given: a config requests partition ordering for a public batch worker.
+    config = KafkaConfig()
+    config.parallel_consumer.ordering_mode = OrderingMode.PARTITION
+
+    # When: the batch-worker facade is assembled.
+    # Then: v1 fails closed until the LeasedBatch partition gate lands.
+    with pytest.raises(
+        ValueError,
+        match="batch_worker_partition_ordering_unsupported_until_leased_batch_gate",
+    ):
+        PyrallelConsumer.from_batch_worker(
+            config=config,
+            batch_worker=lambda items: None,
+            topic="demo",
+        )
+
+
+def test_pyrallel_consumer_from_batch_worker_rejects_adaptive_concurrency() -> None:
+    # Given: adaptive concurrency is enabled.
+    config = KafkaConfig()
+    config.parallel_consumer.adaptive_concurrency.enabled = True
+
+    # When: the batch-worker facade is assembled.
+    # Then: v1 rejects the combination until the live-capacity gate lands.
+    with pytest.raises(
+        ValueError,
+        match="batch_worker_adaptive_concurrency_unsupported_until_live_capacity_gate",
+    ):
+        PyrallelConsumer.from_batch_worker(
+            config=config,
+            batch_worker=lambda items: None,
+            topic="demo",
+        )
+
+
+def test_pyrallel_consumer_from_batch_worker_rejects_adaptive_backpressure() -> None:
+    # Given: adaptive backpressure is enabled.
+    config = KafkaConfig()
+    config.parallel_consumer.adaptive_backpressure.enabled = True
+
+    # When: the batch-worker facade is assembled.
+    # Then: v1 rejects the combination until the live-capacity gate lands.
+    with pytest.raises(
+        ValueError,
+        match="batch_worker_adaptive_backpressure_unsupported_until_live_capacity_gate",
+    ):
+        PyrallelConsumer.from_batch_worker(
+            config=config,
+            batch_worker=lambda items: None,
+            topic="demo",
+        )
+
+
+def test_pyrallel_consumer_from_batch_worker_opens_async_runtime_path(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: dummy facade dependencies are installed and key-hash batch worker mode is used.
+    captured_worker: WorkerSpec | None = None
+
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        nonlocal captured_worker
+        captured_worker = worker
+        return _DummyEngine()
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+
+    config = KafkaConfig()
+
+    def batch_worker(items):
+        return None
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=batch_worker,
+        topic="demo",
+    )
+
+    # Then: async public batch workers use the batch WorkerSpec runtime path.
+    assert consumer._execution_engine is not None
+    assert captured_worker is not None
+    assert captured_worker.kind == "batch"
+    assert captured_worker.callable is batch_worker
+    assert captured_worker.batch_runtime is not None
+    assert captured_worker.batch_runtime.ordering_mode == OrderingMode.KEY_HASH
+    assert consumer._work_manager._batch_dispatch_enabled is True
+
+
+def test_pyrallel_consumer_from_batch_worker_process_mode_fails_closed() -> None:
+    # Given: process mode is configured before process batch runtime support lands.
+    config = KafkaConfig()
+    config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+
+    # When/Then: process public batch workers remain fail-closed for this async slice.
+    with pytest.raises(
+        NotImplementedError,
+        match="batch_worker_process_runtime_path_not_implemented",
+    ):
+        PyrallelConsumer.from_batch_worker(
+            config=config,
+            batch_worker=lambda items: None,
+            topic="demo",
+        )
 
 
 @pytest.mark.asyncio

@@ -5,13 +5,14 @@
 import inspect
 import pickle
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import ExecutionMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 
 
 def _is_async_worker(worker_fn: Callable[[WorkItem], Any]) -> bool:
@@ -33,7 +34,7 @@ def _is_async_worker(worker_fn: Callable[[WorkItem], Any]) -> bool:
 
 def _ensure_worker_matches_mode(
     config: ExecutionConfig,
-    worker_fn: Callable[[WorkItem], Any],
+    worker: WorkerSpec,
 ) -> None:
     """Handle ensure worker matches mode within engine factory.
 
@@ -50,18 +51,20 @@ def _ensure_worker_matches_mode(
         mode = ExecutionMode(mode)
 
     if mode == ExecutionMode.ASYNC:
-        if not _is_async_worker(worker_fn):
+        if not worker.is_async:
+            if worker.kind == "batch":
+                raise TypeError("Async execution mode requires an async batch worker")
             raise TypeError("Async execution mode requires an async worker function")
         return
 
     if mode == ExecutionMode.PROCESS:
-        if _is_async_worker(worker_fn):
+        if worker.is_async:
             raise TypeError(
                 "Process execution mode requires a synchronous worker function"
             )
         if getattr(config.process_config, "require_picklable_worker", False):
             try:
-                pickle.dumps(worker_fn)
+                pickle.dumps(worker)
             except Exception as exc:
                 raise TypeError(
                     "Process execution mode requires a picklable worker"
@@ -69,7 +72,7 @@ def _ensure_worker_matches_mode(
 
 
 def create_execution_engine(
-    config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]
+    config: ExecutionConfig, worker: WorkerSpec | Callable[[WorkItem], Any]
 ) -> BaseExecutionEngine:
     """실행 구성에 따라 적절한 실행 엔진을 생성합니다.
 
@@ -87,10 +90,14 @@ def create_execution_engine(
     if isinstance(mode, str):
         mode = ExecutionMode(mode)
 
-    _ensure_worker_matches_mode(config, worker_fn)
+    worker_spec = (
+        worker if isinstance(worker, WorkerSpec) else WorkerSpec.single(worker)
+    )
+    _ensure_worker_matches_mode(config, worker_spec)
+    worker_fn = cast(Callable[[WorkItem], Any], worker_spec.callable)
 
     if mode == ExecutionMode.ASYNC:
-        return AsyncExecutionEngine(config=config, worker_fn=worker_fn)
+        return AsyncExecutionEngine(config=config, worker_fn=worker_spec)
     if mode == ExecutionMode.PROCESS:
         return ProcessExecutionEngine(config=config, worker_fn=worker_fn)
     raise ValueError(f"Unknown execution mode: {mode}")

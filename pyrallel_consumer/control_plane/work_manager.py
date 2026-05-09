@@ -70,6 +70,7 @@ class WorkManager:
         max_revoke_grace_ms: int = 500,
         poison_message_circuit: Optional[PoisonMessageCircuitBreaker] = None,
         route_batch_size: int = 1,
+        batch_dispatch_enabled: bool = False,
     ):
         """Initialize this component.
 
@@ -124,6 +125,7 @@ class WorkManager:
         self._head_queue_keys_by_offset = self._queue_topology.head_queue_keys_by_offset
         self._poison_message_circuit = poison_message_circuit
         self._route_batch_size = route_batch_size
+        self._batch_dispatch_enabled = batch_dispatch_enabled
 
     def get_ordering_mode(self) -> OrderingMode:
         """Return ordering mode for work scheduling and completion accounting.
@@ -811,7 +813,10 @@ class WorkManager:
                     if selected_queue_key is not None:
                         self._leased_queue_keys.add(selected_queue_key)
                     try:
-                        if len(items_to_submit) == 1:
+                        if (
+                            len(items_to_submit) == 1
+                            and not self._batch_dispatch_enabled
+                        ):
                             await self._execution_engine.submit(items_to_submit[0])
                         else:
                             # submit_batch must be atomic or raise BatchSubmitError

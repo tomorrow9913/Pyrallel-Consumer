@@ -2,8 +2,16 @@ from dataclasses import fields
 from pathlib import Path
 
 from pyrallel_consumer import (
+    AsyncBatchWorker,
+    BatchItemOutcome,
+    BatchItemStatus,
+    BatchWorkerContractError,
+    BatchWorkerResult,
+)
+from pyrallel_consumer import (
     PipelineDiagnosticsSnapshot as ExportedPipelineDiagnosticsSnapshot,
 )
+from pyrallel_consumer import SyncBatchWorker
 from pyrallel_consumer.consumer import PyrallelConsumer
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.dto import (
@@ -324,3 +332,27 @@ def test_pipeline_diagnostics_public_api_docstrings_are_stable_not_experimental(
         assert "stable" in lowered or "supported" in lowered
         assert "experimental" not in lowered
         assert "internal" not in lowered
+
+
+def test_batch_worker_public_contract_exports_helpers_and_error_type() -> None:
+    # Given: the v1 public batch-worker API is imported from the package root.
+    # When: helper constructors and the public contract error are exercised.
+    # Then: the exported names expose stable value-based outcome semantics.
+    assert BatchItemStatus is not None
+    assert BatchWorkerResult is not None
+    assert AsyncBatchWorker is not None
+    assert SyncBatchWorker is not None
+    assert BatchItemOutcome.success() == BatchItemOutcome(status="success")
+    assert BatchItemOutcome.failure("boom") == BatchItemOutcome(
+        status="failure",
+        error="boom",
+    )
+    assert BatchItemOutcome.ordered_prefix_blocked() == BatchItemOutcome(
+        status="ordered_prefix_blocked",
+    )
+
+    error = BatchWorkerContractError("invalid_batch_worker_result:missing_item_id")
+    assert error.code == "invalid_batch_worker_result"
+    assert error.reason == "invalid_batch_worker_result:missing_item_id"
+    assert str(error) == error.reason
+    assert error.args == (error.reason,)

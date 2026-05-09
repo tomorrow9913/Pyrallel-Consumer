@@ -83,6 +83,14 @@ class CompletionEvent:
 
 
 @dataclass(frozen=True)
+class ExecutionControlEvent:
+    """Internal execution-control event for fatal non-committable failures."""
+
+    kind: str
+    error: Exception
+
+
+@dataclass(frozen=True)
 class WorkItem:
     """
     WorkManager에서 관리하는 단일 작업 항목입니다.

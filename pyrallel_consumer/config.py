@@ -123,6 +123,18 @@ class CommitCoordinatorConfig(BaseSettings):
     stop_drain_timeout_ms: int = Field(default=5000, ge=0)
 
 
+class BatchWorkerConfig(BaseSettings):
+    """Hold public batch-worker configuration."""
+
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    max_batch_size: int = Field(default=64, gt=0)
+
+
 class ExecutionConfig(BaseSettings):
     """Hold settings for runtime configuration and librdkafka client setup."""
 
@@ -225,6 +237,7 @@ class ParallelConsumerConfig(BaseSettings):
     commit_coordinator: CommitCoordinatorConfig = Field(
         default_factory=CommitCoordinatorConfig
     )
+    batch_worker: BatchWorkerConfig = Field(default_factory=BatchWorkerConfig)
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
@@ -236,6 +249,7 @@ class ParallelConsumerConfig(BaseSettings):
             env_file = data["_env_file"]
             execution = data.get("execution")
             commit_coordinator = data.get("commit_coordinator")
+            batch_worker = data.get("batch_worker")
             if isinstance(execution, dict):
                 data["execution"] = ExecutionConfig(
                     _env_file=env_file,
@@ -252,6 +266,16 @@ class ParallelConsumerConfig(BaseSettings):
                 data.setdefault(
                     "commit_coordinator",
                     cast(Any, CommitCoordinatorConfig)(_env_file=env_file),
+                )
+            if isinstance(batch_worker, dict):
+                data["batch_worker"] = cast(Any, BatchWorkerConfig)(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], batch_worker),
+                )
+            else:
+                data.setdefault(
+                    "batch_worker",
+                    cast(Any, BatchWorkerConfig)(_env_file=env_file),
                 )
         super().__init__(**cast(dict[str, Any], data))
 

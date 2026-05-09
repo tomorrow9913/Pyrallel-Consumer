@@ -8,6 +8,7 @@ from typing import List, Optional
 from pyrallel_consumer.dto import (
     CompletionEvent,
     EngineRuntimeDiagnostics,
+    ExecutionControlEvent,
     TopicPartition,
     WorkItem,
 )
@@ -88,6 +89,12 @@ class BaseExecutionEngine(ABC):
             List[CompletionEvent]: 완료된 이벤트 리스트
 
         """
+
+    async def poll_control_events(
+        self, batch_limit: int = 1000
+    ) -> List[ExecutionControlEvent]:
+        """Poll internal control events from the execution engine."""
+        return []
 
     @abstractmethod
     async def wait_for_completion(

@@ -13,6 +13,8 @@ from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
+    ExecutionMode,
+    OrderingMode,
     ResourceSignalSnapshot,
     ResourceSignalStatus,
     RuntimeSnapshot,
@@ -21,15 +23,22 @@ from pyrallel_consumer.dto import (
     WorkManagerPipelineDiagnostics,
 )
 from pyrallel_consumer.execution_plane.engine_factory import create_execution_engine
+from pyrallel_consumer.execution_plane.worker_spec import (
+    BatchWorkerRuntimeSpec,
+    WorkerSpec,
+)
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
 from pyrallel_consumer.resource_signals import (
     NullResourceSignalProvider,
     ResourceSignalProvider,
 )
+from pyrallel_consumer.worker import AsyncBatchWorker, SyncBatchWorker
 
 _PROMETHEUS_EXPORTERS: dict[int, PrometheusMetricsExporter] = {}
 _PROMETHEUS_EXPORTER_REFCOUNTS: dict[int, int] = {}
 _METRICS_POLL_INTERVAL_SECONDS = 0.5
+_SingleWorker = Union[Callable[[WorkItem], Awaitable[Any]], Callable[[WorkItem], Any]]
+_ConsumerWorker = _SingleWorker | WorkerSpec
 
 
 def _acquire_prometheus_exporter(
@@ -82,7 +91,7 @@ class PyrallelConsumer:
     def __init__(
         self,
         config: KafkaConfig,
-        worker: Union[Callable[[WorkItem], Awaitable[Any]], Callable[[WorkItem], Any]],
+        worker: _ConsumerWorker,
         topic: str,
         resource_signal_provider: Optional[ResourceSignalProvider] = None,
     ):
@@ -126,7 +135,10 @@ class PyrallelConsumer:
         execution_config = parallel_config.execution
 
         # 1. Create Execution Engine
-        self._execution_engine = create_execution_engine(execution_config, worker)
+        worker_spec = (
+            worker if isinstance(worker, WorkerSpec) else WorkerSpec.single(worker)
+        )
+        self._execution_engine = create_execution_engine(execution_config, worker_spec)
 
         # 2. Create Work Manager
         ordering_mode = parallel_config.ordering_mode
@@ -141,9 +153,12 @@ class PyrallelConsumer:
                 cooldown_ms=int(getattr(poison_message_config, "cooldown_ms", 0)),
                 forced_failure_attempt=execution_config.max_retries,
             )
-        resolved_route_batch_size = resolve_work_manager_route_batch_size(
-            parallel_config
-        )
+        if worker_spec.kind == "batch" and execution_config.mode == ExecutionMode.ASYNC:
+            resolved_route_batch_size = parallel_config.batch_worker.max_batch_size
+        else:
+            resolved_route_batch_size = resolve_work_manager_route_batch_size(
+                parallel_config
+            )
         self._work_manager = WorkManager(
             execution_engine=self._execution_engine,
             max_in_flight_messages=execution_config.max_in_flight_messages,
@@ -151,6 +166,7 @@ class PyrallelConsumer:
             max_revoke_grace_ms=execution_config.max_revoke_grace_ms,
             poison_message_circuit=poison_message_circuit,
             route_batch_size=resolved_route_batch_size,
+            batch_dispatch_enabled=worker_spec.kind == "batch",
         )
 
         # 3. Create Broker Poller (The main loop)
@@ -159,6 +175,48 @@ class PyrallelConsumer:
             kafka_config=config,
             execution_engine=self._execution_engine,
             work_manager=self._work_manager,
+        )
+
+    @classmethod
+    def from_batch_worker(
+        cls,
+        *,
+        config: KafkaConfig,
+        batch_worker: AsyncBatchWorker | SyncBatchWorker,
+        topic: str,
+        resource_signal_provider: Optional[ResourceSignalProvider] = None,
+    ) -> "PyrallelConsumer":
+        parallel_config = getattr(config, "parallel_consumer", None)
+        if parallel_config is None:
+            parallel_config = ParallelConsumerConfig()
+            setattr(config, "parallel_consumer", parallel_config)
+        if parallel_config.ordering_mode == OrderingMode.PARTITION:
+            raise ValueError(
+                "batch_worker_partition_ordering_unsupported_until_leased_batch_gate"
+            )
+        if parallel_config.adaptive_concurrency.enabled:
+            raise ValueError(
+                "batch_worker_adaptive_concurrency_unsupported_until_live_capacity_gate"
+            )
+        if parallel_config.adaptive_backpressure.enabled:
+            raise ValueError(
+                "batch_worker_adaptive_backpressure_unsupported_until_live_capacity_gate"
+            )
+        if parallel_config.execution.mode == ExecutionMode.PROCESS:
+            raise NotImplementedError(
+                "batch_worker_process_runtime_path_not_implemented"
+            )
+        batch_runtime = BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=parallel_config.ordering_mode,
+            batch_worker_config=parallel_config.batch_worker,
+            max_retries=parallel_config.execution.max_retries,
+        )
+        worker_spec = WorkerSpec.batch(batch_worker, batch_runtime)
+        return cls(
+            config=config,
+            worker=worker_spec,
+            topic=topic,
+            resource_signal_provider=resource_signal_provider,
         )
 
     def _publish_metrics_snapshot(self) -> None:

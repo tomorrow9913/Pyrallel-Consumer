@@ -4,12 +4,13 @@
 # Extend here for async-engine behavior; keep shared engine contracts in base.py.
 import asyncio
 import contextvars
+import inspect
 import logging
 import random
 from asyncio import Semaphore, Task
 from collections import deque
 from collections.abc import Callable
-from typing import Any, Deque, List, Optional, Set
+from typing import Any, Awaitable, Deque, List, Optional, Set, cast
 
 from pyrallel_consumer.config import ExecutionConfig
 from pyrallel_consumer.dto import (
@@ -17,10 +18,14 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     EngineRuntimeDiagnostics,
     EngineWorkerDiagnostics,
+    ExecutionControlEvent,
     TopicPartition,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.batch_result import normalize_batch_worker_result
+from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
+from pyrallel_consumer.worker import BatchWorkerContractError, BatchWorkerResult
 
 
 class AsyncExecutionEngine(BaseExecutionEngine):
@@ -34,7 +39,11 @@ class AsyncExecutionEngine(BaseExecutionEngine):
 
     """
 
-    def __init__(self, config: ExecutionConfig, worker_fn: Callable[[WorkItem], Any]):
+    def __init__(
+        self,
+        config: ExecutionConfig,
+        worker_fn: Callable[[WorkItem], Any] | WorkerSpec,
+    ):
         """Initialize this component.
 
         Args:
@@ -43,12 +52,20 @@ class AsyncExecutionEngine(BaseExecutionEngine):
 
         """
         self._config = config
-        self._worker_fn = worker_fn
+        self._worker_spec = (
+            worker_fn
+            if isinstance(worker_fn, WorkerSpec)
+            else WorkerSpec.single(worker_fn)
+        )
+        self._worker_fn = self._worker_spec.callable
         self._semaphore = Semaphore(config.max_in_flight)
         self._completion_queue: asyncio.Queue[CompletionEvent] = asyncio.Queue()
+        self._control_queue: asyncio.Queue[ExecutionControlEvent] = asyncio.Queue()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._in_flight_tasks: Set[Task] = set()
+        self._task_permit_counts: dict[Task, int] = {}
         self._shutdown_event = asyncio.Event()
+        self._activity_event = asyncio.Event()
 
         # Logger for this module
         self._logger = logging.getLogger(__name__)
@@ -58,6 +75,10 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         # depends on contextvars set up by the caller. For simple logging/tracing,
         # passing relevant IDs explicitly or relying on thread-local storage might be simpler.
         self._context = contextvars.copy_context()
+
+    @property
+    def supports_ordered_route_batch(self) -> bool:
+        return self._worker_spec.kind == "batch"
 
     async def submit(self, work_item: WorkItem) -> None:
         """제출된 작업 항목을 처리합니다. 세마포어를 획득하고, 새 비동기 태스크를 생성하여 워커 함수를 실행합니다.
@@ -69,6 +90,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             RuntimeError: 실행 엔진이 종료 중이면 새 작업을 받을 수 없을 때 발생합니다.
 
         """
+        if self._worker_spec.kind == "batch":
+            await self.submit_batch([work_item])
+            return
         if self._shutdown_event.is_set():
             raise RuntimeError("Engine is shutting down, cannot accept new work")
 
@@ -79,7 +103,32 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             asyncio.create_task, self._execute_worker_task(work_item)
         )
         self._in_flight_tasks.add(task)
+        self._task_permit_counts[task] = 1
         task.add_done_callback(self._task_done_callback)
+
+    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+        if self._worker_spec.kind != "batch":
+            await super().submit_batch(work_items)
+            return
+        if self._shutdown_event.is_set():
+            raise RuntimeError("Engine is shutting down, cannot accept new work")
+        if len(work_items) > self._config.max_in_flight:
+            raise ValueError("batch_worker_batch_size_exceeds_max_in_flight")
+        acquired = 0
+        try:
+            for _ in work_items:
+                await self._semaphore.acquire()
+                acquired += 1
+            task = self._context.copy().run(
+                asyncio.create_task, self._execute_batch_worker_task(list(work_items))
+            )
+            self._in_flight_tasks.add(task)
+            self._task_permit_counts[task] = acquired
+            task.add_done_callback(self._task_done_callback)
+        except BaseException:
+            for _ in range(acquired):
+                self._semaphore.release()
+            raise
 
     async def _execute_worker_task(self, work_item: WorkItem) -> None:
         """사용자 워커 함수를 실행하고 결과를 완료 큐에 넣습니다.
@@ -128,7 +177,84 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             error=error,
             attempt=attempt,
         )
-        await self._completion_queue.put(completion_event)
+        await self._put_completion_event(completion_event)
+
+    async def _put_completion_event(self, event: CompletionEvent) -> None:
+        await self._completion_queue.put(event)
+        self._activity_event.set()
+
+    async def _put_control_event(self, event: ExecutionControlEvent) -> None:
+        await self._control_queue.put(event)
+        self._activity_event.set()
+
+    async def _execute_batch_worker_task(self, work_items: list[WorkItem]) -> None:
+        result: BatchWorkerResult = None
+        error: Optional[str] = None
+        attempt = 0
+        batch_worker = cast(
+            Callable[
+                [list[WorkItem]], Awaitable[BatchWorkerResult] | BatchWorkerResult
+            ],
+            self._worker_fn,
+        )
+
+        for attempt in range(1, self._config.max_retries + 1):
+            try:
+                maybe_result = batch_worker(list(work_items))
+                if inspect.isawaitable(maybe_result):
+                    result = await asyncio.wait_for(
+                        maybe_result,
+                        timeout=self._config.async_config.task_timeout_ms / 1000.0,
+                    )
+                else:
+                    result = cast(BatchWorkerResult, maybe_result)
+                error = None
+                break
+            except asyncio.TimeoutError:
+                error = "Batch task timed out."
+                self._logger.error(error)
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+            except Exception as exc:
+                error = str(exc)
+                self._logger.exception("Batch task failed with exception: %s", error)
+                if attempt < self._config.max_retries:
+                    await self._apply_backoff(attempt)
+
+        if error is not None:
+            for item in work_items:
+                await self._put_completion_event(
+                    CompletionEvent(
+                        id=item.id,
+                        tp=item.tp,
+                        offset=item.offset,
+                        epoch=item.epoch,
+                        status=CompletionStatus.FAILURE,
+                        error=error,
+                        attempt=attempt,
+                    )
+                )
+            return
+
+        batch_runtime = self._worker_spec.batch_runtime
+        if batch_runtime is None:
+            raise RuntimeError("batch worker runtime spec is required")
+        ordering_mode = batch_runtime.ordering_mode
+        try:
+            events = normalize_batch_worker_result(
+                pending_items=work_items,
+                result=result,
+                ordering_mode=ordering_mode,
+                attempt=attempt,
+            )
+        except BatchWorkerContractError as exc:
+            await self._put_control_event(
+                ExecutionControlEvent(kind="fatal", error=exc)
+            )
+            self._shutdown_event.set()
+            return
+        for event in events:
+            await self._put_completion_event(event)
 
     async def _apply_backoff(self, attempt: int) -> None:
         """Handle apply backoff within async execution.
@@ -159,7 +285,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
 
         """
         self._in_flight_tasks.discard(task)
-        self._semaphore.release()
+        permit_count = self._task_permit_counts.pop(task, 1)
+        for _ in range(permit_count):
+            self._semaphore.release()
 
         # Check for exceptions that were not caught within _execute_worker_task
         # (e.g., if the task itself was cancelled or an unexpected error occurred before try/except)
@@ -195,7 +323,19 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             len(completed_events) < batch_limit and not self._completion_queue.empty()
         ):
             completed_events.append(self._completion_queue.get_nowait())
+        if self._completion_queue.empty() and self._control_queue.empty():
+            self._activity_event.clear()
         return completed_events
+
+    async def poll_control_events(
+        self, batch_limit: int = 1000
+    ) -> List[ExecutionControlEvent]:
+        control_events: List[ExecutionControlEvent] = []
+        while len(control_events) < batch_limit and not self._control_queue.empty():
+            control_events.append(self._control_queue.get_nowait())
+        if self._completion_queue.empty() and self._control_queue.empty():
+            self._activity_event.clear()
+        return control_events
 
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
@@ -210,22 +350,29 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             bool: 완료 이벤트가 준비되었으면 True, 제한 시간 안에 없으면 False입니다.
 
         """
-        if self._prefetched_completion_events or not self._completion_queue.empty():
+        if (
+            self._prefetched_completion_events
+            or not self._completion_queue.empty()
+            or not self._control_queue.empty()
+        ):
             return True
 
         try:
             if timeout_seconds is None:
-                event = await self._completion_queue.get()
+                await self._activity_event.wait()
             else:
-                event = await asyncio.wait_for(
-                    self._completion_queue.get(),
+                await asyncio.wait_for(
+                    self._activity_event.wait(),
                     timeout=timeout_seconds,
                 )
         except asyncio.TimeoutError:
             return False
 
-        self._prefetched_completion_events.append(event)
-        return True
+        return bool(
+            self._prefetched_completion_events
+            or not self._completion_queue.empty()
+            or not self._control_queue.empty()
+        )
 
     def get_in_flight_count(self) -> int:
         """현재 처리 중인 작업 항목의 수를 반환합니다.

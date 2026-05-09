@@ -7,10 +7,16 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     EngineWorkerDiagnostics,
     ExecutionMode,
+    OrderingMode,
     TopicPartition,
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
+from pyrallel_consumer.execution_plane.worker_spec import (
+    BatchWorkerRuntimeSpec,
+    WorkerSpec,
+)
+from pyrallel_consumer.worker import BatchItemOutcome
 from tests.unit.execution_plane.test_execution_engine_contract import (
     BaseExecutionEngineContractTest,
 )
@@ -258,6 +264,199 @@ class TestAsyncExecutionEngineRetries:
         assert events[0].error is None
 
         await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_submit_batch_invokes_worker_once_with_list() -> None:
+    # Given: an async engine is configured with a batch WorkerSpec.
+    calls: list[list[WorkItem]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append(items)
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    await asyncio.sleep(0.05)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: one batch callback receives a fresh list and item-level completions are emitted.
+    assert len(calls) == 1
+    assert calls[0] == items
+    assert calls[0] is not items
+    assert [(event.id, event.status) for event in events] == [
+        ("a", CompletionStatus.SUCCESS),
+        ("b", CompletionStatus.SUCCESS),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_submit_delegates_to_submit_batch_singleton() -> None:
+    # Given: a batch-mode async engine and a worker that requires a list input.
+    calls: list[list[WorkItem]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append(items)
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.UNORDERED,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    item = WorkItem("single", TopicPartition("orders", 0), 1, 1, "k", b"payload")
+
+    await engine.submit(item)
+    await asyncio.sleep(0.05)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: scalar submit still invokes the public batch worker with [item].
+    assert len(calls) == 1
+    assert calls[0] == [item]
+    assert events[0].id == "single"
+    assert events[0].status == CompletionStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_explicit_result_normalizes_item_outcomes() -> None:
+    # Given: a batch worker returns explicit mixed outcomes.
+    async def batch_worker(items: list[WorkItem]):
+        return {
+            items[0].id: BatchItemOutcome.success(),
+            items[1].id: BatchItemOutcome.failure("sink rejected"),
+        }
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.UNORDERED,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    await asyncio.sleep(0.05)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: explicit item outcomes become item-level completion events.
+    assert [(event.id, event.status, event.error) for event in events] == [
+        ("a", CompletionStatus.SUCCESS, None),
+        ("b", CompletionStatus.FAILURE, "sink rejected"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_invalid_result_emits_fatal_control_event() -> None:
+    # Given: a batch worker returns an invalid mapping that omits an accepted item.
+    async def batch_worker(items: list[WorkItem]):
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.UNORDERED,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+
+    # Then: invalid contract results do not become committable item completions.
+    assert await engine.poll_completed_events() == []
+    control_events = await engine.poll_control_events()
+    await engine.shutdown()
+
+    assert len(control_events) == 1
+    assert control_events[0].kind == "fatal"
+    assert "invalid_batch_worker_result:missing_item_ids" in str(
+        control_events[0].error
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_submit_batch_rolls_back_permits_on_cancellation() -> (
+    None
+):
+    # Given: a batch submit waits for the second item-capacity permit.
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+
+    async def batch_worker(items: list[WorkItem]):
+        if items[0].id == "blocker":
+            blocker_started.set()
+            await release_blocker.wait()
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_in_flight=2, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.UNORDERED,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    blocker = WorkItem("blocker", TopicPartition("orders", 0), 0, 1, "k", b"block")
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch([blocker])
+    await asyncio.wait_for(blocker_started.wait(), timeout=1.0)
+    submit_task = asyncio.create_task(engine.submit_batch(items))
+    await asyncio.sleep(0.05)
+    submit_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await submit_task
+    release_blocker.set()
+    await asyncio.sleep(0.05)
+    await engine.poll_completed_events()
+
+    # When: another full-size batch is submitted after cancellation.
+    await asyncio.wait_for(engine.submit_batch(items), timeout=1.0)
+    await asyncio.sleep(0.05)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: the first acquired permit was rolled back and later full-size work can proceed.
+    assert [(event.id, event.status) for event in events] == [
+        ("a", CompletionStatus.SUCCESS),
+        ("b", CompletionStatus.SUCCESS),
+    ]
 
     @pytest.mark.asyncio
     async def test_success_on_second_attempt_shows_attempt_2(self):

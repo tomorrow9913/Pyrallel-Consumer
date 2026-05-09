@@ -89,6 +89,44 @@ async def test_submit_message(
 
 
 @pytest.mark.asyncio
+async def test_batch_dispatch_enabled_uses_submit_batch_for_single_item_lease(
+    mock_execution_engine, mock_dto_topic_partition
+):
+    # Given: WorkManager is in public batch-worker dispatch mode with one queued item.
+    work_manager = WorkManager(
+        execution_engine=mock_execution_engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        tracker.get_current_epoch(),
+        b"message-key",
+        b"payload",
+    )
+
+    await work_manager.schedule()
+
+    # Then: even a singleton lease enters the batch dispatch path.
+    mock_execution_engine.submit.assert_not_awaited()
+    mock_execution_engine.submit_batch.assert_awaited_once()
+    submitted_batch = mock_execution_engine.submit_batch.await_args.args[0]
+    assert len(submitted_batch) == 1
+    assert submitted_batch[0].offset == 10
+    assert work_manager.get_total_in_flight_count() == 1
+    assert work_manager.get_total_queued_messages() == 0
+
+
+@pytest.mark.asyncio
 async def test_submit_message_tracks_tp_offset_index(
     work_manager, mock_dto_topic_partition
 ):

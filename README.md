@@ -235,6 +235,7 @@ monitoring, adaptive controls, retry/DLQ, and metrics knobs.
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async  # or process
+PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE=64
 ```
 
 ### Secure Kafka connections (`KafkaConfig`)

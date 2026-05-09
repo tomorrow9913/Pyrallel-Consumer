@@ -236,11 +236,15 @@ class BrokerPoller:
             log_change=False,
         )
 
-        self._message_cache: "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]" = OrderedDict()
+        self._message_cache: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], Tuple[Any, Any]]"
+        ) = OrderedDict()
         # BrokerPoller owns pending terminal DLQ failures across transient
         # BrokerCompletionSupport instances; support mutates this ledger while
         # retrying DLQ publication before offsets may be marked complete.
-        self._pending_dlq_events: "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]" = OrderedDict()
+        self._pending_dlq_events: (
+            "OrderedDict[Tuple[DtoTopicPartition, int], CompletionEvent]"
+        ) = OrderedDict()
         self._message_cache_size_bytes = 0
         self._dlq_support = BrokerDlqSupport(
             consume_topic=self._consume_topic,
@@ -746,6 +750,7 @@ class BrokerPoller:
             True when the condition is met; otherwise False.
 
         """
+        await self._drain_execution_control_events_once()
         completed_events = await self._work_manager.poll_completed_events()
         timeout_events = await self._handle_blocking_timeouts()
         if timeout_events:
@@ -756,6 +761,21 @@ class BrokerPoller:
         await self._process_completed_events(completed_events)
         await self._work_manager.schedule()
         return True
+
+    async def _drain_execution_control_events_once(self) -> bool:
+        """Drain fatal execution-control events before item completions."""
+        poll_control_events = getattr(
+            self._execution_engine, "poll_control_events", None
+        )
+        if not callable(poll_control_events):
+            return False
+        control_events = await poll_control_events()
+        if not control_events:
+            return False
+        error = control_events[0].error
+        self._fatal_error = error
+        self._running = False
+        raise error
 
     async def _run_completion_monitor(self) -> None:
         """Run completion monitor for Kafka polling and control-plane orchestration.
