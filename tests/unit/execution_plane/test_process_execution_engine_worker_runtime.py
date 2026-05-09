@@ -3,16 +3,20 @@
 # Role: Verifies worker runtime route-batch execution, batch completion envelopes, and fatal flush behavior.
 # Extend here for focused process execution engine regression coverage in this area.
 
+import asyncio
+
 from pyrallel_consumer.dto import OrderingMode
 from pyrallel_consumer.execution_plane.worker_spec import (
     BatchWorkerRuntimeSpec,
     WorkerSpec,
 )
+from pyrallel_consumer.worker import BatchItemOutcome, BatchWorkerContractError
 from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     CompletionStatus,
     ExecutionConfig,
     ExecutionMode,
+    Mock,
     ProcessConfig,
     ProcessExecutionEngine,
     RouteBatch,
@@ -85,6 +89,77 @@ def test_worker_runtime_route_batch_invokes_batch_worker_once() -> None:
         ("work-2", CompletionStatus.SUCCESS),
         ("work-3", CompletionStatus.SUCCESS),
     ]
+
+
+def test_worker_runtime_invalid_batch_result_surfaces_parent_fatal_control() -> None:
+    # Given: a public process batch worker returns an invalid result shape.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-invalid-result", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def batch_worker(batch: list[WorkItem]) -> dict[str, BatchItemOutcome]:
+        return {batch[0].id: BatchItemOutcome.success()}
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    registry_events = [
+        cast(dict[str, Any], registry_event_queue.get_nowait())
+        for _ in range(registry_event_queue.qsize())
+    ]
+    done_events = [event for event in registry_events if event.get("kind") == "done"]
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._transport = Mock()
+    engine_any._in_flight_registry = {}
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    for event in registry_events:
+        engine._apply_registry_event(event)
+
+    control_events = asyncio.run(engine.poll_control_events())
+
+    # Then: invalid batch contracts are fatal controls, not committable completions.
+    assert completion_queue.empty()
+    assert done_events == []
+    assert len(control_events) == 1
+    assert control_events[0].kind == "fatal"
+    assert isinstance(control_events[0].error, BatchWorkerContractError)
+    assert "invalid_batch_worker_result:missing_item_ids" in str(
+        control_events[0].error
+    )
 
 
 def test_worker_runtime_executes_route_batch_items_in_order() -> None:

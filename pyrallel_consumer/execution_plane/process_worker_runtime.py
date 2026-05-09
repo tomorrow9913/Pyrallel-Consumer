@@ -41,7 +41,7 @@ from pyrallel_consumer.execution_plane.process_codec import (
 )
 from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
 from pyrallel_consumer.logger import LogManager
-from pyrallel_consumer.worker import BatchWorkerResult
+from pyrallel_consumer.worker import BatchWorkerContractError, BatchWorkerResult
 
 _SENTINEL = None
 _PIPE_SENTINEL = b"__pyrallel_consumer_pipe_sentinel__"
@@ -290,12 +290,23 @@ def _worker_loop(
                 batch_runtime = worker_fn.batch_runtime
                 if batch_runtime is None:
                     raise RuntimeError("batch worker runtime spec is required")
-                batch_completion_results = normalize_batch_worker_result(
-                    pending_items=pending_items,
-                    result=result,
-                    ordering_mode=batch_runtime.ordering_mode,
-                    attempt=1,
-                )
+                try:
+                    batch_completion_results = normalize_batch_worker_result(
+                        pending_items=pending_items,
+                        result=result,
+                        ordering_mode=batch_runtime.ordering_mode,
+                        attempt=1,
+                    )
+                except BatchWorkerContractError as exc:
+                    registry_event_queue.put(
+                        {
+                            "kind": "control",
+                            "control_kind": "fatal",
+                            "error_code": exc.code,
+                            "error": exc.reason,
+                        }
+                    )
+                    continue
             else:
                 batch_completion_results = [
                     CompletionEvent(

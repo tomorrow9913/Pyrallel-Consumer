@@ -26,6 +26,7 @@ from pyrallel_consumer.dto import (
     CompletionStatus,
     EngineRuntimeDiagnostics,
     EngineWorkerDiagnostics,
+    ExecutionControlEvent,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     RouteBatch,
@@ -103,6 +104,7 @@ from pyrallel_consumer.execution_plane.process_worker_supervisor import (
     ProcessWorkerSupervisorContext,
 )
 from pyrallel_consumer.logger import LogManager
+from pyrallel_consumer.worker import BatchWorkerContractError
 
 _DEFAULT_MSGPACK_MAX_BYTES = 1_000_000
 _MAX_SEEN_COMPLETION_IDENTITIES = 100_000
@@ -167,6 +169,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._batch_accumulator: _BatchAccumulator | _NoOpBatchAccumulator
         self._completion_queue: Queue[Any] = Queue()
         self._registry_event_queue: Queue[Any] = Queue()
+        self._process_control_events: Deque[ExecutionControlEvent] = deque()
         self._prefetched_completion_events: Deque[CompletionEvent] = deque()
         self._seen_completion_identities: set[tuple[str, str, int, int, int]] = set()
         self._seen_completion_identity_order: Deque[
@@ -617,6 +620,14 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._process_batch_manifests = manifests
         return manifests
 
+    def _get_process_control_events(self) -> Deque[ExecutionControlEvent]:
+        """Return buffered parent-side process control events."""
+        control_events = getattr(self, "_process_control_events", None)
+        if control_events is None:
+            control_events = deque()
+            self._process_control_events = control_events
+        return control_events
+
     def _record_process_batch_manifest(
         self,
         *,
@@ -680,6 +691,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._in_flight_registry[key] = dict(payload)
         return True
 
+    def _apply_control_event(self, event: dict[str, Any]) -> bool:
+        """Buffer child-originated fatal control events for the broker loop."""
+        if event.get("kind") != "control":
+            return False
+        if event.get("control_kind") != "fatal":
+            return True
+        error_reason = str(event.get("error", "process_control_error"))
+        if event.get("error_code") == "invalid_batch_worker_result":
+            error: Exception = BatchWorkerContractError(error_reason)
+        else:
+            error = RuntimeError(error_reason)
+        self._get_process_control_events().append(
+            ExecutionControlEvent(kind="fatal", error=error)
+        )
+        return True
+
     def _apply_registry_event(self, event: dict[str, Any]) -> None:
         """Handle apply registry event within multiprocessing execution.
 
@@ -688,6 +715,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
 
         """
         self._initialize_runtime_timing_state()
+        if self._apply_control_event(event):
+            return
         transport = getattr(self, "_transport", None)
         if transport is not None:
             transport.handle_registry_event(event)
@@ -1166,6 +1195,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
         )
         return completed_events
+
+    async def poll_control_events(
+        self, batch_limit: int = 1000
+    ) -> List[ExecutionControlEvent]:
+        """Poll parent-side process control events from worker registry IPC."""
+        if not getattr(self, "_is_shutdown", False) and hasattr(
+            self, "_registry_event_queue"
+        ):
+            self._drain_registry_events()
+        control_events = self._get_process_control_events()
+        drained: List[ExecutionControlEvent] = []
+        while len(drained) < batch_limit and control_events:
+            drained.append(control_events.popleft())
+        return drained
 
     async def wait_for_completion(
         self, timeout_seconds: Optional[float] = None
