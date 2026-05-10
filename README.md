@@ -365,9 +365,11 @@ runtime_snapshot = consumer.get_runtime_snapshot()
 
 ### Batch worker public API
 
-Use `PyrallelConsumer.from_batch_worker(...)` when your worker naturally handles
-multiple `WorkItem` values at once. The batch worker returns one
-`BatchItemOutcome` per input item:
+Use `PyrallelConsumer.from_batch_worker(...)` when your application callback
+naturally handles multiple `WorkItem` values at once. Internal batching
+optimizations are applied automatically wherever they are behavior-compatible;
+`from_batch_worker(...)` is explicit because it changes the worker callback
+contract. The batch worker returns one `BatchItemOutcome` per input item:
 
 ```python
 from pyrallel_consumer import BatchItemOutcome, PyrallelConsumer
@@ -501,6 +503,10 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
 - Use `--strict-completion-monitor on,off` to compare the completion monitor modes in benchmark output.
 - Use `--adaptive-concurrency off,on` to compare Pyrallel adaptive concurrency disabled vs enabled in the same benchmark matrix.
+- Use `--worker-kind single,batch` only as a benchmark comparison dimension for
+  public callback-contract evidence. It is not a production performance toggle:
+  behavior-compatible internal batching remains automatic, while
+  `from_batch_worker(...)` is explicit because it changes the callback contract.
 - Topic/group reset is enabled by default; disable with `--skip-reset` if needed.
 
 ## 🧪 Run E2E Tests

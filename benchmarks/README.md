@@ -50,6 +50,7 @@ uv sync --group dev
   - `--order key_hash,partition,unordered` (comma-separated subset; defaults to `key_hash` when omitted).
   - `--strict-completion-monitor on,off` (comma-separated subset for benchmark comparison).
   - `--adaptive-concurrency off,on` (comma-separated subset for Pyrallel adaptive concurrency A/B comparison; defaults to `off`).
+  - `--worker-kind single,batch` (comma-separated subset for benchmark comparison). This is an evidence dimension for comparing public single-item and batch-worker callback contracts, not a production performance toggle. Users do not manually enable internal performance batching with this flag.
   - `--metrics-port`: expose Prometheus metrics on the host for the current benchmark process (defaults to `9091`; use `0` to disable).
   - `--worker-sleep-ms`: per-message sleep for `sleep` workload (default 0.5ms).
   - `--worker-cpu-iterations`: hash loop iterations for `cpu` workload (default 1000).
@@ -229,6 +230,7 @@ a soak `PASS` does not convert a performance gate `NO-GO` into a release `GO`.
 - Profiling adds overhead; do not compare TPS from profiled runs to non-profiled runs.
 - Process worker profiling requires both `--profile` and `--profile-process-workers`; per-worker files are not saved by default. Use `uv run snakeviz <prof>` to inspect.
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
+- Keep the single-worker baseline in batch-worker benchmark matrices as contract/evidence coverage only. It proves the public batch-worker path against the existing callback shape; it does not imply users must manually select a worker kind for production performance.
 - For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
 - Experimental demand-flush policies are exposed through `--process-flush-policy`; start with `demand` and `demand_min_residence --process-demand-flush-min-residence-ms 1` when reproducing issue #14.
 - If Prometheus/Grafana is running from `.github/e2e.compose.yml`, the benchmark now exposes metrics on `9091` by default so the `pyrallel-consumer` target comes up automatically.

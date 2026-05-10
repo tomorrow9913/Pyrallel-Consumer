@@ -88,7 +88,7 @@ def _passing_summary() -> dict[str, object]:
     }
 
 
-def _issue_144_result(
+def _batch_worker_v1_result(
     *,
     run_type: str,
     workload: str,
@@ -135,16 +135,16 @@ def _issue_144_result(
     return result
 
 
-def _issue_144_summary() -> dict[str, object]:
+def _batch_worker_v1_summary() -> dict[str, object]:
     summary = _passing_summary()
-    issue_144_results: list[dict[str, object]] = []
+    batch_worker_v1_results: list[dict[str, object]] = []
     for run_type in ("async", "process"):
         for workload in ("sleep", "io"):
             for ordering in ("key_hash", "unordered"):
                 for worker_kind in ("single_item_worker", "batch_worker"):
                     for metrics_enabled in (False, True):
-                        issue_144_results.append(
-                            _issue_144_result(
+                        batch_worker_v1_results.append(
+                            _batch_worker_v1_result(
                                 run_type=run_type,
                                 workload=workload,
                                 ordering=ordering,
@@ -161,20 +161,20 @@ def _issue_144_summary() -> dict[str, object]:
                         )
     existing_results = summary["results"]
     assert isinstance(existing_results, list)
-    summary["results"] = [*existing_results, *issue_144_results]
+    summary["results"] = [*existing_results, *batch_worker_v1_results]
     return summary
 
 
-def _issue_144_only_summary() -> dict[str, object]:
+def _batch_worker_v1_only_summary() -> dict[str, object]:
     summary = _passing_summary()
-    issue_144_results: list[dict[str, object]] = []
+    batch_worker_v1_results: list[dict[str, object]] = []
     for run_type in ("async", "process"):
         for workload in ("sleep", "io"):
             for ordering in ("key_hash", "unordered"):
                 for worker_kind in ("single_item_worker", "batch_worker"):
                     for metrics_enabled in (False, True):
-                        issue_144_results.append(
-                            _issue_144_result(
+                        batch_worker_v1_results.append(
+                            _batch_worker_v1_result(
                                 run_type=run_type,
                                 workload=workload,
                                 ordering=ordering,
@@ -189,7 +189,7 @@ def _issue_144_only_summary() -> dict[str, object]:
                                 ),
                             )
                         )
-    summary["results"] = issue_144_results
+    summary["results"] = batch_worker_v1_results
     return summary
 
 
@@ -212,52 +212,52 @@ def test_evaluate_release_gate_passes_two_complete_threshold_runs(
     assert all(check["status"] == "PASS" for check in report["checks"])
 
 
-def test_evaluate_release_gate_requires_issue_144_batch_worker_matrix(
+def test_evaluate_release_gate_requires_batch_worker_v1_matrix(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "issue-144-complete.json"
-    path.write_text(json.dumps(_issue_144_summary()), encoding="utf-8")
+    path = tmp_path / "batch-worker-v1-complete.json"
+    path.write_text(json.dumps(_batch_worker_v1_summary()), encoding="utf-8")
 
     report = release_gate.evaluate_release_gate(
         [path],
         required_repetitions=1,
-        required_matrix="issue-144-batch-worker-v1",
+        required_matrix="batch-worker-v1",
     )
 
     assert report["verdict"] == "PASS"
-    assert report["summary"]["required_matrix"] == "issue-144-batch-worker-v1"
+    assert report["summary"]["required_matrix"] == "batch-worker-v1"
     assert any(
-        check["code"] == "issue144_matrix" and check["status"] == "PASS"
+        check["code"] == "batch_worker_v1_matrix" and check["status"] == "PASS"
         for check in report["checks"]
     )
 
 
-def test_evaluate_release_gate_require_matrix_accepts_issue_144_only_artifact(
+def test_evaluate_release_gate_require_matrix_accepts_batch_worker_v1_only_artifact(
     tmp_path: Path,
 ) -> None:
-    payload = _issue_144_only_summary()
+    payload = _batch_worker_v1_only_summary()
     results = payload["results"]
     assert isinstance(results, list)
     for result in results:
         result["throughput_tps"] = 1
         result["p99_processing_ms"] = 9999
-    path = tmp_path / "issue-144-only.json"
+    path = tmp_path / "batch-worker-v1-only.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     report = release_gate.evaluate_release_gate(
         [path],
         required_repetitions=1,
-        required_matrix="issue-144-batch-worker-v1",
+        required_matrix="batch-worker-v1",
     )
 
     assert report["verdict"] == "PASS"
-    assert [check["code"] for check in report["checks"]] == ["issue144_matrix"]
+    assert [check["code"] for check in report["checks"]] == ["batch_worker_v1_matrix"]
 
 
-def test_evaluate_release_gate_reports_no_go_for_missing_issue_144_metrics_pair(
+def test_evaluate_release_gate_reports_no_go_for_missing_batch_worker_v1_metrics_pair(
     tmp_path: Path,
 ) -> None:
-    payload = _issue_144_summary()
+    payload = _batch_worker_v1_summary()
     results = payload["results"]
     assert isinstance(results, list)
     payload["results"] = [
@@ -271,61 +271,61 @@ def test_evaluate_release_gate_reports_no_go_for_missing_issue_144_metrics_pair(
             and result.get("metrics_enabled") is True
         )
     ]
-    path = tmp_path / "issue-144-missing-metrics-pair.json"
+    path = tmp_path / "batch-worker-v1-missing-metrics-pair.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     report = release_gate.evaluate_release_gate(
         [path],
         required_repetitions=1,
-        required_matrix="issue-144-batch-worker-v1",
+        required_matrix="batch-worker-v1",
     )
 
     assert report["verdict"] == "NO-GO"
     failed_checks = [
         check
         for check in report["checks"]
-        if check["status"] == "FAIL" and check["code"] == "issue144_matrix"
+        if check["status"] == "FAIL" and check["code"] == "batch_worker_v1_matrix"
     ]
     assert failed_checks
     assert "metrics" in failed_checks[0]["message"]
 
 
-def test_evaluate_release_gate_rejects_issue_144_smoke_artifacts(
+def test_evaluate_release_gate_rejects_batch_worker_v1_smoke_artifacts(
     tmp_path: Path,
 ) -> None:
-    payload = _issue_144_summary()
+    payload = _batch_worker_v1_summary()
     options = payload["options"]
     assert isinstance(options, dict)
-    options["issue_144_matrix_smoke_artifact"] = True
-    path = tmp_path / "issue-144-smoke.json"
+    options["batch_worker_v1_matrix_smoke_artifact"] = True
+    path = tmp_path / "batch-worker-v1-smoke.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     report = release_gate.evaluate_release_gate(
         [path],
         required_repetitions=1,
-        required_matrix="issue-144-batch-worker-v1",
+        required_matrix="batch-worker-v1",
     )
 
     assert report["verdict"] == "NO-GO"
     assert any(
         check["status"] == "FAIL"
-        and check["code"] == "issue144_matrix"
+        and check["code"] == "batch_worker_v1_matrix"
         and "smoke" in check["message"]
         for check in report["checks"]
     )
 
 
-def test_evaluate_release_gate_rejects_non_finite_issue_144_numeric_evidence(
+def test_evaluate_release_gate_rejects_non_finite_batch_worker_v1_numeric_evidence(
     tmp_path: Path,
 ) -> None:
-    payload = _issue_144_summary()
+    payload = _batch_worker_v1_summary()
     results = payload["results"]
     assert isinstance(results, list)
     for result in results:
         if result.get("worker_kind") == "batch_worker":
             result["rss_max_mb"] = "NON_FINITE_PLACEHOLDER"
             break
-    path = tmp_path / "issue-144-nan.json"
+    path = tmp_path / "batch-worker-v1-nan.json"
     path.write_text(
         json.dumps(payload).replace('"NON_FINITE_PLACEHOLDER"', "1e999"),
         encoding="utf-8",
@@ -334,13 +334,13 @@ def test_evaluate_release_gate_rejects_non_finite_issue_144_numeric_evidence(
     report = release_gate.evaluate_release_gate(
         [path],
         required_repetitions=1,
-        required_matrix="issue-144-batch-worker-v1",
+        required_matrix="batch-worker-v1",
     )
 
     assert report["verdict"] == "NO-GO"
     assert any(
         check["status"] == "FAIL"
-        and check["code"] == "issue144_matrix"
+        and check["code"] == "batch_worker_v1_matrix"
         and check["details"]["field"] == "rss_max_mb"
         for check in report["checks"]
     )

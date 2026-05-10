@@ -11,17 +11,17 @@ RELEASE_GATE_MIN_MESSAGES = 10000
 RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
 REQUIRED_PROCESS_TRANSPORT_MODES = ("worker_pipes",)
-ISSUE_144_BATCH_WORKER_MATRIX = "issue-144-batch-worker-v1"
-ISSUE_144_WORKER_KINDS = ("single_item_worker", "batch_worker")
-ISSUE_144_CONSTRUCTORS = {
+BATCH_WORKER_V1_MATRIX = "batch-worker-v1"
+BATCH_WORKER_V1_WORKER_KINDS = ("single_item_worker", "batch_worker")
+BATCH_WORKER_V1_CONSTRUCTORS = {
     "single_item_worker": "PyrallelConsumer",
     "batch_worker": "PyrallelConsumer.from_batch_worker",
 }
-ISSUE_144_RUN_TYPES = ("async", "process")
-ISSUE_144_WORKLOADS = ("sleep", "io")
-ISSUE_144_ORDERINGS = ("key_hash", "unordered")
-ISSUE_144_METRICS_MODES = (False, True)
-ISSUE_144_REQUIRED_FIELDS = (
+BATCH_WORKER_V1_RUN_TYPES = ("async", "process")
+BATCH_WORKER_V1_WORKLOADS = ("sleep", "io")
+BATCH_WORKER_V1_ORDERINGS = ("key_hash", "unordered")
+BATCH_WORKER_V1_METRICS_MODES = (False, True)
+BATCH_WORKER_V1_REQUIRED_FIELDS = (
     "callback_invocation_count",
     "callback_item_count",
     "rss_max_mb",
@@ -33,7 +33,7 @@ ISSUE_144_REQUIRED_FIELDS = (
 
 Combination = tuple[str, str, str]
 BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
-Issue144Key = tuple[str, str, str, str, bool]
+BatchWorkerV1Key = tuple[str, str, str, str, bool]
 
 
 @dataclass(frozen=True)
@@ -484,7 +484,7 @@ def _evaluate_required_matrix(
     """Evaluate an optional named release evidence matrix."""
     if required_matrix is None:
         return []
-    if required_matrix != ISSUE_144_BATCH_WORKER_MATRIX:
+    if required_matrix != BATCH_WORKER_V1_MATRIX:
         return [
             _check(
                 "required_matrix",
@@ -493,26 +493,26 @@ def _evaluate_required_matrix(
                 required_matrix=required_matrix,
             )
         ]
-    return _evaluate_issue_144_batch_worker_matrix(summaries)
+    return _evaluate_batch_worker_v1_matrix(summaries)
 
 
-def _evaluate_issue_144_batch_worker_matrix(
+def _evaluate_batch_worker_v1_matrix(
     summaries: Iterable[tuple[Path, Mapping[str, Any]]],
 ) -> list[dict[str, Any]]:
-    """Evaluate Issue #144 batch-worker release matrix completeness."""
-    observed: dict[Issue144Key, list[tuple[Path, Mapping[str, Any]]]] = {}
+    """Evaluate Batch-worker v1 release matrix completeness."""
+    observed: dict[BatchWorkerV1Key, list[tuple[Path, Mapping[str, Any]]]] = {}
     checks: list[dict[str, Any]] = []
 
     for path, summary in summaries:
         options = summary.get("options")
         if isinstance(options, Mapping) and options.get(
-            "issue_144_matrix_smoke_artifact"
+            "batch_worker_v1_matrix_smoke_artifact"
         ):
             checks.append(
                 _check(
-                    "issue144_matrix",
+                    "batch_worker_v1_matrix",
                     "FAIL",
-                    "Issue #144 batch-worker matrix cannot use smoke artifacts",
+                    "Batch-worker v1 matrix cannot use smoke artifacts",
                     path=str(path),
                 )
             )
@@ -523,35 +523,35 @@ def _evaluate_issue_144_batch_worker_matrix(
             if not isinstance(result, Mapping):
                 continue
             worker_kind = result.get("worker_kind")
-            if worker_kind not in ISSUE_144_WORKER_KINDS:
+            if worker_kind not in BATCH_WORKER_V1_WORKER_KINDS:
                 continue
-            if not _has_issue_144_dimensions(result):
+            if not _has_batch_worker_v1_dimensions(result):
                 continue
-            key = _issue_144_key(result)
+            key = _batch_worker_v1_key(result)
             if key is None:
                 checks.append(
                     _check(
-                        "issue144_matrix",
+                        "batch_worker_v1_matrix",
                         "FAIL",
-                        "Issue #144 batch-worker matrix result has invalid dimensions",
+                        "Batch-worker v1 matrix result has invalid dimensions",
                         path=str(path),
                         run_name=result.get("run_name"),
                     )
                 )
                 continue
-            checks.extend(_evaluate_issue_144_result_fields(path, result))
+            checks.extend(_evaluate_batch_worker_v1_result_fields(path, result))
             observed.setdefault(key, []).append((path, result))
 
-    missing = _missing_issue_144_keys(observed)
+    missing = _missing_batch_worker_v1_keys(observed)
     if missing:
         first_missing = missing[0]
         metrics_label = "on" if first_missing[4] else "off"
         checks.append(
             _check(
-                "issue144_matrix",
+                "batch_worker_v1_matrix",
                 "FAIL",
                 (
-                    "Issue #144 batch-worker matrix is missing baseline/batch "
+                    "Batch-worker v1 matrix is missing baseline/batch "
                     "or metrics on/off paired evidence"
                 ),
                 missing_count=len(missing),
@@ -565,68 +565,68 @@ def _evaluate_issue_144_batch_worker_matrix(
             )
         )
     if not any(
-        _issue_144_large_payload_process(result)
+        _batch_worker_v1_large_payload_process(result)
         for entries in observed.values()
         for _, result in entries
     ):
         checks.append(
             _check(
-                "issue144_matrix",
+                "batch_worker_v1_matrix",
                 "FAIL",
-                "Issue #144 batch-worker matrix is missing large-payload process evidence",
+                "Batch-worker v1 matrix is missing large-payload process evidence",
             )
         )
     if not checks:
         checks.append(
             _check(
-                "issue144_matrix",
+                "batch_worker_v1_matrix",
                 "PASS",
-                "Issue #144 batch-worker public matrix evidence is complete",
+                "Batch-worker v1 public matrix evidence is complete",
             )
         )
     return checks
 
 
-def _issue_144_key(result: Mapping[str, Any]) -> Issue144Key | None:
+def _batch_worker_v1_key(result: Mapping[str, Any]) -> BatchWorkerV1Key | None:
     run_type = result.get("run_type")
     workload = result.get("workload")
     ordering = result.get("ordering")
     worker_kind = result.get("worker_kind")
     metrics_enabled = result.get("metrics_enabled")
-    if run_type not in ISSUE_144_RUN_TYPES:
+    if run_type not in BATCH_WORKER_V1_RUN_TYPES:
         return None
-    if workload not in ISSUE_144_WORKLOADS:
+    if workload not in BATCH_WORKER_V1_WORKLOADS:
         return None
-    if ordering not in ISSUE_144_ORDERINGS:
+    if ordering not in BATCH_WORKER_V1_ORDERINGS:
         return None
-    if worker_kind not in ISSUE_144_WORKER_KINDS:
+    if worker_kind not in BATCH_WORKER_V1_WORKER_KINDS:
         return None
     if not isinstance(metrics_enabled, bool):
         return None
     return (run_type, workload, ordering, worker_kind, metrics_enabled)
 
 
-def _has_issue_144_dimensions(result: Mapping[str, Any]) -> bool:
+def _has_batch_worker_v1_dimensions(result: Mapping[str, Any]) -> bool:
     return (
-        result.get("run_type") in ISSUE_144_RUN_TYPES
-        and result.get("workload") in ISSUE_144_WORKLOADS
-        and result.get("ordering") in ISSUE_144_ORDERINGS
+        result.get("run_type") in BATCH_WORKER_V1_RUN_TYPES
+        and result.get("workload") in BATCH_WORKER_V1_WORKLOADS
+        and result.get("ordering") in BATCH_WORKER_V1_ORDERINGS
     )
 
 
-def _evaluate_issue_144_result_fields(
+def _evaluate_batch_worker_v1_result_fields(
     path: Path,
     result: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     worker_kind = result.get("worker_kind")
-    expected_constructor = ISSUE_144_CONSTRUCTORS.get(str(worker_kind))
+    expected_constructor = BATCH_WORKER_V1_CONSTRUCTORS.get(str(worker_kind))
     if result.get("constructor") != expected_constructor:
         checks.append(
             _check(
-                "issue144_matrix",
+                "batch_worker_v1_matrix",
                 "FAIL",
-                "Issue #144 result constructor must match worker_kind",
+                "Batch-worker v1 result constructor must match worker_kind",
                 path=str(path),
                 run_name=result.get("run_name"),
                 worker_kind=worker_kind,
@@ -634,7 +634,7 @@ def _evaluate_issue_144_result_fields(
                 actual_constructor=result.get("constructor"),
             )
         )
-    for field in ISSUE_144_REQUIRED_FIELDS:
+    for field in BATCH_WORKER_V1_REQUIRED_FIELDS:
         value = result.get(field)
         if (
             isinstance(value, bool)
@@ -643,9 +643,9 @@ def _evaluate_issue_144_result_fields(
         ):
             checks.append(
                 _check(
-                    "issue144_matrix",
+                    "batch_worker_v1_matrix",
                     "FAIL",
-                    "Issue #144 result is missing required numeric evidence field",
+                    "Batch-worker v1 result is missing required numeric evidence field",
                     path=str(path),
                     run_name=result.get("run_name"),
                     field=field,
@@ -654,15 +654,15 @@ def _evaluate_issue_144_result_fields(
     return checks
 
 
-def _missing_issue_144_keys(
-    observed: Mapping[Issue144Key, list[tuple[Path, Mapping[str, Any]]]],
-) -> list[Issue144Key]:
-    missing: list[Issue144Key] = []
-    for run_type in ISSUE_144_RUN_TYPES:
-        for workload in ISSUE_144_WORKLOADS:
-            for ordering in ISSUE_144_ORDERINGS:
-                for worker_kind in ISSUE_144_WORKER_KINDS:
-                    for metrics_enabled in ISSUE_144_METRICS_MODES:
+def _missing_batch_worker_v1_keys(
+    observed: Mapping[BatchWorkerV1Key, list[tuple[Path, Mapping[str, Any]]]],
+) -> list[BatchWorkerV1Key]:
+    missing: list[BatchWorkerV1Key] = []
+    for run_type in BATCH_WORKER_V1_RUN_TYPES:
+        for workload in BATCH_WORKER_V1_WORKLOADS:
+            for ordering in BATCH_WORKER_V1_ORDERINGS:
+                for worker_kind in BATCH_WORKER_V1_WORKER_KINDS:
+                    for metrics_enabled in BATCH_WORKER_V1_METRICS_MODES:
                         key = (
                             run_type,
                             workload,
@@ -675,7 +675,7 @@ def _missing_issue_144_keys(
     return missing
 
 
-def _issue_144_large_payload_process(result: Mapping[str, Any]) -> bool:
+def _batch_worker_v1_large_payload_process(result: Mapping[str, Any]) -> bool:
     return (
         result.get("run_type") == "process"
         and result.get("worker_kind") == "batch_worker"
@@ -855,7 +855,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--require-matrix",
-        choices=[ISSUE_144_BATCH_WORKER_MATRIX],
+        choices=[BATCH_WORKER_V1_MATRIX],
         default=None,
         help="Require a named release evidence matrix in the benchmark artifacts.",
     )
