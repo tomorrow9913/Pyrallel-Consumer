@@ -6,6 +6,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_DOC = (
     REPO_ROOT / "docs" / "operations" / "development-verification-workflow.md"
 )
+README_DOC = REPO_ROOT / "README.md"
+README_KO_DOC = REPO_ROOT / "README.ko.md"
 
 
 def test_development_verification_workflow_is_linked_from_doc_indexes() -> None:
@@ -72,3 +74,20 @@ def test_development_verification_workflow_defines_parallel_worktree_rules() -> 
     # Then: the expected `development verification workflow defines par...` behavior is asserted.
     for phrase in required_phrases:
         assert phrase in text
+
+
+def test_readmes_document_required_broker_e2e_gate() -> None:
+    # Given: local README files document default and release-gate E2E behavior.
+    english_readme = README_DOC.read_text(encoding="utf-8")
+    korean_readme = README_KO_DOC.read_text(encoding="utf-8")
+
+    required_terms = [
+        "PYRALLEL_E2E_REQUIRE_BROKER=1 uv run pytest tests/e2e -q",
+        "skip",
+        "fail",
+    ]
+
+    # Then: both public READMEs expose the required-broker fail-closed command.
+    for document in (english_readme, korean_readme):
+        for term in required_terms:
+            assert term in document

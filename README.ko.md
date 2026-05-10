@@ -397,18 +397,18 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.dto import WorkItem
 
 async def batch_worker(items: list[WorkItem]):
-    outcomes: list[BatchItemOutcome] = []
+    outcomes: dict[str, BatchItemOutcome] = {}
     failed = False
     for item in items:
         if failed:
-            outcomes.append(BatchItemOutcome.ordered_prefix_blocked())
+            outcomes[item.id] = BatchItemOutcome.ordered_prefix_blocked()
             continue
         try:
             # 성공을 반환하기 전에 idempotent sink에 기록하세요.
-            outcomes.append(BatchItemOutcome.success())
+            outcomes[item.id] = BatchItemOutcome.success()
         except Exception as exc:
             failed = True
-            outcomes.append(BatchItemOutcome.failure(str(exc)))
+            outcomes[item.id] = BatchItemOutcome.failure(str(exc))
     return outcomes
 
 config = KafkaConfig()
@@ -597,9 +597,13 @@ docker compose up -d kafka-1
 
 # Kafka-backed end-to-end 테스트 실행
 uv run pytest tests/e2e -q
+
+# Release gate: broker가 없으면 skip 대신 fail
+PYRALLEL_E2E_REQUIRE_BROKER=1 uv run pytest tests/e2e -q
 ```
 
 - `localhost:9092`에 Kafka가 없으면 E2E 테스트는 즉시 실패하지 않고 skip 됩니다.
+- Release verification에서는 `PYRALLEL_E2E_REQUIRE_BROKER=1`을 설정해 Kafka가 없을 때 skip-only evidence가 아니라 fail로 처리하세요.
 - 실제 Kafka 경로를 확인하려면 로컬 `docker compose` 스택을 띄운 뒤 실행하면 됩니다.
 - Kafka-backed ordering 스위트는 이제 실제 브로커에서 `key_hash`/`partition` 정렬에 대해 `async`와 `process` 실행 모드를 모두 검증합니다.
 - `tests/e2e/test_process_recovery.py`를 통해 `async`와 `process` 실행 모드 모두에서 retry, DLQ, in-flight rebalance, restart/offset continuity를 실제 브로커 기준으로 검증합니다.

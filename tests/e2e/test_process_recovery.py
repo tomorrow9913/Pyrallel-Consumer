@@ -5,6 +5,7 @@ import queue
 import time
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 from multiprocessing import Manager, Queue
 from pathlib import Path
 from typing import Any, Callable
@@ -20,12 +21,14 @@ from confluent_kafka.cimpl import (
 )
 from confluent_kafka.cimpl import TopicPartition as KafkaTopicPartition
 
+from pyrallel_consumer import BatchItemOutcome, PyrallelConsumer
 from pyrallel_consumer.config import ExecutionConfig, KafkaConfig
 from pyrallel_consumer.control_plane.broker_poller import BrokerPoller
 from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import ExecutionMode, OrderingMode, WorkItem
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.worker import BatchWorkerContractError
 
 BOOTSTRAP_SERVERS = "localhost:9092"
 DLQ_SUFFIX = ".dlq"
@@ -534,6 +537,16 @@ class _AsyncAlwaysFailWorker:
         )
 
 
+class _ProcessPublicBatchSmokeWorker:
+    def __init__(self, shared_results) -> None:
+        self._shared_results = shared_results
+
+    def __call__(self, items):
+        offsets = [item.offset for item in items]
+        self._shared_results.append(offsets)
+        return {item.id: BatchItemOutcome.success() for item in items}
+
+
 async def _wait_until(
     predicate: Callable[[], bool], timeout_seconds: float, message: str
 ) -> None:
@@ -735,6 +748,11 @@ def _consume_single_record(topic: str, group_id: str, timeout_seconds: float = 1
     finally:
         consumer.close()
     raise AssertionError(f"timed out waiting for DLQ record on topic {topic}")
+
+
+def _topic_exists(admin: AdminClient, topic: str) -> bool:
+    metadata = admin.list_topics(timeout=10)
+    return topic in metadata.topics
 
 
 def _read_attempt_log(path: Path) -> list[tuple[int, int, int]]:
@@ -1288,6 +1306,256 @@ async def test_process_retry_path_commits_only_after_success(
     )
     # Then: the target offset commits only after the retry succeeds.
     assert target_attempts == fail_first_attempts + 1
+    assert final_committed_offset == produced_count
+
+
+@pytest.mark.asyncio
+async def test_async_public_batch_worker_key_hash_partial_failure_retries_tail_only() -> (
+    None
+):
+    # Given: the public facade consumes a key-ordered batch from a real broker.
+    _require_kafka()
+    topic = _topic_name("async-public-batch-partial")
+    group_id = _topic_name("async-public-batch-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 3
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    kafka_config = _build_kafka_config(group_id)
+    kafka_config.parallel_consumer.ordering_mode = OrderingMode.KEY_HASH
+    kafka_config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+    kafka_config.parallel_consumer.execution.max_in_flight = produced_count
+    kafka_config.parallel_consumer.execution.max_retries = 2
+    kafka_config.parallel_consumer.execution.retry_backoff_ms = 10
+    kafka_config.parallel_consumer.execution.max_retry_backoff_ms = 20
+    kafka_config.parallel_consumer.execution.retry_jitter_ms = 0
+    kafka_config.parallel_consumer.commit_debounce_completion_threshold = 1
+    kafka_config.parallel_consumer.commit_debounce_interval_ms = 0
+    kafka_config.parallel_consumer.batch_worker.max_batch_size = produced_count
+
+    async def batch_worker(items: Sequence[WorkItem]):
+        offsets = [item.offset for item in items]
+        if offsets == [0, 1, 2]:
+            return {
+                items[0].id: BatchItemOutcome.success(),
+                items[1].id: BatchItemOutcome.failure("public batch partial failure"),
+                items[2].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {item.id: BatchItemOutcome.success() for item in items}
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=kafka_config,
+        batch_worker=batch_worker,
+        topic=topic,
+    )
+
+    try:
+        await consumer.start()
+        try:
+            await _wait_until(
+                lambda: _fetch_committed_offset(group_id, topic, partition)
+                == produced_count,
+                timeout_seconds=20,
+                message="public batch partial failure never committed final safe offset",
+            )
+            final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+        finally:
+            await consumer.stop()
+
+        _delete_topic(admin, topic)
+    except Exception:
+        _delete_topic(admin, topic)
+        raise
+
+    # Then: the not-started tail is retried and the broker-visible offset advances.
+    assert final_committed_offset == produced_count
+
+
+@pytest.mark.asyncio
+async def test_async_public_batch_worker_invalid_result_is_fatal_no_commit_no_dlq() -> (
+    None
+):
+    # Given: a public batch worker returns a shape that violates the v1 contract.
+    _require_kafka()
+    topic = _topic_name("async-public-batch-invalid")
+    group_id = _topic_name("async-public-batch-invalid-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 2
+    dlq_topic = topic + DLQ_SUFFIX
+
+    async def invalid_batch_worker(items: Sequence[WorkItem]):
+        return {items[0].id: BatchItemOutcome.success()}
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    kafka_config = _build_kafka_config(group_id)
+    kafka_config.parallel_consumer.ordering_mode = OrderingMode.KEY_HASH
+    kafka_config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+    kafka_config.parallel_consumer.execution.max_in_flight = produced_count
+    kafka_config.parallel_consumer.execution.max_retries = 2
+    kafka_config.parallel_consumer.commit_debounce_completion_threshold = 1
+    kafka_config.parallel_consumer.commit_debounce_interval_ms = 0
+    kafka_config.parallel_consumer.batch_worker.max_batch_size = produced_count
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=kafka_config,
+        batch_worker=invalid_batch_worker,
+        topic=topic,
+    )
+
+    try:
+        await consumer.start()
+        try:
+            with pytest.raises(BatchWorkerContractError) as exc_info:
+                await asyncio.wait_for(consumer.wait_closed(), timeout=20)
+            committed_offset = _fetch_committed_offset(group_id, topic, partition)
+            dlq_exists = _topic_exists(admin, dlq_topic)
+        finally:
+            await consumer.stop()
+            _delete_topic(admin, topic)
+    except Exception:
+        _delete_topic(admin, dlq_topic)
+        _delete_topic(admin, topic)
+        raise
+
+    # Then: fatal invalid result does not settle, commit, or publish to DLQ.
+    assert exc_info.value.code == "invalid_batch_worker_result"
+    assert exc_info.value.reason.startswith(
+        "invalid_batch_worker_result:missing_item_ids"
+    )
+    assert len(exc_info.value.reason) <= 4096
+    assert committed_offset in (-1001, 0)
+    assert dlq_exists is False
+
+
+@pytest.mark.asyncio
+async def test_async_public_batch_worker_ordered_prefix_blocked_retries_after_settlement() -> (
+    None
+):
+    # Given: ordered-prefix-blocked marks a not-started tail behind a failed predecessor.
+    _require_kafka()
+    topic = _topic_name("async-public-batch-blocked")
+    group_id = _topic_name("async-public-batch-blocked-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 3
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    kafka_config = _build_kafka_config(group_id)
+    kafka_config.parallel_consumer.ordering_mode = OrderingMode.KEY_HASH
+    kafka_config.parallel_consumer.execution.mode = ExecutionMode.ASYNC
+    kafka_config.parallel_consumer.execution.max_in_flight = produced_count
+    kafka_config.parallel_consumer.execution.max_retries = 2
+    kafka_config.parallel_consumer.execution.retry_backoff_ms = 10
+    kafka_config.parallel_consumer.execution.max_retry_backoff_ms = 20
+    kafka_config.parallel_consumer.execution.retry_jitter_ms = 0
+    kafka_config.parallel_consumer.commit_debounce_completion_threshold = 1
+    kafka_config.parallel_consumer.commit_debounce_interval_ms = 0
+    kafka_config.parallel_consumer.batch_worker.max_batch_size = produced_count
+
+    async def batch_worker(items: Sequence[WorkItem]):
+        offsets = [item.offset for item in items]
+        if offsets == [0, 1, 2]:
+            return {
+                items[0].id: BatchItemOutcome.failure("predecessor blocks tail"),
+                items[1].id: BatchItemOutcome.ordered_prefix_blocked(),
+                items[2].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {item.id: BatchItemOutcome.success() for item in items}
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=kafka_config,
+        batch_worker=batch_worker,
+        topic=topic,
+    )
+
+    try:
+        await consumer.start()
+        try:
+            assert _fetch_committed_offset(group_id, topic, partition) in (-1001, 0)
+            await _wait_until(
+                lambda: _fetch_committed_offset(group_id, topic, partition)
+                == produced_count,
+                timeout_seconds=20,
+                message="blocked-tail scenario never committed final safe offset",
+            )
+            final_committed_offset = _fetch_committed_offset(group_id, topic, partition)
+        finally:
+            await consumer.stop()
+
+        _delete_topic(admin, topic)
+    except Exception:
+        _delete_topic(admin, topic)
+        raise
+
+    # Then: only the not-started tail is promoted after predecessor settlement.
+    assert final_committed_offset == produced_count
+
+
+@pytest.mark.asyncio
+async def test_process_public_batch_worker_facade_smoke_on_real_broker() -> None:
+    # Given: a top-level picklable batch worker is configured through the public facade.
+    _require_kafka()
+    topic = _topic_name("process-public-batch-smoke")
+    group_id = _topic_name("process-public-batch-group")
+    admin = AdminClient({"bootstrap.servers": BOOTSTRAP_SERVERS})
+    partition = 0
+    produced_count = 2
+
+    _create_topic(admin, topic, num_partitions=1)
+    _produce_partition_messages(topic, partition=partition, count=produced_count)
+
+    with Manager() as manager:
+        shared_results = manager.list()
+        kafka_config = _build_kafka_config(group_id)
+        kafka_config.parallel_consumer.ordering_mode = OrderingMode.KEY_HASH
+        kafka_config.parallel_consumer.execution.mode = ExecutionMode.PROCESS
+        kafka_config.parallel_consumer.execution.max_in_flight = produced_count
+        kafka_config.parallel_consumer.execution.process_config.process_count = 1
+        kafka_config.parallel_consumer.execution.process_config.queue_size = 64
+        kafka_config.parallel_consumer.execution.process_config.route_batch_size = (
+            produced_count
+        )
+        kafka_config.parallel_consumer.execution.process_config.batch_size = 1
+        kafka_config.parallel_consumer.execution.process_config.max_batch_wait_ms = 0
+        kafka_config.parallel_consumer.execution.max_retries = 2
+        kafka_config.parallel_consumer.commit_debounce_completion_threshold = 1
+        kafka_config.parallel_consumer.commit_debounce_interval_ms = 0
+        kafka_config.parallel_consumer.batch_worker.max_batch_size = produced_count
+        consumer = PyrallelConsumer.from_batch_worker(
+            config=kafka_config,
+            batch_worker=_ProcessPublicBatchSmokeWorker(shared_results),
+            topic=topic,
+        )
+
+        try:
+            await consumer.start()
+            try:
+                await _wait_until(
+                    lambda: _fetch_committed_offset(group_id, topic, partition)
+                    == produced_count,
+                    timeout_seconds=30,
+                    message="process public batch facade smoke never committed",
+                )
+                final_committed_offset = _fetch_committed_offset(
+                    group_id, topic, partition
+                )
+                batch_calls = [list(entry) for entry in list(shared_results)]
+            finally:
+                await consumer.stop()
+                _delete_topic(admin, topic)
+        except Exception:
+            _delete_topic(admin, topic)
+            raise
+
+    # Then: process mode accepted the public facade path and completed the batch.
+    assert batch_calls == [[0, 1]]
     assert final_committed_offset == produced_count
 
 

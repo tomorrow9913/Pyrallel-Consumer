@@ -375,18 +375,18 @@ from pyrallel_consumer.config import KafkaConfig
 from pyrallel_consumer.dto import WorkItem
 
 async def batch_worker(items: list[WorkItem]):
-    outcomes: list[BatchItemOutcome] = []
+    outcomes: dict[str, BatchItemOutcome] = {}
     failed = False
     for item in items:
         if failed:
-            outcomes.append(BatchItemOutcome.ordered_prefix_blocked())
+            outcomes[item.id] = BatchItemOutcome.ordered_prefix_blocked()
             continue
         try:
             # Write to an idempotent sink before reporting success.
-            outcomes.append(BatchItemOutcome.success())
+            outcomes[item.id] = BatchItemOutcome.success()
         except Exception as exc:
             failed = True
-            outcomes.append(BatchItemOutcome.failure(str(exc)))
+            outcomes[item.id] = BatchItemOutcome.failure(str(exc))
     return outcomes
 
 config = KafkaConfig()
@@ -511,9 +511,13 @@ docker compose up -d kafka-1
 
 # Run Kafka-backed end-to-end tests
 uv run pytest tests/e2e -q
+
+# Release gate: fail instead of skip when the broker is unavailable
+PYRALLEL_E2E_REQUIRE_BROKER=1 uv run pytest tests/e2e -q
 ```
 
 - If Kafka is not available on `localhost:9092`, the E2E tests skip instead of failing immediately.
+- For release verification, set `PYRALLEL_E2E_REQUIRE_BROKER=1` so missing Kafka fails the run instead of producing skip-only evidence.
 - Use the local `docker compose` stack when you want the full Kafka-backed path.
 - The Kafka-backed ordering suite now exercises both `async` and `process` execution modes for `key_hash` and `partition` ordering on a real broker.
 - The recovery suite now runs retry, DLQ, rebalance during in-flight work, and restart/offset continuity against both `async` and `process` execution modes on a real broker via `tests/e2e/test_process_recovery.py`.
