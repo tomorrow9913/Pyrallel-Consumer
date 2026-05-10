@@ -21,6 +21,7 @@ from ..config import AdaptiveBackpressureConfig, AdaptiveConcurrencyConfig, Kafk
 from ..dto import (
     CompletionEvent,
     DLQPayloadMode,
+    ExecutionControlEvent,
     OrderingMode,
     RuntimeSnapshot,
     SystemMetrics,
@@ -765,9 +766,20 @@ class BrokerPoller:
     async def _drain_execution_control_events_once(self) -> bool:
         """Drain fatal execution-control events before item completions."""
         control_events = await self._execution_engine.poll_control_events()
+        if not isinstance(control_events, list):
+            return False
         if not control_events:
             return False
-        error = control_events[0].error
+        fatal_events = [
+            event
+            for event in control_events
+            if isinstance(event, ExecutionControlEvent) and event.kind == "fatal"
+        ]
+        if not fatal_events:
+            return False
+        error = fatal_events[0].error
+        if not isinstance(error, Exception):
+            error = RuntimeError(str(error))
         self._fatal_error = error
         self._running = False
         raise error
