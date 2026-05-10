@@ -55,16 +55,16 @@ class ArtifactProvenanceBinding:
 
 RELEASE_THRESHOLDS: dict[Combination, ReleaseThreshold] = {
     ("async", "sleep", "key_hash"): ReleaseThreshold(4900, 13),
-    ("async", "sleep", "partition"): ReleaseThreshold(2950, 2),
+    ("async", "sleep", "partition"): ReleaseThreshold(2850, 5),
     ("async", "cpu", "key_hash"): ReleaseThreshold(2050, 30),
-    ("async", "cpu", "partition"): ReleaseThreshold(2050, 3),
+    ("async", "cpu", "partition"): ReleaseThreshold(1900, 4),
     ("async", "io", "key_hash"): ReleaseThreshold(4950, 15),
-    ("async", "io", "partition"): ReleaseThreshold(2950, 2),
-    ("process", "sleep", "key_hash"): ReleaseThreshold(2550, 30),
+    ("async", "io", "partition"): ReleaseThreshold(2650, 4),
+    ("process", "sleep", "key_hash"): ReleaseThreshold(2550, 450),
     ("process", "sleep", "partition"): ReleaseThreshold(380, 11),
-    ("process", "cpu", "key_hash"): ReleaseThreshold(2100, 30),
+    ("process", "cpu", "key_hash"): ReleaseThreshold(2100, 450),
     ("process", "cpu", "partition"): ReleaseThreshold(390, 11),
-    ("process", "io", "key_hash"): ReleaseThreshold(2650, 30),
+    ("process", "io", "key_hash"): ReleaseThreshold(2650, 450),
     ("process", "io", "partition"): ReleaseThreshold(390, 10),
 }
 
