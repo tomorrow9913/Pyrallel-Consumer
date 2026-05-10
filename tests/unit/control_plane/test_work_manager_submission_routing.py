@@ -31,7 +31,8 @@ from tests.unit.control_plane._work_manager_support import (
 
 
 class _ReceiptBatchEngine(BaseExecutionEngine):
-    def __init__(self) -> None:
+    def __init__(self, owner: str = "test-engine") -> None:
+        self.owner = owner
         self.submitted_batch: list[WorkItem] = []
         self.completed_events: list[CompletionEvent] = []
 
@@ -47,7 +48,7 @@ class _ReceiptBatchEngine(BaseExecutionEngine):
         self.submitted_batch = list(work_items)
         return BatchSubmissionReceipt(
             batch_id="batch-ledger",
-            owner="test-engine",
+            owner=self.owner,
             worker_generation=9,
             accepted=tuple(
                 (item.id, item.tp, item.offset, item.epoch, item.requeue_attempts + 1)
@@ -68,6 +69,40 @@ class _ReceiptBatchEngine(BaseExecutionEngine):
 
     async def shutdown(self) -> None:
         return None
+
+
+class _BatchMetricsExporter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def observe_completion(
+        self,
+        tp,
+        status: CompletionStatus,
+        duration_seconds: float,
+    ) -> None:
+        self.calls.append(("observe_completion", (tp, status, duration_seconds)))
+
+    def record_batch_worker_invocation(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("record_batch_worker_invocation", args))
+
+    def record_batch_worker_items(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("record_batch_worker_items", args))
+
+    def observe_batch_worker_size(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("observe_batch_worker_size", args))
+
+    def observe_batch_worker_duration(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("observe_batch_worker_duration", args))
+
+    def observe_batch_worker_requested_batch_size(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("observe_batch_worker_requested_batch_size", args))
+
+    def observe_batch_worker_admitted_batch_size(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("observe_batch_worker_admitted_batch_size", args))
+
+    def record_batch_worker_retry(self, *args) -> None:  # noqa: ANN002
+        self.calls.append(("record_batch_worker_retry", args))
 
 
 @pytest.mark.asyncio
@@ -255,6 +290,161 @@ async def test_batch_receipt_populates_active_attempt_ledger_and_fences_stale_at
     ]
     await work_manager.poll_completed_events(schedule_after_release=False)
     assert ledger_key not in work_manager._active_attempt_ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["async", "process"])
+async def test_batch_worker_runtime_metrics_record_once_per_batch_attempt(
+    mock_dto_topic_partition,
+    owner,
+):
+    engine = _ReceiptBatchEngine(owner=owner)
+    metrics_exporter = _BatchMetricsExporter()
+    work_manager = WorkManager(
+        execution_engine=engine,
+        metrics_exporter=metrics_exporter,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    for offset in (10, 11, 12):
+        await work_manager.submit_message(
+            mock_dto_topic_partition,
+            offset,
+            tracker.get_current_epoch(),
+            b"message-key",
+            b"payload",
+        )
+    await work_manager.schedule()
+    accepted = list(engine.submitted_batch)
+    engine.completed_events = [
+        CompletionEvent(
+            id=accepted[0].id,
+            tp=accepted[0].tp,
+            offset=accepted[0].offset,
+            epoch=accepted[0].epoch,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        ),
+        CompletionEvent(
+            id=accepted[1].id,
+            tp=accepted[1].tp,
+            offset=accepted[1].offset,
+            epoch=accepted[1].epoch,
+            status=CompletionStatus.FAILURE,
+            error="worker failed",
+            attempt=1,
+        ),
+    ]
+
+    await work_manager.poll_completed_events(schedule_after_release=False)
+    await work_manager.poll_completed_events(schedule_after_release=False)
+
+    assert (
+        metrics_exporter.calls.count(
+            ("observe_batch_worker_requested_batch_size", (3,))
+        )
+        == 1
+    )
+    assert (
+        metrics_exporter.calls.count(("observe_batch_worker_admitted_batch_size", (3,)))
+        == 1
+    )
+    assert metrics_exporter.calls.count(("observe_batch_worker_size", (3,))) == 1
+    assert (
+        sum(
+            1
+            for call in metrics_exporter.calls
+            if call[0] == "observe_batch_worker_duration"
+        )
+        == 1
+    )
+    assert (
+        metrics_exporter.calls.count(
+            ("record_batch_worker_invocation", (owner, "partial_failure"))
+        )
+        == 1
+    )
+    assert (
+        metrics_exporter.calls.count(
+            ("record_batch_worker_items", (owner, "success", 1))
+        )
+        == 1
+    )
+    assert (
+        metrics_exporter.calls.count(
+            ("record_batch_worker_items", (owner, "failure", 1))
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["async", "process"])
+async def test_batch_worker_retry_metrics_record_on_batch_owner_transfer(
+    mock_dto_topic_partition,
+    owner,
+):
+    engine = _ReceiptBatchEngine(owner=owner)
+    metrics_exporter = _BatchMetricsExporter()
+    work_manager = WorkManager(
+        execution_engine=engine,
+        metrics_exporter=metrics_exporter,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = OffsetTracker(
+        topic_partition=mock_dto_topic_partition,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+    )
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        tracker.get_current_epoch(),
+        b"message-key",
+        b"payload",
+    )
+    await work_manager.schedule()
+    accepted_item = engine.submitted_batch[0]
+    retry_receipt = BatchSubmissionReceipt(
+        batch_id="retry-batch-ledger",
+        owner=owner,
+        worker_generation=9,
+        accepted=(
+            (
+                accepted_item.id,
+                accepted_item.tp,
+                accepted_item.offset,
+                accepted_item.epoch,
+                2,
+            ),
+        ),
+    )
+
+    transferred = work_manager.transfer_batch_owner(
+        expected_old_batch_id="batch-ledger",
+        receipt=retry_receipt,
+    )
+
+    assert transferred is True
+    assert (
+        metrics_exporter.calls.count(
+            ("record_batch_worker_retry", (owner, "exception", 1))
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio

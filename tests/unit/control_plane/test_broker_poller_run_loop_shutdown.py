@@ -242,6 +242,8 @@ async def test_drain_execution_control_events_cancels_engine_batches_with_fatal_
         ]
     )
     broker_poller._execution_engine.cancel_batch_items = MagicMock()
+    metrics_exporter = MagicMock()
+    broker_poller.set_metrics_exporter(metrics_exporter)
 
     with pytest.raises(RuntimeError, match="boom"):
         await broker_poller._drain_execution_control_events_once()
@@ -250,6 +252,15 @@ async def test_drain_execution_control_events_cancels_engine_batches_with_fatal_
     broker_poller._execution_engine.cancel_batch_items.assert_called_once()
     scope = broker_poller._execution_engine.cancel_batch_items.call_args.args[0]
     assert scope.reason == "fatal"
+    metrics_exporter.record_batch_worker_invocation.assert_called_once_with(
+        "async", "invalid_result"
+    )
+    metrics_exporter.record_batch_worker_invalid_result.assert_called_once_with(
+        "async", "invalid_result", 1
+    )
+    metrics_exporter.record_batch_worker_items.assert_called_once_with(
+        "async", "invalid_result", 2
+    )
 
 
 @pytest.mark.asyncio

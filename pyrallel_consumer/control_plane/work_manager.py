@@ -142,6 +142,7 @@ class WorkManager:
         self._active_attempt_ledger: dict[
             tuple[str, str, int, int, int], dict[str, Any]
         ] = {}
+        self._batch_metrics_state: dict[str, dict[str, Any]] = {}
         self._settlement_notification_ledger: dict[
             tuple[str, str, int, int, int, int], dict[str, Any]
         ] = {}
@@ -508,11 +509,58 @@ class WorkManager:
     def _record_batch_submission_receipt(
         self,
         receipt: BatchSubmissionReceipt | None,
+        *,
+        requested_batch_size: int | None = None,
     ) -> None:
         """Record engine-owned batch acceptance in the active attempt ledger."""
         if receipt is None:
             return
         self.register_batch_owner(receipt)
+        self._record_batch_worker_submission_metrics(
+            receipt,
+            requested_batch_size=requested_batch_size,
+        )
+
+    def _call_batch_metrics_exporter(self, method_name: str, *args: object) -> None:
+        """Call an optional batch-worker metric exporter method when installed."""
+        if self._metrics_exporter is None:
+            return
+        method = getattr(self._metrics_exporter, method_name, None)
+        if callable(method):
+            method(*args)
+
+    def _record_batch_worker_submission_metrics(
+        self,
+        receipt: BatchSubmissionReceipt,
+        *,
+        requested_batch_size: int | None,
+    ) -> None:
+        """Record per-attempt public batch-worker admission metrics."""
+        if receipt.owner not in {"async", "process"}:
+            return
+        admitted_batch_size = len(receipt.accepted)
+        requested_size = requested_batch_size or admitted_batch_size
+        self._batch_metrics_state[receipt.batch_id] = {
+            "mode": receipt.owner,
+            "requested": requested_size,
+            "admitted": admitted_batch_size,
+            "started_at": time.perf_counter(),
+            "success": 0,
+            "failure": 0,
+            "finalized": False,
+        }
+        self._call_batch_metrics_exporter(
+            "observe_batch_worker_requested_batch_size",
+            requested_size,
+        )
+        self._call_batch_metrics_exporter(
+            "observe_batch_worker_admitted_batch_size",
+            admitted_batch_size,
+        )
+        self._call_batch_metrics_exporter(
+            "observe_batch_worker_size",
+            admitted_batch_size,
+        )
 
     def _batch_ledger_key(
         self,
@@ -570,6 +618,18 @@ class WorkManager:
             updates.append((key, self._batch_ledger_value(receipt, attempt)))
         for key, value in updates:
             self._active_attempt_ledger[key] = value
+        if receipt.owner in {"async", "process"}:
+            retry_count = len(receipt.accepted)
+            self._call_batch_metrics_exporter(
+                "record_batch_worker_retry",
+                receipt.owner,
+                "exception",
+                retry_count,
+            )
+            self._record_batch_worker_submission_metrics(
+                receipt,
+                requested_batch_size=retry_count,
+            )
         return True
 
     def _scope_matches_item_identity(
@@ -680,9 +740,13 @@ class WorkManager:
         items: list[WorkItem],
         *,
         receipt: BatchSubmissionReceipt | None = None,
+        requested_batch_size: int | None = None,
     ) -> None:
         """Record successfully accepted work items in dispatch accounting."""
-        self._record_batch_submission_receipt(receipt)
+        self._record_batch_submission_receipt(
+            receipt,
+            requested_batch_size=requested_batch_size,
+        )
         for dequeued_item in items:
             self._total_queued_messages = max(0, self._total_queued_messages - 1)
             self._current_in_flight_count += 1
@@ -1070,7 +1134,11 @@ class WorkManager:
                         )
                         if not dequeued_items:
                             return
-                        self._record_submitted_items(dequeued_items, receipt=receipt)
+                        self._record_submitted_items(
+                            dequeued_items,
+                            receipt=receipt,
+                            requested_batch_size=len(items_to_submit),
+                        )
                         if (
                             batch_truncated_by_force_fail
                             and selected_queue_key is not None
@@ -1092,7 +1160,10 @@ class WorkManager:
                                     exc.accepted_count,
                                 )
                             )
-                            self._record_submitted_items(dequeued_items)
+                            self._record_submitted_items(
+                                dequeued_items,
+                                requested_batch_size=len(items_to_submit),
+                            )
                         elif queue_to_dequeue_from is not None:
                             self._refresh_queue_head(
                                 item_to_submit.tp,
@@ -1151,6 +1222,7 @@ class WorkManager:
                 should_schedule = (
                     self._process_completion_event(event) or should_schedule
                 )
+            self._finalize_ready_batch_worker_metrics()
 
             if not schedule_after_release or not should_schedule:
                 break
@@ -1220,6 +1292,7 @@ class WorkManager:
                     event.attempt,
                 )
             ] = dict(active_attempt)
+            self._record_batch_worker_completion_metric(event, active_attempt)
         if event.tp not in self._shared_offset_trackers:
             offset_tracker.mark_complete(event.offset)
             self._invalidate_blocking_cache()
@@ -1246,6 +1319,82 @@ class WorkManager:
                 )
         self._dispatch_timestamps.pop(event.id, None)
         return True
+
+    def _record_batch_worker_completion_metric(
+        self,
+        event: CompletionEvent,
+        active_attempt: dict[str, Any],
+    ) -> None:
+        """Accumulate public batch-worker item outcome metrics for one attempt."""
+        batch_id = str(active_attempt.get("batch_id", ""))
+        state = self._batch_metrics_state.get(batch_id)
+        if state is None or state.get("finalized"):
+            return
+        if event.status == CompletionStatus.SUCCESS:
+            state["success"] = int(state.get("success", 0)) + 1
+        else:
+            state["failure"] = int(state.get("failure", 0)) + 1
+
+    def _finalize_ready_batch_worker_metrics(self) -> None:
+        """Publish aggregate batch-worker attempt metrics once per attempt."""
+        for batch_id, state in list(self._batch_metrics_state.items()):
+            if state.get("finalized"):
+                continue
+            success_count = int(state.get("success", 0))
+            failure_count = int(state.get("failure", 0))
+            observed_count = success_count + failure_count
+            admitted_count = int(state.get("admitted", 0))
+            if observed_count == 0:
+                continue
+            if observed_count < admitted_count and failure_count == 0:
+                continue
+            mode = str(state["mode"])
+            if success_count > 0 and failure_count > 0:
+                invocation_status = "partial_failure"
+            elif failure_count > 0:
+                invocation_status = "failure"
+            else:
+                invocation_status = "success"
+            deferred_count = max(0, admitted_count - observed_count)
+            self._call_batch_metrics_exporter(
+                "record_batch_worker_invocation",
+                mode,
+                invocation_status,
+            )
+            if success_count:
+                self._call_batch_metrics_exporter(
+                    "record_batch_worker_items",
+                    mode,
+                    "success",
+                    success_count,
+                )
+            if failure_count:
+                self._call_batch_metrics_exporter(
+                    "record_batch_worker_items",
+                    mode,
+                    "failure",
+                    failure_count,
+                )
+            if deferred_count:
+                self._call_batch_metrics_exporter(
+                    "record_batch_worker_items",
+                    mode,
+                    "deferred",
+                    deferred_count,
+                )
+                self._call_batch_metrics_exporter(
+                    "record_batch_worker_deferred_items",
+                    mode,
+                    "ordered_prefix_violation",
+                    deferred_count,
+                )
+            duration = max(0.0, time.perf_counter() - float(state["started_at"]))
+            self._call_batch_metrics_exporter(
+                "observe_batch_worker_duration",
+                duration,
+            )
+            state["finalized"] = True
+            self._batch_metrics_state.pop(batch_id, None)
 
     def get_blocking_offsets(self) -> Dict[DtoTopicPartition, Optional[OffsetRange]]:
         """Return the blocking offsets that currently prevent HWM progress.

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -374,6 +375,131 @@ def test_exporter_projects_worker_pipe_route_batch_metrics() -> None:
     assert exporter._process_ipc_items_per_completion_payload_gauge._value.get() == 2.0
     assert exporter._process_completion_item_payload_count_gauge._value.get() == 12
     assert exporter._process_completion_batch_payload_count_gauge._value.get() == 6
+
+
+def test_exporter_records_batch_worker_invocation_statuses_with_bounded_labels() -> (
+    None
+):
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    for status in ("success", "partial_failure", "failure", "invalid_result"):
+        exporter.record_batch_worker_invocation("async", status)
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    for status in ("success", "partial_failure", "failure", "invalid_result"):
+        assert (
+            f'pyrallel_batch_worker_invocations_total{{invocation_status="{status}",mode="async"}} 1.0'
+            in metrics_text
+        )
+    for forbidden in (
+        "topic=",
+        "partition=",
+        "key=",
+        "worker=",
+        "batch_id=",
+        "exception_text",
+    ):
+        assert forbidden not in metrics_text
+
+
+def test_exporter_rejects_unknown_batch_worker_invocation_status() -> None:
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=CollectorRegistry()
+    )
+
+    with pytest.raises(ValueError, match="Unknown batch worker invocation_status"):
+        exporter.record_batch_worker_invocation("async", "tenant_supplied_status")
+
+
+def test_exporter_records_batch_worker_item_outcomes_with_bounded_labels() -> None:
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.record_batch_worker_items("process", "success", 2)
+    exporter.record_batch_worker_items("process", "failure", 3)
+    exporter.record_batch_worker_items("process", "deferred", 4)
+    exporter.record_batch_worker_items("process", "invalid_result", 5)
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    expected = {
+        "success": 2,
+        "failure": 3,
+        "deferred": 4,
+        "invalid_result": 5,
+    }
+    for outcome, count in expected.items():
+        assert (
+            f'pyrallel_batch_worker_items_total{{item_outcome="{outcome}",mode="process"}} {float(count)}'
+            in metrics_text
+        )
+    assert "ordered_prefix_blocked" not in metrics_text
+
+
+def test_exporter_rejects_unknown_batch_worker_item_outcome() -> None:
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=CollectorRegistry()
+    )
+
+    with pytest.raises(ValueError, match="Unknown batch worker item_outcome"):
+        exporter.record_batch_worker_items("process", "custom_outcome", 1)
+
+
+def test_exporter_records_batch_worker_size_latency_retry_and_invalid_reason_metrics() -> (
+    None
+):
+    registry = CollectorRegistry()
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=registry
+    )
+
+    exporter.observe_batch_worker_size(4)
+    exporter.observe_batch_worker_duration(0.125)
+    exporter.record_batch_worker_retry("async", "exception", 2)
+    exporter.record_batch_worker_invalid_result("async", "invalid_result", 3)
+    exporter.record_batch_worker_deferred_items("async", "ordered_prefix_violation", 5)
+    exporter.observe_batch_worker_requested_batch_size(8)
+    exporter.observe_batch_worker_admitted_batch_size(4)
+    exporter.record_batch_worker_capacity_clipped("async", "engine_capacity")
+    exporter.observe_batch_worker_capacity_wait(0.05)
+
+    metrics_text = generate_latest(registry).decode("utf-8")
+    assert "pyrallel_batch_worker_size_bucket" in metrics_text
+    assert "pyrallel_batch_worker_duration_seconds_bucket" in metrics_text
+    assert "pyrallel_batch_worker_requested_batch_size_bucket" in metrics_text
+    assert "pyrallel_batch_worker_admitted_batch_size_bucket" in metrics_text
+    assert "pyrallel_batch_worker_capacity_wait_seconds_bucket" in metrics_text
+    assert (
+        'pyrallel_batch_worker_retries_total{mode="async",reason="exception"} 2.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_batch_worker_invalid_results_total{mode="async",reason="invalid_result"} 3.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_batch_worker_deferred_items_total{mode="async",reason="ordered_prefix_violation"} 5.0'
+        in metrics_text
+    )
+    assert (
+        'pyrallel_batch_worker_capacity_clipped_total{mode="async",reason="engine_capacity"} 1.0'
+        in metrics_text
+    )
+
+
+def test_exporter_rejects_unbounded_batch_worker_metric_labels() -> None:
+    exporter = PrometheusMetricsExporter(
+        MetricsConfig(enabled=False), registry=CollectorRegistry()
+    )
+
+    with pytest.raises(ValueError, match="Unknown batch worker mode"):
+        exporter.record_batch_worker_retry("thread", "exception", 1)
+    with pytest.raises(ValueError, match="Unknown batch worker reason"):
+        exporter.record_batch_worker_invalid_result("async", "raw exception text", 1)
 
 
 def test_exporter_treats_missing_resource_signal_as_fail_open_unavailable() -> None:
@@ -1079,8 +1205,8 @@ def test_remove_labeled_metric_uses_positional_label_api() -> None:
     metric = _PositionalRemoveGauge()
 
     # When: the Prometheus exporter code path is exercised.
-    PrometheusMetricsExporter._remove_labeled_metric(  # type: ignore[arg-type]
-        metric,
+    PrometheusMetricsExporter._remove_labeled_metric(
+        cast(Any, metric),
         {"engine_type": "async", "stage": "queued"},
     )
 

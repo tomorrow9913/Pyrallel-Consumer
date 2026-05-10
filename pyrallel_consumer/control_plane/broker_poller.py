@@ -553,6 +553,43 @@ class BrokerPoller:
             isinstance(active_batch_ids, set) and event.batch_id not in active_batch_ids
         )
 
+    def _batch_worker_metrics_mode(self) -> str:
+        """Return bounded public batch-worker metric mode for this poller."""
+        execution = getattr(self._kafka_config.parallel_consumer, "execution", None)
+        raw_mode = getattr(execution, "mode", "async")
+        mode = getattr(raw_mode, "value", raw_mode)
+        if mode in {"async", "process"}:
+            return str(mode)
+        return "async"
+
+    def _record_invalid_batch_worker_control_metrics(
+        self, event: ExecutionControlEvent
+    ) -> None:
+        """Record bounded metrics for fatal invalid batch-worker result controls."""
+        if event.code != "invalid_batch_worker_result":
+            return
+        if self._metrics_exporter is None:
+            return
+        mode = self._batch_worker_metrics_mode()
+        invocation = getattr(
+            self._metrics_exporter,
+            "record_batch_worker_invocation",
+            None,
+        )
+        if callable(invocation):
+            invocation(mode, "invalid_result")
+        invalid_result = getattr(
+            self._metrics_exporter,
+            "record_batch_worker_invalid_result",
+            None,
+        )
+        if callable(invalid_result):
+            invalid_result(mode, "invalid_result", 1)
+        item_count = event.item_count or len(event.item_ids)
+        items = getattr(self._metrics_exporter, "record_batch_worker_items", None)
+        if callable(items) and item_count > 0:
+            items(mode, "invalid_result", item_count)
+
     def _set_runtime_clients(
         self,
         producer: Any | None,
@@ -801,6 +838,7 @@ class BrokerPoller:
         error = fatal_event.error
         if not isinstance(error, Exception):
             error = RuntimeError(str(error))
+        self._record_invalid_batch_worker_control_metrics(fatal_event)
         self._cancel_engine_batch_items(reason="fatal")
         self._fatal_error = error
         self._running = False

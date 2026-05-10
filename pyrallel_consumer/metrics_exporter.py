@@ -51,6 +51,30 @@ _PIPELINE_POLL_EVENTS = ("nonempty", "empty", "error")
 _PIPELINE_WORKER_CAPACITY_STATES = ("total", "executing", "admitted")
 _PIPELINE_SUBQUEUE_ITEM_STATES = ("queued", "eligible", "blocked")
 _PIPELINE_SUBQUEUE_STATES = ("total", "queued", "eligible", "blocked")
+_BATCH_WORKER_MODES = ("async", "process")
+_BATCH_WORKER_INVOCATION_STATUSES = (
+    "success",
+    "partial_failure",
+    "failure",
+    "invalid_result",
+)
+_BATCH_WORKER_ITEM_OUTCOMES = (
+    "success",
+    "failure",
+    "deferred",
+    "invalid_result",
+)
+_BATCH_WORKER_REASONS = (
+    "exception",
+    "invalid_result",
+    "ordered_prefix_violation",
+    "timeout",
+    "engine_capacity",
+    "process_route_batch_limit",
+    "max_batch_size",
+    "shutdown",
+    "submit_rejected",
+)
 _PIPELINE_SETTLEMENT_BLOCKER_REASONS = tuple(
     reason.value for reason in PipelineSettlementBlockerReason
 )
@@ -381,6 +405,67 @@ class PrometheusMetricsExporter:
             "Whether recycle settings are supported for the active process transport",
             registry=self._registry,
         )
+        self._batch_worker_invocations_total = Counter(
+            "pyrallel_batch_worker_invocations_total",
+            "Public batch-worker invocation attempts by bounded result status",
+            labelnames=("mode", "invocation_status"),
+            registry=self._registry,
+        )
+        self._batch_worker_items_total = Counter(
+            "pyrallel_batch_worker_items_total",
+            "Public batch-worker item outcomes by bounded settlement outcome",
+            labelnames=("mode", "item_outcome"),
+            registry=self._registry,
+        )
+        self._batch_worker_size_hist = Histogram(
+            "pyrallel_batch_worker_size",
+            "Public batch-worker invocation size",
+            registry=self._registry,
+        )
+        self._batch_worker_duration_seconds_hist = Histogram(
+            "pyrallel_batch_worker_duration_seconds",
+            "Public batch-worker invocation duration in seconds",
+            registry=self._registry,
+        )
+        self._batch_worker_retries_total = Counter(
+            "pyrallel_batch_worker_retries_total",
+            "Public batch-worker retry subset scheduling events by bounded reason",
+            labelnames=("mode", "reason"),
+            registry=self._registry,
+        )
+        self._batch_worker_invalid_results_total = Counter(
+            "pyrallel_batch_worker_invalid_results_total",
+            "Public batch-worker invalid result events by bounded reason",
+            labelnames=("mode", "reason"),
+            registry=self._registry,
+        )
+        self._batch_worker_deferred_items_total = Counter(
+            "pyrallel_batch_worker_deferred_items_total",
+            "Public batch-worker deferred item count by bounded reason",
+            labelnames=("mode", "reason"),
+            registry=self._registry,
+        )
+        self._batch_worker_requested_batch_size_hist = Histogram(
+            "pyrallel_batch_worker_requested_batch_size",
+            "Requested public batch-worker batch size before capacity clipping",
+            registry=self._registry,
+        )
+        self._batch_worker_admitted_batch_size_hist = Histogram(
+            "pyrallel_batch_worker_admitted_batch_size",
+            "Admitted public batch-worker batch size after capacity clipping",
+            registry=self._registry,
+        )
+        self._batch_worker_capacity_clipped_total = Counter(
+            "pyrallel_batch_worker_capacity_clipped_total",
+            "Public batch-worker capacity clipping events by bounded reason",
+            labelnames=("mode", "reason"),
+            registry=self._registry,
+        )
+        self._batch_worker_capacity_wait_seconds_hist = Histogram(
+            "pyrallel_batch_worker_capacity_wait_seconds",
+            "Public batch-worker capacity wait duration in seconds",
+            registry=self._registry,
+        )
         self._pipeline_stage_messages_gauge = Gauge(
             "pyrallel_pipeline_stage_messages",
             "Pipeline diagnostic message counts by supported bounded stage",
@@ -597,6 +682,87 @@ class PrometheusMetricsExporter:
         self._pipeline_completion_to_commit_latency_hist.labels(
             engine_type=engine_type
         ).observe(duration_seconds)
+
+    def record_batch_worker_invocation(
+        self, mode: str, invocation_status: str, count: int = 1
+    ) -> None:
+        """Record public batch-worker invocation attempts by bounded status."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_invocation_status(invocation_status)
+        self._batch_worker_invocations_total.labels(
+            mode=mode,
+            invocation_status=invocation_status,
+        ).inc(count)
+
+    def record_batch_worker_items(
+        self, mode: str, item_outcome: str, count: int
+    ) -> None:
+        """Record public batch-worker item outcomes by bounded outcome."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_item_outcome(item_outcome)
+        self._batch_worker_items_total.labels(
+            mode=mode,
+            item_outcome=item_outcome,
+        ).inc(count)
+
+    def observe_batch_worker_size(self, size: int) -> None:
+        """Observe public batch-worker invocation size."""
+        self._batch_worker_size_hist.observe(size)
+
+    def observe_batch_worker_duration(self, duration_seconds: float) -> None:
+        """Observe public batch-worker invocation duration."""
+        self._batch_worker_duration_seconds_hist.observe(duration_seconds)
+
+    def record_batch_worker_retry(self, mode: str, reason: str, count: int = 1) -> None:
+        """Record batch-worker retry scheduling by bounded reason."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_reason(reason)
+        self._batch_worker_retries_total.labels(mode=mode, reason=reason).inc(count)
+
+    def record_batch_worker_invalid_result(
+        self, mode: str, reason: str, count: int = 1
+    ) -> None:
+        """Record batch-worker invalid result events by bounded reason."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_reason(reason)
+        self._batch_worker_invalid_results_total.labels(
+            mode=mode,
+            reason=reason,
+        ).inc(count)
+
+    def record_batch_worker_deferred_items(
+        self, mode: str, reason: str, count: int
+    ) -> None:
+        """Record batch-worker deferred items by bounded reason."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_reason(reason)
+        self._batch_worker_deferred_items_total.labels(
+            mode=mode,
+            reason=reason,
+        ).inc(count)
+
+    def observe_batch_worker_requested_batch_size(self, size: int) -> None:
+        """Observe requested public batch-worker batch size."""
+        self._batch_worker_requested_batch_size_hist.observe(size)
+
+    def observe_batch_worker_admitted_batch_size(self, size: int) -> None:
+        """Observe admitted public batch-worker batch size."""
+        self._batch_worker_admitted_batch_size_hist.observe(size)
+
+    def record_batch_worker_capacity_clipped(
+        self, mode: str, reason: str, count: int = 1
+    ) -> None:
+        """Record batch-worker capacity clipping by bounded reason."""
+        self._validate_batch_worker_mode(mode)
+        self._validate_batch_worker_reason(reason)
+        self._batch_worker_capacity_clipped_total.labels(
+            mode=mode,
+            reason=reason,
+        ).inc(count)
+
+    def observe_batch_worker_capacity_wait(self, duration_seconds: float) -> None:
+        """Observe batch-worker capacity wait duration."""
+        self._batch_worker_capacity_wait_seconds_hist.observe(duration_seconds)
 
     def set_commit_coordinator_pending_partitions(
         self, engine_type: str, count: int
@@ -928,6 +1094,46 @@ class PrometheusMetricsExporter:
             raise ValueError(
                 "Unknown pipeline engine_type: "
                 f"{engine_type!r}; expected one of: {allowed_engine_types}"
+            )
+
+    @staticmethod
+    def _validate_batch_worker_mode(mode: str) -> None:
+        """Reject unbounded batch-worker mode label values."""
+        if mode not in _BATCH_WORKER_MODES:
+            allowed_modes = ", ".join(_BATCH_WORKER_MODES)
+            raise ValueError(
+                "Unknown batch worker mode: "
+                f"{mode!r}; expected one of: {allowed_modes}"
+            )
+
+    @staticmethod
+    def _validate_batch_worker_invocation_status(invocation_status: str) -> None:
+        """Reject unbounded batch-worker invocation status label values."""
+        if invocation_status not in _BATCH_WORKER_INVOCATION_STATUSES:
+            allowed_statuses = ", ".join(_BATCH_WORKER_INVOCATION_STATUSES)
+            raise ValueError(
+                "Unknown batch worker invocation_status: "
+                f"{invocation_status!r}; expected one of: {allowed_statuses}"
+            )
+
+    @staticmethod
+    def _validate_batch_worker_item_outcome(item_outcome: str) -> None:
+        """Reject unbounded batch-worker item outcome label values."""
+        if item_outcome not in _BATCH_WORKER_ITEM_OUTCOMES:
+            allowed_outcomes = ", ".join(_BATCH_WORKER_ITEM_OUTCOMES)
+            raise ValueError(
+                "Unknown batch worker item_outcome: "
+                f"{item_outcome!r}; expected one of: {allowed_outcomes}"
+            )
+
+    @staticmethod
+    def _validate_batch_worker_reason(reason: str) -> None:
+        """Reject unbounded batch-worker reason label values."""
+        if reason not in _BATCH_WORKER_REASONS:
+            allowed_reasons = ", ".join(_BATCH_WORKER_REASONS)
+            raise ValueError(
+                "Unknown batch worker reason: "
+                f"{reason!r}; expected one of: {allowed_reasons}"
             )
 
     @staticmethod
