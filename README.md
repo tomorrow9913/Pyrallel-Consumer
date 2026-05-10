@@ -363,6 +363,64 @@ runtime_snapshot = consumer.get_runtime_snapshot()
 # runtime_snapshot.poison_message.open_circuit_count
 ```
 
+### Batch worker public API
+
+Use `PyrallelConsumer.from_batch_worker(...)` when your worker naturally handles
+multiple `WorkItem` values at once. The batch worker returns one
+`BatchItemOutcome` per input item:
+
+```python
+from pyrallel_consumer import BatchItemOutcome, PyrallelConsumer
+from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.dto import WorkItem
+
+async def batch_worker(items: list[WorkItem]):
+    outcomes: list[BatchItemOutcome] = []
+    failed = False
+    for item in items:
+        if failed:
+            outcomes.append(BatchItemOutcome.ordered_prefix_blocked())
+            continue
+        try:
+            # Write to an idempotent sink before reporting success.
+            outcomes.append(BatchItemOutcome.success())
+        except Exception as exc:
+            failed = True
+            outcomes.append(BatchItemOutcome.failure(str(exc)))
+    return outcomes
+
+config = KafkaConfig()
+config.parallel_consumer.batch_worker.max_batch_size = 64
+
+consumer = PyrallelConsumer.from_batch_worker(
+    config=config,
+    batch_worker=batch_worker,
+    topic="orders",
+)
+```
+
+`BatchWorkerConfig` v1 exposes only `max_batch_size`; configure it with
+`config.parallel_consumer.batch_worker.max_batch_size` or
+`PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE`. Result helpers are stable for
+v1:
+
+- `BatchItemOutcome.success()` marks an item as successfully processed.
+- `BatchItemOutcome.failure(error)` marks an item-level failure.
+- `BatchItemOutcome.ordered_prefix_blocked()` is only for ordered modes and only
+  for the not-started tail after the first failed item. Do not use
+  ordered-prefix-blocked for work the batch worker already attempted.
+
+An invalid batch-worker result shape raises `BatchWorkerContractError` and becomes
+fatal, non-committable control events; fix the worker result shape before
+replaying. Process-mode batch workers must be top-level importable functions so
+the multiprocessing runtime can load them. Batch-worker delivery remains
+at-least-once, so write side effects to an idempotent sink before returning
+success. v1 does not support `from_batch_worker(...)` together with partition
+ordering, adaptive concurrency, or adaptive backpressure; those guards stay in
+place until the leased-batch/live-capacity gates are implemented. The
+broker-backed E2E and benchmark/release matrix evidence remain release-readiness
+blockers for the broader batch-worker rollout.
+
 Canonical Python config access uses lowercase snake_case attributes such as
 `config.bootstrap_servers` and `config.dlq_topic_suffix`. Existing uppercase
 attributes remain available as backward-compatible aliases, while environment

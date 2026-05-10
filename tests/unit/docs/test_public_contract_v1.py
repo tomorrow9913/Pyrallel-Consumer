@@ -43,6 +43,8 @@ from pyrallel_consumer.dto import (
 
 ROOT = Path(__file__).resolve().parents[3]
 PUBLIC_CONTRACT_DOC = ROOT / "docs" / "operations" / "public-contract-v1.md"
+README_DOC = ROOT / "README.md"
+README_KO_DOC = ROOT / "README.ko.md"
 
 
 def test_public_contract_doc_lists_runtime_snapshot_regression_tests() -> None:
@@ -381,3 +383,30 @@ def test_public_contract_doc_freezes_batch_worker_v1_contract() -> None:
     # Then: public docs expose the stable helper/status/codec/error contract and evidence.
     for expected_term in expected_terms:
         assert expected_term in document
+
+
+def test_readmes_document_batch_worker_public_contract() -> None:
+    # Given: README files are the public entry points for English and Korean users.
+    english_readme = README_DOC.read_text(encoding="utf-8")
+    korean_readme = README_KO_DOC.read_text(encoding="utf-8")
+
+    expected_api_terms = [
+        "PyrallelConsumer.from_batch_worker",
+        "BatchItemOutcome.success()",
+        "BatchItemOutcome.failure(error)",
+        "BatchItemOutcome.ordered_prefix_blocked()",
+        "BatchWorkerContractError",
+        "BatchWorkerConfig",
+        "PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE",
+        "ordered-prefix-blocked",
+        "invalid batch-worker result",
+        "at-least-once",
+        "idempotent",
+        "broker-backed E2E",
+        "benchmark/release matrix",
+    ]
+
+    # Then: both public READMEs document the same stable v1 batch-worker surface.
+    for document in (english_readme, korean_readme):
+        for expected_term in expected_api_terms:
+            assert expected_term in document

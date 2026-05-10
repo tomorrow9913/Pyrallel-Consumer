@@ -237,6 +237,7 @@ python -m build
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=my-consumer-group
 PARALLEL_CONSUMER_EXECUTION__MODE=async # 또는 process
+PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE=64
 ```
 
 #### 보안 Kafka 연결 (`KafkaConfig`)
@@ -383,6 +384,64 @@ runtime_snapshot = consumer.get_runtime_snapshot()
 # runtime_snapshot.queue.total_in_flight
 # runtime_snapshot.partitions[0].blocking_offset
 ```
+
+### Batch worker public API
+
+워커가 여러 `WorkItem`을 한 번에 처리하는 형태라면
+`PyrallelConsumer.from_batch_worker(...)`를 사용하세요. batch worker는 입력
+item마다 하나의 `BatchItemOutcome`을 반환합니다.
+
+```python
+from pyrallel_consumer import BatchItemOutcome, PyrallelConsumer
+from pyrallel_consumer.config import KafkaConfig
+from pyrallel_consumer.dto import WorkItem
+
+async def batch_worker(items: list[WorkItem]):
+    outcomes: list[BatchItemOutcome] = []
+    failed = False
+    for item in items:
+        if failed:
+            outcomes.append(BatchItemOutcome.ordered_prefix_blocked())
+            continue
+        try:
+            # 성공을 반환하기 전에 idempotent sink에 기록하세요.
+            outcomes.append(BatchItemOutcome.success())
+        except Exception as exc:
+            failed = True
+            outcomes.append(BatchItemOutcome.failure(str(exc)))
+    return outcomes
+
+config = KafkaConfig()
+config.parallel_consumer.batch_worker.max_batch_size = 64
+
+consumer = PyrallelConsumer.from_batch_worker(
+    config=config,
+    batch_worker=batch_worker,
+    topic="orders",
+)
+```
+
+`BatchWorkerConfig` v1은 `max_batch_size`만 공개합니다.
+`config.parallel_consumer.batch_worker.max_batch_size` 또는
+`PARALLEL_CONSUMER_BATCH_WORKER__MAX_BATCH_SIZE`로 설정하세요. v1에서
+안정적인 결과 helper는 다음과 같습니다.
+
+- `BatchItemOutcome.success()`는 item 단위 성공을 표시합니다.
+- `BatchItemOutcome.failure(error)`는 item 단위 실패를 표시합니다.
+- `BatchItemOutcome.ordered_prefix_blocked()`는 ordered mode에서 첫 실패 뒤
+  시작하지 않은 tail에만 사용합니다. 이미 시도한 작업에는
+  ordered-prefix-blocked를 사용하지 마세요.
+
+invalid batch-worker result shape는 `BatchWorkerContractError`를 발생시키며
+fatal, non-committable control event로 처리됩니다. 재처리 전에 worker의
+결과 shape를 수정하세요. Process mode batch worker는 multiprocessing runtime이
+불러올 수 있도록 top-level importable function이어야 합니다. Batch-worker
+전달은 at-least-once이므로, success를 반환하기 전에 side effect를
+idempotent sink에 기록하세요. v1은 `from_batch_worker(...)`와 partition
+ordering, adaptive concurrency, adaptive backpressure의 조합을 지원하지
+않습니다. 해당 guard는 leased-batch/live-capacity gate가 구현될 때까지
+유지됩니다. The broker-backed E2E and benchmark/release matrix evidence remain
+release-readiness blockers for the broader batch-worker rollout.
 
 Python 코드에서의 canonical config access는 `config.bootstrap_servers`,
 `config.consumer_group`, `config.dlq_topic_suffix` 같은 lowercase
