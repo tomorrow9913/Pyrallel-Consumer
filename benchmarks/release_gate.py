@@ -102,6 +102,7 @@ def _as_number(value: Any, field: str, *, path: Path) -> float:
 
 
 def _raise_invalid_json_constant(constant: str) -> None:
+    """Reject non-finite JSON constants in benchmark artifacts."""
     raise ValueError("invalid non-finite JSON constant: %s" % constant)
 
 
@@ -588,6 +589,7 @@ def _evaluate_batch_worker_v1_matrix(
 
 
 def _batch_worker_v1_key(result: Mapping[str, Any]) -> BatchWorkerV1Key | None:
+    """Return the batch-worker matrix key represented by one result."""
     run_type = result.get("run_type")
     workload = result.get("workload")
     ordering = result.get("ordering")
@@ -607,6 +609,7 @@ def _batch_worker_v1_key(result: Mapping[str, Any]) -> BatchWorkerV1Key | None:
 
 
 def _has_batch_worker_v1_dimensions(result: Mapping[str, Any]) -> bool:
+    """Return whether a result belongs to the batch-worker v1 evidence space."""
     return (
         result.get("run_type") in BATCH_WORKER_V1_RUN_TYPES
         and result.get("workload") in BATCH_WORKER_V1_WORKLOADS
@@ -618,6 +621,7 @@ def _evaluate_batch_worker_v1_result_fields(
     path: Path,
     result: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
+    """Validate required numeric evidence fields for batch-worker v1 results."""
     checks: list[dict[str, Any]] = []
     worker_kind = result.get("worker_kind")
     expected_constructor = BATCH_WORKER_V1_CONSTRUCTORS.get(str(worker_kind))
@@ -657,6 +661,7 @@ def _evaluate_batch_worker_v1_result_fields(
 def _missing_batch_worker_v1_keys(
     observed: Mapping[BatchWorkerV1Key, list[tuple[Path, Mapping[str, Any]]]],
 ) -> list[BatchWorkerV1Key]:
+    """Return required batch-worker matrix keys not present in artifacts."""
     missing: list[BatchWorkerV1Key] = []
     for run_type in BATCH_WORKER_V1_RUN_TYPES:
         for workload in BATCH_WORKER_V1_WORKLOADS:
@@ -676,6 +681,7 @@ def _missing_batch_worker_v1_keys(
 
 
 def _batch_worker_v1_large_payload_process(result: Mapping[str, Any]) -> bool:
+    """Return whether a result is the required large-payload process evidence."""
     return (
         result.get("run_type") == "process"
         and result.get("worker_kind") == "batch_worker"

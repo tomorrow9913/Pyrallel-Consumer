@@ -49,6 +49,7 @@ def disabled_poison_policy_snapshot() -> PoisonPolicySnapshot:
 
 
 def _poison_key(work_item: WorkItem) -> PoisonPolicyKey:
+    """Return the immutable poison-policy lookup key for a work item."""
     circuit_key = PoisonMessageCircuitBreaker._circuit_key(work_item)
     return (circuit_key[0], circuit_key[1])
 

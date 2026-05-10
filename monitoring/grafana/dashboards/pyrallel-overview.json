@@ -2197,6 +2197,189 @@
       ],
       "title": "Process compatibility/reference metrics",
       "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_invocations_total[1m])",
+          "legendFormat": "batch invocations/s {{invocation_status}}",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_items_total[1m])",
+          "legendFormat": "batch items/s {{item_outcome}}",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_batch_worker_size_bucket[1m])) by (le))",
+          "legendFormat": "batch size p95",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_batch_worker_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "batch duration p95",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_batch_worker_requested_batch_size_bucket[1m])) by (le))",
+          "legendFormat": "requested batch size p95",
+          "instant": false,
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_batch_worker_admitted_batch_size_bucket[1m])) by (le))",
+          "legendFormat": "admitted batch size p95",
+          "instant": false,
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_batch_worker_capacity_wait_seconds_bucket[1m])) by (le))",
+          "legendFormat": "capacity wait p95",
+          "instant": false,
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_retries_total[1m])",
+          "legendFormat": "batch retries/s {{reason}}",
+          "instant": false,
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_invalid_results_total[1m])",
+          "legendFormat": "invalid results/s {{reason}}",
+          "instant": false,
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_deferred_items_total[1m])",
+          "legendFormat": "deferred items/s {{reason}}",
+          "instant": false,
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_batch_worker_capacity_clipped_total[1m])",
+          "legendFormat": "capacity clipped/s",
+          "instant": false,
+          "range": true,
+          "refId": "K"
+        }
+      ],
+      "title": "Batch-worker public API metrics",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",

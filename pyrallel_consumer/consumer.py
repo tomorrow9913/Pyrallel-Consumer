@@ -206,6 +206,7 @@ class PyrallelConsumer:
         topic: str,
         resource_signal_provider: Optional[ResourceSignalProvider] = None,
     ) -> "PyrallelConsumer":
+        """Create a consumer from a public batch-worker callable."""
         parallel_config = getattr(config, "parallel_consumer", None)
         if parallel_config is None:
             parallel_config = ParallelConsumerConfig()

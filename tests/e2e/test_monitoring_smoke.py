@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -90,6 +91,21 @@ def _wait_until(description: str, timeout_sec: float, predicate) -> None:
             last_error = exc
         time.sleep(2)
     raise RuntimeError(f"{description} did not become ready: {last_error}")
+
+
+def _wait_for_local_port_available(port: int, *, timeout_sec: float) -> None:
+    """Wait until a local TCP port can be bound by the benchmark process."""
+    deadline = time.monotonic() + timeout_sec
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+                return
+            except OSError as exc:
+                last_error = exc
+        time.sleep(1)
+    raise RuntimeError(f"port {port} did not become available: {last_error}")
 
 
 def _grafana_provisioning_ready(grafana_auth: str) -> bool:
@@ -218,6 +234,8 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         "10",
         "--timeout-sec",
         "180",
+        "--metrics",
+        "on",
         "--metrics-port",
         "9091",
         "--topic-prefix",
@@ -226,6 +244,7 @@ def test_monitoring_stack_scrapes_consumer_and_provisions_grafana(
         str(json_output),
     ]
     # When: a process-mode benchmark run exposes consumer metrics on port 9091.
+    _wait_for_local_port_available(9091, timeout_sec=30)
     benchmark = subprocess.Popen(
         command,
         cwd=REPO_ROOT,

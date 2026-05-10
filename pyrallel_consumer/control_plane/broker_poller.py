@@ -1048,6 +1048,7 @@ class BrokerPoller:
             return await self._publish_to_dlq(**kwargs)
 
         async def _notify_item_settled(event: CompletionEvent) -> None:
+            """Notify the engine registry after broker-side settlement succeeds."""
             notifier = getattr(self._work_manager, "notify_item_settled", None)
             if callable(notifier):
                 notifier(event)

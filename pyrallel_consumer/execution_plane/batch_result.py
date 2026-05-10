@@ -16,10 +16,12 @@ _DEFAULT_BATCH_ITEM_FAILURE = "batch_worker_item_failed"
 
 
 def _contract_error(reason: str) -> BatchWorkerContractError:
+    """Build a fatal batch-worker result contract error."""
     return BatchWorkerContractError(f"invalid_batch_worker_result:{reason}")
 
 
 def _validate_unique_pending_ids(pending_items: Sequence[WorkItem]) -> None:
+    """Reject duplicate work item ids before result normalization."""
     seen: set[str] = set()
     duplicates: set[str] = set()
     for item in pending_items:
@@ -37,6 +39,7 @@ def _completion_event(
     error: str | None,
     attempt: int,
 ) -> CompletionEvent:
+    """Build a bounded completion event for a normalized batch outcome."""
     bounded_error = (
         _bound_batch_worker_error_reason(error) if error is not None else None
     )
@@ -54,6 +57,7 @@ def _completion_event(
 def _validate_mapping_keys(
     pending_items: Sequence[WorkItem], result: Mapping[str, BatchItemOutcome]
 ) -> None:
+    """Ensure a batch result covers exactly the current pending item ids."""
     expected_ids = {item.id for item in pending_items}
     actual_ids = set(result.keys())
     missing_ids = expected_ids - actual_ids
@@ -65,6 +69,7 @@ def _validate_mapping_keys(
 
 
 def _validate_outcome(outcome: object) -> BatchItemOutcome:
+    """Validate one public BatchItemOutcome value."""
     if not isinstance(outcome, BatchItemOutcome):
         raise _contract_error("invalid_outcome_shape")
     if outcome.status == "success":
@@ -110,6 +115,7 @@ def normalize_batch_worker_result(
     ordering_mode: OrderingMode,
     attempt: int,
 ) -> list[CompletionEvent]:
+    """Normalize a public batch-worker result into item completion events."""
     _validate_unique_pending_ids(pending_items)
     if result is None:
         return [

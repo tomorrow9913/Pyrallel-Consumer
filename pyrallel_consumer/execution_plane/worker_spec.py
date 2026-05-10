@@ -15,11 +15,14 @@ WorkerKind = Literal["single", "batch"]
 
 
 class CompletionFailureClass(str, Enum):
+    """Internal failure classes carried on terminal completion metadata."""
+
     WORKER_FAILURE = "WORKER_FAILURE"
     BATCH_WORKER_CONTRACT_ERROR = "BATCH_WORKER_CONTRACT_ERROR"
 
 
 def _is_async_callable(callable_: Callable[..., Any]) -> bool:
+    """Return whether a callable or callable object is asynchronous."""
     if inspect.iscoroutinefunction(callable_):
         return True
     call = getattr(callable_, "__call__", None)
@@ -27,6 +30,7 @@ def _is_async_callable(callable_: Callable[..., Any]) -> bool:
 
 
 def _derive_route_policy(ordering_mode: OrderingMode) -> RoutePolicy:
+    """Derive the internal route policy from public ordering mode."""
     if ordering_mode == OrderingMode.KEY_HASH:
         return "key_hash"
     if ordering_mode == OrderingMode.PARTITION:
@@ -38,6 +42,8 @@ def _derive_route_policy(ordering_mode: OrderingMode) -> RoutePolicy:
 
 @dataclass(frozen=True)
 class BatchWorkerRuntimeSpec:
+    """Internal runtime contract for public batch-worker dispatch."""
+
     ordering_mode: OrderingMode
     batch_worker_config: BatchWorkerConfig | object
     route_policy: RoutePolicy
@@ -66,6 +72,7 @@ class BatchWorkerRuntimeSpec:
         batch_worker_config: BatchWorkerConfig | object,
         max_retries: int,
     ) -> "BatchWorkerRuntimeSpec":
+        """Build a batch-worker runtime spec from consumer configuration."""
         return cls(
             ordering_mode=ordering_mode,
             batch_worker_config=batch_worker_config,
@@ -76,6 +83,8 @@ class BatchWorkerRuntimeSpec:
 
 @dataclass(frozen=True)
 class WorkerSpec:
+    """Internal normalized worker descriptor used by execution engines."""
+
     kind: WorkerKind
     callable: Callable[..., Any]
     is_async: bool
@@ -83,6 +92,7 @@ class WorkerSpec:
 
     @classmethod
     def single(cls, worker: Callable[[WorkItem], Any]) -> "WorkerSpec":
+        """Build a single-item worker descriptor."""
         return cls(
             kind="single",
             callable=worker,
@@ -95,6 +105,7 @@ class WorkerSpec:
         batch_worker: Callable[..., Any],
         batch_runtime: BatchWorkerRuntimeSpec,
     ) -> "WorkerSpec":
+        """Build a batch-worker descriptor."""
         return cls(
             kind="batch",
             callable=batch_worker,

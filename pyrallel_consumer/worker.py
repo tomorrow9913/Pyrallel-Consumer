@@ -15,19 +15,24 @@ BatchItemStatus: TypeAlias = Literal[
 
 @dataclass(frozen=True)
 class BatchItemOutcome:
+    """Item-level outcome returned by a public batch worker."""
+
     status: BatchItemStatus
     error: str | None = None
 
     @staticmethod
     def success() -> "BatchItemOutcome":
+        """Return a successful item outcome."""
         return BatchItemOutcome(status="success")
 
     @staticmethod
     def failure(error: str | None = None) -> "BatchItemOutcome":
+        """Return a failed item outcome with an optional bounded reason."""
         return BatchItemOutcome(status="failure", error=error)
 
     @staticmethod
     def ordered_prefix_blocked() -> "BatchItemOutcome":
+        """Return an ordered-tail item outcome that has not started yet."""
         return BatchItemOutcome(status="ordered_prefix_blocked")
 
 
@@ -39,6 +44,7 @@ SyncBatchWorker: TypeAlias = Callable[[Sequence[WorkItem]], BatchWorkerResult]
 
 
 def _bound_batch_worker_error_reason(reason: str) -> str:
+    """Clamp batch-worker error text before it reaches events or logs."""
     if len(reason) <= BATCH_WORKER_ERROR_MAX_CHARS:
         return reason
     return reason[:BATCH_WORKER_ERROR_MAX_CHARS]

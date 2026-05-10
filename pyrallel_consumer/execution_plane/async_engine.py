@@ -97,6 +97,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
 
     @property
     def supports_ordered_route_batch(self) -> bool:
+        """Return whether this engine can accept ordered route batches."""
         return self._worker_spec.kind == "batch"
 
     async def submit(self, work_item: WorkItem) -> None:
@@ -128,6 +129,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
     async def submit_batch(
         self, work_items: list[WorkItem]
     ) -> BatchSubmissionReceipt | None:
+        """Submit a public batch-worker attempt and return ownership metadata."""
         if self._worker_spec.kind != "batch":
             return await super().submit_batch(work_items)
         if self._shutdown_event.is_set():
@@ -337,10 +339,12 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         await self._put_completion_event(completion_event)
 
     async def _put_completion_event(self, event: CompletionEvent) -> None:
+        """Enqueue a completion event and wake waiters."""
         await self._completion_queue.put(event)
         self._activity_event.set()
 
     async def _put_control_event(self, event: ExecutionControlEvent) -> None:
+        """Enqueue a control event and wake waiters."""
         await self._control_queue.put(event)
         self._activity_event.set()
 
@@ -351,6 +355,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         first_attempt: int = 1,
         batch_id: str | None = None,
     ) -> None:
+        """Run one async batch-worker attempt sequence for the pending items."""
         result: BatchWorkerResult = None
         error: Optional[str] = None
         attempt = 0
@@ -592,6 +597,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
     async def poll_control_events(
         self, batch_limit: int = 1000
     ) -> List[ExecutionControlEvent]:
+        """Drain queued control events for the broker poller."""
         control_events: List[ExecutionControlEvent] = []
         while len(control_events) < batch_limit and not self._control_queue.empty():
             control_events.append(self._control_queue.get_nowait())

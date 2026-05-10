@@ -301,6 +301,17 @@ def test_grafana_dashboard_is_reference_sample_for_public_metric_surface() -> No
         "pyrallel_commit_coordinator_retries_total",
         "pyrallel_commit_coordinator_coalesced_total",
         "pyrallel_commit_coordinator_settlement_latency_seconds_bucket",
+        "pyrallel_batch_worker_invocations_total",
+        "pyrallel_batch_worker_items_total",
+        "pyrallel_batch_worker_size_bucket",
+        "pyrallel_batch_worker_duration_seconds_bucket",
+        "pyrallel_batch_worker_requested_batch_size_bucket",
+        "pyrallel_batch_worker_admitted_batch_size_bucket",
+        "pyrallel_batch_worker_capacity_wait_seconds_bucket",
+        "pyrallel_batch_worker_retries_total",
+        "pyrallel_batch_worker_invalid_results_total",
+        "pyrallel_batch_worker_deferred_items_total",
+        "pyrallel_batch_worker_capacity_clipped_total",
     )
     for metric_family in required_metric_families:
         assert metric_family in expressions_text
@@ -330,7 +341,7 @@ def test_reference_dashboard_catalog_covers_exporter_public_metric_surface() -> 
     dashboard_references = _dashboard_metric_family_references(dashboard)
 
     # Then: the expected `reference dashboard catalog covers exporter p...` behavior is asserted.
-    assert len(exporter_families) == 75
+    assert len(exporter_families) == 86
     assert exporter_families - dashboard_references == set()
 
 
