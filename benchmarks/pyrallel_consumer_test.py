@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Sequence
+from functools import partial
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from confluent_kafka.admin import AdminClient
@@ -26,7 +28,12 @@ from pyrallel_consumer.dto import (
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 from pyrallel_consumer.execution_plane.process_engine import ProcessExecutionEngine
+from pyrallel_consumer.execution_plane.worker_spec import (
+    BatchWorkerRuntimeSpec,
+    WorkerSpec,
+)
 from pyrallel_consumer.metrics_exporter import PrometheusMetricsExporter
+from pyrallel_consumer.worker import BatchItemOutcome
 
 from .kafka_admin import TopicConfig, reset_topics_and_groups
 from .stats import BenchmarkResult, BenchmarkStats
@@ -219,6 +226,17 @@ def _process_mode_worker(item: WorkItem) -> None:
     payload_bytes = item.payload or b""
     _decode_payload(payload_bytes)
     time.sleep(0.005)
+
+
+def _process_mode_batch_worker(
+    items: Sequence[WorkItem],
+    *,
+    worker_fn: Callable[[WorkItem], None],
+) -> dict[str, BatchItemOutcome]:
+    """Run a picklable process benchmark worker over a public batch."""
+    for item in items:
+        worker_fn(item)
+    return {item.id: BatchItemOutcome.success() for item in items}
 
 
 async def _wait_for_partition_assignment(
@@ -539,6 +557,7 @@ async def run_pyrallel_consumer_test(
     route_batch_size: int = 64,
     metrics_port: Optional[int] = None,
     adaptive_concurrency_enabled: bool = False,
+    worker_kind: str = "single_item_worker",
 ) -> tuple[bool, ConsumptionStats, Optional[BenchmarkResult]]:
     """Run pyrallel consumer test for pyrallel consumer test."""
     effective_topic = topic_name or topic
@@ -590,6 +609,9 @@ async def run_pyrallel_consumer_test(
     if (
         mode_value == ExecutionMode.ASYNC
         and ordering_mode_value != OrderingMode.UNORDERED
+        and worker_kind != "batch_worker"
+        and stats is not None
+        and not stats.large_payload
     ):
         ordering_validator = OrderingValidator(
             ordering_mode=ordering_mode_value.value,
@@ -599,6 +621,7 @@ async def run_pyrallel_consumer_test(
     if (
         mode_value == ExecutionMode.PROCESS
         and ordering_mode_value != OrderingMode.UNORDERED
+        and not (stats is not None and stats.large_payload)
     ):
         process_completion_validator = OrderingValidator(
             ordering_mode=ordering_mode_value.value,
@@ -629,20 +652,60 @@ async def run_pyrallel_consumer_test(
         try:
             if ordering_validator is not None:
                 ordering_validator.observe(item)
+            if stats is not None:
+                stats.record_callback_invocation()
             await async_worker_impl(item)
         except Exception as exc:
             metrics_observer.report_worker_failure(str(exc))
             raise
 
+    async def validated_async_batch_worker(
+        items: Sequence[WorkItem],
+    ) -> dict[str, BatchItemOutcome]:
+        """Handle validated async batch worker within pyrallel consumer test."""
+        try:
+            if stats is not None:
+                stats.record_callback_invocation(item_count=len(items))
+            for item in items:
+                if ordering_validator is not None:
+                    ordering_validator.observe(item)
+                await async_worker_impl(item)
+        except Exception as exc:
+            metrics_observer.report_worker_failure(str(exc))
+            raise
+        return {item.id: BatchItemOutcome.success() for item in items}
+
+    batch_runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=ordering_mode_value,
+        batch_worker_config=kafka_config.parallel_consumer.batch_worker,
+        max_retries=execution_config.max_retries,
+    )
+
     engine: BaseExecutionEngine
     if mode_value == ExecutionMode.PROCESS:
+        process_worker_spec: Callable[[WorkItem], Any] | WorkerSpec
+        if worker_kind == "batch_worker":
+            process_worker_spec = WorkerSpec.batch(
+                partial(_process_mode_batch_worker, worker_fn=process_worker),
+                batch_runtime,
+            )
+        else:
+            process_worker_spec = process_worker
         engine = ProcessExecutionEngine(
             config=execution_config,
-            worker_fn=process_worker,
+            worker_fn=process_worker_spec,
         )
     else:
+        async_worker_spec: Callable[[WorkItem], Any] | WorkerSpec
+        if worker_kind == "batch_worker":
+            async_worker_spec = WorkerSpec.batch(
+                validated_async_batch_worker,
+                batch_runtime,
+            )
+        else:
+            async_worker_spec = validated_async_worker
         engine = AsyncExecutionEngine(
-            config=execution_config, worker_fn=validated_async_worker
+            config=execution_config, worker_fn=async_worker_spec
         )
 
     work_manager = WorkManager(

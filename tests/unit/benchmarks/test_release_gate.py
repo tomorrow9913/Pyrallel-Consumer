@@ -88,6 +88,111 @@ def _passing_summary() -> dict[str, object]:
     }
 
 
+def _issue_144_result(
+    *,
+    run_type: str,
+    workload: str,
+    ordering: str,
+    worker_kind: str,
+    metrics_enabled: bool,
+    large_payload: bool = False,
+) -> dict[str, object]:
+    constructor = (
+        "PyrallelConsumer.from_batch_worker"
+        if worker_kind == "batch_worker"
+        else "PyrallelConsumer"
+    )
+    result = _result(
+        run_type=run_type,
+        workload=workload,
+        ordering=ordering,
+        throughput_tps=99999,
+        p99_processing_ms=0.1,
+    )
+    result.update(
+        {
+            "run_name": "%s-%s-%s-%s-metrics-%s"
+            % (
+                workload,
+                ordering,
+                run_type,
+                worker_kind,
+                "on" if metrics_enabled else "off",
+            ),
+            "worker_kind": worker_kind,
+            "constructor": constructor,
+            "metrics_enabled": metrics_enabled,
+            "callback_invocation_count": 10,
+            "callback_item_count": 10000,
+            "rss_max_mb": 64.0,
+            "input_ipc_bytes": 1024,
+            "completion_ipc_bytes": 512,
+            "input_ipc_chunks": 10,
+            "completion_ipc_chunks": 10,
+            "large_payload": large_payload,
+        }
+    )
+    return result
+
+
+def _issue_144_summary() -> dict[str, object]:
+    summary = _passing_summary()
+    issue_144_results: list[dict[str, object]] = []
+    for run_type in ("async", "process"):
+        for workload in ("sleep", "io"):
+            for ordering in ("key_hash", "unordered"):
+                for worker_kind in ("single_item_worker", "batch_worker"):
+                    for metrics_enabled in (False, True):
+                        issue_144_results.append(
+                            _issue_144_result(
+                                run_type=run_type,
+                                workload=workload,
+                                ordering=ordering,
+                                worker_kind=worker_kind,
+                                metrics_enabled=metrics_enabled,
+                                large_payload=(
+                                    run_type == "process"
+                                    and workload == "io"
+                                    and ordering == "unordered"
+                                    and worker_kind == "batch_worker"
+                                    and metrics_enabled
+                                ),
+                            )
+                        )
+    existing_results = summary["results"]
+    assert isinstance(existing_results, list)
+    summary["results"] = [*existing_results, *issue_144_results]
+    return summary
+
+
+def _issue_144_only_summary() -> dict[str, object]:
+    summary = _passing_summary()
+    issue_144_results: list[dict[str, object]] = []
+    for run_type in ("async", "process"):
+        for workload in ("sleep", "io"):
+            for ordering in ("key_hash", "unordered"):
+                for worker_kind in ("single_item_worker", "batch_worker"):
+                    for metrics_enabled in (False, True):
+                        issue_144_results.append(
+                            _issue_144_result(
+                                run_type=run_type,
+                                workload=workload,
+                                ordering=ordering,
+                                worker_kind=worker_kind,
+                                metrics_enabled=metrics_enabled,
+                                large_payload=(
+                                    run_type == "process"
+                                    and workload == "io"
+                                    and ordering == "unordered"
+                                    and worker_kind == "batch_worker"
+                                    and metrics_enabled
+                                ),
+                            )
+                        )
+    summary["results"] = issue_144_results
+    return summary
+
+
 def test_evaluate_release_gate_passes_two_complete_threshold_runs(
     tmp_path: Path,
 ) -> None:
@@ -105,6 +210,164 @@ def test_evaluate_release_gate_passes_two_complete_threshold_runs(
     assert report["verdict"] == "PASS"
     assert report["summary"]["required_repetitions"] == 2
     assert all(check["status"] == "PASS" for check in report["checks"])
+
+
+def test_evaluate_release_gate_requires_issue_144_batch_worker_matrix(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "issue-144-complete.json"
+    path.write_text(json.dumps(_issue_144_summary()), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate(
+        [path],
+        required_repetitions=1,
+        required_matrix="issue-144-batch-worker-v1",
+    )
+
+    assert report["verdict"] == "PASS"
+    assert report["summary"]["required_matrix"] == "issue-144-batch-worker-v1"
+    assert any(
+        check["code"] == "issue144_matrix" and check["status"] == "PASS"
+        for check in report["checks"]
+    )
+
+
+def test_evaluate_release_gate_require_matrix_accepts_issue_144_only_artifact(
+    tmp_path: Path,
+) -> None:
+    payload = _issue_144_only_summary()
+    results = payload["results"]
+    assert isinstance(results, list)
+    for result in results:
+        result["throughput_tps"] = 1
+        result["p99_processing_ms"] = 9999
+    path = tmp_path / "issue-144-only.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate(
+        [path],
+        required_repetitions=1,
+        required_matrix="issue-144-batch-worker-v1",
+    )
+
+    assert report["verdict"] == "PASS"
+    assert [check["code"] for check in report["checks"]] == ["issue144_matrix"]
+
+
+def test_evaluate_release_gate_reports_no_go_for_missing_issue_144_metrics_pair(
+    tmp_path: Path,
+) -> None:
+    payload = _issue_144_summary()
+    results = payload["results"]
+    assert isinstance(results, list)
+    payload["results"] = [
+        result
+        for result in results
+        if not (
+            result.get("worker_kind") == "batch_worker"
+            and result.get("run_type") == "process"
+            and result.get("workload") == "io"
+            and result.get("ordering") == "unordered"
+            and result.get("metrics_enabled") is True
+        )
+    ]
+    path = tmp_path / "issue-144-missing-metrics-pair.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate(
+        [path],
+        required_repetitions=1,
+        required_matrix="issue-144-batch-worker-v1",
+    )
+
+    assert report["verdict"] == "NO-GO"
+    failed_checks = [
+        check
+        for check in report["checks"]
+        if check["status"] == "FAIL" and check["code"] == "issue144_matrix"
+    ]
+    assert failed_checks
+    assert "metrics" in failed_checks[0]["message"]
+
+
+def test_evaluate_release_gate_rejects_issue_144_smoke_artifacts(
+    tmp_path: Path,
+) -> None:
+    payload = _issue_144_summary()
+    options = payload["options"]
+    assert isinstance(options, dict)
+    options["issue_144_matrix_smoke_artifact"] = True
+    path = tmp_path / "issue-144-smoke.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = release_gate.evaluate_release_gate(
+        [path],
+        required_repetitions=1,
+        required_matrix="issue-144-batch-worker-v1",
+    )
+
+    assert report["verdict"] == "NO-GO"
+    assert any(
+        check["status"] == "FAIL"
+        and check["code"] == "issue144_matrix"
+        and "smoke" in check["message"]
+        for check in report["checks"]
+    )
+
+
+def test_evaluate_release_gate_rejects_non_finite_issue_144_numeric_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _issue_144_summary()
+    results = payload["results"]
+    assert isinstance(results, list)
+    for result in results:
+        if result.get("worker_kind") == "batch_worker":
+            result["rss_max_mb"] = "NON_FINITE_PLACEHOLDER"
+            break
+    path = tmp_path / "issue-144-nan.json"
+    path.write_text(
+        json.dumps(payload).replace('"NON_FINITE_PLACEHOLDER"', "1e999"),
+        encoding="utf-8",
+    )
+
+    report = release_gate.evaluate_release_gate(
+        [path],
+        required_repetitions=1,
+        required_matrix="issue-144-batch-worker-v1",
+    )
+
+    assert report["verdict"] == "NO-GO"
+    assert any(
+        check["status"] == "FAIL"
+        and check["code"] == "issue144_matrix"
+        and check["details"]["field"] == "rss_max_mb"
+        for check in report["checks"]
+    )
+
+
+def test_cli_emits_no_go_for_json_constants(tmp_path: Path) -> None:
+    path = tmp_path / "non-finite.json"
+    path.write_text('{"results": [NaN]}', encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks.release_gate",
+            "--benchmark-json",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        cwd=ROOT,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "NO-GO"
+    assert payload["checks"][0]["code"] == "schema"
 
 
 def test_evaluate_release_gate_reports_no_go_for_threshold_and_completion_failures(

@@ -61,6 +61,9 @@ class BenchmarkRunPlan:
     group_id: str
     strict_completion_monitor_enabled: bool
     adaptive_concurrency_enabled: bool
+    worker_kind: str
+    constructor: str
+    metrics_enabled: bool
     workload_options: dict[str, dict[str, object]] | None
 
 
@@ -120,6 +123,7 @@ def _run_baseline_round(
     workload: str,
     ordering: str = "key_hash",
     ensure_topic_exists: bool = True,
+    payload_bytes: int = 0,
 ) -> BenchmarkResult:
     """Run baseline round for benchmark orchestration."""
     produce_messages(
@@ -129,6 +133,7 @@ def _run_baseline_round(
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
         ensure_topic_exists=ensure_topic_exists,
+        payload_bytes=payload_bytes,
     )
     stats = BenchmarkStats(
         run_name=run_name,
@@ -176,6 +181,10 @@ async def _run_pyrparallel_round(
     route_batch_size: int = 64,
     metrics_port: int | None = None,
     adaptive_concurrency_enabled: bool = False,
+    worker_kind: str = "single_item_worker",
+    constructor: str = "PyrallelConsumer",
+    metrics_enabled: bool = False,
+    payload_bytes: int = 0,
 ) -> BenchmarkResult:
     """Run pyrparallel round for benchmark orchestration."""
     produce_messages(
@@ -185,6 +194,7 @@ async def _run_pyrparallel_round(
         topic_name=topic_name,
         bootstrap_servers=bootstrap_servers,
         ensure_topic_exists=ensure_topic_exists,
+        payload_bytes=payload_bytes,
     )
     stats = BenchmarkStats(
         run_name=run_name,
@@ -196,6 +206,10 @@ async def _run_pyrparallel_round(
         process_batch_size=process_batch_size
         if mode == ExecutionMode.PROCESS
         else None,
+        worker_kind=worker_kind,
+        constructor=constructor,
+        metrics_enabled=metrics_enabled,
+        large_payload=payload_bytes > 0,
         target_messages=num_messages,
     )
     timed_out, _, summary = await run_pyrallel_consumer_test(
@@ -220,6 +234,7 @@ async def _run_pyrparallel_round(
         route_batch_size=route_batch_size,
         metrics_port=metrics_port,
         adaptive_concurrency_enabled=adaptive_concurrency_enabled,
+        worker_kind=worker_kind,
     )
     if timed_out:
         raise RuntimeError(
@@ -227,7 +242,30 @@ async def _run_pyrparallel_round(
         )
     if summary is None:
         summary = stats.summary()
+    _complete_issue_144_numeric_evidence(summary)
+    if mode == ExecutionMode.PROCESS and not summary.callback_invocation_count:
+        if worker_kind == "batch_worker":
+            summary.callback_invocation_count = (
+                summary.completion_batch_payload_count
+                or summary.input_ipc_chunks
+                or summary.messages_processed
+            )
+        else:
+            summary.callback_invocation_count = summary.messages_processed
+        summary.callback_item_count = summary.messages_processed
     return summary
+
+
+def _complete_issue_144_numeric_evidence(summary: BenchmarkResult) -> None:
+    """Fill not-applicable Issue #144 numeric evidence fields with zero."""
+    for field in (
+        "input_ipc_bytes",
+        "completion_ipc_bytes",
+        "input_ipc_chunks",
+        "completion_ipc_chunks",
+    ):
+        if getattr(summary, field) is None:
+            setattr(summary, field, 0)
 
 
 def _reset_run_targets(
@@ -334,6 +372,8 @@ def _build_benchmark_run_plans(args: argparse.Namespace) -> list[BenchmarkRunPla
     orderings = list(args.order)
     strict_monitor_modes = list(args.strict_completion_monitor)
     adaptive_concurrency_modes = list(args.adaptive_concurrency)
+    worker_kind_modes = list(args.worker_kind)
+    metrics_modes = list(args.metrics)
 
     for workload in workloads:
         workload_options = _workload_options_for(args.workload_options, workload)
@@ -353,6 +393,9 @@ def _build_benchmark_run_plans(args: argparse.Namespace) -> list[BenchmarkRunPla
                         strict_completion_monitor_enabled=True,
                         adaptive_concurrency_enabled=False,
                         workload_options=workload_options,
+                        worker_kind="single_item_worker",
+                        constructor="PyrallelConsumer",
+                        metrics_enabled=False,
                     )
                 )
 
@@ -370,52 +413,92 @@ def _build_benchmark_run_plans(args: argparse.Namespace) -> list[BenchmarkRunPla
                         or adaptive_concurrency_mode != "off"
                     ):
                         adaptive_suffix = "-adaptive-%s" % adaptive_concurrency_mode
-                    mode_suffix = "%s%s" % (strict_suffix, adaptive_suffix)
+                    base_mode_suffix = "%s%s" % (strict_suffix, adaptive_suffix)
 
-                    if not args.skip_async:
-                        plans.append(
-                            BenchmarkRunPlan(
-                                kind="async",
-                                workload=workload,
-                                ordering=ordering,
-                                topic_name="%s%s-async%s"
-                                % (args.topic_prefix, suffix, mode_suffix),
-                                run_name="%s-pyrallel-async%s"
-                                % (run_prefix, mode_suffix),
-                                group_id="%s%s%s"
-                                % (args.async_group, suffix, mode_suffix),
-                                strict_completion_monitor_enabled=(
-                                    strict_completion_monitor_enabled
-                                ),
-                                adaptive_concurrency_enabled=(
-                                    adaptive_concurrency_enabled
-                                ),
-                                workload_options=workload_options,
-                            )
-                        )
+                    for worker_kind_mode in worker_kind_modes:
+                        if ordering == "partition" and worker_kind_mode == "batch":
+                            continue
+                        worker_kind = _worker_kind_metadata(worker_kind_mode)
+                        constructor = _constructor_metadata(worker_kind_mode)
+                        worker_suffix = ""
+                        if len(worker_kind_modes) > 1 or worker_kind_mode != "single":
+                            worker_suffix = "-worker-%s" % worker_kind_mode
 
-                    if not args.skip_process:
-                        plans.append(
-                            BenchmarkRunPlan(
-                                kind="process",
-                                workload=workload,
-                                ordering=ordering,
-                                topic_name="%s%s-process%s"
-                                % (args.topic_prefix, suffix, mode_suffix),
-                                run_name="%s-pyrallel-process%s"
-                                % (run_prefix, mode_suffix),
-                                group_id="%s%s%s"
-                                % (args.process_group, suffix, mode_suffix),
-                                strict_completion_monitor_enabled=(
-                                    strict_completion_monitor_enabled
-                                ),
-                                adaptive_concurrency_enabled=(
-                                    adaptive_concurrency_enabled
-                                ),
-                                workload_options=workload_options,
+                        for metrics_mode in metrics_modes:
+                            metrics_enabled = metrics_mode == "on"
+                            metrics_suffix = ""
+                            if len(metrics_modes) > 1 or metrics_mode != "off":
+                                metrics_suffix = "-metrics-%s" % metrics_mode
+                            mode_suffix = "%s%s%s" % (
+                                base_mode_suffix,
+                                worker_suffix,
+                                metrics_suffix,
                             )
-                        )
+
+                            if not args.skip_async:
+                                plans.append(
+                                    BenchmarkRunPlan(
+                                        kind="async",
+                                        workload=workload,
+                                        ordering=ordering,
+                                        topic_name="%s%s-async%s"
+                                        % (args.topic_prefix, suffix, mode_suffix),
+                                        run_name="%s-pyrallel-async%s"
+                                        % (run_prefix, mode_suffix),
+                                        group_id="%s%s%s"
+                                        % (args.async_group, suffix, mode_suffix),
+                                        strict_completion_monitor_enabled=(
+                                            strict_completion_monitor_enabled
+                                        ),
+                                        adaptive_concurrency_enabled=(
+                                            adaptive_concurrency_enabled
+                                        ),
+                                        worker_kind=worker_kind,
+                                        constructor=constructor,
+                                        metrics_enabled=metrics_enabled,
+                                        workload_options=workload_options,
+                                    )
+                                )
+
+                            if not args.skip_process:
+                                plans.append(
+                                    BenchmarkRunPlan(
+                                        kind="process",
+                                        workload=workload,
+                                        ordering=ordering,
+                                        topic_name="%s%s-process%s"
+                                        % (args.topic_prefix, suffix, mode_suffix),
+                                        run_name="%s-pyrallel-process%s"
+                                        % (run_prefix, mode_suffix),
+                                        group_id="%s%s%s"
+                                        % (args.process_group, suffix, mode_suffix),
+                                        strict_completion_monitor_enabled=(
+                                            strict_completion_monitor_enabled
+                                        ),
+                                        adaptive_concurrency_enabled=(
+                                            adaptive_concurrency_enabled
+                                        ),
+                                        worker_kind=worker_kind,
+                                        constructor=constructor,
+                                        metrics_enabled=metrics_enabled,
+                                        workload_options=workload_options,
+                                    )
+                                )
     return plans
+
+
+def _worker_kind_metadata(worker_kind_mode: str) -> str:
+    """Return release-matrix worker kind metadata for a CLI worker mode."""
+    if worker_kind_mode == "batch":
+        return "batch_worker"
+    return "single_item_worker"
+
+
+def _constructor_metadata(worker_kind_mode: str) -> str:
+    """Return release-matrix constructor metadata for a CLI worker mode."""
+    if worker_kind_mode == "batch":
+        return "PyrallelConsumer.from_batch_worker"
+    return "PyrallelConsumer"
 
 
 def _group_benchmark_run_plans(
@@ -514,6 +597,7 @@ def _execute_baseline_run_plan(
             workload=plan.workload,
             ordering=plan.ordering,
             ensure_topic_exists=args.skip_reset,
+            payload_bytes=args.payload_bytes,
         )
 
 
@@ -588,10 +672,14 @@ async def _execute_async_benchmark_run_plans(
                             args.process_demand_flush_min_residence_ms
                         ),
                         route_batch_size=1,
-                        metrics_port=metrics_port,
+                        metrics_port=metrics_port if plan.metrics_enabled else None,
                         adaptive_concurrency_enabled=(
                             plan.adaptive_concurrency_enabled
                         ),
+                        worker_kind=plan.worker_kind,
+                        constructor=plan.constructor,
+                        metrics_enabled=plan.metrics_enabled,
+                        payload_bytes=args.payload_bytes,
                     )
                 )
             continue
@@ -633,8 +721,12 @@ async def _execute_async_benchmark_run_plans(
                     args.process_demand_flush_min_residence_ms
                 ),
                 route_batch_size=args.process_route_batch_size,
-                metrics_port=metrics_port,
+                metrics_port=metrics_port if plan.metrics_enabled else None,
                 adaptive_concurrency_enabled=plan.adaptive_concurrency_enabled,
+                worker_kind=plan.worker_kind,
+                constructor=plan.constructor,
+                metrics_enabled=plan.metrics_enabled,
+                payload_bytes=args.payload_bytes,
             )
         )
         if args.profile and args.profile_process_workers:

@@ -233,6 +233,55 @@ def test_write_results_json_includes_nullable_route_batch_runtime_metrics(
     assert process["completion_batch_payload_count"] == 1
 
 
+def test_benchmark_stats_summary_carries_issue_144_batch_worker_matrix_fields() -> None:
+    stats = BenchmarkStats(
+        run_name="sleep-key_hash-pyrallel-process-batch-metrics-on",
+        run_type="process",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        process_transport_mode="worker_pipes",
+        worker_kind="batch_worker",
+        constructor="PyrallelConsumer.from_batch_worker",
+        metrics_enabled=True,
+        target_messages=2,
+    )
+    process_metrics = type(
+        "ProcessMetrics",
+        (),
+        {
+            "items_per_input_ipc": 2.0,
+            "items_per_completion_ipc": 2.0,
+            "input_ipc_bytes": 128,
+            "completion_ipc_bytes": 96,
+            "input_ipc_chunks": 1,
+            "completion_ipc_chunks": 1,
+        },
+    )()
+
+    stats.start()
+    assert stats._start_time is not None
+    stats.record_callback_invocation(item_count=2)
+    stats.record(0.001, completed_at=stats._start_time + 0.001)
+    stats.record(0.001, completed_at=stats._start_time + 0.002)
+    stats.record_process_batch_metrics(process_metrics)
+    stats.stop()
+
+    summary = stats.summary()
+
+    assert summary.worker_kind == "batch_worker"
+    assert summary.constructor == "PyrallelConsumer.from_batch_worker"
+    assert summary.metrics_enabled is True
+    assert summary.callback_invocation_count == 1
+    assert summary.callback_item_count == 2
+    assert summary.input_ipc_bytes == 128
+    assert summary.completion_ipc_bytes == 96
+    assert summary.input_ipc_chunks == 1
+    assert summary.completion_ipc_chunks == 1
+    assert isinstance(summary.rss_max_mb, float)
+    assert summary.rss_max_mb > 0
+
+
 def test_write_results_json_includes_performance_improvement_analysis(tmp_path) -> None:
     # Given: inputs for `write results json includes performance impro...` are prepared.
     output_path = tmp_path / "summary.json"

@@ -75,6 +75,54 @@ def test_build_artifact_metadata_records_tui_runner_interface() -> None:
     assert metadata["runner_interface"] == "tui"
 
 
+def test_build_artifact_metadata_records_local_git_repository_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchmarks import benchmark_artifacts
+
+    def fake_git_output(*args: str) -> str | None:
+        if args == ("rev-parse", "HEAD"):
+            return "0123456789abcdef0123456789abcdef01234567"
+        if args == ("symbolic-ref", "--quiet", "--short", "HEAD"):
+            return "feature/issue-144"
+        if args == ("describe", "--tags", "--exact-match"):
+            return None
+        if args == ("config", "--get", "remote.origin.url"):
+            return "git@github.com:mqueue/Pyrallel-Consumer.git"
+        return None
+
+    monkeypatch.setattr(benchmark_artifacts, "git_output", fake_git_output)
+
+    metadata = benchmark_artifacts.build_artifact_metadata(
+        output_path="benchmarks/results/local.json",
+        environ={},
+    )
+
+    assert metadata["github_repository"] == "mqueue/Pyrallel-Consumer"
+    assert metadata["git_commit_sha"] == "0123456789abcdef0123456789abcdef01234567"
+    assert metadata["git_ref"] == "refs/heads/feature/issue-144"
+
+
+def test_build_artifact_metadata_rejects_non_github_remote_spoofing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from benchmarks import benchmark_artifacts
+
+    def fake_git_output(*args: str) -> str | None:
+        if args == ("config", "--get", "remote.origin.url"):
+            return "https://evil.example/github.com/mqueue/Pyrallel-Consumer.git?token=secret"
+        return None
+
+    monkeypatch.setattr(benchmark_artifacts, "git_output", fake_git_output)
+
+    metadata = benchmark_artifacts.build_artifact_metadata(
+        output_path="benchmarks/results/local.json",
+        environ={},
+    )
+
+    assert "github_repository" not in metadata
+
+
 def test_run_benchmark_writes_artifact_metadata(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,

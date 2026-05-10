@@ -299,11 +299,7 @@ def _worker_loop(
                 }
             )
 
-        if (
-            route_batch_id is not None
-            and isinstance(worker_fn, WorkerSpec)
-            and worker_fn.kind == "batch"
-        ):
+        if isinstance(worker_fn, WorkerSpec) and worker_fn.kind == "batch":
             pending_items = [_work_item_from_dict(payload) for payload in payloads]
             batch_run_started_at = time.monotonic()
             result: BatchWorkerResult = None
@@ -381,7 +377,7 @@ def _worker_loop(
                     payloads=payloads,
                     result=result,
                 )
-                if blocked_tail_payloads:
+                if blocked_tail_payloads and route_batch_id is not None:
                     registry_event_queue.put(
                         {
                             "kind": "not_started",
@@ -411,15 +407,26 @@ def _worker_loop(
                     ),
                 }
             )
-            _flush_route_batch_completion(
-                completion_queue=completion_queue,
-                registry_event_queue=registry_event_queue,
-                worker_logger=worker_logger,
-                process_idx=process_idx,
-                route_batch_id=route_batch_id,
-                route_identity=route_identity,
-                batch_completion_results=batch_completion_results,
-            )
+            if route_batch_id is not None:
+                _flush_route_batch_completion(
+                    completion_queue=completion_queue,
+                    registry_event_queue=registry_event_queue,
+                    worker_logger=worker_logger,
+                    process_idx=process_idx,
+                    route_batch_id=route_batch_id,
+                    route_identity=route_identity,
+                    batch_completion_results=batch_completion_results,
+                )
+            else:
+                for completion_event in batch_completion_results:
+                    packed_completion = msgpack.packb(
+                        _completion_event_to_dict(
+                            completion_event,
+                            extra_fields={"completion_enqueued_at": time.monotonic()},
+                        ),
+                        use_bin_type=True,
+                    )
+                    completion_queue.put(packed_completion)
             payload_by_id = {
                 str(payload.get("id", "")): payload for payload in payloads
             }

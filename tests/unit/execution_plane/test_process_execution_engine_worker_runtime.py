@@ -97,6 +97,50 @@ def test_worker_runtime_route_batch_invokes_batch_worker_once() -> None:
     ]
 
 
+def test_worker_runtime_batch_spec_handles_single_worker_pipe_payload() -> None:
+    # Given: worker-pipes delivers a single non-route payload to a batch WorkerSpec.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    item = WorkItem("work-1", TopicPartition("topic", 1), 1, 7, b"key", b"")
+    task_source.put(_serialize_batch_payload([item], time.monotonic()))
+    task_source.put(None)
+    seen_batches: list[list[WorkItem]] = []
+
+    def batch_worker(batch: list[WorkItem]) -> dict[str, BatchItemOutcome]:
+        seen_batches.append(list(batch))
+        return {batch[0].id: BatchItemOutcome.success()}
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+
+    raw_payload = msgpack.unpackb(completion_queue.get_nowait(), raw=False)
+
+    # Then: the batch worker is invoked and the single payload completes normally.
+    assert seen_batches == [[item]]
+    assert raw_payload["id"] == "work-1"
+    assert raw_payload["status"] == CompletionStatus.SUCCESS.value
+
+
 def test_worker_runtime_invalid_batch_result_surfaces_parent_fatal_control() -> None:
     # Given: a public process batch worker returns an invalid result shape.
     task_source: queue.Queue[object] = queue.Queue()

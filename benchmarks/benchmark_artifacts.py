@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+_GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 def git_output(*args: str) -> str | None:
@@ -88,6 +92,12 @@ def build_artifact_metadata(
         elif git_ref_name is not None and git_ref_type == "tag":
             metadata["git_ref"] = "refs/tags/%s" % git_ref_name
 
+    if "github_repository" not in metadata:
+        remote_url = git_output("config", "--get", "remote.origin.url")
+        repository = _github_repository_from_remote(remote_url)
+        if repository is not None:
+            metadata["github_repository"] = repository
+
     return metadata
 
 
@@ -96,3 +106,29 @@ def _runner_interface(env: Mapping[str, str]) -> str:
     if env.get("PYRALLEL_BENCHMARK_RUNNER_INTERFACE") == "tui":
         return "tui"
     return "cli"
+
+
+def _github_repository_from_remote(remote_url: str | None) -> str | None:
+    """Return owner/repository from common GitHub remote URL shapes."""
+    if not remote_url:
+        return None
+    value = remote_url.strip()
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https", "ssh"}:
+        if parsed.hostname != "github.com":
+            return None
+        return _normalize_github_repository_path(parsed.path)
+    ssh_match = re.fullmatch(r"git@github\.com:([^?#]+)", value)
+    if ssh_match:
+        return _normalize_github_repository_path(ssh_match.group(1))
+    return None
+
+
+def _normalize_github_repository_path(path: str) -> str | None:
+    """Normalize a GitHub path to owner/repo when it is exactly that shape."""
+    value = path.strip().lstrip("/").rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    if _GITHUB_REPOSITORY_RE.fullmatch(value):
+        return value
+    return None

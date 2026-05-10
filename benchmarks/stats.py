@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import resource
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import mean
@@ -23,9 +24,20 @@ class BenchmarkResult:
     throughput_tps: float
     avg_processing_ms: float
     p99_processing_ms: float
+    worker_kind: str = "single_item_worker"
+    constructor: str = "PyrallelConsumer"
+    metrics_enabled: bool = False
+    large_payload: bool = False
+    callback_invocation_count: int | None = None
+    callback_item_count: int | None = None
+    rss_max_mb: float | None = None
     process_transport_mode: str | None = None
     route_batch_size: int = 1
     process_batch_size: int | None = None
+    input_ipc_bytes: int | None = None
+    completion_ipc_bytes: int | None = None
+    input_ipc_chunks: int | None = None
+    completion_ipc_chunks: int | None = None
     items_per_input_ipc: float | None = None
     items_per_completion_ipc: float | None = None
     route_batch_count: int | None = None
@@ -60,6 +72,10 @@ class BenchmarkStats:
         process_transport_mode: str | None = None,
         route_batch_size: int = 1,
         process_batch_size: int | None = None,
+        worker_kind: str = "single_item_worker",
+        constructor: str = "PyrallelConsumer",
+        metrics_enabled: bool = False,
+        large_payload: bool = False,
         target_messages: Optional[int] = None,
     ) -> None:
         self.run_name = run_name
@@ -70,6 +86,10 @@ class BenchmarkStats:
         self.process_transport_mode = process_transport_mode
         self.route_batch_size = route_batch_size
         self.process_batch_size = process_batch_size
+        self.worker_kind = worker_kind
+        self.constructor = constructor
+        self.metrics_enabled = metrics_enabled
+        self.large_payload = large_payload
         self.target_messages = target_messages
         self._start_time: Optional[float] = None
         self._end_time: Optional[float] = None
@@ -79,6 +99,8 @@ class BenchmarkStats:
         self._window_size_messages = 100
         self._release_gate_observations: list[dict[str, Any]] = []
         self._process_batch_metrics: Any = None
+        self._callback_invocation_count = 0
+        self._callback_item_count = 0
 
     def start(self) -> None:
         """Handle start within stats."""
@@ -122,6 +144,11 @@ class BenchmarkStats:
         """Record latest process runtime metrics for benchmark summary."""
         self._process_batch_metrics = metrics
 
+    def record_callback_invocation(self, *, item_count: int = 1) -> None:
+        """Record one user-worker callback invocation for benchmark evidence."""
+        self._callback_invocation_count += 1
+        self._callback_item_count += item_count
+
     @property
     def processed(self) -> int:
         """Handle processed within stats."""
@@ -154,9 +181,32 @@ class BenchmarkStats:
             workload=self.workload,
             ordering=self.ordering,
             topic=self.topic,
+            worker_kind=self.worker_kind,
+            constructor=self.constructor,
+            metrics_enabled=self.metrics_enabled,
+            large_payload=self.large_payload,
+            callback_invocation_count=self._callback_invocation_count,
+            callback_item_count=self._callback_item_count,
+            rss_max_mb=_rss_max_mb(),
             process_transport_mode=self.process_transport_mode,
             route_batch_size=self.route_batch_size,
             process_batch_size=self.process_batch_size,
+            input_ipc_bytes=_metric_value(
+                self._process_batch_metrics,
+                "input_ipc_bytes",
+            ),
+            completion_ipc_bytes=_metric_value(
+                self._process_batch_metrics,
+                "completion_ipc_bytes",
+            ),
+            input_ipc_chunks=_metric_value(
+                self._process_batch_metrics,
+                "input_ipc_chunks",
+            ),
+            completion_ipc_chunks=_metric_value(
+                self._process_batch_metrics,
+                "completion_ipc_chunks",
+            ),
             items_per_input_ipc=_metric_value(
                 self._process_batch_metrics,
                 "items_per_input_ipc",
@@ -270,6 +320,17 @@ def _metric_value(metrics: Any, field_name: str) -> Any:
     return getattr(metrics, field_name, None)
 
 
+def _rss_max_mb() -> float:
+    """Return maximum resident set size in MiB for artifact provenance."""
+    rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    if rss <= 0:
+        return 0.0
+    # Linux reports KiB; macOS reports bytes.
+    if rss > 10_000_000:
+        return rss / (1024 * 1024)
+    return rss / 1024
+
+
 def write_results_json(
     results: list[BenchmarkResult],
     output_path: Path,
@@ -285,7 +346,10 @@ def write_results_json(
         "metrics_observations": _merge_metrics_observations(results),
         "results": [result.to_dict() for result in results],
     }
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(payload, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
 
 
 def _merge_metrics_observations(

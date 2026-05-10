@@ -12,6 +12,8 @@ _FALLBACK_WORKLOAD_CHOICES = ("sleep", "cpu", "io")
 _ORDER_CHOICES = tuple(mode.value for mode in OrderingMode)
 _STRICT_COMPLETION_MONITOR_CHOICES = ("on", "off")
 _ADAPTIVE_CONCURRENCY_CHOICES = ("off", "on")
+_WORKER_KIND_CHOICES = ("single", "batch")
+_METRICS_CHOICES = ("off", "on")
 _PROCESS_FLUSH_POLICY_CHOICES = (
     "size_or_timer",
     "demand",
@@ -437,6 +439,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated adaptive concurrency modes for Pyrallel runs (choices: off,on)",
     )
     parser.add_argument(
+        "--worker-kind",
+        type=lambda value: parse_csv_selection(
+            value,
+            argument_name="--worker-kind",
+            choices=_WORKER_KIND_CHOICES,
+        ),
+        default=["single"],
+        help="Comma-separated worker API kinds for Pyrallel runs (choices: single,batch)",
+    )
+    parser.add_argument(
+        "--metrics",
+        type=lambda value: parse_csv_selection(
+            value,
+            argument_name="--metrics",
+            choices=_METRICS_CHOICES,
+        ),
+        default=["off"],
+        help="Comma-separated benchmark metrics modes for Pyrallel runs (choices: off,on)",
+    )
+    parser.add_argument(
         "--worker-sleep-ms",
         type=float,
         default=None,
@@ -453,6 +475,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Sleep per message for IO workload (simulated IO wait)",
+    )
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        default=0,
+        help="Add benchmark payload padding bytes per produced message (0 disables)",
     )
     parser.add_argument(
         "--workload-option",

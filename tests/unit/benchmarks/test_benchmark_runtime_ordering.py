@@ -5,6 +5,7 @@
 
 from tests.unit.benchmarks._benchmark_runtime_support import (
     Any,
+    BenchmarkStats,
     Callable,
     CompletionStatus,
     SimpleNamespace,
@@ -379,6 +380,114 @@ async def test_run_pyrallel_consumer_test_raises_on_process_ordering_violation(
             ordering_mode="key_hash",
             stats_tracker=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_run_pyrallel_consumer_test_skips_process_ordering_validation_for_large_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_exporter: Any = None
+    captured_process_worker: Callable[[WorkItem], None] | None = None
+
+    class _FakeEngine:
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeBrokerPoller:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self._metrics = SimpleNamespace(
+                total_in_flight=0,
+                is_paused=False,
+                partitions=[
+                    SimpleNamespace(
+                        tp=SimpleNamespace(topic="demo-topic", partition=0),
+                        true_lag=0,
+                        gap_count=0,
+                        queued_count=0,
+                    )
+                ],
+            )
+
+        async def start(self) -> None:
+            assert captured_process_worker is not None
+            process_worker = cast(Callable[[WorkItem], None], captured_process_worker)
+            for offset, sequence in ((0, 5), (1, 0)):
+                item = WorkItem(
+                    id=f"item-{offset}",
+                    tp=TopicPartition(topic="demo-topic", partition=0),
+                    offset=offset,
+                    epoch=0,
+                    key="key-0",
+                    payload=f'{{"key":"key-0","sequence":{sequence}}}'.encode(),
+                )
+                process_worker(item)  # pylint: disable=not-callable
+                captured_exporter.observe_work_completion(
+                    SimpleNamespace(status=CompletionStatus.SUCCESS),
+                    item,
+                    0.01,
+                )
+
+        def get_metrics(self):
+            return self._metrics
+
+        async def stop(self) -> None:
+            return None
+
+    def _capture_work_manager(**kwargs):
+        nonlocal captured_exporter
+        captured_exporter = kwargs["metrics_exporter"]
+        return object()
+
+    def _capture_process_engine(**kwargs):
+        nonlocal captured_process_worker
+        captured_process_worker = kwargs["worker_fn"]
+        return _FakeEngine()
+
+    async def _skip_wait(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "create_topic_if_not_exists",
+        lambda _conf, topic_name, num_partitions=1: None,
+    )
+    monkeypatch.setattr(
+        pyrallel_consumer_test, "ProcessExecutionEngine", _capture_process_engine
+    )
+    monkeypatch.setattr(pyrallel_consumer_test, "BrokerPoller", _FakeBrokerPoller)
+    monkeypatch.setattr(pyrallel_consumer_test, "WorkManager", _capture_work_manager)
+    monkeypatch.setattr(
+        pyrallel_consumer_test,
+        "_wait_for_partition_assignment",
+        _skip_wait,
+    )
+
+    stats = BenchmarkStats(
+        run_name="demo",
+        run_type="process",
+        workload="sleep",
+        ordering="key_hash",
+        topic="demo-topic",
+        large_payload=True,
+        target_messages=2,
+    )
+
+    (
+        timed_out,
+        consumption_stats,
+        _summary,
+    ) = await pyrallel_consumer_test.run_pyrallel_consumer_test(
+        num_messages=2,
+        timeout_sec=5,
+        topic_name="demo-topic",
+        execution_mode="process",
+        ordering_mode="key_hash",
+        stats_tracker=stats,
+    )
+
+    assert timed_out is False
+    assert consumption_stats.processed == 2
 
 
 @pytest.mark.asyncio

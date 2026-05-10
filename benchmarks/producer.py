@@ -54,6 +54,7 @@ def produce_messages(
     topic_name: str,
     bootstrap_servers: str | None = None,
     ensure_topic_exists: bool = True,
+    payload_bytes: int = 0,
 ) -> None:
     """지정된 수의 메시지와 키를 사용하여 테스트 데이터를 생성하고 Kafka에 전송합니다."""
     producer_conf = dict(conf)
@@ -80,6 +81,8 @@ def produce_messages(
             "sequence": sequences[key],
             "timestamp": time.time_ns(),
         }
+        if payload_bytes > 0:
+            payload["padding"] = "x" * payload_bytes
 
         sequences[key] += 1
 

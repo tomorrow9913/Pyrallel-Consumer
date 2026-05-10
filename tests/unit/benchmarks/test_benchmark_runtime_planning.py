@@ -223,6 +223,120 @@ def test_build_parser_accepts_adaptive_concurrency_matrix() -> None:
     assert args.adaptive_concurrency == ["off", "on"]
 
 
+def test_build_parser_accepts_issue_144_worker_and_metrics_matrix() -> None:
+    parser = run_parallel_benchmark.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--worker-kind",
+            "single,batch",
+            "--metrics",
+            "off,on",
+            "--payload-bytes",
+            "4096",
+        ]
+    )
+
+    assert args.worker_kind == ["single", "batch"]
+    assert args.metrics == ["off", "on"]
+    assert args.payload_bytes == 4096
+
+
+def test_run_benchmark_expands_issue_144_batch_worker_matrix_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    benchmark_result: BenchmarkResult,
+) -> None:
+    calls: list[tuple[str, str, bool, int | None]] = []
+
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_check_kafka_connection", lambda _bootstrap: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "_select_workers",
+        lambda **_kwargs: (
+            lambda _payload: None,
+            lambda _item: None,
+            lambda _item: None,
+        ),
+    )
+    monkeypatch.setattr(run_parallel_benchmark, "_print_table", lambda _results: None)
+    monkeypatch.setattr(
+        run_parallel_benchmark,
+        "write_results_json",
+        lambda _results, _path, options=None, artifact_metadata=None: None,
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "reset_topics_and_groups", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        run_parallel_benchmark, "_ensure_metrics_port_available", lambda _port: None
+    )
+
+    async def _async_round(**kwargs) -> BenchmarkResult:
+        calls.append(
+            (
+                kwargs["worker_kind"],
+                kwargs["constructor"],
+                kwargs["metrics_enabled"],
+                kwargs["metrics_port"],
+            )
+        )
+        return benchmark_result
+
+    monkeypatch.setattr(run_parallel_benchmark, "_run_pyrparallel_round", _async_round)
+
+    run_parallel_benchmark.run_benchmark(
+        _build_args(
+            skip_baseline=True,
+            worker_kind=["single", "batch"],
+            metrics=["off", "on"],
+            metrics_port=9091,
+        ),
+        raw_argv=[
+            "--skip-baseline",
+            "--worker-kind",
+            "single,batch",
+            "--metrics",
+            "off,on",
+        ],
+    )
+
+    assert calls == [
+        ("single_item_worker", "PyrallelConsumer", False, None),
+        ("single_item_worker", "PyrallelConsumer", True, 9091),
+        ("batch_worker", "PyrallelConsumer.from_batch_worker", False, None),
+        ("batch_worker", "PyrallelConsumer.from_batch_worker", True, 9091),
+    ]
+
+
+def test_build_benchmark_run_plans_skips_unsupported_batch_worker_partition_ordering() -> (
+    None
+):
+    plans = run_parallel_benchmark._build_benchmark_run_plans(
+        _build_args(
+            skip_baseline=True,
+            skip_process=False,
+            order=["key_hash", "partition", "unordered"],
+            worker_kind=["single", "batch"],
+        )
+    )
+
+    assert not [
+        plan
+        for plan in plans
+        if plan.ordering == "partition" and plan.worker_kind == "batch_worker"
+    ]
+    assert [
+        (plan.kind, plan.ordering, plan.worker_kind)
+        for plan in plans
+        if plan.ordering == "partition"
+    ] == [
+        ("async", "partition", "single_item_worker"),
+        ("process", "partition", "single_item_worker"),
+    ]
+
+
 def test_run_benchmark_expands_adaptive_concurrency_modes(
     monkeypatch: pytest.MonkeyPatch,
     benchmark_result: BenchmarkResult,

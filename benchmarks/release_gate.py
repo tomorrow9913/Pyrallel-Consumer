@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -10,9 +11,29 @@ RELEASE_GATE_MIN_MESSAGES = 10000
 RELEASE_GATE_PARTITIONS = 8
 DEFAULT_REQUIRED_REPETITIONS = 2
 REQUIRED_PROCESS_TRANSPORT_MODES = ("worker_pipes",)
+ISSUE_144_BATCH_WORKER_MATRIX = "issue-144-batch-worker-v1"
+ISSUE_144_WORKER_KINDS = ("single_item_worker", "batch_worker")
+ISSUE_144_CONSTRUCTORS = {
+    "single_item_worker": "PyrallelConsumer",
+    "batch_worker": "PyrallelConsumer.from_batch_worker",
+}
+ISSUE_144_RUN_TYPES = ("async", "process")
+ISSUE_144_WORKLOADS = ("sleep", "io")
+ISSUE_144_ORDERINGS = ("key_hash", "unordered")
+ISSUE_144_METRICS_MODES = (False, True)
+ISSUE_144_REQUIRED_FIELDS = (
+    "callback_invocation_count",
+    "callback_item_count",
+    "rss_max_mb",
+    "input_ipc_bytes",
+    "completion_ipc_bytes",
+    "input_ipc_chunks",
+    "completion_ipc_chunks",
+)
 
 Combination = tuple[str, str, str]
 BenchmarkEntry = tuple[Path, Mapping[str, Any], int | None]
+Issue144Key = tuple[str, str, str, str, bool]
 
 
 @dataclass(frozen=True)
@@ -59,7 +80,10 @@ def _check(code: str, status: str, message: str, **details: Any) -> dict[str, An
 def _load_summary(path: Path) -> Mapping[str, Any]:
     """Handle load summary within release gate."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=lambda constant: (_raise_invalid_json_constant(constant)),
+        )
     except json.JSONDecodeError as exc:
         raise ValueError("invalid benchmark JSON at %s: %s" % (path, exc)) from exc
     if not isinstance(payload, dict):
@@ -71,7 +95,14 @@ def _as_number(value: Any, field: str, *, path: Path) -> float:
     """Handle as number within release gate."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("%s must be numeric in %s" % (field, path))
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("%s must be finite in %s" % (field, path))
+    return number
+
+
+def _raise_invalid_json_constant(constant: str) -> None:
+    raise ValueError("invalid non-finite JSON constant: %s" % constant)
 
 
 def _as_int(value: Any, field: str, *, path: Path) -> int:
@@ -446,6 +477,212 @@ def _evaluate_matrix(
     return checks
 
 
+def _evaluate_required_matrix(
+    required_matrix: str | None,
+    summaries: Iterable[tuple[Path, Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Evaluate an optional named release evidence matrix."""
+    if required_matrix is None:
+        return []
+    if required_matrix != ISSUE_144_BATCH_WORKER_MATRIX:
+        return [
+            _check(
+                "required_matrix",
+                "FAIL",
+                "unknown required release matrix",
+                required_matrix=required_matrix,
+            )
+        ]
+    return _evaluate_issue_144_batch_worker_matrix(summaries)
+
+
+def _evaluate_issue_144_batch_worker_matrix(
+    summaries: Iterable[tuple[Path, Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Evaluate Issue #144 batch-worker release matrix completeness."""
+    observed: dict[Issue144Key, list[tuple[Path, Mapping[str, Any]]]] = {}
+    checks: list[dict[str, Any]] = []
+
+    for path, summary in summaries:
+        options = summary.get("options")
+        if isinstance(options, Mapping) and options.get(
+            "issue_144_matrix_smoke_artifact"
+        ):
+            checks.append(
+                _check(
+                    "issue144_matrix",
+                    "FAIL",
+                    "Issue #144 batch-worker matrix cannot use smoke artifacts",
+                    path=str(path),
+                )
+            )
+        results = summary.get("results")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, Mapping):
+                continue
+            worker_kind = result.get("worker_kind")
+            if worker_kind not in ISSUE_144_WORKER_KINDS:
+                continue
+            if not _has_issue_144_dimensions(result):
+                continue
+            key = _issue_144_key(result)
+            if key is None:
+                checks.append(
+                    _check(
+                        "issue144_matrix",
+                        "FAIL",
+                        "Issue #144 batch-worker matrix result has invalid dimensions",
+                        path=str(path),
+                        run_name=result.get("run_name"),
+                    )
+                )
+                continue
+            checks.extend(_evaluate_issue_144_result_fields(path, result))
+            observed.setdefault(key, []).append((path, result))
+
+    missing = _missing_issue_144_keys(observed)
+    if missing:
+        first_missing = missing[0]
+        metrics_label = "on" if first_missing[4] else "off"
+        checks.append(
+            _check(
+                "issue144_matrix",
+                "FAIL",
+                (
+                    "Issue #144 batch-worker matrix is missing baseline/batch "
+                    "or metrics on/off paired evidence"
+                ),
+                missing_count=len(missing),
+                first_missing={
+                    "run_type": first_missing[0],
+                    "workload": first_missing[1],
+                    "ordering": first_missing[2],
+                    "worker_kind": first_missing[3],
+                    "metrics": metrics_label,
+                },
+            )
+        )
+    if not any(
+        _issue_144_large_payload_process(result)
+        for entries in observed.values()
+        for _, result in entries
+    ):
+        checks.append(
+            _check(
+                "issue144_matrix",
+                "FAIL",
+                "Issue #144 batch-worker matrix is missing large-payload process evidence",
+            )
+        )
+    if not checks:
+        checks.append(
+            _check(
+                "issue144_matrix",
+                "PASS",
+                "Issue #144 batch-worker public matrix evidence is complete",
+            )
+        )
+    return checks
+
+
+def _issue_144_key(result: Mapping[str, Any]) -> Issue144Key | None:
+    run_type = result.get("run_type")
+    workload = result.get("workload")
+    ordering = result.get("ordering")
+    worker_kind = result.get("worker_kind")
+    metrics_enabled = result.get("metrics_enabled")
+    if run_type not in ISSUE_144_RUN_TYPES:
+        return None
+    if workload not in ISSUE_144_WORKLOADS:
+        return None
+    if ordering not in ISSUE_144_ORDERINGS:
+        return None
+    if worker_kind not in ISSUE_144_WORKER_KINDS:
+        return None
+    if not isinstance(metrics_enabled, bool):
+        return None
+    return (run_type, workload, ordering, worker_kind, metrics_enabled)
+
+
+def _has_issue_144_dimensions(result: Mapping[str, Any]) -> bool:
+    return (
+        result.get("run_type") in ISSUE_144_RUN_TYPES
+        and result.get("workload") in ISSUE_144_WORKLOADS
+        and result.get("ordering") in ISSUE_144_ORDERINGS
+    )
+
+
+def _evaluate_issue_144_result_fields(
+    path: Path,
+    result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    worker_kind = result.get("worker_kind")
+    expected_constructor = ISSUE_144_CONSTRUCTORS.get(str(worker_kind))
+    if result.get("constructor") != expected_constructor:
+        checks.append(
+            _check(
+                "issue144_matrix",
+                "FAIL",
+                "Issue #144 result constructor must match worker_kind",
+                path=str(path),
+                run_name=result.get("run_name"),
+                worker_kind=worker_kind,
+                expected_constructor=expected_constructor,
+                actual_constructor=result.get("constructor"),
+            )
+        )
+    for field in ISSUE_144_REQUIRED_FIELDS:
+        value = result.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            checks.append(
+                _check(
+                    "issue144_matrix",
+                    "FAIL",
+                    "Issue #144 result is missing required numeric evidence field",
+                    path=str(path),
+                    run_name=result.get("run_name"),
+                    field=field,
+                )
+            )
+    return checks
+
+
+def _missing_issue_144_keys(
+    observed: Mapping[Issue144Key, list[tuple[Path, Mapping[str, Any]]]],
+) -> list[Issue144Key]:
+    missing: list[Issue144Key] = []
+    for run_type in ISSUE_144_RUN_TYPES:
+        for workload in ISSUE_144_WORKLOADS:
+            for ordering in ISSUE_144_ORDERINGS:
+                for worker_kind in ISSUE_144_WORKER_KINDS:
+                    for metrics_enabled in ISSUE_144_METRICS_MODES:
+                        key = (
+                            run_type,
+                            workload,
+                            ordering,
+                            worker_kind,
+                            metrics_enabled,
+                        )
+                        if key not in observed:
+                            missing.append(key)
+    return missing
+
+
+def _issue_144_large_payload_process(result: Mapping[str, Any]) -> bool:
+    return (
+        result.get("run_type") == "process"
+        and result.get("worker_kind") == "batch_worker"
+        and result.get("large_payload") is True
+    )
+
+
 def _artifact_provenance_binding(
     path: Path, summary: Mapping[str, Any]
 ) -> tuple[ArtifactProvenanceBinding | None, list[dict[str, Any]]]:
@@ -516,6 +753,7 @@ def evaluate_release_gate(
     benchmark_json_paths: Iterable[str | Path],
     *,
     required_repetitions: int = DEFAULT_REQUIRED_REPETITIONS,
+    required_matrix: str | None = None,
 ) -> dict[str, Any]:
     """Handle evaluate release gate within release gate."""
     paths = [Path(path) for path in benchmark_json_paths]
@@ -568,15 +806,19 @@ def evaluate_release_gate(
                     },
                 )
             )
-    grouped, grouped_checks, process_transport_modes = _group_results(summaries)
-    checks.extend(grouped_checks)
-    checks.extend(_evaluate_matrix(grouped, required_repetitions))
+    process_transport_modes: set[str] = set()
+    if required_matrix is None:
+        grouped, grouped_checks, process_transport_modes = _group_results(summaries)
+        checks.extend(grouped_checks)
+        checks.extend(_evaluate_matrix(grouped, required_repetitions))
+    checks.extend(_evaluate_required_matrix(required_matrix, summaries))
     verdict = "NO-GO" if any(check["status"] == "FAIL" for check in checks) else "PASS"
     return {
         "verdict": verdict,
         "summary": {
             "artifacts": [str(path) for path in paths],
             "required_repetitions": required_repetitions,
+            "required_matrix": required_matrix,
             "expected_combinations": len(RELEASE_THRESHOLDS),
             "required_process_transport_modes": list(REQUIRED_PROCESS_TRANSPORT_MODES),
             "process_transport_modes": sorted(process_transport_modes),
@@ -611,6 +853,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REQUIRED_REPETITIONS,
         help="Minimum artifact count required for each release-gate combination.",
     )
+    parser.add_argument(
+        "--require-matrix",
+        choices=[ISSUE_144_BATCH_WORKER_MATRIX],
+        default=None,
+        help="Require a named release evidence matrix in the benchmark artifacts.",
+    )
     return parser
 
 
@@ -621,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
         report = evaluate_release_gate(
             args.benchmark_json,
             required_repetitions=args.required_repetitions,
+            required_matrix=args.require_matrix,
         )
     except (OSError, ValueError) as exc:
         report = {
@@ -628,6 +877,7 @@ def main(argv: list[str] | None = None) -> int:
             "summary": {
                 "artifacts": args.benchmark_json,
                 "required_repetitions": args.required_repetitions,
+                "required_matrix": args.require_matrix,
                 "expected_combinations": len(RELEASE_THRESHOLDS),
                 "process_transport_modes": [],
                 "provenance_binding": None,
