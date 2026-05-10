@@ -92,6 +92,16 @@ class ExecutionControlEvent:
 
     kind: str
     error: Exception
+    code: Optional[str] = None
+    reason: Optional[str] = None
+    failure_class: Optional[str] = None
+    committable: bool = False
+    batch_id: Optional[str] = None
+    worker_generation: Optional[int] = None
+    item_ids: tuple[str, ...] = ()
+    item_count: Optional[int] = None
+    epoch: Optional[int] = None
+    attempt: Optional[int] = None
 
 
 @dataclass(frozen=True)

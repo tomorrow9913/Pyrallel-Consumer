@@ -1,8 +1,10 @@
 import asyncio
+import importlib
 
 import pytest
 
 from pyrallel_consumer.config import AsyncConfig, ExecutionConfig
+from pyrallel_consumer.control_plane.work_manager import WorkManager
 from pyrallel_consumer.dto import (
     CompletionStatus,
     EngineWorkerDiagnostics,
@@ -12,6 +14,10 @@ from pyrallel_consumer.dto import (
     WorkItem,
 )
 from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
+from pyrallel_consumer.execution_plane.base import (
+    BatchCancelScope,
+    BatchSubmissionReceipt,
+)
 from pyrallel_consumer.execution_plane.worker_spec import (
     BatchWorkerRuntimeSpec,
     WorkerSpec,
@@ -23,6 +29,65 @@ from tests.unit.execution_plane.test_execution_engine_contract import (
 
 # Global counter for retry tests
 retry_attempt_counter = 0
+
+
+class _RecordingAsyncSettlementRegistry:
+    def __init__(self, *, auto_settled: bool = True) -> None:
+        self.receipts: list[BatchSubmissionReceipt] = []
+        self.transfers: list[tuple[str, BatchSubmissionReceipt]] = []
+        self.settled: set[tuple[str, TopicPartition, int, int, int, str]] = set()
+        self.waits: list[tuple[str, TopicPartition, int, int, int, str]] = []
+        self.auto_settled = auto_settled
+        self.wait_future: asyncio.Future[bool] | None = None
+        self.cancelled_scopes: list[BatchCancelScope] = []
+
+    def register_batch_owner(self, receipt: BatchSubmissionReceipt) -> None:
+        self.receipts.append(receipt)
+
+    def transfer_batch_owner(
+        self,
+        *,
+        expected_old_batch_id: str,
+        receipt: BatchSubmissionReceipt,
+    ) -> bool:
+        self.transfers.append((expected_old_batch_id, receipt))
+        return True
+
+    async def wait_for_item_settlement(
+        self,
+        *,
+        item_id: str,
+        tp: TopicPartition,
+        offset: int,
+        epoch: int,
+        attempt: int,
+        batch_id: str,
+    ) -> bool:
+        key = (item_id, tp, offset, epoch, attempt, batch_id)
+        self.waits.append(key)
+        if self.wait_future is not None:
+            return await self.wait_future
+        return self.auto_settled or key in self.settled
+
+    def record_item_settled(
+        self,
+        *,
+        item_id: str,
+        tp: TopicPartition,
+        offset: int,
+        epoch: int,
+        attempt: int,
+        batch_id: str,
+    ) -> None:
+        self.settled.add((item_id, tp, offset, epoch, attempt, batch_id))
+
+    def notify_item_settled(self, event: object) -> None:
+        del event
+
+    def cancel_scope(self, scope: BatchCancelScope) -> None:
+        self.cancelled_scopes.append(scope)
+        if self.wait_future is not None and not self.wait_future.done():
+            self.wait_future.set_result(False)
 
 
 # Dummy async worker function for testing
@@ -284,6 +349,8 @@ async def test_async_batch_worker_submit_batch_invokes_worker_once_with_list() -
     engine = AsyncExecutionEngine(
         config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
     )
+    registry = _RecordingAsyncSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
     items = [
         WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
         WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
@@ -354,6 +421,8 @@ async def test_async_batch_worker_explicit_result_normalizes_item_outcomes() -> 
     engine = AsyncExecutionEngine(
         config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
     )
+    registry = _RecordingAsyncSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
     items = [
         WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
         WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
@@ -369,6 +438,43 @@ async def test_async_batch_worker_explicit_result_normalizes_item_outcomes() -> 
         ("a", CompletionStatus.SUCCESS, None),
         ("b", CompletionStatus.FAILURE, "sink rejected"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_submit_batch_returns_batch_submission_receipt() -> (
+    None
+):
+    # Given: an async batch worker accepts a same-call batch.
+    async def batch_worker(_items: list[WorkItem]):
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    registry = _RecordingAsyncSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    receipt = await engine.submit_batch(items)
+    await engine.shutdown()
+
+    # Then: async batch acceptance returns internal ownership metadata for WorkManager.
+    assert isinstance(receipt, BatchSubmissionReceipt)
+    assert receipt.owner == "async"
+    assert receipt.worker_generation == 0
+    assert receipt.accepted == (
+        ("a", TopicPartition("orders", 0), 1, 1, 1),
+        ("b", TopicPartition("orders", 0), 2, 1, 1),
+    )
 
 
 @pytest.mark.asyncio
@@ -417,6 +523,295 @@ async def test_async_batch_worker_retries_ordered_prefix_blocked_tail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_batch_worker_transfers_tail_ownership_before_retry() -> None:
+    # Given: an ordered async tail is retried under engine-owned attempt 2.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(calls) == 1:
+            return {
+                items[0].id: BatchItemOutcome.failure("sink rejected"),
+                items[1].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    registry = _RecordingAsyncSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: ownership is atomically transferred before the attempt 2 tail settles.
+    assert calls == [["a", "b"], ["b"]]
+    assert len(registry.receipts) == 1
+    assert len(registry.transfers) == 1
+    expected_old_batch_id, retry_receipt = registry.transfers[0]
+    assert expected_old_batch_id == registry.receipts[0].batch_id
+    assert retry_receipt.batch_id != expected_old_batch_id
+    assert retry_receipt.owner == "async"
+    assert retry_receipt.accepted == (("b", TopicPartition("orders", 0), 2, 1, 2),)
+    assert [(event.id, event.status, event.attempt) for event in events] == [
+        ("a", CompletionStatus.FAILURE, 1),
+        ("b", CompletionStatus.SUCCESS, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_blocks_ordered_tail_until_predecessor_settled() -> (
+    None
+):
+    # Given: an ordered async tail is blocked behind an unsettled predecessor failure.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(calls) == 1:
+            return {
+                items[0].id: BatchItemOutcome.failure("sink rejected"),
+                items[1].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    registry = _RecordingAsyncSettlementRegistry(auto_settled=False)
+    engine.set_engine_settlement_notification_registry(registry)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: only the predecessor completion is visible; the tail was not promoted.
+    assert calls == [["a", "b"]]
+    assert [(event.id, event.status, event.attempt) for event in events] == [
+        ("a", CompletionStatus.FAILURE, 1),
+    ]
+    assert registry.waits == [
+        ("a", TopicPartition("orders", 0), 1, 1, 1, registry.receipts[0].batch_id)
+    ]
+    assert registry.transfers == []
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_cancel_scope_blocks_late_settlement_promotion() -> (
+    None
+):
+    # Given: an ordered async tail is waiting behind predecessor settlement.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(calls) == 1:
+            return {
+                items[0].id: BatchItemOutcome.failure("sink rejected"),
+                items[1].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    registry = _RecordingAsyncSettlementRegistry(auto_settled=False)
+    registry.wait_future = asyncio.get_running_loop().create_future()
+    engine.set_engine_settlement_notification_registry(registry)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    first_events = await engine.poll_completed_events()
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=("b",),
+            topic_partitions=(TopicPartition("orders", 0),),
+            epoch=1,
+            reason="revoke",
+        )
+    )
+    await asyncio.sleep(0)
+    late_events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: cancel wins over the later settlement waiter release; tail is not promoted.
+    assert [(event.id, event.status, event.attempt) for event in first_events] == [
+        ("a", CompletionStatus.FAILURE, 1),
+    ]
+    assert late_events == []
+    assert calls == [["a", "b"]]
+    assert registry.cancelled_scopes
+    assert registry.transfers == []
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_tombstoned_tail_ignores_late_predecessor_settlement_notification() -> (
+    None
+):
+    # Given: an ordered async tail is tombstoned while waiting on predecessor settlement.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(calls) == 1:
+            return {
+                items[0].id: BatchItemOutcome.failure("sink rejected"),
+                items[1].id: BatchItemOutcome.ordered_prefix_blocked(),
+            }
+        return {items[0].id: BatchItemOutcome.success()}
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    registry = WorkManager(execution_engine=engine, ordering_mode=OrderingMode.KEY_HASH)
+    engine.set_engine_settlement_notification_registry(registry)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    first_events = await engine.poll_completed_events()
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=("b",),
+            topic_partitions=(TopicPartition("orders", 0),),
+            epoch=1,
+            reason="revoke",
+        )
+    )
+    registry.notify_item_settled(first_events[0])
+    await asyncio.sleep(0)
+    late_events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: late predecessor settlement cannot release a tombstoned tail into retry.
+    assert [(event.id, event.status, event.attempt) for event in first_events] == [
+        ("a", CompletionStatus.FAILURE, 1),
+    ]
+    assert late_events == []
+    assert calls == [["a", "b"]]
+
+
+@pytest.mark.asyncio
+async def test_async_batch_worker_applies_poison_policy_before_ordered_tail_retry() -> (
+    None
+):
+    # Given: an async batch worker leaves a poison tail blocked behind a failure.
+    calls: list[list[str]] = []
+
+    async def batch_worker(items: list[WorkItem]):
+        calls.append([item.id for item in items])
+        if len(items) == 1:
+            return {items[0].id: BatchItemOutcome.success()}
+        return {
+            items[0].id: BatchItemOutcome.success(),
+            items[1].id: BatchItemOutcome.failure("sink rejected"),
+            items[2].id: BatchItemOutcome.ordered_prefix_blocked(),
+        }
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
+    )
+    poison_policy = importlib.import_module(
+        "pyrallel_consumer.control_plane.poison_policy"
+    )
+    provider_calls = 0
+
+    def snapshot_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        return poison_policy.PoisonPolicySnapshot(
+            forced_fail_keys=frozenset({(TopicPartition("orders", 0), b"poison-key")}),
+            forced_failure_attempt=3,
+            reason_template="poison forced {topic_partition}@{offset}",
+            captured_at=10.0,
+        )
+
+    engine.set_poison_policy_snapshot_provider(snapshot_provider)
+    items = [
+        WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
+        WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
+        WorkItem(
+            "c",
+            TopicPartition("orders", 0),
+            3,
+            1,
+            "k",
+            b"c",
+            poison_key=b"poison-key",
+        ),
+    ]
+
+    await engine.submit_batch(items)
+    assert await engine.wait_for_completion(timeout_seconds=1.0) is True
+    await asyncio.sleep(0)
+    events = await engine.poll_completed_events()
+    await engine.shutdown()
+
+    # Then: the blocked tail is classified through the provider/helper instead
+    # of being recursively retried by the async engine.
+    assert provider_calls == 1
+    assert calls == [["a", "b", "c"]]
+    assert [(event.id, event.status, event.attempt) for event in events] == [
+        ("a", CompletionStatus.SUCCESS, 1),
+        ("b", CompletionStatus.FAILURE, 1),
+        ("c", CompletionStatus.FAILURE, 3),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_async_batch_worker_bounds_thrown_exception_errors() -> None:
     # Given: a batch worker raises an oversized exception string.
     oversized_error = "x" * (BATCH_WORKER_ERROR_MAX_CHARS + 99)
@@ -460,6 +855,8 @@ async def test_async_batch_worker_invalid_result_emits_fatal_control_event() -> 
     engine = AsyncExecutionEngine(
         config=config, worker_fn=WorkerSpec.batch(batch_worker, runtime)
     )
+    registry = _RecordingAsyncSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
     items = [
         WorkItem("a", TopicPartition("orders", 0), 1, 1, "k", b"a"),
         WorkItem("b", TopicPartition("orders", 0), 2, 1, "k", b"b"),
@@ -477,9 +874,22 @@ async def test_async_batch_worker_invalid_result_emits_fatal_control_event() -> 
 
     assert len(control_events) == 1
     assert control_events[0].kind == "fatal"
+    assert control_events[0].code == "invalid_batch_worker_result"
+    assert control_events[0].reason == "invalid_batch_worker_result:missing_item_ids"
+    assert control_events[0].failure_class == "BATCH_WORKER_CONTRACT_ERROR"
+    assert control_events[0].committable is False
+    assert control_events[0].batch_id == registry.receipts[0].batch_id
+    assert control_events[0].worker_generation == 0
+    assert control_events[0].item_ids == ("a", "b")
+    assert control_events[0].item_count == 2
+    assert control_events[0].epoch == 1
+    assert control_events[0].attempt == 1
     assert "invalid_batch_worker_result:missing_item_ids" in str(
         control_events[0].error
     )
+    assert registry.cancelled_scopes
+    assert registry.cancelled_scopes[0].reason == "fatal"
+    assert registry.cancelled_scopes[0].item_ids == ("a", "b")
 
 
 @pytest.mark.asyncio

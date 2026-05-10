@@ -3,7 +3,9 @@
 # Role: Defines the abstract execution-engine contract used by the control plane.
 # Extend here only when every execution engine must expose the same capability.
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import List, Optional, Protocol
 
 from pyrallel_consumer.dto import (
     CompletionEvent,
@@ -12,6 +14,64 @@ from pyrallel_consumer.dto import (
     TopicPartition,
     WorkItem,
 )
+
+
+@dataclass(frozen=True)
+class BatchSubmissionReceipt:
+    """Internal receipt returned after an engine accepts a route batch."""
+
+    batch_id: str
+    owner: str
+    worker_generation: Optional[int]
+    accepted: tuple[tuple[str, TopicPartition, int, int, int], ...]
+
+
+@dataclass(frozen=True)
+class BatchCancelScope:
+    """Internal cancellation/tombstone scope for engine-owned batch items."""
+
+    item_ids: tuple[str, ...] = ()
+    topic_partitions: tuple[TopicPartition, ...] = ()
+    epoch: Optional[int] = None
+    reason: str = "revoke"
+
+
+class EngineSettlementNotificationRegistry(Protocol):
+    """Internal registry for engine-owned batch settlement metadata."""
+
+    def register_batch_owner(self, receipt: BatchSubmissionReceipt) -> None:
+        """Register accepted batch ownership before dispatch becomes visible."""
+        ...
+
+    def transfer_batch_owner(
+        self,
+        *,
+        expected_old_batch_id: str,
+        receipt: BatchSubmissionReceipt,
+    ) -> bool:
+        """Atomically transfer existing batch ownership to a new receipt."""
+        ...
+
+    async def wait_for_item_settlement(
+        self,
+        *,
+        item_id: str,
+        tp: TopicPartition,
+        offset: int,
+        epoch: int,
+        attempt: int,
+        batch_id: str,
+    ) -> bool:
+        """Wait until an accepted item has passed durable completion settlement."""
+        ...
+
+    def notify_item_settled(self, event: CompletionEvent) -> None:
+        """Notify engine waiters after broker completion settlement."""
+        ...
+
+    def cancel_scope(self, scope: BatchCancelScope) -> None:
+        """Cancel active settlement waiters and ownership for a batch scope."""
+        ...
 
 
 class BatchSubmitError(RuntimeError):
@@ -38,6 +98,27 @@ class BaseExecutionEngine(ABC):
         """Return whether this engine can run ordered route batches safely."""
         return False
 
+    def set_engine_settlement_notification_registry(
+        self,
+        registry: EngineSettlementNotificationRegistry,
+    ) -> None:
+        """Install the internal settlement notification registry for batch engines."""
+        self._engine_settlement_notification_registry = registry
+
+    def cancel_batch_items(self, scope: BatchCancelScope) -> None:
+        """Record an internal batch-item cancellation scope before cleanup."""
+        registry = getattr(self, "_engine_settlement_notification_registry", None)
+        cancel_scope = getattr(registry, "cancel_scope", None)
+        if callable(cancel_scope):
+            cancel_scope(scope)
+
+    def set_poison_policy_snapshot_provider(
+        self,
+        provider: Callable[[], object],
+    ) -> None:
+        """Install the WorkManager-owned poison policy snapshot provider."""
+        self._poison_policy_snapshot_provider = provider
+
     @abstractmethod
     async def submit(self, work_item: WorkItem) -> None:
         """Submit a WorkItem to the execution engine for processing.
@@ -49,7 +130,10 @@ class BaseExecutionEngine(ABC):
 
         """
 
-    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+    async def submit_batch(
+        self,
+        work_items: list[WorkItem],
+    ) -> Optional[BatchSubmissionReceipt]:
         """Submit WorkItems using the existing item-level engine contract.
 
         This default fallback preserves existing engine semantics while allowing
@@ -71,6 +155,7 @@ class BaseExecutionEngine(ABC):
             except Exception as exc:
                 raise BatchSubmitError(accepted_count, exc) from exc
             accepted_count += 1
+        return None
 
     @abstractmethod
     async def poll_completed_events(

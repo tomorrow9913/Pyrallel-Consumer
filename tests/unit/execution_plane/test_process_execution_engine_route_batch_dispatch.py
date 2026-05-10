@@ -4,8 +4,14 @@
 # Extend here for focused process execution engine regression coverage in this area.
 
 import asyncio
+import importlib
 
 from pyrallel_consumer.dto import BatchCompletion
+from pyrallel_consumer.execution_plane.base import (
+    BatchCancelScope,
+    BatchSubmissionReceipt,
+    EngineSettlementNotificationRegistry,
+)
 from pyrallel_consumer.execution_plane.process_codec import (
     serialize_batch_completion_payload,
 )
@@ -42,6 +48,106 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     threading,
     time,
 )
+
+
+class _RecordingSettlementRegistry(EngineSettlementNotificationRegistry):
+    def __init__(self) -> None:
+        self.receipts: list[BatchSubmissionReceipt] = []
+        self.transfers: list[tuple[str, BatchSubmissionReceipt]] = []
+        self.cancelled_scopes: list[BatchCancelScope] = []
+        self.transfer_result = True
+
+    def register_batch_owner(self, receipt: BatchSubmissionReceipt) -> None:
+        self.receipts.append(receipt)
+
+    def transfer_batch_owner(
+        self,
+        *,
+        expected_old_batch_id: str,
+        receipt: BatchSubmissionReceipt,
+    ) -> bool:
+        self.transfers.append((expected_old_batch_id, receipt))
+        return self.transfer_result
+
+    def cancel_scope(self, scope: BatchCancelScope) -> None:
+        self.cancelled_scopes.append(scope)
+
+    async def wait_for_item_settlement(
+        self,
+        *,
+        item_id: str,
+        tp: TopicPartition,
+        offset: int,
+        epoch: int,
+        attempt: int,
+        batch_id: str,
+    ) -> bool:
+        del item_id, tp, offset, epoch, attempt, batch_id
+        return True
+
+    def notify_item_settled(self, event: CompletionEvent) -> None:
+        del event
+
+
+def test_process_engine_submit_batch_returns_receipt_after_registry_owner_registered_before_dispatch() -> (
+    None
+):
+    # Given: a parent-owned route batch is accepted for process dispatch.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=2),
+    )
+    engine_any._is_shutdown = False
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = set()
+    engine_any._in_flight_registry = {}
+    engine_any._logger = logging.getLogger(__name__)
+    engine_any._ensure_workers_alive = Mock()
+    engine._initialize_runtime_timing_state()
+    registry = _RecordingSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+
+    first_item = WorkItem("work-a", TopicPartition("topic", 1), 42, 7, b"key", b"a")
+    second_item = WorkItem("work-b", TopicPartition("topic", 1), 43, 7, b"key", b"b")
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity
+            assert count_in_flight is True
+            assert registry.receipts
+            assert registry.receipts[-1].batch_id == route_batch.batch_id
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+
+    receipt = asyncio.run(engine.submit_batch([first_item, second_item]))
+
+    # Then: registration is in the submit acceptance critical section before
+    # dispatch is visible, and the caller receives the same engine-owned batch id.
+    assert isinstance(receipt, BatchSubmissionReceipt)
+    assert len(registry.receipts) == 1
+    assert receipt == registry.receipts[0]
+    assert receipt.batch_id == dispatched_batches[0].batch_id
+    assert receipt.owner == "process"
+    assert receipt.worker_generation == dispatched_batches[0].worker_index
+    assert receipt.accepted == (
+        ("work-a", TopicPartition("topic", 1), 42, 7, 1),
+        ("work-b", TopicPartition("topic", 1), 43, 7, 1),
+    )
 
 
 def test_process_engine_redispatches_retryable_failed_batch_subset_with_new_batch_id() -> (
@@ -379,6 +485,569 @@ def test_process_engine_retryable_batch_failure_is_not_finalized() -> None:
     # Then: retryable failure is redispatched, not finalized.
     assert completed_events == []
     assert len(dispatched_batches) == 1
+
+
+def test_process_engine_retry_redispatch_transfers_registry_ownership_before_dispatch() -> (
+    None
+):
+    # Given: a process batch retry has old batch ownership and remaining retry budget.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-retryable"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    registry = _RecordingSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+
+    failed_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 46): _work_item_to_dict(failed_item)
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            assert registry.transfers
+            assert registry.transfers[-1][1].batch_id == route_batch.batch_id
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-retryable",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: old batch ownership is CAS-transferred before redispatch is visible.
+    assert completed_events == []
+    assert len(dispatched_batches) == 1
+    assert len(registry.transfers) == 1
+    expected_old_batch_id, retry_receipt = registry.transfers[0]
+    assert expected_old_batch_id == "batch-retryable"
+    assert retry_receipt.batch_id == dispatched_batches[0].batch_id
+    assert retry_receipt.owner == "process"
+    assert retry_receipt.worker_generation == 0
+    assert retry_receipt.accepted == (
+        ("work-retry", TopicPartition("topic", 1), 46, 7, 2),
+    )
+
+
+def test_process_engine_retry_redispatch_fails_closed_on_registry_transfer_mismatch() -> (
+    None
+):
+    # Given: registry CAS rejects retry ownership transfer for the old batch id.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_identity_order = deque()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-retryable"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    registry = _RecordingSettlementRegistry()
+    registry.transfer_result = False
+    engine.set_engine_settlement_notification_registry(registry)
+
+    failed_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    original_payload = _work_item_to_dict(failed_item)
+    engine_any._in_flight_registry = {(0, "topic", 1, 46): dict(original_payload)}
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-retryable",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: mismatch fails closed; no redispatch and old registry remains intact.
+    assert completed_events == []
+    assert dispatched_batches == []
+    assert len(registry.transfers) == 1
+    assert engine_any._process_batch_manifests == {}
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 46): original_payload}
+
+
+def test_process_engine_shutdown_retryable_completion_does_not_redispatch() -> None:
+    # Given: shutdown tombstones an active process batch before a retryable completion arrives.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._is_shutdown = True
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {
+        "batch-retryable": {"batch_id": "batch-retryable"}
+    }
+    engine_any._active_process_batch_ids = {"batch-retryable"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    registry = _RecordingSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+
+    failed_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 46): _work_item_to_dict(failed_item)
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=(failed_item.id,),
+            topic_partitions=(failed_item.tp,),
+            epoch=failed_item.epoch,
+            reason="shutdown",
+        )
+    )
+
+    completed_events = engine._decode_completion_queue_item_events(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-retryable",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    # Then: shutdown tombstone suppresses retry redispatch and clears active ownership.
+    assert completed_events == []
+    assert dispatched_batches == []
+    assert registry.transfers == []
+    assert registry.cancelled_scopes
+    assert engine_any._process_batch_manifests == {}
+    assert engine_any._active_process_batch_ids == set()
+    assert engine_any._in_flight_registry == {}
+
+
+def test_process_engine_tombstoned_not_started_tail_does_not_replay() -> None:
+    # Given: a live worker reports a route-batch tail as not_started after tombstone.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._logger = logging.getLogger(__name__)
+    tail = WorkItem("tail", TopicPartition("topic", 1), 47, 7, b"key", b"tail")
+    payload = _work_item_to_dict(tail)
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+    engine_any._in_flight_registry = {}
+    engine_any._active_process_batch_ids = {"batch-parent"}
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=(tail.id,),
+            topic_partitions=(tail.tp,),
+            epoch=tail.epoch,
+            reason="fatal",
+        )
+    )
+
+    recovered = engine._recover_not_started_payloads(
+        {
+            "kind": "not_started",
+            "batch_id": "batch-parent",
+            "_route_batch_pending_not_started": True,
+            "payloads": [payload],
+        }
+    )
+
+    # Then: tombstone wins before replaying a skipped process tail.
+    assert recovered is True
+    assert transport.requeued_payloads == []
+    assert engine_any._in_flight_registry == {}
+
+
+def test_process_engine_retry_redispatch_rolls_back_registry_transfer_on_dispatch_failure() -> (
+    None
+):
+    # Given: ownership transfer succeeds but the retry dispatch fails before visibility.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 1
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-retryable"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    registry = _RecordingSettlementRegistry()
+    engine.set_engine_settlement_notification_registry(registry)
+
+    failed_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    original_payload = _work_item_to_dict(failed_item)
+    engine_any._in_flight_registry = {(0, "topic", 1, 46): dict(original_payload)}
+
+    class FailingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_batch, route_identity, count_in_flight
+            raise RuntimeError("dispatch failed")
+
+    engine_any._transport = FailingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-retryable",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        failed_item.id,
+                        failed_item.tp,
+                        failed_item.offset,
+                        failed_item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        asyncio.run(engine.poll_completed_events())
+
+    # Then: new manifest is removed, registry ownership is transferred back, and
+    # the parent process registry restores the old payload.
+    assert len(registry.transfers) == 2
+    assert registry.transfers[0][0] == "batch-retryable"
+    new_batch_id = registry.transfers[0][1].batch_id
+    assert registry.transfers[1][0] == new_batch_id
+    assert registry.transfers[1][1].batch_id == "batch-retryable"
+    assert engine_any._process_batch_manifests == {}
+    assert engine_any._in_flight_registry == {(0, "topic", 1, 46): original_payload}
+
+
+def test_process_engine_applies_poison_policy_before_retry_subset_redispatch() -> None:
+    # Given: a retryable process batch subset contains a poison item and an ordered tail.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 3
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-poison"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    poison_policy = importlib.import_module(
+        "pyrallel_consumer.control_plane.poison_policy"
+    )
+    provider_calls = 0
+
+    def snapshot_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        return poison_policy.PoisonPolicySnapshot(
+            forced_fail_keys=frozenset({(TopicPartition("topic", 1), b"poison-key")}),
+            forced_failure_attempt=3,
+            reason_template="poison forced {topic_partition}@{offset}",
+            captured_at=10.0,
+        )
+
+    engine.set_poison_policy_snapshot_provider(snapshot_provider)
+    retry_item = WorkItem("work-retry", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    poison_item = WorkItem(
+        "work-poison",
+        TopicPartition("topic", 1),
+        47,
+        7,
+        b"key",
+        b"",
+        poison_key=b"poison-key",
+    )
+    tail_item = WorkItem("work-tail", TopicPartition("topic", 1), 48, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 46): _work_item_to_dict(retry_item),
+        (0, "topic", 1, 47): _work_item_to_dict(poison_item),
+        (0, "topic", 1, 48): _work_item_to_dict(tail_item),
+    }
+    original_tail_payload = dict(engine_any._in_flight_registry[(0, "topic", 1, 48)])
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-poison",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        item.id,
+                        item.tp,
+                        item.offset,
+                        item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                    for item in (retry_item, poison_item, tail_item)
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: provider-backed poison policy filters redispatch, returns forced
+    # failures through completions, and leaves the ordered tail unresolved.
+    assert provider_calls == 1
+    assert [(event.id, event.status, event.attempt) for event in completed_events] == [
+        ("work-poison", CompletionStatus.FAILURE, 3)
+    ]
+    assert len(dispatched_batches) == 1
+    assert [
+        (item.id, item.requeue_attempts) for item in dispatched_batches[0].items
+    ] == [("work-retry", 1)]
+    assert engine_any._in_flight_registry[(0, "topic", 1, 48)] == original_tail_payload
+
+
+def test_process_engine_disabled_poison_policy_snapshot_preserves_retry_redispatch() -> (
+    None
+):
+    # Given: retryable process batch failures and a disabled poison snapshot provider.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._config = ExecutionConfig(
+        mode=ExecutionMode.PROCESS,
+        max_retries=3,
+        process_config=ProcessConfig(process_count=1),
+    )
+    engine_any._completion_queue = queue.Queue()
+    engine_any._registry_event_queue = queue.Queue()
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._in_flight_lock = threading.Lock()
+    engine_any._in_flight_count = 2
+    engine_any._process_batch_manifests = {}
+    engine_any._active_process_batch_ids = {"batch-disabled-poison"}
+    engine_any._logger = logging.getLogger(__name__)
+    engine._initialize_runtime_timing_state()
+    poison_policy = importlib.import_module(
+        "pyrallel_consumer.control_plane.poison_policy"
+    )
+    engine.set_poison_policy_snapshot_provider(
+        poison_policy.disabled_poison_policy_snapshot
+    )
+
+    first_item = WorkItem("work-a", TopicPartition("topic", 1), 46, 7, b"key", b"")
+    second_item = WorkItem("work-b", TopicPartition("topic", 1), 47, 7, b"key", b"")
+    engine_any._in_flight_registry = {
+        (0, "topic", 1, 46): _work_item_to_dict(first_item),
+        (0, "topic", 1, 47): _work_item_to_dict(second_item),
+    }
+    dispatched_batches: list[RouteBatch] = []
+
+    class RecordingTransport:
+        def handle_registry_event(self, _event: dict[str, Any]) -> None:
+            return None
+
+        def dispatch_route_batch(
+            self,
+            route_batch: RouteBatch,
+            *,
+            route_identity: RouteIdentity,
+            count_in_flight: bool,
+        ) -> None:
+            del route_identity, count_in_flight
+            dispatched_batches.append(route_batch)
+
+    engine_any._transport = RecordingTransport()
+    engine_any._completion_queue.put(
+        serialize_batch_completion_payload(
+            BatchCompletion(
+                batch_id="batch-disabled-poison",
+                route_identity=("topic", 1, b"key"),
+                results=[
+                    CompletionEvent(
+                        item.id,
+                        item.tp,
+                        item.offset,
+                        item.epoch,
+                        CompletionStatus.FAILURE,
+                        "retryable failure",
+                        1,
+                    )
+                    for item in (first_item, second_item)
+                ],
+            ),
+            completion_enqueued_at=time.monotonic(),
+        )
+    )
+
+    completed_events = asyncio.run(engine.poll_completed_events())
+
+    # Then: disabled poison policy is a no-op for existing retry redispatch.
+    assert completed_events == []
+    assert len(dispatched_batches) == 1
+    assert [
+        (item.id, item.requeue_attempts) for item in dispatched_batches[0].items
+    ] == [
+        ("work-a", 1),
+        ("work-b", 1),
+    ]
 
 
 def test_process_engine_retryable_batch_failure_survives_child_done_before_completion() -> (

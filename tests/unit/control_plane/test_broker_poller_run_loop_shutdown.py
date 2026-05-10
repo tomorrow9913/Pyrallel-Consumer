@@ -3,6 +3,7 @@
 # Role: Verifies BrokerPoller run-loop failure handling and task shutdown lifecycle.
 # Extend here for focused control-plane regression coverage in this area.
 
+from pyrallel_consumer.dto import ExecutionControlEvent
 from tests.unit.control_plane._broker_poller_support import (
     AsyncMock,
     BrokerPoller,
@@ -215,6 +216,94 @@ async def test_consumer_loop_downstream_exception_does_not_count_as_poll_error(
     assert isinstance(broker_poller._fatal_error, RuntimeError)
     assert broker_poller._pipeline_poll_records_total == 1
     assert broker_poller._pipeline_poll_error_total == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_execution_control_events_cancels_engine_batches_with_fatal_reason(
+    broker_poller,
+) -> None:
+    # Given: the execution engine reports a fatal control event.
+    broker_poller._execution_engine.poll_control_events = AsyncMock(
+        return_value=[
+            ExecutionControlEvent(
+                kind="fatal",
+                error=RuntimeError("boom"),
+                code="invalid_batch_worker_result",
+                reason="invalid_batch_worker_result:missing_item_ids",
+                failure_class="BATCH_WORKER_CONTRACT_ERROR",
+                committable=False,
+                batch_id="batch-live",
+                worker_generation=0,
+                item_ids=("a", "b"),
+                item_count=2,
+                epoch=1,
+                attempt=1,
+            )
+        ]
+    )
+    broker_poller._execution_engine.cancel_batch_items = MagicMock()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await broker_poller._drain_execution_control_events_once()
+
+    # Then: broker fatal handling tombstones active engine-owned batch work first.
+    broker_poller._execution_engine.cancel_batch_items.assert_called_once()
+    scope = broker_poller._execution_engine.cancel_batch_items.call_args.args[0]
+    assert scope.reason == "fatal"
+
+
+@pytest.mark.asyncio
+async def test_drain_execution_control_events_ignores_inactive_batch_fatal(
+    broker_poller,
+) -> None:
+    # Given: a stale process fatal references a batch no longer active in the engine.
+    broker_poller._execution_engine.poll_control_events = AsyncMock(
+        return_value=[
+            ExecutionControlEvent(
+                kind="fatal",
+                error=RuntimeError("stale fatal"),
+                code="invalid_batch_worker_result",
+                reason="invalid_batch_worker_result:missing_item_ids",
+                failure_class="BATCH_WORKER_CONTRACT_ERROR",
+                committable=False,
+                batch_id="batch-stale",
+                worker_generation=0,
+                item_ids=("a",),
+                item_count=1,
+                epoch=1,
+                attempt=1,
+            )
+        ]
+    )
+    broker_poller._execution_engine._active_process_batch_ids = {"batch-live"}
+    broker_poller._execution_engine.cancel_batch_items = MagicMock()
+    broker_poller._running = True
+
+    drained = await broker_poller._drain_execution_control_events_once()
+
+    # Then: inactive/stale fatal controls are quarantined and do not kill the consumer.
+    assert drained is True
+    assert broker_poller._fatal_error is None
+    assert broker_poller._running is not False
+    broker_poller._execution_engine.cancel_batch_items.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_engine_batches_with_shutdown_reason(
+    broker_poller,
+) -> None:
+    # Given: broker cleanup is closing runtime after shutdown starts.
+    broker_poller.producer = None
+    broker_poller._commit_coordinator = MagicMock()
+    broker_poller._drain_commit_coordinator_for_shutdown = AsyncMock(return_value=True)
+    broker_poller._execution_engine.cancel_batch_items = MagicMock()
+
+    await BrokerPoller._cleanup(broker_poller)
+
+    # Then: shutdown cleanup tombstones active engine-owned batch work before close.
+    broker_poller._execution_engine.cancel_batch_items.assert_called_once()
+    scope = broker_poller._execution_engine.cancel_batch_items.call_args.args[0]
+    assert scope.reason == "shutdown"
 
 
 @pytest.mark.asyncio

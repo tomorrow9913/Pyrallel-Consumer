@@ -21,7 +21,11 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
+from pyrallel_consumer.execution_plane.base import (
+    BaseExecutionEngine,
+    BatchSubmissionReceipt,
+    BatchSubmitError,
+)
 
 
 def _open_poison_circuit_for_key(
@@ -56,6 +60,7 @@ __all__ = (
     "AsyncMock",
     "BaseExecutionEngine",
     "BatchSubmitError",
+    "BatchSubmissionReceipt",
     "CompletionEvent",
     "CompletionStatus",
     "DtoTopicPartition",

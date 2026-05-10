@@ -4,6 +4,7 @@
 # Extend here for completion-event accounting; keep polling and dispatch loops in broker_poller.py.
 from __future__ import annotations
 
+import inspect
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -62,6 +63,9 @@ class BrokerCompletionSupport:
             OrderedDict[tuple[DtoTopicPartition, int], CompletionEvent]
         ] = None,
         metrics_exporter: Optional[DlqFailureMetricsExporter] = None,
+        settlement_notifier: Optional[
+            Callable[[CompletionEvent], Awaitable[None] | None]
+        ] = None,
     ) -> None:
         """Initialize this component.
 
@@ -90,6 +94,7 @@ class BrokerCompletionSupport:
             pending_dlq_events if pending_dlq_events is not None else OrderedDict()
         )
         self._metrics_exporter = metrics_exporter
+        self._settlement_notifier = settlement_notifier
 
     async def handle_blocking_timeouts(
         self,
@@ -258,6 +263,10 @@ class BrokerCompletionSupport:
                 resolved_pending_keys.add(pending_key)
             self._pending_dlq_events.pop(pending_key, None)
             self._pop_cached_message((event.tp, event.offset))
+            if self._settlement_notifier is not None:
+                notification = self._settlement_notifier(event)
+                if inspect.isawaitable(notification):
+                    await notification
 
         completed_offsets = {
             tp: tuple(offsets) for tp, offsets in completed_offsets_by_partition.items()

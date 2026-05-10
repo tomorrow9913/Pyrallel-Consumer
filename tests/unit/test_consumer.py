@@ -62,6 +62,10 @@ def _process_batch_facade_invalid_worker(
 class _DummyEngine:
     def __init__(self):
         self.shutdown_called = False
+        self.poison_policy_snapshot_provider = None
+
+    def set_poison_policy_snapshot_provider(self, provider):
+        self.poison_policy_snapshot_provider = provider
 
     async def shutdown(self):
         self.shutdown_called = True
@@ -283,6 +287,32 @@ def test_pyrallel_consumer_from_batch_worker_opens_async_runtime_path(
     assert captured_worker.batch_runtime is not None
     assert captured_worker.batch_runtime.ordering_mode == OrderingMode.KEY_HASH
     assert consumer._work_manager._batch_dispatch_enabled is True
+
+
+def test_pyrallel_consumer_from_batch_worker_wires_poison_snapshot_provider(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: batch-worker facade construction creates the engine before WorkManager.
+    def _create_engine(execution_config, worker):  # noqa: ARG001
+        return _DummyEngine()
+
+    monkeypatch.setattr(
+        "pyrallel_consumer.consumer.create_execution_engine", _create_engine
+    )
+    config = KafkaConfig()
+
+    consumer = PyrallelConsumer.from_batch_worker(
+        config=config,
+        batch_worker=lambda items: None,
+        topic="demo",
+    )
+
+    # Then: the WorkManager-owned poison snapshot provider is wired into the
+    # engine before scheduling can submit public batch-worker work.
+    provider = cast(Any, consumer._execution_engine).poison_policy_snapshot_provider
+    assert callable(provider)
+    snapshot = provider()
+    assert snapshot.forced_fail_keys == frozenset()
 
 
 def test_pyrallel_consumer_from_batch_worker_opens_process_runtime_path(
@@ -547,10 +577,13 @@ def test_pyrallel_consumer_process_batch_facade_invalid_result_is_fatal_only(
     control_events = asyncio.run(engine.poll_control_events())
 
     # Then: invalid contracts surface only as fatal control events.
+    assert worker_completion_queue.get_nowait() == {"kind": "control_wakeup"}
     assert worker_completion_queue.empty()
     assert len(control_events) == 1
     assert control_events[0].kind == "fatal"
     assert isinstance(control_events[0].error, BatchWorkerContractError)
+    assert control_events[0].batch_id == "batch-invalid-facade"
+    assert control_events[0].item_ids == ("work-invalid-a", "work-invalid-b")
 
 
 @pytest.mark.asyncio

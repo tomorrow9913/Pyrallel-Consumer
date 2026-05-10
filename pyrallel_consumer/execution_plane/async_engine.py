@@ -4,9 +4,11 @@
 # Extend here for async-engine behavior; keep shared engine contracts in base.py.
 import asyncio
 import contextvars
+import importlib
 import inspect
 import logging
 import random
+import uuid
 from asyncio import Semaphore, Task
 from collections import deque
 from collections.abc import Callable
@@ -22,7 +24,11 @@ from pyrallel_consumer.dto import (
     TopicPartition,
     WorkItem,
 )
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import (
+    BaseExecutionEngine,
+    BatchCancelScope,
+    BatchSubmissionReceipt,
+)
 from pyrallel_consumer.execution_plane.batch_result import (
     normalize_batch_worker_result,
     ordered_prefix_blocked_tail_items,
@@ -76,6 +82,9 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._task_permit_counts: dict[Task, int] = {}
         self._shutdown_event = asyncio.Event()
         self._activity_event = asyncio.Event()
+        self._cancelled_batch_item_keys: set[tuple[str, str, int, int]] = set()
+        self._cancelled_batch_partition_keys: set[tuple[str, int, int | None]] = set()
+        self._cancelled_all_batch_items = False
 
         # Logger for this module
         self._logger = logging.getLogger(__name__)
@@ -116,10 +125,11 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._task_permit_counts[task] = 1
         task.add_done_callback(self._task_done_callback)
 
-    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+    async def submit_batch(
+        self, work_items: list[WorkItem]
+    ) -> BatchSubmissionReceipt | None:
         if self._worker_spec.kind != "batch":
-            await super().submit_batch(work_items)
-            return
+            return await super().submit_batch(work_items)
         if self._shutdown_event.is_set():
             raise RuntimeError("Engine is shutting down, cannot accept new work")
         if len(work_items) > self._config.max_in_flight:
@@ -129,16 +139,153 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             for _ in work_items:
                 await self._semaphore.acquire()
                 acquired += 1
+            receipt = self._build_batch_submission_receipt(
+                work_items,
+                batch_id=uuid.uuid4().hex,
+                attempt=1,
+            )
+            registry = getattr(self, "_engine_settlement_notification_registry", None)
+            if registry is not None:
+                registry.register_batch_owner(receipt)
             task = self._context.copy().run(
-                asyncio.create_task, self._execute_batch_worker_task(list(work_items))
+                asyncio.create_task,
+                self._execute_batch_worker_task(
+                    list(work_items), batch_id=receipt.batch_id
+                ),
             )
             self._in_flight_tasks.add(task)
             self._task_permit_counts[task] = acquired
             task.add_done_callback(self._task_done_callback)
+            return receipt
         except BaseException:
             for _ in range(acquired):
                 self._semaphore.release()
             raise
+
+    def _build_batch_submission_receipt(
+        self,
+        work_items: list[WorkItem],
+        *,
+        batch_id: str,
+        attempt: int,
+    ) -> BatchSubmissionReceipt:
+        """Build async ownership metadata for accepted batch items."""
+        return BatchSubmissionReceipt(
+            batch_id=batch_id,
+            owner="async",
+            worker_generation=0,
+            accepted=tuple(
+                (
+                    item.id,
+                    item.tp,
+                    item.offset,
+                    item.epoch,
+                    attempt,
+                )
+                for item in work_items
+            ),
+        )
+
+    def _transfer_batch_ownership(
+        self,
+        work_items: list[WorkItem],
+        *,
+        expected_old_batch_id: str | None,
+        attempt: int,
+    ) -> str | None:
+        """Transfer async ownership before emitting a later-attempt completion."""
+        if not work_items or expected_old_batch_id is None:
+            return expected_old_batch_id
+        registry = getattr(self, "_engine_settlement_notification_registry", None)
+        transfer = getattr(registry, "transfer_batch_owner", None)
+        if not callable(transfer):
+            return expected_old_batch_id
+        receipt = self._build_batch_submission_receipt(
+            work_items,
+            batch_id=uuid.uuid4().hex,
+            attempt=attempt,
+        )
+        if not transfer(expected_old_batch_id=expected_old_batch_id, receipt=receipt):
+            return None
+        return receipt.batch_id
+
+    def cancel_batch_items(self, scope: BatchCancelScope) -> None:
+        """Record async-engine tombstones before revoke/shutdown/fatal cleanup."""
+        item_keys: set[tuple[str, str, int, int]] = getattr(
+            self, "_cancelled_batch_item_keys", set()
+        )
+        partition_keys: set[tuple[str, int, int | None]] = getattr(
+            self, "_cancelled_batch_partition_keys", set()
+        )
+        if not scope.item_ids and not scope.topic_partitions and scope.epoch is None:
+            self._cancelled_all_batch_items = True
+        wildcard_tp = TopicPartition("", -1)
+        for item_id in scope.item_ids:
+            for tp in scope.topic_partitions or (wildcard_tp,):
+                item_keys.add((item_id, tp.topic, tp.partition, scope.epoch or -1))
+        for tp in scope.topic_partitions:
+            partition_keys.add((tp.topic, tp.partition, scope.epoch))
+        self._cancelled_batch_item_keys = item_keys
+        self._cancelled_batch_partition_keys = partition_keys
+        super().cancel_batch_items(scope)
+
+    def _is_batch_item_cancelled(self, item: WorkItem) -> bool:
+        """Return whether a work item is blocked by an internal tombstone."""
+        item_keys: set[tuple[str, str, int, int]] = getattr(
+            self, "_cancelled_batch_item_keys", set()
+        )
+        partition_keys: set[tuple[str, int, int | None]] = getattr(
+            self, "_cancelled_batch_partition_keys", set()
+        )
+        if getattr(self, "_cancelled_all_batch_items", False):
+            return True
+        return (
+            (item.id, item.tp.topic, item.tp.partition, item.epoch) in item_keys
+            or (item.id, item.tp.topic, item.tp.partition, -1) in item_keys
+            or (item.id, "", -1, item.epoch) in item_keys
+            or (item.id, "", -1, -1) in item_keys
+            or (item.tp.topic, item.tp.partition, item.epoch) in partition_keys
+            or (item.tp.topic, item.tp.partition, None) in partition_keys
+        )
+
+    def _is_completion_cancelled(self, event: CompletionEvent) -> bool:
+        """Return whether a completion belongs to a tombstoned batch item."""
+        item = WorkItem(
+            event.id,
+            event.tp,
+            event.offset,
+            event.epoch,
+            None,
+            None,
+        )
+        return self._is_batch_item_cancelled(item)
+
+    async def _wait_for_item_settlement(
+        self,
+        event: CompletionEvent,
+        *,
+        batch_id: str | None,
+    ) -> bool:
+        """Wait for control-plane settlement before promoting an ordered tail."""
+        if batch_id is None:
+            return True
+        if self._is_completion_cancelled(event):
+            return False
+        registry = getattr(self, "_engine_settlement_notification_registry", None)
+        wait_for_settlement = getattr(registry, "wait_for_item_settlement", None)
+        if not callable(wait_for_settlement):
+            return True
+        result = wait_for_settlement(
+            item_id=event.id,
+            tp=event.tp,
+            offset=event.offset,
+            epoch=event.epoch,
+            attempt=event.attempt,
+            batch_id=batch_id,
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
 
     async def _execute_worker_task(self, work_item: WorkItem) -> None:
         """사용자 워커 함수를 실행하고 결과를 완료 큐에 넣습니다.
@@ -198,7 +345,11 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         self._activity_event.set()
 
     async def _execute_batch_worker_task(
-        self, work_items: list[WorkItem], *, first_attempt: int = 1
+        self,
+        work_items: list[WorkItem],
+        *,
+        first_attempt: int = 1,
+        batch_id: str | None = None,
     ) -> None:
         result: BatchWorkerResult = None
         error: Optional[str] = None
@@ -210,7 +361,18 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             self._worker_fn,
         )
 
+        current_batch_id = batch_id
         for attempt in range(first_attempt, self._config.max_retries + 1):
+            if any(self._is_batch_item_cancelled(item) for item in work_items):
+                return
+            if attempt > 1:
+                current_batch_id = self._transfer_batch_ownership(
+                    work_items,
+                    expected_old_batch_id=current_batch_id,
+                    attempt=attempt,
+                )
+                if current_batch_id is None:
+                    return
             try:
                 maybe_result = batch_worker(list(work_items))
                 if inspect.isawaitable(maybe_result):
@@ -260,8 +422,28 @@ class AsyncExecutionEngine(BaseExecutionEngine):
                 attempt=attempt,
             )
         except BatchWorkerContractError as exc:
+            self.cancel_batch_items(
+                BatchCancelScope(
+                    item_ids=tuple(item.id for item in work_items),
+                    topic_partitions=tuple({item.tp for item in work_items}),
+                    reason="fatal",
+                )
+            )
             await self._put_control_event(
-                ExecutionControlEvent(kind="fatal", error=exc)
+                ExecutionControlEvent(
+                    kind="fatal",
+                    error=exc,
+                    code=exc.code,
+                    reason=exc.reason,
+                    failure_class=CompletionFailureClass.BATCH_WORKER_CONTRACT_ERROR.value,
+                    committable=False,
+                    batch_id=current_batch_id,
+                    worker_generation=0,
+                    item_ids=tuple(item.id for item in work_items),
+                    item_count=len(work_items),
+                    epoch=work_items[0].epoch if work_items else None,
+                    attempt=attempt,
+                )
             )
             self._shutdown_event.set()
             return
@@ -273,9 +455,45 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         )
         if not blocked_tail:
             return
+        if any(self._is_batch_item_cancelled(item) for item in blocked_tail):
+            return
+        predecessor_event = next(
+            (event for event in events if event.status == CompletionStatus.FAILURE),
+            None,
+        )
+        if predecessor_event is not None and not await self._wait_for_item_settlement(
+            predecessor_event,
+            batch_id=current_batch_id,
+        ):
+            return
+        provider = getattr(self, "_poison_policy_snapshot_provider", None)
+        if callable(provider):
+            poison_policy = importlib.import_module(
+                "pyrallel_consumer.control_plane.poison_policy"
+            )
+            decision = poison_policy.apply_poison_policy(
+                blocked_tail,
+                ordering_mode=ordering_mode,
+                snapshot=provider(),
+            )
+            for event in decision.forced_failure_events:
+                forced_items = [item for item in blocked_tail if item.id == event.id]
+                current_batch_id = self._transfer_batch_ownership(
+                    forced_items,
+                    expected_old_batch_id=current_batch_id,
+                    attempt=event.attempt,
+                )
+                if current_batch_id is None:
+                    return
+                await self._put_completion_event(event)
+            blocked_tail = list(decision.accepted_items)
+            if not blocked_tail:
+                return
         if attempt < self._config.max_retries:
             await self._execute_batch_worker_task(
-                blocked_tail, first_attempt=attempt + 1
+                blocked_tail,
+                first_attempt=attempt + 1,
+                batch_id=current_batch_id,
             )
             return
         for item in blocked_tail:
@@ -449,6 +667,7 @@ class AsyncExecutionEngine(BaseExecutionEngine):
         """실행 엔진을 정상적으로 종료합니다. 모든 진행 중인 태스크가 완료되거나 취소될 때까지 대기합니다."""
         self._logger.debug("Initiating AsyncExecutionEngine shutdown.")
         self._shutdown_event.set()
+        self.cancel_batch_items(BatchCancelScope(reason="shutdown"))
 
         grace_timeout = self._config.async_config.shutdown_grace_timeout_ms / 1000.0
 

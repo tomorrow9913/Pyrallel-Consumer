@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import logging
 import logging.handlers
@@ -16,7 +17,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from multiprocessing import Process, Queue
-from typing import Any, Deque, List, Optional
+from typing import Any, Deque, List, Optional, cast
 
 import msgpack  # type: ignore[import-untyped]
 
@@ -27,13 +28,18 @@ from pyrallel_consumer.dto import (
     EngineRuntimeDiagnostics,
     EngineWorkerDiagnostics,
     ExecutionControlEvent,
+    OrderingMode,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
     RouteBatch,
     TopicPartition,
     WorkItem,
 )
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import (
+    BaseExecutionEngine,
+    BatchCancelScope,
+    BatchSubmissionReceipt,
+)
 from pyrallel_consumer.execution_plane.process_batching import (
     BatchAccumulator as _BatchAccumulator,
 )
@@ -201,6 +207,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         self._completed_process_batch_payloads: dict[
             tuple[str, str, int, int, int], tuple[int, SerializedWorkItem]
         ] = {}
+        self._cancelled_batch_item_keys: set[tuple[str, str, int, int]] = set()
+        self._cancelled_batch_partition_keys: set[tuple[str, int, int | None]] = set()
+        self._cancelled_all_batch_items = False
         self._stale_process_batch_completion_count: int = 0
         self._workers: List[Process] = []
         self._worker_pid_by_index: dict[int, Optional[int]] = {}
@@ -688,7 +697,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             payloads = [
                 dict(payload)
                 for payload in manifest.get("items", [])
-                if isinstance(payload, dict)
+                if isinstance(payload, dict) and not self._is_payload_cancelled(payload)
             ]
             manifests.pop(batch_id, None)
             self._get_active_process_batch_ids().discard(str(batch_id))
@@ -745,6 +754,22 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             event.epoch,
         )
 
+    def _is_payload_cancelled(self, payload: SerializedWorkItem) -> bool:
+        """Return whether a serialized payload belongs to a tombstoned item."""
+        event = CompletionEvent(
+            id=str(payload.get("id")),
+            tp=TopicPartition(
+                str(payload.get("topic")),
+                int(payload.get("partition", 0)),
+            ),
+            offset=int(payload.get("offset", -1)),
+            epoch=int(payload.get("epoch", 0)),
+            status=CompletionStatus.FAILURE,
+            error=None,
+            attempt=int(payload.get("requeue_attempts", 0)) + 1,
+        )
+        return self._is_completion_cancelled(event)
+
     def _get_completed_process_batch_payloads(
         self,
     ) -> dict[tuple[str, str, int, int, int], tuple[int, SerializedWorkItem]]:
@@ -796,6 +821,8 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         for payload in manifest.get("items", []):
             if not isinstance(payload, dict):
                 continue
+            if self._is_payload_cancelled(payload):
+                continue
             key = (
                 manifest_worker_index,
                 str(payload["topic"]),
@@ -817,7 +844,42 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         else:
             error = RuntimeError(error_reason)
         self._get_process_control_events().append(
-            ExecutionControlEvent(kind="fatal", error=error)
+            ExecutionControlEvent(
+                kind="fatal",
+                error=error,
+                code=(
+                    str(event["error_code"])
+                    if event.get("error_code") is not None
+                    else None
+                ),
+                reason=error_reason,
+                failure_class=(
+                    str(event["failure_class"])
+                    if event.get("failure_class") is not None
+                    else None
+                ),
+                committable=bool(event.get("committable", False)),
+                batch_id=(
+                    str(event["batch_id"])
+                    if event.get("batch_id") is not None
+                    else None
+                ),
+                worker_generation=(
+                    int(event["worker_generation"])
+                    if event.get("worker_generation") is not None
+                    else None
+                ),
+                item_ids=tuple(str(item_id) for item_id in event.get("item_ids", ())),
+                item_count=(
+                    int(event["item_count"])
+                    if event.get("item_count") is not None
+                    else None
+                ),
+                epoch=int(event["epoch"]) if event.get("epoch") is not None else None,
+                attempt=(
+                    int(event["attempt"]) if event.get("attempt") is not None else None
+                ),
+            )
         )
         return True
 
@@ -856,7 +918,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         if not isinstance(payloads, list):
             return True
         recovered_payloads = [
-            dict(payload) for payload in payloads if isinstance(payload, dict)
+            dict(payload)
+            for payload in payloads
+            if isinstance(payload, dict) and not self._is_payload_cancelled(payload)
         ]
         if not recovered_payloads:
             return True
@@ -901,6 +965,57 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             None,
         )
 
+    def cancel_batch_items(self, scope: BatchCancelScope) -> None:
+        """Record process-engine tombstones before replay or redispatch cleanup."""
+        item_keys: set[tuple[str, str, int, int]] = getattr(
+            self, "_cancelled_batch_item_keys", set()
+        )
+        partition_keys: set[tuple[str, int, int | None]] = getattr(
+            self, "_cancelled_batch_partition_keys", set()
+        )
+        if not scope.item_ids and not scope.topic_partitions and scope.epoch is None:
+            self._cancelled_all_batch_items = True
+        wildcard_tp = TopicPartition("", -1)
+        for item_id in scope.item_ids:
+            for tp in scope.topic_partitions or (wildcard_tp,):
+                item_keys.add((item_id, tp.topic, tp.partition, scope.epoch or -1))
+        for tp in scope.topic_partitions:
+            partition_keys.add((tp.topic, tp.partition, scope.epoch))
+        self._cancelled_batch_item_keys = item_keys
+        self._cancelled_batch_partition_keys = partition_keys
+        super().cancel_batch_items(scope)
+
+    def _is_completion_cancelled(self, event: CompletionEvent) -> bool:
+        """Return whether a completion belongs to a tombstoned batch item."""
+        item_keys: set[tuple[str, str, int, int]] = getattr(
+            self, "_cancelled_batch_item_keys", set()
+        )
+        partition_keys: set[tuple[str, int, int | None]] = getattr(
+            self, "_cancelled_batch_partition_keys", set()
+        )
+        if getattr(self, "_cancelled_all_batch_items", False):
+            return True
+        return (
+            (event.id, event.tp.topic, event.tp.partition, event.epoch) in item_keys
+            or (event.id, event.tp.topic, event.tp.partition, -1) in item_keys
+            or (event.id, "", -1, event.epoch) in item_keys
+            or (event.id, "", -1, -1) in item_keys
+            or (event.tp.topic, event.tp.partition, event.epoch) in partition_keys
+            or (event.tp.topic, event.tp.partition, None) in partition_keys
+        )
+
+    def _discard_cancelled_batch_completion(
+        self,
+        *,
+        batch_id: str,
+        results: list[CompletionEvent],
+    ) -> None:
+        """Drop cancelled batch ownership without surfacing retryable completions."""
+        self._get_process_batch_manifests().pop(batch_id, None)
+        self._retire_active_process_batch_id(batch_id)
+        for event in results:
+            self._pop_registry_payload_for_completion(event)
+
     def _redispatch_retryable_batch_failures(
         self,
         *,
@@ -909,8 +1024,15 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         results: list[CompletionEvent],
     ) -> list[CompletionEvent]:
         """Redispatch retryable failed batch subset and return visible completions."""
+        if any(self._is_completion_cancelled(event) for event in results):
+            self._discard_cancelled_batch_completion(
+                batch_id=batch_id,
+                results=results,
+            )
+            return []
         visible_events: list[CompletionEvent] = []
         retry_items: list[WorkItem] = []
+        retry_payloads_by_id: dict[str, tuple[int, SerializedWorkItem]] = {}
         retry_worker_index: int | None = None
         for event in results:
             if event.status != CompletionStatus.FAILURE:
@@ -941,9 +1063,39 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     )
                 )
                 continue
+            original_payload = dict(payload)
             payload["requeue_attempts"] = attempts + 1
-            retry_items.append(_work_item_from_dict(payload))
+            retry_item = _work_item_from_dict(payload)
+            retry_items.append(retry_item)
+            retry_payloads_by_id[retry_item.id] = (worker_index, original_payload)
             retry_worker_index = worker_index
+        if not retry_items:
+            return visible_events
+        provider = getattr(self, "_poison_policy_snapshot_provider", None)
+        if callable(provider):
+            poison_policy = importlib.import_module(
+                "pyrallel_consumer.control_plane.poison_policy"
+            )
+            decision = poison_policy.apply_poison_policy(
+                retry_items,
+                ordering_mode=OrderingMode.KEY_HASH,
+                snapshot=provider(),
+            )
+            visible_events.extend(decision.forced_failure_events)
+            for tail_item in decision.truncated_tail_items:
+                tail_entry = retry_payloads_by_id.get(tail_item.id)
+                if tail_entry is None:
+                    continue
+                tail_worker_index, tail_payload = tail_entry
+                self._in_flight_registry[
+                    (
+                        tail_worker_index,
+                        tail_item.tp.topic,
+                        tail_item.tp.partition,
+                        tail_item.offset,
+                    )
+                ] = dict(tail_payload)
+            retry_items = list(decision.accepted_items)
         if not retry_items:
             return visible_events
         retry_route_identity = resolve_route_identity(retry_items[0])
@@ -953,6 +1105,41 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker_index=retry_worker_index,
             items=retry_items,
         )
+        retry_receipt = BatchSubmissionReceipt(
+            batch_id=retry_batch.batch_id,
+            owner="process",
+            worker_generation=retry_worker_index,
+            accepted=tuple(
+                (
+                    item.id,
+                    item.tp,
+                    item.offset,
+                    item.epoch,
+                    item.requeue_attempts + 1,
+                )
+                for item in retry_items
+            ),
+        )
+        registry = getattr(self, "_engine_settlement_notification_registry", None)
+        transfer = getattr(registry, "transfer_batch_owner", None)
+        if callable(transfer) and not transfer(
+            expected_old_batch_id=batch_id,
+            receipt=retry_receipt,
+        ):
+            for item in retry_items:
+                retry_entry = retry_payloads_by_id.get(item.id)
+                if retry_entry is None:
+                    continue
+                worker_index, original_payload = retry_entry
+                self._in_flight_registry[
+                    (
+                        worker_index,
+                        item.tp.topic,
+                        item.tp.partition,
+                        item.offset,
+                    )
+                ] = dict(original_payload)
+            return visible_events
         self._record_process_batch_manifest(
             batch_id=retry_batch.batch_id,
             worker_index=stable_worker_index_for_route(
@@ -970,6 +1157,40 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             )
         except Exception:
             self._get_process_batch_manifests().pop(retry_batch.batch_id, None)
+            rollback_transfer = getattr(registry, "transfer_batch_owner", None)
+            if callable(rollback_transfer):
+                rollback_receipt = BatchSubmissionReceipt(
+                    batch_id=batch_id,
+                    owner="process",
+                    worker_generation=retry_worker_index,
+                    accepted=tuple(
+                        (
+                            item.id,
+                            item.tp,
+                            item.offset,
+                            item.epoch,
+                            max(1, item.requeue_attempts),
+                        )
+                        for item in retry_items
+                    ),
+                )
+                rollback_transfer(
+                    expected_old_batch_id=retry_batch.batch_id,
+                    receipt=rollback_receipt,
+                )
+            for item in retry_items:
+                retry_entry = retry_payloads_by_id.get(item.id)
+                if retry_entry is None:
+                    continue
+                worker_index, original_payload = retry_entry
+                self._in_flight_registry[
+                    (
+                        worker_index,
+                        item.tp.topic,
+                        item.tp.partition,
+                        item.offset,
+                    )
+                ] = dict(original_payload)
             raise
         return visible_events
 
@@ -1323,20 +1544,20 @@ class ProcessExecutionEngine(BaseExecutionEngine):
         )
         self._record_input_ipc(1)
 
-    async def submit_batch(self, work_items: list[WorkItem]) -> None:
+    async def submit_batch(
+        self, work_items: list[WorkItem]
+    ) -> BatchSubmissionReceipt | None:
         """Submit a route-local work batch through the worker-pipe transport."""
         if getattr(self, "_is_shutdown", False):
             raise RuntimeError("ProcessExecutionEngine is shutting down")
         if not work_items:
-            await super().submit_batch(work_items)
-            return
+            return await super().submit_batch(work_items)
 
         route_identity = resolve_route_identity(work_items[0])
         if any(
             resolve_route_identity(item) != route_identity for item in work_items[1:]
         ):
-            await super().submit_batch(work_items)
-            return
+            return await super().submit_batch(work_items)
 
         self._drain_registry_events()
         self._recover_expired_batch_start_acks(now=time.monotonic())
@@ -1355,12 +1576,30 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             worker_index=worker_index,
             items=work_items,
         )
+        receipt = BatchSubmissionReceipt(
+            batch_id=route_batch.batch_id,
+            owner="process",
+            worker_generation=worker_index,
+            accepted=tuple(
+                (
+                    item.id,
+                    item.tp,
+                    item.offset,
+                    item.epoch,
+                    item.requeue_attempts + 1,
+                )
+                for item in work_items
+            ),
+        )
         dispatch_route_batch = getattr(self._transport, "dispatch_route_batch")
         self._record_process_batch_manifest(
             batch_id=route_batch.batch_id,
             worker_index=worker_index,
             items=work_items,
         )
+        registry = getattr(self, "_engine_settlement_notification_registry", None)
+        if registry is not None:
+            registry.register_batch_owner(receipt)
         try:
             await asyncio.to_thread(
                 dispatch_route_batch,
@@ -1372,6 +1611,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             self._process_batch_manifests.pop(route_batch.batch_id, None)
             raise
         self._record_input_ipc(len(work_items), route_batch=True)
+        return receipt
 
     async def poll_completed_events(
         self, batch_limit: int = 1000
@@ -1447,6 +1687,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
             else time.monotonic() + max(timeout_seconds, 0)
         )
         while True:
+            self._drain_registry_events()
+            if self._get_process_control_events():
+                return True
             try:
                 raw_event = self._completion_queue.get_nowait()
             except queue.Empty:
@@ -1468,6 +1711,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                     return completion_buffer.has_prefetched_events
 
             if completion_buffer.prefetch_queue_item(raw_event):
+                return True
+            self._drain_registry_events()
+            if self._get_process_control_events():
                 return True
 
     def _initialize_runtime_timing_state(self) -> None:
@@ -1653,7 +1899,9 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 )
             self._record_completion_ipc(1, batch_payload=False)
             return [_completion_event_from_dict(payload)]
-        return [raw_event]
+        if isinstance(raw_event, dict) and raw_event.get("kind") == "control_wakeup":
+            return []
+        return [cast(CompletionEvent, raw_event)]
 
     def _completion_msgpack_max_bytes(self) -> int:
         """Return completion decode msgpack byte limit without config construction."""
@@ -1712,6 +1960,7 @@ class ProcessExecutionEngine(BaseExecutionEngine):
                 "ProcessExecutionEngine.shutdown() called but already shut down. Skipping."
             )
             return
+        self.cancel_batch_items(BatchCancelScope(reason="shutdown"))
         self._is_shutdown = True
 
         await self._get_shutdown_support().shutdown(

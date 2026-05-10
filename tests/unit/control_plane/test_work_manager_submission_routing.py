@@ -3,7 +3,17 @@
 # Role: Verifies WorkManager message submission, route-batch scheduling, poison-message routing, and submit errors.
 # Extend here for focused control-plane regression coverage in this area.
 
+from pyrallel_consumer.config import ExecutionConfig
+from pyrallel_consumer.dto import ExecutionMode
+from pyrallel_consumer.execution_plane.async_engine import AsyncExecutionEngine
+from pyrallel_consumer.execution_plane.base import BatchCancelScope
+from pyrallel_consumer.execution_plane.worker_spec import (
+    BatchWorkerRuntimeSpec,
+    WorkerSpec,
+)
 from tests.unit.control_plane._work_manager_support import (
+    BaseExecutionEngine,
+    BatchSubmissionReceipt,
     BatchSubmitError,
     CompletionEvent,
     CompletionStatus,
@@ -11,11 +21,53 @@ from tests.unit.control_plane._work_manager_support import (
     OffsetTracker,
     OrderingMode,
     PoisonMessageCircuitBreaker,
+    WorkItem,
     WorkManager,
     _open_poison_circuit_for_key,
+    asyncio,
     patch,
     pytest,
 )
+
+
+class _ReceiptBatchEngine(BaseExecutionEngine):
+    def __init__(self) -> None:
+        self.submitted_batch: list[WorkItem] = []
+        self.completed_events: list[CompletionEvent] = []
+
+    @property
+    def supports_ordered_route_batch(self) -> bool:
+        return True
+
+    async def submit(self, work_item):
+        del work_item
+        raise AssertionError("batch dispatch expected")
+
+    async def submit_batch(self, work_items):
+        self.submitted_batch = list(work_items)
+        return BatchSubmissionReceipt(
+            batch_id="batch-ledger",
+            owner="test-engine",
+            worker_generation=9,
+            accepted=tuple(
+                (item.id, item.tp, item.offset, item.epoch, item.requeue_attempts + 1)
+                for item in work_items
+            ),
+        )
+
+    async def poll_completed_events(self, batch_limit: int = 1000):
+        del batch_limit
+        return list(getattr(self, "completed_events", []))
+
+    async def wait_for_completion(self, timeout_seconds=None):
+        del timeout_seconds
+        return True
+
+    def get_in_flight_count(self) -> int:
+        return len(getattr(self, "submitted_batch", []))
+
+    async def shutdown(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -124,6 +176,342 @@ async def test_batch_dispatch_enabled_uses_submit_batch_for_single_item_lease(
     assert submitted_batch[0].offset == 10
     assert work_manager.get_total_in_flight_count() == 1
     assert work_manager.get_total_queued_messages() == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_receipt_populates_active_attempt_ledger_and_fences_stale_attempt(
+    mock_dto_topic_partition,
+):
+    # Given: a batch-aware engine returns a submission receipt for accepted work.
+    engine = _ReceiptBatchEngine()
+    work_manager = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = MagicMock(spec=OffsetTracker)
+    tracker.get_current_epoch.return_value = 1
+    tracker.get_gaps.return_value = []
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        1,
+        b"message-key",
+        b"payload",
+    )
+    await work_manager.schedule()
+    accepted_item = engine.submitted_batch[0]
+    ledger_key = (
+        accepted_item.id,
+        accepted_item.tp.topic,
+        accepted_item.tp.partition,
+        accepted_item.offset,
+        accepted_item.epoch,
+    )
+
+    # When: an otherwise matching completion arrives from the wrong attempt.
+    engine.completed_events = [
+        CompletionEvent(
+            id=accepted_item.id,
+            tp=accepted_item.tp,
+            offset=accepted_item.offset,
+            epoch=accepted_item.epoch,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=99,
+        )
+    ]
+    completed_events = await work_manager.poll_completed_events(
+        schedule_after_release=False
+    )
+
+    # Then: the WorkManager-owned active attempt ledger rejects stale attempts
+    # before offset, poison, metrics, or in-flight release side effects.
+    assert work_manager._active_attempt_ledger[ledger_key] == {
+        "attempt": 1,
+        "batch_id": "batch-ledger",
+        "owner": "test-engine",
+        "worker_generation": 9,
+    }
+    assert completed_events == engine.completed_events
+    tracker.mark_complete.assert_not_called()
+    assert accepted_item.id in work_manager._in_flight_work_items
+    assert work_manager.get_total_in_flight_count() == 1
+
+    # And: the matching active attempt is accepted and clears ledger ownership.
+    engine.completed_events = [
+        CompletionEvent(
+            id=accepted_item.id,
+            tp=accepted_item.tp,
+            offset=accepted_item.offset,
+            epoch=accepted_item.epoch,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    ]
+    await work_manager.poll_completed_events(schedule_after_release=False)
+    assert ledger_key not in work_manager._active_attempt_ledger
+
+
+@pytest.mark.asyncio
+async def test_cancel_scope_releases_waiter_and_late_settlement_notification_is_noop(
+    mock_dto_topic_partition,
+):
+    # Given: an engine-owned item is waiting for settlement when fatal/revoke cancellation wins.
+    engine = _ReceiptBatchEngine()
+    work_manager = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    wait_task = asyncio.create_task(
+        work_manager.wait_for_item_settlement(
+            item_id="work-cancelled",
+            tp=mock_dto_topic_partition,
+            offset=10,
+            epoch=1,
+            attempt=1,
+            batch_id="batch-cancelled",
+        )
+    )
+    await asyncio.sleep(0)
+
+    # When: the scope is cancelled before a late settlement notification arrives.
+    work_manager.cancel_scope(
+        BatchCancelScope(
+            item_ids=("work-cancelled",),
+            topic_partitions=(mock_dto_topic_partition,),
+            epoch=1,
+            reason="fatal",
+        )
+    )
+    result = await wait_task
+    work_manager.notify_item_settled(
+        CompletionEvent(
+            id="work-cancelled",
+            tp=mock_dto_topic_partition,
+            offset=10,
+            epoch=1,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=1,
+        )
+    )
+
+    # Then: cancellation resolves waiters false and late settlement cannot resurrect them.
+    assert result is False
+    assert work_manager._settlement_waiters == {}
+    assert work_manager._settlement_notification_ledger == {}
+
+
+@pytest.mark.asyncio
+async def test_async_batch_receipt_populates_active_attempt_ledger_and_fences_stale_attempt(
+    mock_dto_topic_partition,
+):
+    # Given: WorkManager submits a batch to the real async batch engine.
+    release_worker = asyncio.Event()
+
+    async def batch_worker(_items: list[WorkItem]):
+        await release_worker.wait()
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=1)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config,
+        worker_fn=WorkerSpec.batch(batch_worker, runtime),
+    )
+    work_manager = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = MagicMock(spec=OffsetTracker)
+    tracker.get_current_epoch.return_value = 1
+    tracker.get_gaps.return_value = []
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        1,
+        b"message-key",
+        b"payload",
+    )
+    await work_manager.schedule()
+    accepted_item = next(iter(work_manager._in_flight_work_items.values()))
+    ledger_key = (
+        accepted_item.id,
+        accepted_item.tp.topic,
+        accepted_item.tp.partition,
+        accepted_item.offset,
+        accepted_item.epoch,
+    )
+
+    # When: an otherwise matching completion arrives from the wrong async attempt.
+    should_schedule = work_manager._process_completion_event(
+        CompletionEvent(
+            id=accepted_item.id,
+            tp=accepted_item.tp,
+            offset=accepted_item.offset,
+            epoch=accepted_item.epoch,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=99,
+        )
+    )
+
+    # Then: async receipt ownership fences the stale completion before side effects.
+    try:
+        assert work_manager._active_attempt_ledger[ledger_key]["owner"] == "async"
+        assert should_schedule is False
+        tracker.mark_complete.assert_not_called()
+        assert accepted_item.id in work_manager._in_flight_work_items
+        assert work_manager.get_total_in_flight_count() == 1
+    finally:
+        release_worker.set()
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_async_owned_attempt_two_without_handoff_is_ignored_without_side_effects(
+    mock_dto_topic_partition,
+):
+    # Given: async-owned attempt 1 is active, but no engine handoff promoted attempt 2.
+    engine = _ReceiptBatchEngine()
+    work_manager = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    tracker = MagicMock(spec=OffsetTracker)
+    tracker.get_current_epoch.return_value = 1
+    tracker.get_gaps.return_value = []
+    work_manager.on_assign({mock_dto_topic_partition: tracker})
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        1,
+        b"message-key",
+        b"payload",
+    )
+    await work_manager.schedule()
+    accepted_item = engine.submitted_batch[0]
+    ledger_key = (
+        accepted_item.id,
+        accepted_item.tp.topic,
+        accepted_item.tp.partition,
+        accepted_item.offset,
+        accepted_item.epoch,
+    )
+    work_manager._active_attempt_ledger[ledger_key]["owner"] = "async"
+
+    # When: attempt 2 completion arrives before an atomic ownership handoff.
+    should_schedule = work_manager._process_completion_event(
+        CompletionEvent(
+            id=accepted_item.id,
+            tp=accepted_item.tp,
+            offset=accepted_item.offset,
+            epoch=accepted_item.epoch,
+            status=CompletionStatus.SUCCESS,
+            error=None,
+            attempt=2,
+        )
+    )
+
+    # Then: WorkManager rejects it without offset, in-flight, or ledger side effects.
+    assert should_schedule is False
+    assert work_manager._active_attempt_ledger[ledger_key] == {
+        "attempt": 1,
+        "batch_id": "batch-ledger",
+        "owner": "async",
+        "worker_generation": 9,
+    }
+    tracker.mark_complete.assert_not_called()
+    assert accepted_item.id in work_manager._in_flight_work_items
+    assert work_manager.get_total_in_flight_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_batch_receipt_allows_active_internal_retry_completion(
+    mock_dto_topic_partition,
+):
+    # Given: a real async batch engine owns a batch and succeeds after an internal retry.
+    calls = 0
+
+    async def batch_worker(_items: list[WorkItem]):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("retryable")
+        return None
+
+    config = ExecutionConfig(mode=ExecutionMode.ASYNC, max_retries=2)
+    runtime = BatchWorkerRuntimeSpec.from_config(
+        ordering_mode=OrderingMode.KEY_HASH,
+        batch_worker_config=object(),
+        max_retries=config.max_retries,
+    )
+    engine = AsyncExecutionEngine(
+        config=config,
+        worker_fn=WorkerSpec.batch(batch_worker, runtime),
+    )
+    work_manager = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        max_in_flight_messages=10,
+        route_batch_size=64,
+        batch_dispatch_enabled=True,
+    )
+    work_manager.on_assign([mock_dto_topic_partition])
+    tracker = work_manager._offset_trackers[mock_dto_topic_partition]
+    epoch = tracker.get_current_epoch()
+    await work_manager.submit_message(
+        mock_dto_topic_partition,
+        10,
+        epoch,
+        b"message-key",
+        b"payload",
+    )
+    await work_manager.schedule()
+    accepted_item = next(iter(work_manager._in_flight_work_items.values()))
+    ledger_key = (
+        accepted_item.id,
+        accepted_item.tp.topic,
+        accepted_item.tp.partition,
+        accepted_item.offset,
+        accepted_item.epoch,
+    )
+
+    try:
+        assert await engine.wait_for_completion(timeout_seconds=3.0) is True
+        completed_events = await work_manager.poll_completed_events(
+            schedule_after_release=False
+        )
+
+        # Then: the active async-owned retry completion is accepted, not fenced.
+        assert [
+            (event.id, event.status, event.attempt) for event in completed_events
+        ] == [(accepted_item.id, CompletionStatus.SUCCESS, 2)]
+        assert tracker.is_completed_uncommitted(10)
+        assert ledger_key not in work_manager._active_attempt_ledger
+        assert accepted_item.id not in work_manager._in_flight_work_items
+        assert work_manager.get_total_in_flight_count() == 0
+    finally:
+        await engine.shutdown()
 
 
 @pytest.mark.asyncio

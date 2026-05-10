@@ -3,6 +3,7 @@
 # Role: Verifies worker registry identity matching, pending dispatch accounting, and backpressure slot behavior.
 # Extend here for focused process execution engine regression coverage in this area.
 
+from pyrallel_consumer.execution_plane.base import BatchCancelScope
 from tests.unit.execution_plane._process_execution_engine_support import (
     Any,
     ExecutionConfig,
@@ -118,6 +119,52 @@ def test_registry_batch_start_seeds_in_flight_from_parent_manifest() -> None:
     assert engine_any._process_batch_manifests == {}
 
 
+def test_registry_batch_start_drops_tombstoned_parent_manifest() -> None:
+    # Given: a parent manifest is cancelled before its child batch_start ack arrives.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    tombstoned = WorkItem(
+        "work-42", TopicPartition("topic", 1), 42, 7, b"key", b"parent"
+    )
+    kept = WorkItem("work-43", TopicPartition("topic", 1), 43, 7, b"key", b"parent")
+    engine_any._in_flight_registry = {}
+    engine_any._process_batch_manifests = {
+        "batch-parent": {
+            "worker_index": 0,
+            "items": [_work_item_to_dict(tombstoned), _work_item_to_dict(kept)],
+        }
+    }
+    engine_any._active_process_batch_ids = {"batch-parent"}
+    engine_any._transport = Mock()
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=(tombstoned.id,),
+            epoch=tombstoned.epoch,
+            reason="revoke",
+        )
+    )
+
+    engine._apply_registry_event(
+        {
+            "kind": "batch_start",
+            "batch_id": "batch-parent",
+            "worker_index": 0,
+            "item_ids": [tombstoned.id, kept.id],
+            "item_count": 2,
+        }
+    )
+
+    # Then: only the non-tombstoned item is replayed into active recovery state.
+    assert engine_any._in_flight_registry == {
+        (0, "topic", 1, 43): _work_item_to_dict(kept),
+    }
+    assert engine_any._process_batch_manifests == {}
+    assert engine_any._active_process_batch_ids == {"batch-parent"}
+
+
 def test_expired_batch_start_ack_requeues_parent_manifest() -> None:
     # Given: a parent batch manifest has not received batch_start before its deadline.
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
@@ -148,6 +195,40 @@ def test_expired_batch_start_ack_requeues_parent_manifest() -> None:
     assert recovered == 1
     assert transport.requeued_payloads == [[payload]]
     assert engine_any._process_batch_manifests == {}
+
+
+def test_expired_batch_start_ack_does_not_requeue_tombstoned_manifest() -> None:
+    # Given: a parent manifest times out after its item has been tombstoned.
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    item = WorkItem("work-42", TopicPartition("topic", 1), 42, 7, b"key", b"parent")
+    payload = _work_item_to_dict(item)
+    transport = _RequeueRecordingTransport()
+    engine_any._transport = transport
+    engine_any._process_batch_manifests = {
+        "batch-timeout": {
+            "worker_index": 0,
+            "items": [payload],
+            "start_ack_deadline_at": 10.0,
+        }
+    }
+    engine_any._active_process_batch_ids = {"batch-timeout"}
+    engine.cancel_batch_items(
+        BatchCancelScope(
+            item_ids=(item.id,),
+            topic_partitions=(item.tp,),
+            epoch=item.epoch,
+            reason="shutdown",
+        )
+    )
+
+    recovered = engine._recover_expired_batch_start_acks(now=11.0)
+
+    # Then: recovery consumes ownership but does not replay cancelled payloads.
+    assert recovered == 1
+    assert transport.requeued_payloads == []
+    assert engine_any._process_batch_manifests == {}
+    assert engine_any._active_process_batch_ids == set()
 
 
 def test_registry_start_event_overwrites_stale_identity_when_epoch_advances() -> None:

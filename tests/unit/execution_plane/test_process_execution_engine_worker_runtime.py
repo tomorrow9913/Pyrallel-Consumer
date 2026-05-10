@@ -31,6 +31,7 @@ from tests.unit.execution_plane._process_execution_engine_support import (
     _worker_loop,
     batch_completion_from_dict,
     cast,
+    deque,
     msgpack,
     pytest,
     queue,
@@ -143,6 +144,11 @@ def test_worker_runtime_invalid_batch_result_surfaces_parent_fatal_control() -> 
         for _ in range(registry_event_queue.qsize())
     ]
     done_events = [event for event in registry_events if event.get("kind") == "done"]
+    fatal_registry_events = [
+        event
+        for event in registry_events
+        if event.get("kind") == "control" and event.get("control_kind") == "fatal"
+    ]
     engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
     engine_any = cast(Any, engine)
     engine_any._transport = Mock()
@@ -157,14 +163,105 @@ def test_worker_runtime_invalid_batch_result_surfaces_parent_fatal_control() -> 
     control_events = asyncio.run(engine.poll_control_events())
 
     # Then: invalid batch contracts are fatal controls, not committable completions.
+    wakeup = completion_queue.get_nowait()
+    assert wakeup == {"kind": "control_wakeup"}
     assert completion_queue.empty()
     assert done_events == []
+    assert len(fatal_registry_events) == 1
+    assert fatal_registry_events[0]["error_code"] == "invalid_batch_worker_result"
+    assert fatal_registry_events[0]["failure_class"] == "BATCH_WORKER_CONTRACT_ERROR"
+    assert fatal_registry_events[0]["committable"] is False
+    assert fatal_registry_events[0]["batch_id"] == "batch-invalid-result"
+    assert fatal_registry_events[0]["worker_generation"] == 0
+    assert fatal_registry_events[0]["item_ids"] == ("work-1", "work-2")
+    assert fatal_registry_events[0]["item_count"] == 2
+    assert fatal_registry_events[0]["epoch"] == 7
+    assert fatal_registry_events[0]["attempt"] == 1
     assert len(control_events) == 1
     assert control_events[0].kind == "fatal"
+    assert control_events[0].code == "invalid_batch_worker_result"
+    assert control_events[0].failure_class == "BATCH_WORKER_CONTRACT_ERROR"
+    assert control_events[0].committable is False
+    assert control_events[0].batch_id == "batch-invalid-result"
+    assert control_events[0].worker_generation == 0
+    assert control_events[0].item_ids == ("work-1", "work-2")
+    assert control_events[0].item_count == 2
+    assert control_events[0].epoch == 7
+    assert control_events[0].attempt == 1
     assert isinstance(control_events[0].error, BatchWorkerContractError)
     assert "invalid_batch_worker_result:missing_item_ids" in str(
         control_events[0].error
     )
+
+
+@pytest.mark.asyncio
+async def test_process_wait_for_completion_wakes_for_control_only_invalid_batch_result() -> (
+    None
+):
+    # Given: an invalid process batch result produces no completion event.
+    task_source: queue.Queue[object] = queue.Queue()
+    completion_queue: queue.Queue[object] = queue.Queue()
+    registry_event_queue: queue.Queue[object] = queue.Queue()
+    items = [
+        WorkItem(f"work-{offset}", TopicPartition("topic", 1), offset, 7, b"key", b"")
+        for offset in (1, 2)
+    ]
+    task_source.put(
+        _serialize_batch_payload(
+            RouteBatch("batch-invalid-wakeup", ("topic", 1, b"key"), 0, items),
+            1.0,
+        )
+    )
+    task_source.put(None)
+
+    def batch_worker(batch: list[WorkItem]) -> dict[str, BatchItemOutcome]:
+        return {batch[0].id: BatchItemOutcome.success()}
+
+    worker_spec = WorkerSpec.batch(
+        batch_worker,
+        BatchWorkerRuntimeSpec.from_config(
+            ordering_mode=OrderingMode.KEY_HASH,
+            batch_worker_config=object(),
+            max_retries=1,
+        ),
+    )
+
+    _worker_loop(
+        task_source,
+        completion_queue,  # type: ignore[arg-type]
+        registry_event_queue,  # type: ignore[arg-type]
+        worker_spec,  # type: ignore[arg-type]
+        0,
+        ExecutionConfig(
+            mode=ExecutionMode.PROCESS,
+            max_retries=1,
+            process_config=ProcessConfig(process_count=1),
+        ),
+    )
+    engine = ProcessExecutionEngine.__new__(ProcessExecutionEngine)
+    engine_any = cast(Any, engine)
+    engine_any._completion_queue = completion_queue
+    engine_any._registry_event_queue = registry_event_queue
+    engine_any._prefetched_completion_events = deque()
+    engine_any._seen_completion_identities = set()
+    engine_any._seen_completion_identity_order = deque()
+    engine_any._process_control_events = deque()
+    engine_any._transport = Mock()
+    engine_any._in_flight_registry = {}
+    engine_any._is_shutdown = False
+    engine_any._ensure_workers_alive = lambda: None  # type: ignore[method-assign]
+    engine_any._initialize_runtime_timing_state = lambda: None  # type: ignore[method-assign]
+    engine_any._record_main_to_worker_ipc = lambda *_args: None  # type: ignore[method-assign]
+    engine_any._record_worker_exec = lambda *_args: None  # type: ignore[method-assign]
+
+    assert await engine.wait_for_completion(timeout_seconds=0.1) is True
+    assert await engine.poll_completed_events() == []
+    control_events = await engine.poll_control_events()
+
+    # Then: control-only fatal wakes the wait path without a committable completion.
+    assert len(control_events) == 1
+    assert control_events[0].kind == "fatal"
+    assert control_events[0].batch_id == "batch-invalid-wakeup"
 
 
 def test_worker_runtime_batch_worker_timeout_exits_without_success_completion(

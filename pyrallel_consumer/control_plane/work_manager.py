@@ -3,6 +3,7 @@
 # Role: Schedules WorkItems, enforces ordering and in-flight limits, and reconciles completions.
 # Extend here for scheduling/accounting rules; keep broker polling and commits outside this module.
 import asyncio
+import importlib
 import logging
 import time
 import uuid
@@ -30,7 +31,12 @@ from pyrallel_consumer.dto import (
 )
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 from pyrallel_consumer.dto import WorkItem, WorkManagerPipelineDiagnostics
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchSubmitError
+from pyrallel_consumer.execution_plane.base import (
+    BaseExecutionEngine,
+    BatchCancelScope,
+    BatchSubmissionReceipt,
+    BatchSubmitError,
+)
 
 OffsetTrackerAssignment = Mapping[DtoTopicPartition, int | OffsetTracker]
 GroupedMessage = tuple[int, int, Any] | tuple[int, int, Any, Any]
@@ -89,6 +95,13 @@ class WorkManager:
             raise ValueError("route_batch_size must be >= 1")
         self._logger = logging.getLogger(__name__)
         self._execution_engine = execution_engine
+        settlement_registry_setter = getattr(
+            self._execution_engine,
+            "set_engine_settlement_notification_registry",
+            None,
+        )
+        if callable(settlement_registry_setter):
+            settlement_registry_setter(self)
         self._offset_trackers: Dict[DtoTopicPartition, OffsetTracker] = {}
         self._queue_topology = WorkQueueTopology()
         self._virtual_partition_queues = self._queue_topology.virtual_partition_queues
@@ -126,6 +139,15 @@ class WorkManager:
         self._poison_message_circuit = poison_message_circuit
         self._route_batch_size = route_batch_size
         self._batch_dispatch_enabled = batch_dispatch_enabled
+        self._active_attempt_ledger: dict[
+            tuple[str, str, int, int, int], dict[str, Any]
+        ] = {}
+        self._settlement_notification_ledger: dict[
+            tuple[str, str, int, int, int, int], dict[str, Any]
+        ] = {}
+        self._settlement_waiters: dict[
+            tuple[str, str, int, int, int, int, str], asyncio.Future[bool]
+        ] = {}
 
     def get_ordering_mode(self) -> OrderingMode:
         """Return ordering mode for work scheduling and completion accounting.
@@ -153,6 +175,16 @@ class WorkManager:
 
         """
         self._metrics_exporter = metrics_exporter
+
+    def capture_poison_policy_snapshot(self) -> object:
+        """Capture immutable poison policy decisions from WorkManager-owned state."""
+        poison_policy = importlib.import_module(
+            "pyrallel_consumer.control_plane.poison_policy"
+        )
+        return poison_policy.capture_poison_policy_snapshot(
+            self._poison_message_circuit,
+            now=time.perf_counter(),
+        )
 
     def get_average_completion_latency_seconds(self) -> Optional[float]:
         """Return average completion latency seconds for work scheduling and completion accounting.
@@ -348,6 +380,16 @@ class WorkManager:
         dispatch_time = self._dispatch_timestamps.pop(work_item_id, None)
         if completed_item is None:
             return False, dispatch_time
+        self._active_attempt_ledger.pop(
+            (
+                completed_item.id,
+                completed_item.tp.topic,
+                completed_item.tp.partition,
+                completed_item.offset,
+                completed_item.epoch,
+            ),
+            None,
+        )
         tp_offset_key = (completed_item.tp, completed_item.offset)
         if self._work_item_ids_by_tp_offset.get(tp_offset_key) == work_item_id:
             self._work_item_ids_by_tp_offset.pop(tp_offset_key, None)
@@ -463,13 +505,198 @@ class WorkManager:
                 return index, True
         return len(items), False
 
-    def _record_submitted_items(self, items: list[WorkItem]) -> None:
+    def _record_batch_submission_receipt(
+        self,
+        receipt: BatchSubmissionReceipt | None,
+    ) -> None:
+        """Record engine-owned batch acceptance in the active attempt ledger."""
+        if receipt is None:
+            return
+        self.register_batch_owner(receipt)
+
+    def _batch_ledger_key(
+        self,
+        item_id: str,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+    ) -> tuple[str, str, int, int, int]:
+        """Return active-attempt ledger key for an accepted batch item."""
+        return (item_id, tp.topic, tp.partition, offset, epoch)
+
+    def _batch_ledger_value(
+        self,
+        receipt: BatchSubmissionReceipt,
+        attempt: int,
+    ) -> dict[str, Any]:
+        """Return active-attempt ledger ownership metadata."""
+        return {
+            "attempt": attempt,
+            "batch_id": receipt.batch_id,
+            "owner": receipt.owner,
+            "worker_generation": receipt.worker_generation,
+        }
+
+    def register_batch_owner(self, receipt: BatchSubmissionReceipt) -> None:
+        """Register accepted batch ownership without overwriting conflicts."""
+        updates: list[tuple[tuple[str, str, int, int, int], dict[str, Any]]] = []
+        for item_id, tp, offset, epoch, attempt in receipt.accepted:
+            key = self._batch_ledger_key(item_id, tp, offset, epoch)
+            value = self._batch_ledger_value(receipt, attempt)
+            existing = self._active_attempt_ledger.get(key)
+            if existing is not None and existing != value:
+                raise RuntimeError("batch_owner_conflict")
+            updates.append((key, value))
+        for key, value in updates:
+            self._active_attempt_ledger[key] = value
+
+    def transfer_batch_owner(
+        self,
+        *,
+        expected_old_batch_id: str,
+        receipt: BatchSubmissionReceipt,
+    ) -> bool:
+        """CAS-transfer accepted item ownership to a new batch receipt."""
+        updates: list[tuple[tuple[str, str, int, int, int], dict[str, Any]]] = []
+        for item_id, tp, offset, epoch, attempt in receipt.accepted:
+            key = self._batch_ledger_key(item_id, tp, offset, epoch)
+            existing = self._active_attempt_ledger.get(key)
+            if existing is None:
+                if item_id not in self._in_flight_work_items:
+                    continue
+                return False
+            if existing.get("batch_id") != expected_old_batch_id:
+                return False
+            updates.append((key, self._batch_ledger_value(receipt, attempt)))
+        for key, value in updates:
+            self._active_attempt_ledger[key] = value
+        return True
+
+    def _scope_matches_item_identity(
+        self,
+        scope: BatchCancelScope,
+        *,
+        item_id: str,
+        tp_topic: str,
+        tp_partition: int,
+        epoch: int,
+    ) -> bool:
+        """Return whether a batch cancellation scope matches an item identity."""
+        if not scope.item_ids and not scope.topic_partitions and scope.epoch is None:
+            return True
+        if scope.item_ids and item_id not in scope.item_ids:
+            return False
+        if scope.topic_partitions:
+            scoped_partitions = {
+                (tp.topic, tp.partition) for tp in scope.topic_partitions
+            }
+            if (tp_topic, tp_partition) not in scoped_partitions:
+                return False
+        if scope.epoch is not None and epoch != scope.epoch:
+            return False
+        return True
+
+    def cancel_scope(self, scope: BatchCancelScope) -> None:
+        """Cancel active ownership and settlement waiters for an internal scope."""
+        for active_key in list(self._active_attempt_ledger):
+            item_id, tp_topic, tp_partition, _offset, epoch = active_key
+            if self._scope_matches_item_identity(
+                scope,
+                item_id=item_id,
+                tp_topic=tp_topic,
+                tp_partition=tp_partition,
+                epoch=epoch,
+            ):
+                self._active_attempt_ledger.pop(active_key, None)
+        for notification_key in list(self._settlement_notification_ledger):
+            item_id, tp_topic, tp_partition, _offset, epoch, _attempt = notification_key
+            if self._scope_matches_item_identity(
+                scope,
+                item_id=item_id,
+                tp_topic=tp_topic,
+                tp_partition=tp_partition,
+                epoch=epoch,
+            ):
+                self._settlement_notification_ledger.pop(notification_key, None)
+        for waiter_key, future in list(self._settlement_waiters.items()):
+            (
+                item_id,
+                tp_topic,
+                tp_partition,
+                _offset,
+                epoch,
+                _attempt,
+                _batch_id,
+            ) = waiter_key
+            if self._scope_matches_item_identity(
+                scope,
+                item_id=item_id,
+                tp_topic=tp_topic,
+                tp_partition=tp_partition,
+                epoch=epoch,
+            ):
+                self._settlement_waiters.pop(waiter_key, None)
+                if not future.done():
+                    future.set_result(False)
+
+    async def wait_for_item_settlement(
+        self,
+        *,
+        item_id: str,
+        tp: DtoTopicPartition,
+        offset: int,
+        epoch: int,
+        attempt: int,
+        batch_id: str,
+    ) -> bool:
+        """Wait until broker completion processing settles an engine-owned item."""
+        key = (item_id, tp.topic, tp.partition, offset, epoch, attempt, batch_id)
+        future = self._settlement_waiters.get(key)
+        if future is None:
+            future = asyncio.get_running_loop().create_future()
+            self._settlement_waiters[key] = future
+        return await future
+
+    def notify_item_settled(self, event: CompletionEvent) -> None:
+        """Notify engine-owned waiters after broker completion processing settles an item."""
+        ledger_key = (
+            event.id,
+            event.tp.topic,
+            event.tp.partition,
+            event.offset,
+            event.epoch,
+            event.attempt,
+        )
+        ownership = self._settlement_notification_ledger.pop(ledger_key, None)
+        if ownership is None:
+            return
+        waiter_key = (*ledger_key, ownership["batch_id"])
+        future = self._settlement_waiters.pop(waiter_key, None)
+        if future is not None and not future.done():
+            future.set_result(True)
+
+    def _record_submitted_items(
+        self,
+        items: list[WorkItem],
+        *,
+        receipt: BatchSubmissionReceipt | None = None,
+    ) -> None:
         """Record successfully accepted work items in dispatch accounting."""
+        self._record_batch_submission_receipt(receipt)
         for dequeued_item in items:
             self._total_queued_messages = max(0, self._total_queued_messages - 1)
             self._current_in_flight_count += 1
             self._dispatch_timestamps[dequeued_item.id] = time.perf_counter()
             self._record_ordering_lock(dequeued_item)
+
+    def _is_stale_completion_attempt(
+        self,
+        event: CompletionEvent,
+        active_attempt: dict[str, Any],
+    ) -> bool:
+        """Return whether a completion attempt is outside active ownership."""
+        expected_attempt = active_attempt["attempt"]
+        return event.attempt != expected_attempt
 
     def _record_ordering_lock(self, item: WorkItem) -> None:
         """Record ordering lock for work scheduling and completion accounting.
@@ -625,6 +852,18 @@ class WorkManager:
             None
 
         """
+        if revoked_tps:
+            scope = BatchCancelScope(
+                topic_partitions=tuple(revoked_tps),
+                reason="revoke",
+            )
+            cancel_batch_items = getattr(
+                self._execution_engine, "cancel_batch_items", None
+            )
+            if callable(cancel_batch_items):
+                cancel_batch_items(scope)
+            else:
+                self.cancel_scope(scope)
         for tp in revoked_tps:
             removed_count = self._queue_topology.revoke(tp)
             self._runnable_queue_keys = self._queue_topology.runnable_queue_keys
@@ -813,6 +1052,7 @@ class WorkManager:
                     if selected_queue_key is not None:
                         self._leased_queue_keys.add(selected_queue_key)
                     try:
+                        receipt = None
                         if (
                             len(items_to_submit) == 1
                             and not self._batch_dispatch_enabled
@@ -822,13 +1062,15 @@ class WorkManager:
                             # submit_batch must be atomic or raise BatchSubmitError
                             # with accepted_count for a partially accepted prefix.
                             # Generic exceptions are treated as zero accepted.
-                            await self._execution_engine.submit_batch(items_to_submit)
+                            receipt = await self._execution_engine.submit_batch(
+                                items_to_submit
+                            )
                         dequeued_items = self._queue_topology.dequeue_submitted_items(
                             selected_tp, selected_key, len(items_to_submit)
                         )
                         if not dequeued_items:
                             return
-                        self._record_submitted_items(dequeued_items)
+                        self._record_submitted_items(dequeued_items, receipt=receipt)
                         if (
                             batch_truncated_by_force_fail
                             and selected_queue_key is not None
@@ -950,7 +1192,34 @@ class WorkManager:
             self._dispatch_timestamps.pop(event.id, None)
             return False
 
+        active_attempt = self._active_attempt_ledger.get(
+            (event.id, event.tp.topic, event.tp.partition, event.offset, event.epoch)
+        )
+        if active_attempt is not None and self._is_stale_completion_attempt(
+            event,
+            active_attempt,
+        ):
+            self._logger.warning(
+                "Ignoring stale completion attempt for work item %s offset=%d expected_attempt=%s observed_attempt=%s",
+                event.id,
+                event.offset,
+                active_attempt["attempt"],
+                event.attempt,
+            )
+            return False
+
         completed_item = self._in_flight_work_items[event.id]
+        if active_attempt is not None:
+            self._settlement_notification_ledger[
+                (
+                    event.id,
+                    event.tp.topic,
+                    event.tp.partition,
+                    event.offset,
+                    event.epoch,
+                    event.attempt,
+                )
+            ] = dict(active_attempt)
         if event.tp not in self._shared_offset_trackers:
             offset_tracker.mark_complete(event.offset)
             self._invalidate_blocking_cache()

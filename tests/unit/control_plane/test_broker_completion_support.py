@@ -115,6 +115,112 @@ async def test_process_completed_events_marks_complete_and_clears_cache() -> Non
 
 
 @pytest.mark.asyncio
+async def test_process_completed_events_notifies_after_offset_mark_complete() -> None:
+    # Given: a normal completion has a settlement notifier installed.
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    settlement_order: list[str] = []
+
+    async def notify_settled(event: CompletionEvent) -> None:
+        assert event.offset in tracker.completed_offsets
+        settlement_order.append(event.id)
+
+    support = BrokerCompletionSupport(
+        kafka_config=KafkaConfig(),
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict(),
+        should_cache_message_payloads=lambda: False,
+        pop_cached_message=lambda _cache_key: None,
+        publish_to_dlq=AsyncMock(return_value=True),
+        logger=MagicMock(),
+        settlement_notifier=notify_settled,
+    )
+
+    # When: completion processing durably marks the offset complete.
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="done",
+                tp=tp,
+                offset=0,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.SUCCESS,
+                error=None,
+                attempt=1,
+            )
+        ]
+    )
+
+    # Then: the settlement notification is emitted after mark_complete.
+    assert settlement_order == ["done"]
+
+
+@pytest.mark.asyncio
+async def test_process_completed_events_suppresses_settlement_notify_on_dlq_failure() -> (
+    None
+):
+    # Given: a final failure cannot be published to DLQ yet.
+    from pyrallel_consumer.control_plane.broker_completion_support import (
+        BrokerCompletionSupport,
+    )
+
+    tp = DtoTopicPartition(topic="demo", partition=0)
+    tracker = OffsetTracker(
+        topic_partition=tp,
+        starting_offset=0,
+        max_revoke_grace_ms=0,
+        initial_completed_offsets=set(),
+    )
+    tracker.increment_epoch()
+    kafka_config = KafkaConfig()
+    kafka_config.dlq_enabled = True
+    kafka_config.parallel_consumer.execution.max_retries = 1
+    settlement_notifier = AsyncMock()
+
+    support = BrokerCompletionSupport(
+        kafka_config=kafka_config,
+        work_manager=MagicMock(),
+        offset_trackers={tp: tracker},
+        message_cache=OrderedDict(),
+        should_cache_message_payloads=lambda: False,
+        pop_cached_message=lambda _cache_key: None,
+        publish_to_dlq=AsyncMock(return_value=False),
+        logger=MagicMock(),
+        settlement_notifier=settlement_notifier,
+    )
+
+    # When: DLQ publish fails and the offset remains pending retry.
+    await support.process_completed_events(
+        [
+            CompletionEvent(
+                id="failed",
+                tp=tp,
+                offset=0,
+                epoch=tracker.get_current_epoch(),
+                status=CompletionStatus.FAILURE,
+                error="boom",
+                attempt=1,
+            )
+        ]
+    )
+
+    # Then: no durable settlement notification is emitted.
+    settlement_notifier.assert_not_awaited()
+    assert 0 not in tracker.completed_offsets
+
+
+@pytest.mark.asyncio
 async def test_process_completed_events_returns_only_newly_completed_offsets() -> None:
     # Given: inputs for `process completed events returns only newly c...` are prepared.
     from pyrallel_consumer.control_plane.broker_completion_support import (

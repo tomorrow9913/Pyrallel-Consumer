@@ -15,7 +15,7 @@ from confluent_kafka import Consumer, KafkaException, Message, Producer
 from confluent_kafka import TopicPartition as KafkaTopicPartition
 from confluent_kafka.admin import AdminClient
 
-from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
+from pyrallel_consumer.execution_plane.base import BaseExecutionEngine, BatchCancelScope
 
 from ..config import AdaptiveBackpressureConfig, AdaptiveConcurrencyConfig, KafkaConfig
 from ..dto import (
@@ -536,6 +536,23 @@ class BrokerPoller:
         """Update the stored fatal runtime error."""
         self._fatal_error = error
 
+    def _cancel_engine_batch_items(self, *, reason: str) -> None:
+        """Tombstone active engine-owned batch items before terminal boundaries."""
+        cancel_batch_items = getattr(self._execution_engine, "cancel_batch_items", None)
+        if callable(cancel_batch_items):
+            cancel_batch_items(BatchCancelScope(reason=reason))
+
+    def _is_inactive_control_event(self, event: ExecutionControlEvent) -> bool:
+        """Return whether a fatal control event no longer owns active work."""
+        if event.batch_id is None:
+            return False
+        active_batch_ids = getattr(
+            self._execution_engine, "_active_process_batch_ids", None
+        )
+        return (
+            isinstance(active_batch_ids, set) and event.batch_id not in active_batch_ids
+        )
+
     def _set_runtime_clients(
         self,
         producer: Any | None,
@@ -702,6 +719,7 @@ class BrokerPoller:
                     await asyncio.sleep(consume_timeout)
 
         except Exception as exc:
+            self._cancel_engine_batch_items(reason="fatal")
             self._fatal_error = exc
             logger.error("Consumer loop error: %s", exc, exc_info=True)
         finally:
@@ -777,9 +795,13 @@ class BrokerPoller:
         ]
         if not fatal_events:
             return False
-        error = fatal_events[0].error
+        fatal_event = fatal_events[0]
+        if self._is_inactive_control_event(fatal_event):
+            return True
+        error = fatal_event.error
         if not isinstance(error, Exception):
             error = RuntimeError(str(error))
+        self._cancel_engine_batch_items(reason="fatal")
         self._fatal_error = error
         self._running = False
         raise error
@@ -987,6 +1009,11 @@ class BrokerPoller:
             """
             return await self._publish_to_dlq(**kwargs)
 
+        async def _notify_item_settled(event: CompletionEvent) -> None:
+            notifier = getattr(self._work_manager, "notify_item_settled", None)
+            if callable(notifier):
+                notifier(event)
+
         return BrokerCompletionSupport(
             kafka_config=self._kafka_config,
             work_manager=self._work_manager,
@@ -998,6 +1025,7 @@ class BrokerPoller:
             logger=logger,
             pending_dlq_events=self._pending_dlq_events,
             metrics_exporter=self._metrics_exporter,
+            settlement_notifier=_notify_item_settled,
         )
 
     async def _handle_blocking_timeouts(self) -> list[CompletionEvent]:
@@ -1347,6 +1375,8 @@ class BrokerPoller:
 
     async def _cleanup(self) -> None:
         """Handle cleanup within Kafka polling and control-plane orchestration."""
+        if self._fatal_error is None:
+            self._cancel_engine_batch_items(reason="shutdown")
         await self._make_lifecycle_support().cleanup_runtime()
 
     def _raise_if_failed(self) -> None:

@@ -39,7 +39,10 @@ from pyrallel_consumer.execution_plane.process_codec import (
 from pyrallel_consumer.execution_plane.process_codec import (
     work_item_identity_payload as _work_item_identity_payload,
 )
-from pyrallel_consumer.execution_plane.worker_spec import WorkerSpec
+from pyrallel_consumer.execution_plane.worker_spec import (
+    CompletionFailureClass,
+    WorkerSpec,
+)
 from pyrallel_consumer.logger import LogManager
 from pyrallel_consumer.worker import (
     BatchWorkerContractError,
@@ -360,8 +363,19 @@ def _worker_loop(
                             "control_kind": "fatal",
                             "error_code": exc.code,
                             "error": exc.reason,
+                            "failure_class": CompletionFailureClass.BATCH_WORKER_CONTRACT_ERROR.value,
+                            "committable": False,
+                            "batch_id": route_batch_id,
+                            "worker_generation": process_idx,
+                            "item_ids": tuple(
+                                work_item.id for work_item in pending_items
+                            ),
+                            "item_count": len(pending_items),
+                            "epoch": pending_items[0].epoch if pending_items else None,
+                            "attempt": 1,
                         }
                     )
+                    completion_queue.put({"kind": "control_wakeup"})
                     continue
                 blocked_tail_payloads = _ordered_prefix_blocked_tail_payloads(
                     payloads=payloads,

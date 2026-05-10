@@ -174,6 +174,20 @@ class PyrallelConsumer:
             route_batch_size=resolved_route_batch_size,
             batch_dispatch_enabled=worker_spec.kind == "batch",
         )
+        set_poison_policy_snapshot_provider = getattr(
+            self._execution_engine,
+            "set_poison_policy_snapshot_provider",
+            None,
+        )
+        poison_policy_snapshot_provider = getattr(
+            self._work_manager,
+            "capture_poison_policy_snapshot",
+            None,
+        )
+        if callable(set_poison_policy_snapshot_provider) and callable(
+            poison_policy_snapshot_provider
+        ):
+            set_poison_policy_snapshot_provider(poison_policy_snapshot_provider)
 
         # 3. Create Broker Poller (The main loop)
         self._poller = BrokerPoller(
