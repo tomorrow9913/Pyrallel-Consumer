@@ -518,13 +518,13 @@ async def test_async_batch_worker_retries_ordered_prefix_blocked_tail() -> None:
     assert [(event.id, event.status, event.attempt) for event in events] == [
         ("a", CompletionStatus.SUCCESS, 1),
         ("b", CompletionStatus.FAILURE, 1),
-        ("c", CompletionStatus.SUCCESS, 2),
+        ("c", CompletionStatus.SUCCESS, 1),
     ]
 
 
 @pytest.mark.asyncio
 async def test_async_batch_worker_transfers_tail_ownership_before_retry() -> None:
-    # Given: an ordered async tail is retried under engine-owned attempt 2.
+    # Given: an ordered async tail is retried without consuming a new attempt.
     calls: list[list[str]] = []
 
     async def batch_worker(items: list[WorkItem]):
@@ -558,7 +558,7 @@ async def test_async_batch_worker_transfers_tail_ownership_before_retry() -> Non
     events = await engine.poll_completed_events()
     await engine.shutdown()
 
-    # Then: ownership is atomically transferred before the attempt 2 tail settles.
+    # Then: ownership is atomically transferred before the deferred tail settles.
     assert calls == [["a", "b"], ["b"]]
     assert len(registry.receipts) == 1
     assert len(registry.transfers) == 1
@@ -566,10 +566,10 @@ async def test_async_batch_worker_transfers_tail_ownership_before_retry() -> Non
     assert expected_old_batch_id == registry.receipts[0].batch_id
     assert retry_receipt.batch_id != expected_old_batch_id
     assert retry_receipt.owner == "async"
-    assert retry_receipt.accepted == (("b", TopicPartition("orders", 0), 2, 1, 2),)
+    assert retry_receipt.accepted == (("b", TopicPartition("orders", 0), 2, 1, 1),)
     assert [(event.id, event.status, event.attempt) for event in events] == [
         ("a", CompletionStatus.FAILURE, 1),
-        ("b", CompletionStatus.SUCCESS, 2),
+        ("b", CompletionStatus.SUCCESS, 1),
     ]
 
 

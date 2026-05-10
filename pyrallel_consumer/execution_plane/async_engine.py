@@ -490,9 +490,16 @@ class AsyncExecutionEngine(BaseExecutionEngine):
             if not blocked_tail:
                 return
         if attempt < self._config.max_retries:
+            current_batch_id = self._transfer_batch_ownership(
+                blocked_tail,
+                expected_old_batch_id=current_batch_id,
+                attempt=attempt,
+            )
+            if current_batch_id is None:
+                return
             await self._execute_batch_worker_task(
                 blocked_tail,
-                first_attempt=attempt + 1,
+                first_attempt=attempt,
                 batch_id=current_batch_id,
             )
             return
