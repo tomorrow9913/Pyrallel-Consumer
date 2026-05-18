@@ -212,6 +212,7 @@ class ProcessShutdownSupport:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Sleep = asyncio.sleep,
     ) -> tuple[int, int]:
+        """Drain shutdown IPC before workers are joined."""
         shutdown_drain_deadline = monotonic() + 1.0
         total_registry_drained = 0
         total_completion_drained = 0
@@ -229,6 +230,7 @@ class ProcessShutdownSupport:
         return total_registry_drained, total_completion_drained
 
     def _log_shutdown_start(self, context: ProcessShutdownContext) -> None:
+        """Log shutdown state before worker drain and join begin."""
         self._logger.debug(
             "Initiating ProcessExecutionEngine shutdown. prefetched_completion_events=%d in_flight_registry=%d worker_count=%d",
             len(context.prefetched_completion_events),
@@ -237,6 +239,7 @@ class ProcessShutdownSupport:
         )
 
     def _warn_residual_registry(self, context: ProcessShutdownContext) -> None:
+        """Warn when shutdown leaves in-flight registry entries behind."""
         if not context.in_flight_registry:
             return
         registry_summary = []
