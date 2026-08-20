@@ -31,7 +31,7 @@ For each item, review all three dimensions below.
   - What: define stable contract defaults for ordering guidance, DLQ payload default,
     commit public surface, and rebalance state strategy.
   - Evidence: `docs/operations/public-contract-v1.md` defines freeze scope/exception
-    policy, and `tests/unit/test_public_contract_v1.py` locks regression.
+    policy, and `tests/unit/docs/test_public_contract_v1.py` locks regression.
   - Owner hint: `README*`, `docs/operations/*`, `tests/unit/*`
 
 - [x] **Include process mode in real-broker E2E**

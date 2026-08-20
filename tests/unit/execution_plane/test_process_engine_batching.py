@@ -130,6 +130,7 @@ def _make_decode_only_process_engine(max_bytes: int) -> ProcessExecutionEngine:
 
 
 def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
+    # Given: inputs for `route batch wire contract preserves identity...` are prepared.
     route_batch = RouteBatch(
         batch_id="batch-1",
         route_identity=("topic", 0, b"key-a"),
@@ -137,8 +138,10 @@ def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
         items=[_make_work_item(0), _make_work_item(1)],
     )
 
+    # When: the process engine batching code path is exercised.
     decoded = route_batch_from_dict(route_batch_to_dict(route_batch))
 
+    # Then: the expected `route batch wire contract preserves identity...` behavior is asserted.
     assert decoded.batch_id == "batch-1"
     assert decoded.route_identity == ("topic", 0, b"key-a")
     assert decoded.worker_index == 2
@@ -155,6 +158,7 @@ def test_route_batch_wire_contract_preserves_identity_and_item_order() -> None:
 def test_route_batch_from_dict_rejects_missing_required_fields(
     missing_field: str,
 ) -> None:
+    # Given: inputs for `route batch from dict rejects missing require...` are prepared.
     payload = route_batch_to_dict(
         RouteBatch(
             batch_id="batch-required",
@@ -165,11 +169,14 @@ def test_route_batch_from_dict_rejects_missing_required_fields(
     )
     payload.pop(missing_field)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `route batch from dict rejects missing require...` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_route_batch"):
         route_batch_from_dict(payload)
 
 
 def test_route_batch_from_dict_rejects_non_list_items() -> None:
+    # Given: inputs for `route batch from dict rejects non list items` are prepared.
     payload = route_batch_to_dict(
         RouteBatch(
             batch_id="batch-items",
@@ -180,11 +187,14 @@ def test_route_batch_from_dict_rejects_non_list_items() -> None:
     )
     payload["items"] = {"offset": 0}
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `route batch from dict rejects non list items` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_route_batch"):
         route_batch_from_dict(payload)
 
 
 def test_route_batch_from_dict_rejects_empty_items() -> None:
+    # Given: inputs for `route batch from dict rejects empty items` are prepared.
     payload = route_batch_to_dict(
         RouteBatch(
             batch_id="batch-empty",
@@ -195,11 +205,14 @@ def test_route_batch_from_dict_rejects_empty_items() -> None:
     )
     payload["items"] = []
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `route batch from dict rejects empty items` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_route_batch"):
         route_batch_from_dict(payload)
 
 
 def test_batch_completion_wire_contract_preserves_item_results() -> None:
+    # Given: inputs for `batch completion wire contract preserves item...` are prepared.
     completion = BatchCompletion(
         batch_id="batch-1",
         route_identity=("topic", 0, b"key-a"),
@@ -225,8 +238,10 @@ def test_batch_completion_wire_contract_preserves_item_results() -> None:
         ],
     )
 
+    # When: the process engine batching code path is exercised.
     decoded = batch_completion_from_dict(batch_completion_to_dict(completion))
 
+    # Then: the expected `batch completion wire contract preserves item...` behavior is asserted.
     assert decoded.batch_id == "batch-1"
     assert decoded.route_identity == ("topic", 0, b"key-a")
     assert [event.id for event in decoded.results] == ["wi-0", "wi-1"]
@@ -242,6 +257,7 @@ def test_batch_completion_wire_contract_preserves_item_results() -> None:
 def test_batch_completion_from_dict_rejects_missing_required_fields(
     missing_field: str,
 ) -> None:
+    # Given: inputs for `batch completion from dict rejects missing re...` are prepared.
     payload = batch_completion_to_dict(
         BatchCompletion(
             batch_id="batch-required",
@@ -251,11 +267,14 @@ def test_batch_completion_from_dict_rejects_missing_required_fields(
     )
     payload.pop(missing_field)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `batch completion from dict rejects missing re...` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_batch_completion"):
         batch_completion_from_dict(payload)
 
 
 def test_batch_completion_from_dict_rejects_non_list_results() -> None:
+    # Given: inputs for `batch completion from dict rejects non list r...` are prepared.
     payload = batch_completion_to_dict(
         BatchCompletion(
             batch_id="batch-results",
@@ -265,11 +284,14 @@ def test_batch_completion_from_dict_rejects_non_list_results() -> None:
     )
     payload["results"] = {"offset": 0}
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `batch completion from dict rejects non list r...` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_batch_completion"):
         batch_completion_from_dict(payload)
 
 
 def test_batch_completion_from_dict_rejects_empty_results() -> None:
+    # Given: inputs for `batch completion from dict rejects empty results` are prepared.
     payload = batch_completion_to_dict(
         BatchCompletion(
             batch_id="batch-empty",
@@ -279,11 +301,14 @@ def test_batch_completion_from_dict_rejects_empty_results() -> None:
     )
     payload["results"] = []
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `batch completion from dict rejects empty results` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_batch_completion"):
         batch_completion_from_dict(payload)
 
 
 def test_batch_completion_envelope_roundtrip_preserves_prefix_result_order() -> None:
+    # Given: inputs for `batch completion envelope roundtrip preserves...` are prepared.
     completion = BatchCompletion(
         batch_id="batch-envelope",
         route_identity=("topic", 0, b"key-a"),
@@ -313,8 +338,10 @@ def test_batch_completion_envelope_roundtrip_preserves_prefix_result_order() -> 
         serialize_batch_completion_payload(completion, completion_enqueued_at=4.5),
         max_bytes=4096,
     )
+    # When: the process engine batching code path is exercised.
     decoded = batch_completion_from_dict(decoded_payload["completion"])
 
+    # Then: the expected `batch completion envelope roundtrip preserves...` behavior is asserted.
     assert decoded_payload["kind"] == "batch_completion"
     assert decoded_payload["timing"] == {"completion_enqueued_at": 4.5}
     assert decoded.batch_id == "batch-envelope"
@@ -331,6 +358,7 @@ def test_batch_completion_envelope_roundtrip_preserves_prefix_result_order() -> 
 def test_decode_completion_queue_item_events_uses_existing_config_without_instantiating_execution_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `decode completion queue item events uses exis...` are prepared.
     event = _make_completion_event(7)
     raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
     engine = _make_decode_only_process_engine(max_bytes=len(raw_event) + 1)
@@ -340,14 +368,17 @@ def test_decode_completion_queue_item_events_uses_existing_config_without_instan
 
     monkeypatch.setattr(process_engine, "ExecutionConfig", fail_execution_config)
 
+    # When: the process engine batching code path is exercised.
     decoded = engine._decode_completion_queue_item_events(raw_event)
 
+    # Then: the expected `decode completion queue item events uses exis...` behavior is asserted.
     assert [item.id for item in decoded] == ["wi-7"]
 
 
 def test_decode_completion_queue_item_events_uses_constant_fallback_without_instantiating_execution_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `decode completion queue item events uses cons...` are prepared.
     event = _make_completion_event(8)
     raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
     engine = cast(
@@ -361,14 +392,17 @@ def test_decode_completion_queue_item_events_uses_constant_fallback_without_inst
 
     monkeypatch.setattr(process_engine, "ExecutionConfig", fail_execution_config)
 
+    # When: the process engine batching code path is exercised.
     decoded = engine._decode_completion_queue_item_events(raw_event)
 
+    # Then: the expected `decode completion queue item events uses cons...` behavior is asserted.
     assert [item.id for item in decoded] == ["wi-8"]
 
 
 def test_decode_completion_queue_item_events_rejects_oversized_raw_bytes_before_unpack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `decode completion queue item events rejects o...` are prepared.
     engine = _make_decode_only_process_engine(max_bytes=2)
 
     def fail_unpack(*_args: object, **_kwargs: object) -> object:
@@ -376,6 +410,8 @@ def test_decode_completion_queue_item_events_rejects_oversized_raw_bytes_before_
 
     monkeypatch.setattr(process_engine.msgpack, "unpackb", fail_unpack)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `decode completion queue item events rejects o...` behavior is asserted.
     with pytest.raises(ValueError, match="payload_too_large"):
         engine._decode_completion_queue_item_events(b"012345")
 
@@ -383,18 +419,24 @@ def test_decode_completion_queue_item_events_rejects_oversized_raw_bytes_before_
 def test_decode_completion_queue_item_events_rejects_oversized_item_completion_bytes() -> (
     None
 ):
+    # Given: inputs for `decode completion queue item events rejects o...` are prepared.
     event = _make_completion_event(7)
     raw_event = msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)
     engine = _make_decode_only_process_engine(max_bytes=len(raw_event) - 1)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `decode completion queue item events rejects o...` behavior is asserted.
     with pytest.raises(ValueError, match="payload_too_large"):
         engine._decode_completion_queue_item_events(raw_event)
 
 
 def test_decode_completion_queue_item_events_rejects_non_dict_payload() -> None:
+    # Given: inputs for `decode completion queue item events rejects n...` are prepared.
     raw_event = msgpack.packb(["not", "a", "dict"], use_bin_type=True)
     engine = _make_decode_only_process_engine(max_bytes=len(raw_event) + 1)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `decode completion queue item events rejects n...` behavior is asserted.
     with pytest.raises(ValueError, match="invalid_completion_payload_type"):
         engine._decode_completion_queue_item_events(raw_event)
 
@@ -402,6 +444,7 @@ def test_decode_completion_queue_item_events_rejects_non_dict_payload() -> None:
 def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_bytes() -> (
     None
 ):
+    # Given: inputs for `decode completion queue item events rejects o...` are prepared.
     completion = BatchCompletion(
         batch_id="batch-too-large",
         route_identity=("test", 0, b"key-a"),
@@ -413,6 +456,8 @@ def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_
     )
     engine = _make_decode_only_process_engine(max_bytes=len(raw_event) - 1)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `decode completion queue item events rejects o...` behavior is asserted.
     with pytest.raises(ValueError, match="payload_too_large"):
         engine._decode_completion_queue_item_events(raw_event)
 
@@ -420,9 +465,12 @@ def test_decode_completion_queue_item_events_rejects_oversized_batch_completion_
 def test_completion_identity_cache_evicts_oldest_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Given: inputs for `completion identity cache evicts oldest entries` are prepared.
     engine = _make_decode_only_process_engine(max_bytes=1024)
     monkeypatch.setattr(process_engine, "_MAX_SEEN_COMPLETION_IDENTITIES", 2)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `completion identity cache evicts oldest entries` behavior is asserted.
     assert engine._is_duplicate_completion_event(_make_completion_event(0)) is False
     assert engine._is_duplicate_completion_event(_make_completion_event(1)) is False
     assert engine._is_duplicate_completion_event(_make_completion_event(2)) is False
@@ -433,6 +481,7 @@ def test_completion_identity_cache_evicts_oldest_entries(
 
 
 def test_completion_dedupe_does_not_collapse_synthetic_decode_failures() -> None:
+    # Given: inputs for `completion dedupe does not collapse synthetic...` are prepared.
     engine = _make_decode_only_process_engine(max_bytes=1024)
     first_failure = CompletionEvent(
         id="",
@@ -453,12 +502,15 @@ def test_completion_dedupe_does_not_collapse_synthetic_decode_failures() -> None
         attempt=1,
     )
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `completion dedupe does not collapse synthetic...` behavior is asserted.
     assert engine._is_duplicate_completion_event(first_failure) is False
     assert engine._is_duplicate_completion_event(second_failure) is False
 
 
 @pytest.mark.asyncio
 async def test_parent_poll_expands_batch_completion_to_item_events() -> None:
+    # Given: inputs for `parent poll expands batch completion to item...` are prepared.
     batch_completion = BatchCompletion(
         batch_id="batch-parent",
         route_identity=("test", 0, b"key-a"),
@@ -473,8 +525,10 @@ async def test_parent_poll_expands_batch_completion_to_item_events() -> None:
     )
     engine._in_flight_count = 2
 
+    # When: the process engine batching code path is exercised.
     events = await engine.poll_completed_events()
 
+    # Then: the expected `parent poll expands batch completion to item...` behavior is asserted.
     assert [(event.id, event.offset, event.status) for event in events] == [
         ("wi-0", 0, CompletionStatus.SUCCESS),
         ("wi-1", 1, CompletionStatus.SUCCESS),
@@ -491,6 +545,7 @@ async def test_parent_poll_expands_batch_completion_to_item_events() -> None:
 
 @pytest.mark.asyncio
 async def test_parent_poll_preserves_batch_completion_failure_result_fields() -> None:
+    # Given: inputs for `parent poll preserves batch completion failur...` are prepared.
     batch_completion = BatchCompletion(
         batch_id="batch-parent-failure",
         route_identity=("test", 0, b"key-a"),
@@ -513,8 +568,10 @@ async def test_parent_poll_preserves_batch_completion_failure_result_fields() ->
     )
     engine._in_flight_count = 2
 
+    # When: the process engine batching code path is exercised.
     events = await engine.poll_completed_events()
 
+    # Then: the expected `parent poll preserves batch completion failur...` behavior is asserted.
     assert [
         (event.offset, event.status, event.error, event.attempt) for event in events
     ] == [
@@ -525,6 +582,7 @@ async def test_parent_poll_preserves_batch_completion_failure_result_fields() ->
 
 @pytest.mark.asyncio
 async def test_parent_poll_batch_limit_counts_expanded_item_events() -> None:
+    # Given: inputs for `parent poll batch limit counts expanded item...` are prepared.
     batch_completion = BatchCompletion(
         batch_id="batch-parent-limit",
         route_identity=("test", 0, b"key-a"),
@@ -540,8 +598,10 @@ async def test_parent_poll_batch_limit_counts_expanded_item_events() -> None:
     engine._in_flight_count = 2
 
     first_poll = await engine.poll_completed_events(batch_limit=1)
+    # When: the process engine batching code path is exercised.
     second_poll = await engine.poll_completed_events(batch_limit=1)
 
+    # Then: the expected `parent poll batch limit counts expanded item...` behavior is asserted.
     assert [event.offset for event in first_poll] == [0]
     assert [event.offset for event in second_poll] == [1]
     assert engine.get_in_flight_count() == 0
@@ -551,6 +611,7 @@ async def test_parent_poll_batch_limit_counts_expanded_item_events() -> None:
 async def test_parent_poll_suppresses_duplicate_item_completion_after_batch_envelope() -> (
     None
 ):
+    # Given: inputs for `parent poll suppresses duplicate item complet...` are prepared.
     duplicate_event = _make_completion_event(0)
     batch_completion = BatchCompletion(
         batch_id="batch-parent-dedupe",
@@ -569,14 +630,17 @@ async def test_parent_poll_suppresses_duplicate_item_completion_after_batch_enve
     )
     engine._in_flight_count = 1
 
+    # When: the process engine batching code path is exercised.
     events = await engine.poll_completed_events()
 
+    # Then: the expected `parent poll suppresses duplicate item complet...` behavior is asserted.
     assert [(event.id, event.offset) for event in events] == [("wi-0", 0)]
     assert engine.get_in_flight_count() == 0
 
 
 @pytest.mark.asyncio
 async def test_parent_poll_does_not_invent_completion_for_skipped_batch_tail() -> None:
+    # Given: inputs for `parent poll does not invent completion for sk...` are prepared.
     batch_completion = BatchCompletion(
         batch_id="batch-parent-prefix",
         route_identity=("test", 0, b"key-a"),
@@ -591,22 +655,27 @@ async def test_parent_poll_does_not_invent_completion_for_skipped_batch_tail() -
     )
     engine._in_flight_count = 2
 
+    # When: the process engine batching code path is exercised.
     events = await engine.poll_completed_events()
 
+    # Then: the expected `parent poll does not invent completion for sk...` behavior is asserted.
     assert [event.offset for event in events] == [0, 1]
     assert 2 not in [event.offset for event in events]
 
 
 @pytest.mark.asyncio
 async def test_parent_poll_keeps_existing_item_level_completion_path() -> None:
+    # Given: inputs for `parent poll keeps existing item level complet...` are prepared.
     event = _make_completion_event(7)
     engine = _make_unstarted_process_engine(
         [msgpack.packb(_completion_event_to_dict(event), use_bin_type=True)]
     )
     engine._in_flight_count = 1
 
+    # When: the process engine batching code path is exercised.
     events = await engine.poll_completed_events()
 
+    # Then: the expected `parent poll keeps existing item level complet...` behavior is asserted.
     assert events == [event]
     assert engine.get_in_flight_count() == 0
     runtime_metrics = engine.get_runtime_metrics()
@@ -619,6 +688,7 @@ async def test_parent_poll_keeps_existing_item_level_completion_path() -> None:
 
 
 def test_worker_pipe_payload_codec_distinguishes_single_item_and_route_batch() -> None:
+    # Given: inputs for `worker pipe payload codec distinguishes singl...` are prepared.
     single_payload = serialize_worker_pipe_payload([_make_work_item(0)], 1.5)
     batch_payload = serialize_worker_pipe_payload(
         RouteBatch(
@@ -631,8 +701,10 @@ def test_worker_pipe_payload_codec_distinguishes_single_item_and_route_batch() -
     )
 
     decoded_single = decode_worker_pipe_payload(single_payload, max_bytes=4096)
+    # When: the process engine batching code path is exercised.
     decoded_batch = decode_worker_pipe_payload(batch_payload, max_bytes=4096)
 
+    # Then: the expected `worker pipe payload codec distinguishes singl...` behavior is asserted.
     assert decoded_single["kind"] == "work_items"
     assert decoded_batch["kind"] == "route_batch"
     assert [item["offset"] for item in decoded_single["items"]] == [0]
@@ -642,6 +714,7 @@ def test_worker_pipe_payload_codec_distinguishes_single_item_and_route_batch() -
 def test_worker_pipe_route_batch_payload_roundtrip_preserves_identity_and_order() -> (
     None
 ):
+    # Given: inputs for `worker pipe route batch payload roundtrip pre...` are prepared.
     route_batch = RouteBatch(
         batch_id="batch-ordered",
         route_identity=("test", 0, b"key-a"),
@@ -651,8 +724,10 @@ def test_worker_pipe_route_batch_payload_roundtrip_preserves_identity_and_order(
 
     packed = serialize_worker_pipe_payload(route_batch, 3.5)
     decoded_payload = decode_worker_pipe_payload(packed, max_bytes=4096)
+    # When: the process engine batching code path is exercised.
     decoded_batch = route_batch_from_dict(decoded_payload["batch"])
 
+    # Then: the expected `worker pipe route batch payload roundtrip pre...` behavior is asserted.
     assert decoded_payload["kind"] == "route_batch"
     assert decoded_batch.batch_id == "batch-ordered"
     assert decoded_batch.route_identity == ("test", 0, b"key-a")
@@ -661,8 +736,11 @@ def test_worker_pipe_route_batch_payload_roundtrip_preserves_identity_and_order(
 
 
 def test_worker_pipe_payload_codec_rejects_unknown_payload_kind() -> None:
+    # Given: inputs for `worker pipe payload codec rejects unknown pay...` are prepared.
     packed = msgpack.packb({"kind": "mystery", "items": []}, use_bin_type=True)
 
+    # When: the process engine batching code path is exercised.
+    # Then: the expected `worker pipe payload codec rejects unknown pay...` behavior is asserted.
     with pytest.raises(ValueError, match="unknown_worker_pipe_payload_kind:mystery"):
         decode_worker_pipe_payload(packed, max_bytes=4096)
 
@@ -740,6 +818,8 @@ class TestMicroBatching:
     async def test_submit_uses_inline_fast_path_for_single_item_batches(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `submit uses inline fast path for single item...` are prepared.
+        # When: the process engine batching code path is exercised.
         monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
 
         async def fail_to_thread(*args: Any, **kwargs: Any) -> Any:
@@ -756,6 +836,7 @@ class TestMicroBatching:
             ),
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        # Then: the expected `submit uses inline fast path for single item...` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
 
@@ -770,6 +851,7 @@ class TestMicroBatching:
             await engine.shutdown()
 
     def test_single_item_fast_path_reports_full_queue_without_buffering(self) -> None:
+        # Given: inputs for `single item fast path reports full queue with...` are prepared.
         task_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
         task_queue.put_nowait(b"busy")
         accumulator = _BatchAccumulator(
@@ -778,8 +860,10 @@ class TestMicroBatching:
             max_batch_wait_ms=0,
         )
 
+        # When: the process engine batching code path is exercised.
         accepted = accumulator.add_nowait_fast_path(_make_work_item(0))
 
+        # Then: the expected `single item fast path reports full queue with...` behavior is asserted.
         assert accepted is False
         metrics = accumulator.snapshot()
         assert metrics.size_flush_count == 0
@@ -790,6 +874,8 @@ class TestMicroBatching:
     async def test_submit_falls_back_to_threaded_add_when_fast_path_cannot_enqueue(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `submit falls back to threaded add when fast p...` are prepared.
+        # When: the process engine batching code path is exercised.
         monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
         config = ExecutionConfig(
             mode="process",
@@ -827,6 +913,7 @@ class TestMicroBatching:
         monkeypatch.setattr(process_engine.asyncio, "to_thread", immediate_to_thread)
         engine._batch_accumulator = accumulator  # type: ignore[assignment]
         item = _make_work_item(0)
+        # Then: the expected `submit falls back to threaded add when fast p...` behavior is asserted.
         try:
             await engine.submit(item)
 
@@ -839,6 +926,7 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_poll_completed_events_does_not_depend_on_queue_empty(self) -> None:
+        # Given: inputs for `poll completed events does not depend on queu...` are prepared.
         event = CompletionEvent(
             id="wi-0",
             tp=TopicPartition("test", 0),
@@ -880,12 +968,15 @@ class TestMicroBatching:
         engine._ensure_workers_alive = _noop_ensure_workers_alive  # type: ignore[method-assign]
         engine._drain_registry_events = lambda: None  # type: ignore[method-assign]
 
+        # When: the process engine batching code path is exercised.
         events = await engine.poll_completed_events()
 
+        # Then: the expected `poll completed events does not depend on queu...` behavior is asserted.
         assert events == [event]
         assert engine.get_in_flight_count() == 0
 
     def test_demand_flush_emits_existing_buffer_before_appending_new_item(self):
+        # Given: inputs for `demand flush emits existing buffer before app...` are prepared.
         task_queue: queue.Queue[bytes] = queue.Queue()
         accumulator = _BatchAccumulator(
             task_queue=task_queue,
@@ -896,6 +987,8 @@ class TestMicroBatching:
         )
 
         accumulator.add(_make_work_item(0))
+        # When: the process engine batching code path is exercised.
+        # Then: the expected `demand flush emits existing buffer before app...` behavior is asserted.
         assert task_queue.empty()
 
         accumulator.add(_make_work_item(1))
@@ -912,6 +1005,7 @@ class TestMicroBatching:
     def test_demand_min_residence_waits_until_threshold_before_flushing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `demand min residence waits until threshold be...` are prepared.
         clock = {"now": 100.0}
         monkeypatch.setattr(
             "pyrallel_consumer.execution_plane.process_engine.time.monotonic",
@@ -931,6 +1025,8 @@ class TestMicroBatching:
         accumulator.add(_make_work_item(0))
         clock["now"] += 0.001
         accumulator.add(_make_work_item(1))
+        # When: the process engine batching code path is exercised.
+        # Then: the expected `demand min residence waits until threshold be...` behavior is asserted.
         assert task_queue.empty()
 
         clock["now"] += 0.002
@@ -949,6 +1045,8 @@ class TestMicroBatching:
     async def test_get_runtime_metrics_reports_buffered_items_before_flush(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `get runtime metrics reports buffered items be...` are prepared.
+        # When: the process engine batching code path is exercised.
         monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
         config = ExecutionConfig(
             mode="process",
@@ -960,6 +1058,7 @@ class TestMicroBatching:
             ),
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        # Then: the expected `get runtime metrics reports buffered items be...` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             diagnostics = engine.get_runtime_metrics()
@@ -978,6 +1077,8 @@ class TestMicroBatching:
     async def test_get_runtime_metrics_reports_size_flush_snapshot(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `get runtime metrics reports size flush snapshot` are prepared.
+        # When: the process engine batching code path is exercised.
         monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
         config = ExecutionConfig(
             mode="process",
@@ -989,6 +1090,7 @@ class TestMicroBatching:
             ),
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        # Then: the expected `get runtime metrics reports size flush snapshot` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await engine.submit(_make_work_item(1))
@@ -1017,6 +1119,8 @@ class TestMicroBatching:
     async def test_get_runtime_metrics_reports_process_timing_after_completion(
         self,
     ) -> None:
+        # Given: inputs for `get runtime metrics reports process timing af...` are prepared.
+        # When: the process engine batching code path is exercised.
         config = ExecutionConfig(
             mode="process",
             process_config=ProcessConfig(
@@ -1028,6 +1132,7 @@ class TestMicroBatching:
             ),
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sleepy_worker)
+        # Then: the expected `get runtime metrics reports process timing af...` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
 
@@ -1054,6 +1159,8 @@ class TestMicroBatching:
     async def test_get_runtime_metrics_marks_worker_pipes_as_bounded_support(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Given: inputs for `get runtime metrics marks worker pipes as bou...` are prepared.
+        # When: the process engine batching code path is exercised.
         monkeypatch.setattr(ProcessExecutionEngine, "_start_workers", lambda self: None)
         config = ExecutionConfig(
             mode="process",
@@ -1066,6 +1173,7 @@ class TestMicroBatching:
             ),
         )
         engine = ProcessExecutionEngine(config=config, worker_fn=_sync_worker)
+        # Then: the expected `get runtime metrics marks worker pipes as bou...` behavior is asserted.
         try:
             diagnostics = engine.get_runtime_metrics()
 
@@ -1082,9 +1190,12 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_batch_flush_on_size(self, small_batch_config):
+        # Given: inputs for `batch flush on size` are prepared.
+        # When: the process engine batching code path is exercised.
         engine = ProcessExecutionEngine(
             config=small_batch_config, worker_fn=_sync_worker
         )
+        # Then: the expected `batch flush on size` behavior is asserted.
         try:
             for i in range(4):
                 await engine.submit(_make_work_item(i))
@@ -1099,9 +1210,12 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_batch_flush_on_timeout(self, small_batch_config):
+        # Given: inputs for `batch flush on timeout` are prepared.
+        # When: the process engine batching code path is exercised.
         engine = ProcessExecutionEngine(
             config=small_batch_config, worker_fn=_sync_worker
         )
+        # Then: the expected `batch flush on timeout` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await engine.submit(_make_work_item(1))
@@ -1115,9 +1229,12 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_completion_events_per_item(self, small_batch_config):
+        # Given: inputs for `completion events per item` are prepared.
+        # When: the process engine batching code path is exercised.
         engine = ProcessExecutionEngine(
             config=small_batch_config, worker_fn=_sync_worker
         )
+        # Then: the expected `completion events per item` behavior is asserted.
         try:
             for i in range(8):
                 await engine.submit(_make_work_item(i))
@@ -1133,9 +1250,12 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_in_flight_count_tracks_items(self, small_batch_config):
+        # Given: inputs for `in flight count tracks items` are prepared.
+        # When: the process engine batching code path is exercised.
         engine = ProcessExecutionEngine(
             config=small_batch_config, worker_fn=_sync_worker
         )
+        # Then: the expected `in flight count tracks items` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await engine.submit(_make_work_item(1))
@@ -1149,9 +1269,12 @@ class TestMicroBatching:
 
     @pytest.mark.asyncio
     async def test_worker_failure_in_batch(self, small_batch_config):
+        # Given: inputs for `worker failure in batch` are prepared.
+        # When: the process engine batching code path is exercised.
         engine = ProcessExecutionEngine(
             config=small_batch_config, worker_fn=_failing_worker
         )
+        # Then: the expected `worker failure in batch` behavior is asserted.
         try:
             for i in range(4):
                 await engine.submit(_make_work_item(i))
@@ -1174,12 +1297,15 @@ class TestMicroBatching:
 class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_success_on_retry(self, retry_config):
+        # Given: inputs for `success on retry` are prepared.
+        # When: the process engine batching code path is exercised.
         global _retry_counter
         _retry_counter = _RetryCounter()
 
         engine = ProcessExecutionEngine(
             config=retry_config, worker_fn=_worker_succeeds_on_second_attempt
         )
+        # Then: the expected `success on retry` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await asyncio.sleep(1.0)
@@ -1195,12 +1321,15 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_failure_after_max_retries(self, retry_config):
+        # Given: inputs for `failure after max retries` are prepared.
+        # When: the process engine batching code path is exercised.
         global _retry_counter
         _retry_counter = _RetryCounter()
 
         engine = ProcessExecutionEngine(
             config=retry_config, worker_fn=_worker_always_fails
         )
+        # Then: the expected `failure after max retries` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await asyncio.sleep(2.0)
@@ -1217,12 +1346,15 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_exponential_backoff_timing(self, retry_config):
+        # Given: inputs for `exponential backoff timing` are prepared.
+        # When: the process engine batching code path is exercised.
         global _retry_counter
         _retry_counter = _RetryCounter()
 
         engine = ProcessExecutionEngine(
             config=retry_config, worker_fn=_worker_always_fails
         )
+        # Then: the expected `exponential backoff timing` behavior is asserted.
         try:
             start_time = time.time()
             await engine.submit(_make_work_item(0))
@@ -1241,6 +1373,8 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_backoff_cap_enforced(self):
+        # Given: inputs for `backoff cap enforced` are prepared.
+        # When: the process engine batching code path is exercised.
         config = ExecutionConfig(
             mode="process",
             max_in_flight=100,
@@ -1262,6 +1396,7 @@ class TestRetryLogic:
         _retry_counter = _RetryCounter()
 
         engine = ProcessExecutionEngine(config=config, worker_fn=_worker_always_fails)
+        # Then: the expected `backoff cap enforced` behavior is asserted.
         try:
             start_time = time.time()
             await engine.submit(_make_work_item(0))
@@ -1280,10 +1415,13 @@ class TestRetryLogic:
 
     @pytest.mark.asyncio
     async def test_attempt_count_on_immediate_success(self, retry_config):
+        # Given: inputs for `attempt count on immediate success` are prepared.
+        # When: the process engine batching code path is exercised.
         global _retry_counter
         _retry_counter = _RetryCounter()
 
         engine = ProcessExecutionEngine(config=retry_config, worker_fn=_sync_worker)
+        # Then: the expected `attempt count on immediate success` behavior is asserted.
         try:
             await engine.submit(_make_work_item(0))
             await asyncio.sleep(0.5)
@@ -1417,6 +1555,7 @@ class TestShutdownLifecycle:
 
     @pytest.mark.asyncio
     async def test_shutdown_drains_registry_events_before_join(self):
+        # Given: inputs for `shutdown drains registry events before join` are prepared.
         worker = _FakeShutdownWorker(pid=303, alive_states=[False])
         engine = self._build_shutdown_engine(worker)
         engine._registry_event_queue = _FakeDrainQueue(
@@ -1437,20 +1576,25 @@ class TestShutdownLifecycle:
             }
         }
 
+        # When: the process engine batching code path is exercised.
         await engine.shutdown()
 
+        # Then: the expected `shutdown drains registry events before join` behavior is asserted.
         assert engine._in_flight_registry == {}
         assert worker.join_calls == [0.05]
 
     @pytest.mark.asyncio
     async def test_shutdown_rejoins_after_terminate_before_considering_kill(self):
+        # Given: inputs for `shutdown rejoins after terminate before consi...` are prepared.
         engine = self._build_shutdown_engine(
             _FakeShutdownWorker(pid=101, alive_states=[True, False])
         )
 
         await engine.shutdown()
 
+        # When: the process engine batching code path is exercised.
         worker = engine._workers[0]
+        # Then: the expected `shutdown rejoins after terminate before consi...` behavior is asserted.
         assert worker.terminate_calls == 1
         assert worker.kill_calls == 0
         assert worker.join_calls == [0.05, 0.05]
@@ -1460,13 +1604,16 @@ class TestShutdownLifecycle:
     async def test_shutdown_kills_worker_only_after_terminate_still_leaves_it_alive(
         self,
     ):
+        # Given: inputs for `shutdown kills worker only after terminate st...` are prepared.
         engine = self._build_shutdown_engine(
             _FakeShutdownWorker(pid=202, alive_states=[True, True, False])
         )
 
         await engine.shutdown()
 
+        # When: the process engine batching code path is exercised.
         worker = engine._workers[0]
+        # Then: the expected `shutdown kills worker only after terminate st...` behavior is asserted.
         assert worker.terminate_calls == 1
         assert worker.kill_calls == 1
         assert worker.join_calls == [0.05, 0.05, 0.05]

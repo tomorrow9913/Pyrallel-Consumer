@@ -236,6 +236,7 @@ async def test_run_consumer_loop_basic_flow(
     setup_assigned_partitions,
     mock_work_manager,
 ):
+    # Given: one assigned partition and three consumable Kafka messages.
     broker_poller._kafka_config.parallel_consumer.rebalance_state_strategy = (
         "metadata_snapshot"
     )
@@ -264,6 +265,7 @@ async def test_run_consumer_loop_basic_flow(
 
     mock_consumer.consume.side_effect = custom_consume_side_effect
 
+    # When: the consumer loop submits the batch and receives successful completions.
     broker_poller._running = True
     consumer_task = asyncio.create_task(broker_poller._run_consumer())
 
@@ -304,6 +306,7 @@ async def test_run_consumer_loop_basic_flow(
     broker_poller._running = False
     await consumer_task
 
+    # Then: the batch is submitted once, completed offsets are marked, and offset 3 commits.
     assert mock_consumer.consume.call_count >= 1
     assert mock_work_manager.submit_message_batch.call_count == 1
     assert mock_work_manager.submit_message.call_count == 0
@@ -353,6 +356,7 @@ async def test_backpressure_pause_resume_hysteresis(
     2. MIN < Load < MAX -> Stay Paused (Hysteresis)
     3. Load < MIN -> Resume
     """
+    # Given: pause at 100 in-flight messages and resume below 50.
     # Setup custom thresholds for testing
     broker_poller.MAX_IN_FLIGHT_MESSAGES = 100
     broker_poller.MIN_IN_FLIGHT_MESSAGES_TO_RESUME = 50
@@ -373,8 +377,10 @@ async def test_backpressure_pause_resume_hysteresis(
         DtoTopicPartition("test-topic", 0): {"virtual-0": 11}
     }
 
+    # When: observed load is above MAX.
     await broker_poller._check_backpressure()
 
+    # Then: the assigned partition is paused.
     assert broker_poller._is_paused is True
     mock_consumer.pause.assert_called_once()
     # Verify it paused the assigned partitions
@@ -391,8 +397,10 @@ async def test_backpressure_pause_resume_hysteresis(
     mock_work_manager.get_total_in_flight_count.return_value = 80
     mock_work_manager.get_virtual_queue_sizes.return_value = {}
 
+    # When: observed load drops into the hysteresis band.
     await broker_poller._check_backpressure()
 
+    # Then: the poller stays paused without issuing new broker calls.
     assert broker_poller._is_paused is True
     mock_consumer.pause.assert_not_called()
     mock_consumer.resume.assert_not_called()
@@ -401,8 +409,10 @@ async def test_backpressure_pause_resume_hysteresis(
     # Load = 40 ( < MIN=50)
     mock_work_manager.get_total_in_flight_count.return_value = 40
 
+    # When: observed load drops below MIN.
     await broker_poller._check_backpressure()
 
+    # Then: the assigned partition is resumed.
     assert broker_poller._is_paused is False
     mock_consumer.resume.assert_called_once()
     mock_consumer.resume.assert_called_with([test_tp_kafka])
@@ -426,6 +436,7 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
     3. Headers include error metadata
     4. Offset committed only after DLQ publish succeeds
     """
+    # Given: DLQ is enabled and one consumed message fails on its final retry.
     # Configure DLQ
     mock_kafka_config.dlq_enabled = True
     mock_kafka_config.DLQ_TOPIC_SUFFIX = ".dlq"
@@ -450,6 +461,7 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
     broker_poller.producer.produce = MagicMock()
     broker_poller.producer.flush = MagicMock()
 
+    # When: the consumer loop processes the failure completion event.
     # Start consumer loop
     broker_poller._running = True
     consumer_task = asyncio.create_task(broker_poller._run_consumer())
@@ -494,6 +506,7 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
     broker_poller._running = False
     await consumer_task
 
+    # Then: the original record is published to the DLQ with error headers.
     # Verify DLQ publish
     broker_poller.producer.produce.assert_called_once()
     call_kwargs = broker_poller.producer.produce.call_args.kwargs
@@ -513,6 +526,7 @@ async def test_dlq_publish_on_failure_with_retries_exhausted(
 
     broker_poller.producer.flush.assert_called()
 
+    # Then: the failed offset is marked complete only after DLQ handling finishes.
     assert mock_offset_tracker_instance.mark_complete.call_count == 1
 
 
@@ -521,8 +535,10 @@ async def test_stop_surfaces_consumer_loop_failure(
     broker_poller,
     mock_consumer,
 ):
+    # Given: the Kafka consume call raises a terminal RuntimeError.
     mock_consumer.consume.side_effect = RuntimeError("boom")
 
+    # When: the consumer task observes the failure and shutdown is requested.
     broker_poller._running = True
     broker_poller._consumer_task = asyncio.create_task(broker_poller._run_consumer())
 
@@ -532,6 +548,7 @@ async def test_stop_surfaces_consumer_loop_failure(
             raise AssertionError("Timeout waiting for consumer loop failure")
         await asyncio.sleep(0.01)
 
+    # Then: stop re-raises the original consumer-loop failure.
     with pytest.raises(RuntimeError, match="boom"):
         await broker_poller.stop()
 
@@ -549,6 +566,7 @@ async def test_dlq_disabled_failure_commits_normally(
     Test that when DLQ is disabled, failures are logged and offset is committed
     without attempting to publish to DLQ.
     """
+    # Given: DLQ is disabled and one consumed message fails after max retries.
     # Disable DLQ
     mock_kafka_config.dlq_enabled = False
     mock_kafka_config.parallel_consumer.execution.max_retries = 3
@@ -571,6 +589,7 @@ async def test_dlq_disabled_failure_commits_normally(
     # Mock producer
     broker_poller.producer.produce = MagicMock()
 
+    # When: the consumer loop processes the failure completion event.
     # Start consumer loop
     broker_poller._running = True
     consumer_task = asyncio.create_task(broker_poller._run_consumer())
@@ -611,6 +630,7 @@ async def test_dlq_disabled_failure_commits_normally(
     broker_poller._running = False
     await consumer_task
 
+    # Then: no DLQ publish is attempted and the failed offset is still completed.
     # Verify NO DLQ publish
     broker_poller.producer.produce.assert_not_called()
 
@@ -631,6 +651,7 @@ async def test_dlq_publish_retry_on_failure(
     """
     Test that DLQ publish is retried on failure using configured retry settings.
     """
+    # Given: DLQ publish fails once, retry backoff is fixed, and max retries is 2.
     mock_kafka_config.dlq_enabled = True
     mock_kafka_config.DLQ_TOPIC_SUFFIX = ".dlq"
     mock_kafka_config.parallel_consumer.execution.max_retries = 2
@@ -674,6 +695,7 @@ async def test_dlq_publish_retry_on_failure(
 
     broker_poller._publish_to_dlq = mock_publish_to_dlq
 
+    # When: the consumer loop handles a final failure and retries DLQ publishing.
     broker_poller._running = True
     consumer_task = asyncio.create_task(broker_poller._run_consumer())
 
@@ -706,6 +728,7 @@ async def test_dlq_publish_retry_on_failure(
     broker_poller._running = False
     await consumer_task
 
+    # Then: produce is called twice and the DLQ producer is flushed.
     assert broker_poller.producer.produce.call_count == 2
 
     broker_poller.producer.flush.assert_called()

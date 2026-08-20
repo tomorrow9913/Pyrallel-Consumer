@@ -65,13 +65,17 @@ def _draft(
 
 
 def test_tui_app_preserves_validation_result_export() -> None:
+    # Given: inputs for `tui app preserves validation result export` are prepared.
+    # When: the benchmark TUI options form code path is exercised.
     from benchmarks.tui import app as tui_app
     from benchmarks.tui.options_form import OptionsValidationResult
 
+    # Then: the expected `tui app preserves validation result export` behavior is asserted.
     assert tui_app._ValidationResult is OptionsValidationResult
 
 
 def test_validate_options_form_rejects_invalid_numeric_input() -> None:
+    # Given: inputs for `validate options form rejects invalid numeric...` are prepared.
     draft = _draft(
         input_values={
             **_draft().input_values,
@@ -79,6 +83,7 @@ def test_validate_options_form_rejects_invalid_numeric_input() -> None:
         }
     )
 
+    # When: the benchmark TUI options form code path is exercised.
     result = validate_options_form(
         draft,
         base_state=BenchmarkTuiState(),
@@ -86,11 +91,14 @@ def test_validate_options_form_rejects_invalid_numeric_input() -> None:
         workload_classes=_workload_classes(),
     )
 
+    # Then: the expected `validate options form rejects invalid numeric...` behavior is asserted.
     assert result.state is None
     assert result.errors["num-messages"] == "Enter a whole number."
 
 
 def test_validate_options_form_builds_state_with_workload_options() -> None:
+    # Given: inputs for `validate options form builds state with workl...` are prepared.
+    # When: the benchmark TUI options form code path is exercised.
     result = validate_options_form(
         _draft(workload_option_values={"sleep": {"sleep_ms": "1.25"}}),
         base_state=BenchmarkTuiState(),
@@ -98,6 +106,7 @@ def test_validate_options_form_builds_state_with_workload_options() -> None:
         workload_classes=_workload_classes(),
     )
 
+    # Then: the expected `validate options form builds state with workl...` behavior is asserted.
     assert result.errors == {}
     assert result.state is not None
     assert result.state.worker_sleep_ms == 1.25
@@ -105,6 +114,7 @@ def test_validate_options_form_builds_state_with_workload_options() -> None:
 
 
 def test_validate_options_form_rejects_all_execution_modes_skipped() -> None:
+    # Given: inputs for `validate options form rejects all execution m...` are prepared.
     draft = _draft(
         switch_values={
             **_draft().switch_values,
@@ -114,6 +124,7 @@ def test_validate_options_form_rejects_all_execution_modes_skipped() -> None:
         }
     )
 
+    # When: the benchmark TUI options form code path is exercised.
     result = validate_options_form(
         draft,
         base_state=BenchmarkTuiState(),
@@ -121,6 +132,7 @@ def test_validate_options_form_rejects_all_execution_modes_skipped() -> None:
         workload_classes=_workload_classes(),
     )
 
+    # Then: the expected `validate options form rejects all execution m...` behavior is asserted.
     assert result.state is None
     assert (
         result.errors["skip-phase-group"] == "Keep at least one execution mode enabled."

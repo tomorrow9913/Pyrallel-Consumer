@@ -47,6 +47,14 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_processed_total` | Counter | `topic`, `partition`, `status` | Number of completed messages (success/failure) |
 | `consumer_commit_failures_total` | Counter | `topic`, `partition`, `reason` | Final offset commit failures by fixed reason |
 | `consumer_dlq_publish_failures_total` | Counter | `topic`, `partition` | Terminal DLQ publish failures that retain offsets pending retry |
+| `pyrallel_pipeline_completed_offset_skips_total` | Counter | `engine_type`, `broker_kind` | Record-level skip counter projected delta-safely from `PipelinePollDiagnostics.completed_offset_skips_total` for records skipped at dispatch because `metadata_snapshot` restore already marked the offset complete but not contiguously committed |
+| `pyrallel_commit_coordinator_pending_partitions` | Gauge | `engine_type` | Topic-partitions currently pending or in-flight in the async commit coordinator |
+| `pyrallel_commit_coordinator_coalesced_total` | Counter | `engine_type` | Commit coordinator candidates superseded by newer offsets |
+| `pyrallel_commit_coordinator_submitted_total` | Counter | `engine_type` | Commit coordinator submitted partition count |
+| `pyrallel_commit_coordinator_success_total` | Counter | `engine_type` | Commit coordinator successful settlement partition count |
+| `pyrallel_commit_coordinator_failures_total` | Counter | `engine_type`, `reason` | Commit coordinator failure partition count by bounded reason |
+| `pyrallel_commit_coordinator_retries_total` | Counter | `engine_type`, `reason` | Commit coordinator retry partition count by bounded reason |
+| `pyrallel_commit_coordinator_settlement_latency_seconds` | Histogram | `engine_type` | Commit coordinator broker settlement duration |
 | `consumer_processing_latency_seconds` | Histogram | `topic`, `partition` | End-to-end processing latency (WorkManager submit → completion) |
 | `consumer_in_flight_count` | Gauge | – | Current in-flight message count |
 | `consumer_parallel_lag` | Gauge | `topic`, `partition` | True lag (`last_fetched - last_committed`) |
@@ -70,11 +78,19 @@ metrics through `WorkManager`, and publishes gauge snapshots from
 | `consumer_process_batch_avg_worker_exec_seconds` | Gauge | – | Average worker execution time |
 | `consumer_process_batch_last_worker_to_main_ipc_seconds` | Gauge | – | Most recent worker-to-main IPC time |
 | `consumer_process_batch_avg_worker_to_main_ipc_seconds` | Gauge | – | Average worker-to-main IPC time |
+| `consumer_process_batch_transport_mode` | Gauge | `mode` | One-hot process execution transport diagnostic (`worker_pipes`) |
+| `consumer_process_batch_support_state` | Gauge | `state` | One-hot support boundary state (`full` or `bounded`) |
+| `consumer_process_batch_timer_flush_supported` | Gauge | – | Whether timer flush is supported by the active process execution path |
+| `consumer_process_batch_demand_flush_supported` | Gauge | – | Whether demand flush is supported by the active process execution path |
+| `consumer_process_batch_recycle_supported` | Gauge | – | Whether recycle settings are supported by the active process execution path |
 
 These metrics are based on the same values returned by `BrokerPoller.get_metrics()`.
 For failure alerting, use `consumer_commit_failures_total{reason="kafka_exception"}`
 for final Kafka commit failures and `consumer_dlq_publish_failures_total` for
 terminal DLQ publish failures.
+`pyrallel_pipeline_completed_offset_skips_total` is a record-level skip counter
+projected from `PipelinePollDiagnostics.completed_offset_skips_total`, not a
+poll-call event, and does not change poll event labels.
 
 ### Runtime Snapshot API
 
@@ -90,6 +106,20 @@ projection of existing runtime state and includes:
 If `adaptive_concurrency.enabled=true`, `execution.max_in_flight` remains the
 configured ceiling while `runtime_snapshot.queue.max_in_flight` reflects the
 live control-plane limit after adaptive adjustments.
+
+### Pipeline Diagnostics Sidecar API
+
+`PyrallelConsumer.get_pipeline_diagnostics()` exposes the supported broker-neutral
+pipeline diagnostics sidecar. It stays separate from `get_runtime_snapshot()` and
+does not add fields to the frozen RuntimeSnapshot v1 contract. The sidecar reports
+bounded stage counts, blocked reasons, support states, subqueue aggregates,
+dispatch/admission capacity, worker aggregates, settlement blockers, poll
+counters, and related support metadata. The sidecar-backed `pyrallel_pipeline_*`
+Prometheus metrics are projections of this sidecar; unsupported sections are
+represented through support-state gauges rather than fake observed values.
+`pyrallel_pipeline_completion_to_commit_latency_seconds` is a broker-owned
+pipeline event metric emitted alongside the sidecar projection, not a field in
+`get_pipeline_diagnostics()`.
 
 ## 📊 Benchmark Snapshot (profiling OFF)
 
@@ -130,8 +160,9 @@ contract. The commit clamping rule is computed from the control-plane `WorkManag
 dispatch ledger, while engine-private registries remain recovery/diagnostics
 state rather than the canonical source of commit safety.
 
-For runtime observability, `process_batch_metrics` remains the v1 compatibility projection
-while generic engine diagnostics evolve behind the same stable public snapshot boundary.
+For runtime observability, `process_batch_metrics` remains the v1 compatibility projection,
+`get_runtime_snapshot()` remains the frozen v1 operator snapshot, and
+`get_pipeline_diagnostics()` is the separate supported pipeline diagnostics sidecar.
 
 ```mermaid
 graph TD
@@ -403,6 +434,9 @@ uv run python benchmarks/run_parallel_benchmark.py \
 - JSON reports include `performance_improvements` entries with TPS delta,
   percent delta, and ratio for adaptive on/off comparisons and best Pyrallel
   versus baseline comparisons.
+- JSON reports also include observability evidence fields: `metrics_observations`,
+  `final_lag`, and `final_gap_count`. These summarize selected runtime metrics
+  for benchmark review; they are not the full runtime snapshot API.
 - No flags: launches a Textual TUI so you can configure the benchmark interactively.
 - You can skip rounds with `--skip-baseline`, `--skip-async`, `--skip-process`.
 - Use `--workloads sleep,cpu` to run any subset of workloads and `--order key_hash,partition` to run multiple ordering modes in one invocation.
@@ -461,6 +495,14 @@ Included stack (via `docker-compose.yml`):
 - Kafka UI (8080)
 - Kafka (9092)
 
+The checked-in Grafana dashboard is a reference/sample dashboard for exploring
+the public metric surface and composing your own panels. It is not a
+production opinionated dashboard or alert policy.
+
+The dashboard is intentionally two-layered: Operator triage is a curated subset
+for first-screen health/risk/bottleneck checks, while Metric catalog/reference
+covers the public metric surface for composing detailed panels.
+
 Usage:
 
 1) Current facade note:
@@ -499,6 +541,22 @@ docker compose up -d
 - `consumer_process_batch_avg_worker_exec_seconds`
 - `consumer_process_batch_last_worker_to_main_ipc_seconds`
 - `consumer_process_batch_avg_worker_to_main_ipc_seconds`
+- `consumer_process_batch_transport_mode`
+- `consumer_process_batch_support_state`
+- `consumer_process_batch_timer_flush_supported`
+- `consumer_process_batch_demand_flush_supported`
+- `consumer_process_batch_recycle_supported`
+- `pyrallel_pipeline_stage_messages`
+- `pyrallel_pipeline_blocked_messages`
+- `pyrallel_pipeline_dispatch_capacity_blocked_messages`
+- `pyrallel_pipeline_section_support_state`
+- `pyrallel_pipeline_worker_capacity_units`
+- `pyrallel_pipeline_subqueue_items`
+- `pyrallel_pipeline_subqueues`
+- `pyrallel_pipeline_settlement_blocker_state`
+- `pyrallel_pipeline_poll_records_total`
+- `pyrallel_pipeline_poll_events_total`
+- `pyrallel_pipeline_completion_to_commit_latency_seconds_bucket`
 
 Interpretation and operator actions for these metrics live in:
 - `docs/operations/guide.en.md`

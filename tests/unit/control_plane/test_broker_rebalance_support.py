@@ -11,6 +11,7 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 def test_build_assignments_hydrates_metadata_snapshot() -> None:
+    # Given: inputs for `build assignments hydrates metadata snapshot` are prepared.
     from pyrallel_consumer.control_plane.broker_rebalance_support import (
         BrokerRebalanceSupport,
     )
@@ -33,6 +34,8 @@ def test_build_assignments_hydrates_metadata_snapshot() -> None:
 
     tp = DtoTopicPartition(topic="test-topic", partition=0)
     tracker = assignments[tp]
+    # When: the broker rebalance support code path is exercised.
+    # Then: the expected `build assignments hydrates metadata snapshot` behavior is asserted.
     assert set(tracker.completed_offsets) == {103, 105}
     assert tracker.last_committed_offset == 99
     assert tracker.last_fetched_offset == 105
@@ -42,6 +45,7 @@ def test_build_assignments_hydrates_metadata_snapshot() -> None:
 def test_build_assignments_refreshes_gap_cache_after_metadata_snapshot_hydration() -> (
     None
 ):
+    # Given: inputs for `build assignments refreshes gap cache after m...` are prepared.
     from pyrallel_consumer.control_plane.broker_rebalance_support import (
         BrokerRebalanceSupport,
     )
@@ -63,6 +67,8 @@ def test_build_assignments_refreshes_gap_cache_after_metadata_snapshot_hydration
     )
 
     tracker = assignments[DtoTopicPartition(topic="test-topic", partition=0)]
+    # When: the broker rebalance support code path is exercised.
+    # Then: the expected `build assignments refreshes gap cache after m...` behavior is asserted.
     assert tracker.get_first_gap_head() == 100
     assert tracker.get_gaps() == [
         OffsetRange(start=100, end=100),
@@ -71,6 +77,7 @@ def test_build_assignments_refreshes_gap_cache_after_metadata_snapshot_hydration
 
 
 def test_handle_revoke_commits_metadata_and_removes_trackers() -> None:
+    # Given: inputs for `handle revoke commits metadata and removes tr...` are prepared.
     from pyrallel_consumer.control_plane.broker_rebalance_support import (
         BrokerRebalanceSupport,
     )
@@ -105,7 +112,9 @@ def test_handle_revoke_commits_metadata_and_removes_trackers() -> None:
         logger=MagicMock(),
     )
 
+    # When: the broker rebalance support code path is exercised.
     work_manager.on_revoke.assert_called_once_with([tp])
+    # Then: the expected `handle revoke commits metadata and removes tr...` behavior is asserted.
     assert dropped == [tp]
     offsets_arg = consumer.commit.call_args.kwargs["offsets"]
     assert len(offsets_arg) == 1
@@ -115,6 +124,7 @@ def test_handle_revoke_commits_metadata_and_removes_trackers() -> None:
 
 
 def test_build_assignments_uses_negative_one_hwm_for_zero_offset_assignment() -> None:
+    # Given: inputs for `build assignments uses negative one hwm for z...` are prepared.
     from pyrallel_consumer.control_plane.broker_rebalance_support import (
         BrokerRebalanceSupport,
     )
@@ -133,12 +143,16 @@ def test_build_assignments_uses_negative_one_hwm_for_zero_offset_assignment() ->
         max_revoke_grace_ms=500,
     )
 
+    # When: the broker rebalance support code path is exercised.
     tracker = assignments[DtoTopicPartition("test-topic", 0)]
+    # Then: the expected `build assignments uses negative one hwm for z...` behavior is asserted.
     assert tracker.last_committed_offset == -1
     assert tracker.last_fetched_offset == -1
 
 
 def test_build_assignments_bounds_committed_lookup_timeout() -> None:
+    # Given: inputs for `build assignments bounds committed lookup tim...` are prepared.
+    # When: the broker rebalance support code path is exercised.
     from pyrallel_consumer.control_plane.broker_rebalance_support import (
         BrokerRebalanceSupport,
     )
@@ -160,6 +174,7 @@ def test_build_assignments_bounds_committed_lookup_timeout() -> None:
         max_revoke_grace_ms=500,
     )
 
+    # Then: the expected `build assignments bounds committed lookup tim...` behavior is asserted.
     consumer.committed.assert_called_once_with(
         [KafkaTopicPartition("test-topic", 0, 0)],
         timeout=7.5,

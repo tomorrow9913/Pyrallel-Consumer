@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from pyrallel_consumer.config import KafkaConfig
@@ -34,6 +34,12 @@ class CompletionProcessingResult:
 
     processed_count: int
     completed_partitions: frozenset[DtoTopicPartition]
+    completed_counts_by_partition: dict[DtoTopicPartition, int] = field(
+        default_factory=dict
+    )
+    completed_offsets_by_partition: dict[DtoTopicPartition, tuple[int, ...]] = field(
+        default_factory=dict
+    )
 
 
 class BrokerCompletionSupport:
@@ -150,6 +156,7 @@ class BrokerCompletionSupport:
         resolved_pending_keys: set[tuple[DtoTopicPartition, int]] = set()
         completed_count = 0
         completed_partitions: set[DtoTopicPartition] = set()
+        completed_offsets_by_partition: dict[DtoTopicPartition, list[int]] = {}
 
         for event, from_pending_ledger in events_to_process:
             pending_key = (event.tp, event.offset)
@@ -239,15 +246,28 @@ class BrokerCompletionSupport:
                     )
                     continue
 
+            before_completed_count = len(tracker.completed_offsets)
             tracker.mark_complete(event.offset)
-            completed_count += 1
-            completed_partitions.add(event.tp)
+            if len(tracker.completed_offsets) != before_completed_count:
+                completed_count += 1
+                completed_partitions.add(event.tp)
+                completed_offsets_by_partition.setdefault(event.tp, []).append(
+                    event.offset
+                )
             if from_pending_ledger:
                 resolved_pending_keys.add(pending_key)
             self._pending_dlq_events.pop(pending_key, None)
             self._pop_cached_message((event.tp, event.offset))
 
+        completed_offsets = {
+            tp: tuple(offsets) for tp, offsets in completed_offsets_by_partition.items()
+        }
+        completed_counts_by_partition = {
+            tp: len(offsets) for tp, offsets in completed_offsets.items()
+        }
         return CompletionProcessingResult(
             processed_count=completed_count,
             completed_partitions=frozenset(completed_partitions),
+            completed_counts_by_partition=completed_counts_by_partition,
+            completed_offsets_by_partition=completed_offsets,
         )

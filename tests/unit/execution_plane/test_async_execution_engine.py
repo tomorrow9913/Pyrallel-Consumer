@@ -5,6 +5,7 @@ import pytest
 from pyrallel_consumer.config import AsyncConfig, ExecutionConfig
 from pyrallel_consumer.dto import (
     CompletionStatus,
+    EngineWorkerDiagnostics,
     ExecutionMode,
     TopicPartition,
     WorkItem,
@@ -82,10 +83,13 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
     async def test_submit_handles_worker_timeout(
         self, engine: AsyncExecutionEngine, mock_timeout_work_item: WorkItem
     ):
+        # Given: inputs for `submit handles worker timeout` are prepared.
         await engine.submit(mock_timeout_work_item)
         # Wait slightly more than the timeout set in config (500ms)
         await asyncio.sleep(0.6)
+        # When: the async execution engine code path is exercised.
         completed_events = await engine.poll_completed_events()
+        # Then: the expected `submit handles worker timeout` behavior is asserted.
         assert len(completed_events) == 1
         assert completed_events[0].id == mock_timeout_work_item.id
         assert completed_events[0].status == CompletionStatus.FAILURE
@@ -104,10 +108,13 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
         mock_timeout_work_item: WorkItem,
     ):
         # Submit tasks that will take some time
+        # Given: inputs for `shutdown waits for in flight tasks` are prepared.
         await engine.submit(mock_work_item)
         await engine.submit(mock_timeout_work_item)  # This task will timeout
 
         # Ensure tasks are in-flight
+        # When: the async execution engine code path is exercised.
+        # Then: the expected `shutdown waits for in flight tasks` behavior is asserted.
         assert engine.get_in_flight_count() == 2
 
         # Shutdown should wait for them to finish (or timeout in this case)
@@ -141,15 +148,19 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
     async def test_submit_rejects_after_shutdown(
         self, config, mock_work_item: WorkItem
     ):
+        # Given: inputs for `submit rejects after shutdown` are prepared.
         engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
 
         await engine.shutdown()
 
+        # When: the async execution engine code path is exercised.
+        # Then: the expected `submit rejects after shutdown` behavior is asserted.
         with pytest.raises(RuntimeError):
             await engine.submit(mock_work_item)
 
     @pytest.mark.asyncio
     async def test_shutdown_cancels_after_grace_timeout(self):
+        # Given: inputs for `shutdown cancels after grace timeout` are prepared.
         async_cfg = AsyncConfig(task_timeout_ms=5000)
         setattr(async_cfg, "shutdown_grace_timeout_ms", 50)  # type: ignore[attr-defined]
 
@@ -177,10 +188,35 @@ class TestAsyncExecutionEngine(BaseExecutionEngineContractTest):
 
         start = asyncio.get_event_loop().time()
         await engine.shutdown()
+        # When: the async execution engine code path is exercised.
         elapsed = asyncio.get_event_loop().time() - start
 
+        # Then: the expected `shutdown cancels after grace timeout` behavior is asserted.
         assert elapsed < 1.0
         assert engine.get_in_flight_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_runtime_metrics_reports_async_worker_capacity_state(
+        self, config: ExecutionConfig, mock_timeout_work_item: WorkItem
+    ):
+        # Given: inputs for `runtime metrics reports async worker capacity...` are prepared.
+        # When: the async execution engine code path is exercised.
+        engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
+        await engine.submit(mock_timeout_work_item)
+
+        # Then: the expected `runtime metrics reports async worker capacity...` behavior is asserted.
+        try:
+            runtime_metrics = engine.get_runtime_metrics()
+
+            assert runtime_metrics is not None
+            assert runtime_metrics.engine_type == "async"
+            assert isinstance(runtime_metrics.workers, EngineWorkerDiagnostics)
+            assert runtime_metrics.workers.total == config.max_in_flight
+            assert runtime_metrics.workers.executing == 1
+            assert runtime_metrics.workers.admitted is None
+            assert runtime_metrics.workers.top_k_loads == []
+        finally:
+            await engine.shutdown()
 
 
 class TestAsyncExecutionEngineRetries:
@@ -189,6 +225,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_success_on_first_attempt_shows_attempt_1(self):
         """When worker succeeds immediately, CompletionEvent.attempt should be 1"""
+        # Given: inputs for `success on first attempt shows attempt 1` are prepared.
         config = ExecutionConfig(
             mode=ExecutionMode.ASYNC,
             max_in_flight=10,
@@ -212,7 +249,9 @@ class TestAsyncExecutionEngineRetries:
         await engine.submit(work_item)
         await asyncio.sleep(0.1)
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `success on first attempt shows attempt 1` behavior is asserted.
         assert len(events) == 1
         assert events[0].status == CompletionStatus.SUCCESS
         assert events[0].attempt == 1
@@ -223,6 +262,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_success_on_second_attempt_shows_attempt_2(self):
         """When worker fails once then succeeds, CompletionEvent.attempt should be 2"""
+        # Given: inputs for `success on second attempt shows attempt 2` are prepared.
         global retry_attempt_counter
         retry_attempt_counter = 0
 
@@ -251,7 +291,9 @@ class TestAsyncExecutionEngineRetries:
         await engine.submit(work_item)
         await asyncio.sleep(0.3)
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `success on second attempt shows attempt 2` behavior is asserted.
         assert len(events) == 1
         assert events[0].status == CompletionStatus.SUCCESS
         assert events[0].attempt == 2
@@ -262,6 +304,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_failure_after_max_retries(self):
         """When worker fails all retries, CompletionEvent.attempt should equal max_retries"""
+        # Given: inputs for `failure after max retries` are prepared.
         config = ExecutionConfig(
             mode=ExecutionMode.ASYNC,
             max_in_flight=10,
@@ -287,7 +330,9 @@ class TestAsyncExecutionEngineRetries:
         await engine.submit(work_item)
         await asyncio.sleep(0.5)
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `failure after max retries` behavior is asserted.
         assert len(events) == 1
         assert events[0].status == CompletionStatus.FAILURE
         assert events[0].attempt == 3
@@ -299,6 +344,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_timeout_retried_and_counted(self):
         """Timeouts should be treated as failures and retried"""
+        # Given: inputs for `timeout retried and counted` are prepared.
         config = ExecutionConfig(
             mode=ExecutionMode.ASYNC,
             max_in_flight=10,
@@ -323,7 +369,9 @@ class TestAsyncExecutionEngineRetries:
         await engine.submit(work_item)
         await asyncio.sleep(0.5)
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `timeout retried and counted` behavior is asserted.
         assert len(events) == 1
         assert events[0].status == CompletionStatus.FAILURE
         assert events[0].attempt == 2
@@ -335,6 +383,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_exponential_backoff_timing(self):
         """Verify exponential backoff increases delay between retries"""
+        # Given: inputs for `exponential backoff timing` are prepared.
         global retry_attempt_counter
         retry_attempt_counter = 0
 
@@ -365,7 +414,9 @@ class TestAsyncExecutionEngineRetries:
         await asyncio.sleep(0.5)
         end_time = asyncio.get_event_loop().time()
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `exponential backoff timing` behavior is asserted.
         assert len(events) == 1
 
         elapsed = end_time - start_time
@@ -377,6 +428,7 @@ class TestAsyncExecutionEngineRetries:
     @pytest.mark.asyncio
     async def test_backoff_respects_max_cap(self):
         """Verify backoff doesn't exceed max_retry_backoff_ms"""
+        # Given: inputs for `backoff respects max cap` are prepared.
         config = ExecutionConfig(
             mode=ExecutionMode.ASYNC,
             max_in_flight=10,
@@ -404,7 +456,9 @@ class TestAsyncExecutionEngineRetries:
         await asyncio.sleep(1.2)
         end_time = asyncio.get_event_loop().time()
 
+        # When: the async execution engine code path is exercised.
         events = await engine.poll_completed_events()
+        # Then: the expected `backoff respects max cap` behavior is asserted.
         assert len(events) == 1
         assert events[0].attempt == 5
 
@@ -417,6 +471,7 @@ class TestAsyncExecutionEngineRetries:
 
 @pytest.mark.asyncio
 async def test_get_min_inflight_offset_returns_none_for_async_engine():
+    # Given: inputs for `get min inflight offset returns none for asyn...` are prepared.
     config = ExecutionConfig(
         mode=ExecutionMode.ASYNC,
         max_in_flight=1,
@@ -424,6 +479,8 @@ async def test_get_min_inflight_offset_returns_none_for_async_engine():
     )
     engine = AsyncExecutionEngine(config=config, worker_fn=async_worker_fn)
 
+    # When: the async execution engine code path is exercised.
+    # Then: the expected `get min inflight offset returns none for asyn...` behavior is asserted.
     assert (
         engine.get_min_inflight_offset(TopicPartition(topic="test", partition=0))
         is None

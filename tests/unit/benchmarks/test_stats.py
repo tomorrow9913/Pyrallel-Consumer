@@ -6,6 +6,7 @@ from benchmarks.stats import BenchmarkResult, BenchmarkStats, write_results_json
 
 
 def test_benchmark_stats_summary_reports_windowed_tps_percentiles() -> None:
+    # Given: inputs for `benchmark stats summary reports windowed tps...` are prepared.
     stats = BenchmarkStats(
         run_name="demo",
         run_type="baseline",
@@ -24,8 +25,10 @@ def test_benchmark_stats_summary_reports_windowed_tps_percentiles() -> None:
         stats.record(0.003, completed_at=4.0)
     stats.stop()
 
+    # When: the benchmark stats serializer code path is exercised.
     summary = stats.summary()
 
+    # Then: the expected `benchmark stats summary reports windowed tps...` behavior is asserted.
     assert summary.window_size_messages == 100
     assert summary.tps_min_window == 50.0
     assert summary.tps_p10_window == 60.0
@@ -33,6 +36,7 @@ def test_benchmark_stats_summary_reports_windowed_tps_percentiles() -> None:
 
 
 def test_benchmark_stats_summary_omits_windowed_tps_when_too_few_messages() -> None:
+    # Given: inputs for `benchmark stats summary omits windowed tps wh...` are prepared.
     stats = BenchmarkStats(
         run_name="demo",
         run_type="baseline",
@@ -46,8 +50,10 @@ def test_benchmark_stats_summary_omits_windowed_tps_when_too_few_messages() -> N
         stats.record(0.001, completed_at=1.0)
     stats.stop()
 
+    # When: the benchmark stats serializer code path is exercised.
     summary = stats.summary()
 
+    # Then: the expected `benchmark stats summary omits windowed tps wh...` behavior is asserted.
     assert summary.window_size_messages == 100
     assert summary.tps_p50_window is None
     assert summary.tps_p10_window is None
@@ -55,6 +61,7 @@ def test_benchmark_stats_summary_omits_windowed_tps_when_too_few_messages() -> N
 
 
 def test_benchmark_stats_summary_includes_release_gate_lag_gap_evidence() -> None:
+    # Given: inputs for `benchmark stats summary includes release gate...` are prepared.
     stats = BenchmarkStats(
         run_name="demo",
         run_type="async",
@@ -75,8 +82,10 @@ def test_benchmark_stats_summary_includes_release_gate_lag_gap_evidence() -> Non
         consumer_gap_count=0,
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     summary = stats.summary()
 
+    # Then: the expected `benchmark stats summary includes release gate...` behavior is asserted.
     assert summary.final_lag == 0
     assert summary.final_gap_count == 0
     assert summary.metrics_observations == [
@@ -94,6 +103,7 @@ def test_benchmark_stats_summary_includes_release_gate_lag_gap_evidence() -> Non
 
 
 def test_benchmark_stats_summary_carries_route_batch_size_separately() -> None:
+    # Given: inputs for `benchmark stats summary carries route batch s...` are prepared.
     stats = BenchmarkStats(
         run_name="demo-process",
         run_type="process",
@@ -107,13 +117,16 @@ def test_benchmark_stats_summary_carries_route_batch_size_separately() -> None:
     stats.record(0.001, completed_at=1.0)
     stats.stop()
 
+    # When: the benchmark stats serializer code path is exercised.
     summary = stats.summary()
 
+    # Then: the expected `benchmark stats summary carries route batch s...` behavior is asserted.
     assert summary.process_transport_mode == "worker_pipes"
     assert summary.route_batch_size == 64
 
 
 def test_write_results_json_includes_route_batch_size_field(tmp_path) -> None:
+    # Given: inputs for `write results json includes route batch size...` are prepared.
     output_path = tmp_path / "summary.json"
 
     write_results_json(
@@ -137,8 +150,10 @@ def test_write_results_json_includes_route_batch_size_field(tmp_path) -> None:
         options={"process_batch_size": 1, "route_batch_size": 64},
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
 
+    # Then: the expected `write results json includes route batch size...` behavior is asserted.
     assert payload["options"]["process_batch_size"] == 1
     assert payload["options"]["route_batch_size"] == 64
     assert payload["results"][0]["process_transport_mode"] == "worker_pipes"
@@ -148,6 +163,7 @@ def test_write_results_json_includes_route_batch_size_field(tmp_path) -> None:
 def test_write_results_json_includes_nullable_route_batch_runtime_metrics(
     tmp_path
 ) -> None:
+    # Given: inputs for `write results json includes nullable route ba...` are prepared.
     output_path = tmp_path / "summary.json"
 
     write_results_json(
@@ -191,10 +207,12 @@ def test_write_results_json_includes_nullable_route_batch_runtime_metrics(
         output_path,
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     baseline = payload["results"][0]
     process = payload["results"][1]
 
+    # Then: the expected `write results json includes nullable route ba...` behavior is asserted.
     assert baseline["items_per_input_ipc"] is None
     assert baseline["items_per_completion_ipc"] is None
     assert baseline["route_batch_count"] is None
@@ -216,6 +234,7 @@ def test_write_results_json_includes_nullable_route_batch_runtime_metrics(
 
 
 def test_write_results_json_includes_performance_improvement_analysis(tmp_path) -> None:
+    # Given: inputs for `write results json includes performance impro...` are prepared.
     output_path = tmp_path / "summary.json"
 
     write_results_json(
@@ -261,8 +280,10 @@ def test_write_results_json_includes_performance_improvement_analysis(tmp_path) 
         options={"adaptive_concurrency": ["off", "on"]},
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
 
+    # Then: the expected `write results json includes performance impro...` behavior is asserted.
     assert payload["performance_improvements"] == [
         {
             "comparison": "adaptive_on_vs_off",
@@ -296,6 +317,7 @@ def test_write_results_json_includes_performance_improvement_analysis(tmp_path) 
 def test_write_results_json_marks_improvement_percent_unknown_for_zero_reference(
     tmp_path,
 ) -> None:
+    # Given: inputs for `write results json marks improvement percent...` are prepared.
     output_path = tmp_path / "summary.json"
 
     write_results_json(
@@ -328,15 +350,18 @@ def test_write_results_json_marks_improvement_percent_unknown_for_zero_reference
         output_path,
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     analysis = payload["performance_improvements"][0]
 
+    # Then: the expected `write results json marks improvement percent...` behavior is asserted.
     assert analysis["throughput_tps_delta"] == 10.0
     assert analysis["throughput_tps_delta_pct"] is None
     assert analysis["improvement_ratio"] is None
 
 
 def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
+    # Given: inputs for `adaptive improvements match full run variant key` are prepared.
     output_path = tmp_path / "summary.json"
 
     write_results_json(
@@ -381,6 +406,7 @@ def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
         output_path,
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     adaptive_analysis = [
         row
@@ -388,6 +414,7 @@ def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
         if row["comparison"] == "adaptive_on_vs_off"
     ]
 
+    # Then: the expected `adaptive improvements match full run variant key` behavior is asserted.
     assert adaptive_analysis == [
         {
             "comparison": "adaptive_on_vs_off",
@@ -406,6 +433,7 @@ def test_adaptive_improvements_match_full_run_variant_key(tmp_path) -> None:
 
 
 def test_write_results_json_preserves_artifact_metadata(tmp_path) -> None:
+    # Given: inputs for `write results json preserves artifact metadata` are prepared.
     output_path = tmp_path / "summary.json"
     artifact_metadata = {
         "generated_at_utc": "2026-04-25T05:00:00Z",
@@ -435,6 +463,8 @@ def test_write_results_json_preserves_artifact_metadata(tmp_path) -> None:
         artifact_metadata=artifact_metadata,
     )
 
+    # When: the benchmark stats serializer code path is exercised.
     payload = json.loads(output_path.read_text(encoding="utf-8"))
 
+    # Then: the expected `write results json preserves artifact metadata` behavior is asserted.
     assert payload["artifact_metadata"] == artifact_metadata

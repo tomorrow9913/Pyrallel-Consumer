@@ -33,9 +33,9 @@ operations-facing copy lives in
 
 ## Validation
 
-- [../tests/unit/test_internal_doc_language_assets.py](../tests/unit/test_internal_doc_language_assets.py)
+- [../tests/unit/docs/test_internal_doc_language_assets.py](../tests/unit/docs/test_internal_doc_language_assets.py)
   verifies the PRD mirror pair, the policy rule text, and curated link targets.
 - [operations/language-policy.md](./operations/language-policy.md) republishes
   the same rule from the `docs/operations/` entry surface.
-- [../tests/unit/test_blueprint_language_assets.py](../tests/unit/test_blueprint_language_assets.py)
+- [../tests/unit/docs/test_blueprint_language_assets.py](../tests/unit/docs/test_blueprint_language_assets.py)
   verifies the existing blueprint tree.

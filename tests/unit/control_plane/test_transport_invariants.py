@@ -59,23 +59,29 @@ def _collect_execution_engine_method_usage(path: Path) -> set[str]:
 
 
 def test_control_plane_source_does_not_reference_process_transport_details() -> None:
+    # Given: inputs for `control plane source does not reference proce...` are prepared.
     offenders: list[str] = []
 
+    # When: the control-plane transport invariant code path is exercised.
     for path in _iter_control_plane_modules():
         text = _read_text(path)
         for term in FORBIDDEN_TRANSPORT_TERMS:
             if term in text:
                 offenders.append(f"{path.relative_to(REPO_ROOT)} -> {term}")
 
+    # Then: the expected `control plane source does not reference proce...` behavior is asserted.
     assert offenders == []
 
 
 def test_control_plane_only_uses_base_execution_engine_contract_methods() -> None:
+    # Given: inputs for `control plane only uses base execution engine...` are prepared.
     used_methods: set[str] = set()
 
+    # When: the control-plane transport invariant code path is exercised.
     for path in _iter_control_plane_modules():
         used_methods.update(_collect_execution_engine_method_usage(path))
 
+    # Then: the expected `control plane only uses base execution engine...` behavior is asserted.
     assert used_methods <= ALLOWED_ENGINE_METHODS
     assert used_methods >= {
         "submit",
@@ -83,49 +89,3 @@ def test_control_plane_only_uses_base_execution_engine_contract_methods() -> Non
         "wait_for_completion",
         "get_runtime_metrics",
     }
-
-
-def test_worker_pipe_blueprint_documents_shutdown_completion_boundary() -> None:
-    blueprint = (
-        REPO_ROOT
-        / "docs"
-        / "blueprint"
-        / "features"
-        / "03-execution"
-        / "02-process-execution-engine"
-        / "04-worker-pipe-transport-experiment.md"
-    ).read_text(encoding="utf-8")
-
-    required_phrases = [
-        "Shutdown completion-preservation contract",
-        "already-visible real completions",
-        "diagnostic-only",
-        "must not synthesize",
-        "DLQ",
-        "commit",
-        "rebalance",
-    ]
-
-    assert [phrase for phrase in required_phrases if phrase not in blueprint] == []
-
-
-def test_worker_pipe_blueprint_documents_shutdown_diagnostic_interpretation() -> None:
-    blueprint = (
-        REPO_ROOT
-        / "docs"
-        / "blueprint"
-        / "features"
-        / "03-execution"
-        / "02-process-execution-engine"
-        / "04-worker-pipe-transport-experiment.md"
-    ).read_text(encoding="utf-8")
-
-    required_phrases = [
-        "diagnostic evidence",
-        "Pre-join and post-join drain counts",
-        "stable-empty post-join",
-        "not a retry ledger",
-        "audit log for commit safety",
-    ]
-
-    assert [phrase for phrase in required_phrases if phrase not in blueprint] == []

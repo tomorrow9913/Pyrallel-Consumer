@@ -9,9 +9,9 @@ import sys
 from collections.abc import Callable, Sequence
 
 DEFAULT_TEST_TARGETS: tuple[str, ...] = (
-    "tests/unit/test_role_b_preflight.py",
+    "tests/unit/ops/test_role_b_preflight.py",
     "tests/unit/benchmarks/test_benchmark_runtime.py",
-    "tests/unit/test_release_policy.py",
+    "tests/unit/ops/test_release_policy.py",
 )
 
 

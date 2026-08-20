@@ -24,7 +24,7 @@ on:
       - "scripts/compatibility_matrix.py"
       - "scripts/release_policy.py"
       - "benchmarks/release_gate.py"
-      - "tests/unit/test_supply_chain_assets.py"
+      - "tests/unit/ops/test_supply_chain_assets.py"
   workflow_dispatch:
 
 permissions:

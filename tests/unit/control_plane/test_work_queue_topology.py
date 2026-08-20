@@ -34,6 +34,7 @@ def _make_item(tp: DtoTopicPartition, offset: int, key: object) -> WorkItem:
 
 @pytest.mark.asyncio
 async def test_topology_enqueue_batch_tracks_head_and_active_queue_key() -> None:
+    # Given: inputs for `topology enqueue batch tracks head and active...` are prepared.
     from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 
     topology = WorkQueueTopology()
@@ -47,7 +48,9 @@ async def test_topology_enqueue_batch_tracks_head_and_active_queue_key() -> None
         [_make_item(tp, 7, b"key-a"), _make_item(tp, 8, b"key-a")],
     )
 
+    # When: the work queue topology code path is exercised.
     queue = topology.get_queue(tp, b"key-a")
+    # Then: the expected `topology enqueue batch tracks head and active...` behavior is asserted.
     assert queue is not None
     assert queue.qsize() == 2
     assert topology.head_offsets[queue_key] == 7
@@ -57,6 +60,7 @@ async def test_topology_enqueue_batch_tracks_head_and_active_queue_key() -> None
 
 
 def test_topology_peek_queue_batch_only_reads_to_limit() -> None:
+    # Given: inputs for `topology peek queue batch only reads to limit` are prepared.
     from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 
     tp = DtoTopicPartition(topic="test-topic", partition=0)
@@ -68,13 +72,16 @@ def test_topology_peek_queue_batch_only_reads_to_limit() -> None:
     queue = object.__new__(asyncio.Queue)
     queue._queue = _FailingAfterLimitQueue(items, limit=2)  # type: ignore[attr-defined]
 
+    # When: the work queue topology code path is exercised.
     batch = WorkQueueTopology.peek_queue_batch(queue, 2)
 
+    # Then: the expected `topology peek queue batch only reads to limit` behavior is asserted.
     assert [item.offset for item in batch] == [1, 2]
 
 
 @pytest.mark.asyncio
 async def test_topology_revoke_clears_queue_and_returns_removed_count() -> None:
+    # Given: inputs for `topology revoke clears queue and returns remo...` are prepared.
     from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 
     topology = WorkQueueTopology()
@@ -92,8 +99,10 @@ async def test_topology_revoke_clears_queue_and_returns_removed_count() -> None:
         [_make_item(tp, 3, b"key-b")],
     )
 
+    # When: the work queue topology code path is exercised.
     removed_count = topology.revoke(tp)
 
+    # Then: the expected `topology revoke clears queue and returns remo...` behavior is asserted.
     assert removed_count == 3
     assert topology.virtual_partition_queues.get(tp) is None
     assert not topology.head_offsets
@@ -103,6 +112,7 @@ async def test_topology_revoke_clears_queue_and_returns_removed_count() -> None:
 
 @pytest.mark.asyncio
 async def test_topology_pick_next_queue_prefers_blocking_offset() -> None:
+    # Given: inputs for `topology pick next queue prefers blocking offset` are prepared.
     from pyrallel_consumer.control_plane.work_queue_topology import WorkQueueTopology
 
     topology = WorkQueueTopology()
@@ -114,10 +124,12 @@ async def test_topology_pick_next_queue_prefers_blocking_offset() -> None:
     topology.enqueue_batch(tp, b"key-a", [_make_item(tp, 10, b"key-a")])
     topology.enqueue_batch(tp, b"key-b", [_make_item(tp, 20, b"key-b")])
 
+    # When: the work queue topology code path is exercised.
     selected_queue_key = topology.pop_next_queue_key(
         {tp: OffsetRange(10, 10)},
         is_queue_eligible=lambda _queue_key: True,
     )
 
+    # Then: the expected `topology pick next queue prefers blocking offset` behavior is asserted.
     assert selected_queue_key == blocking_queue_key
     assert selected_queue_key != other_queue_key

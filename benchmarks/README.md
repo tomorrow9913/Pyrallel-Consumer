@@ -14,7 +14,7 @@ uv run python -m benchmarks.run_parallel_benchmark
 # Standard benchmark (no profiling)
 uv run python -m benchmarks.run_parallel_benchmark --num-messages 100000 --num-partitions 8
 
-# Enable profiling for all modes (writes .prof files)
+# Enable profiling for baseline/async modes (writes .prof files)
 uv run python -m benchmarks.run_parallel_benchmark \
   --profile \
   --profile-dir benchmarks/results/profiles \
@@ -169,7 +169,10 @@ three-callable tuple used by `run_parallel_benchmark.py`.
 - JSON summaries include `performance_improvements`, which reports TPS delta,
   percent delta, and ratio for adaptive on/off pairs plus the best Pyrallel run
   versus the matching baseline for each workload/order combination.
-- Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process mode also saves per-worker `.prof` files (suffix `-worker-<pid>.prof`) when profiling is enabled.
+- JSON summaries include observability evidence fields: `metrics_observations`,
+  `final_lag`, and `final_gap_count`. These are selected runtime-review values,
+  not a serialized copy of the full `RuntimeSnapshot` API.
+- Profiling: per-mode `.prof` files under `profile-dir` (e.g., `pyrallel-async.prof`, `pyrallel-process.prof`). Process worker `.prof` files (suffix `-worker-<pid>.prof`) are written only when both `--profile` and `--profile-process-workers` are set.
 - py-spy: per-run output files under `--py-spy-output` directory (default `benchmarks/results/pyspy/`). File names include format and UTC timestamp (e.g., `pyspy-flamegraph-20260226T001500Z.svg`).
 
 ## Process Batch Advisor
@@ -224,7 +227,7 @@ a soak `PASS` does not convert a performance gate `NO-GO` into a release `GO`.
 
 ## Notes
 - Profiling adds overhead; do not compare TPS from profiled runs to non-profiled runs.
-- Process worker profiling is enabled when `--profile` is set; per-worker files are saved automatically. Use `uv run snakeviz <prof>` to inspect.
+- Process worker profiling requires both `--profile` and `--profile-process-workers`; per-worker files are not saved by default. Use `uv run snakeviz <prof>` to inspect.
 - For clean TPS measurements, keep logging low: `--log-level WARNING` (default). Using `DEBUG` can materially reduce throughput and should only be used for debugging, not performance comparisons.
 - For tiny `sleep` workloads in process + `partition` ordering, default batching may dominate throughput. Compare against `--process-batch-size 1 --process-max-batch-wait-ms 0` before changing library defaults.
 - Experimental demand-flush policies are exposed through `--process-flush-policy`; start with `demand` and `demand_min_residence --process-demand-flush-min-residence-ms 1` when reproducing issue #14.

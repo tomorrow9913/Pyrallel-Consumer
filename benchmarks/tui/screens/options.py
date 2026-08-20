@@ -181,6 +181,17 @@ class OptionsScreen(Screen[None]):
             selections.append((label, name, name in state.workloads))
         return selections
 
+    @staticmethod
+    def _execution_mode_selections(
+        state: BenchmarkTuiState,
+    ) -> list[tuple[str, str, bool]]:
+        """Build execution engine selections from skip flags."""
+        return [
+            ("baseline", "baseline", not state.skip_baseline),
+            ("async", "async", not state.skip_async),
+            ("process", "process", not state.skip_process),
+        ]
+
     @classmethod
     def _unavailable_workload_reasons(cls) -> dict[str, str]:
         """Return unavailable workload reasons keyed by workload name."""
@@ -354,11 +365,6 @@ class OptionsScreen(Screen[None]):
                         "Configure the Kafka target and choose the workload shape to run."
                     )
                     yield from self._labeled_selection_list(
-                        option_id="workloads",
-                        selections=self._workload_selections(state),
-                        widget_id="workloads",
-                    )
-                    yield from self._labeled_selection_list(
                         option_id="ordering-modes",
                         selections=[
                             (
@@ -378,6 +384,21 @@ class OptionsScreen(Screen[None]):
                             ),
                         ],
                         widget_id="ordering-modes",
+                    )
+                    yield from self._labeled_selection_list(
+                        option_id="execution-modes",
+                        selections=self._execution_mode_selections(state),
+                        widget_id="execution-modes",
+                    )
+                    yield Static(
+                        "",
+                        id=self._error_id("skip-phase-group"),
+                        classes="field-error",
+                    )
+                    yield from self._labeled_selection_list(
+                        option_id="workloads",
+                        selections=self._workload_selections(state),
+                        widget_id="workloads",
                     )
                     yield from self._workload_option_controls(state)
                     yield from self._labeled_input(
@@ -520,26 +541,6 @@ class OptionsScreen(Screen[None]):
                             ],
                             value=state.log_level,
                             widget_id="log-level",
-                        )
-                        yield from self._switch_field(
-                            option_id="skip-baseline",
-                            value=state.skip_baseline,
-                            widget_id="skip-baseline",
-                        )
-                        yield from self._switch_field(
-                            option_id="skip-async",
-                            value=state.skip_async,
-                            widget_id="skip-async",
-                        )
-                        yield from self._switch_field(
-                            option_id="skip-process",
-                            value=state.skip_process,
-                            widget_id="skip-process",
-                        )
-                        yield Static(
-                            "",
-                            id=self._error_id("skip-phase-group"),
-                            classes="field-error",
                         )
                         yield from self._labeled_input(
                             option_id="profile-dir",
@@ -728,21 +729,29 @@ class OptionsScreen(Screen[None]):
 
     def _form_switch_values(self) -> dict[str, bool]:
         """Collect switch widget values for form validation."""
+        execution_modes = set(
+            self.query_one("#execution-modes", SelectionList).selected
+        )
         widget_ids = {
             "profiling-enabled",
             "skip-reset",
             "profile",
             "py-spy",
-            "skip-baseline",
-            "skip-async",
-            "skip-process",
             "py-spy-native",
             "py-spy-idle",
         }
-        return {
+        values = {
             widget_id: self.query_one("#%s" % widget_id, Switch).value
             for widget_id in widget_ids
         }
+        values.update(
+            {
+                "skip-baseline": "baseline" not in execution_modes,
+                "skip-async": "async" not in execution_modes,
+                "skip-process": "process" not in execution_modes,
+            }
+        )
+        return values
 
     def _form_select_values(self) -> dict[str, str]:
         """Collect select widget values for form validation."""

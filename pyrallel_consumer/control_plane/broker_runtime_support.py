@@ -4,6 +4,7 @@
 # Extend here for diagnostic projection; keep adaptive policy decisions in adaptive modules.
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from pyrallel_consumer.dto import (
@@ -15,6 +16,15 @@ from pyrallel_consumer.dto import (
     OrderingMode,
     PartitionMetrics,
     PartitionRuntimeSnapshot,
+    PipelineCount,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelinePollDiagnostics,
+    PipelineSettlementBlockerReason,
+    PipelineSettlementDiagnostics,
+    PipelineStage,
+    PipelineWorkerDiagnostics,
     PoisonMessageRuntimeSnapshot,
     ProcessBatchMetrics,
     ProcessRuntimeDiagnostics,
@@ -22,6 +32,7 @@ from pyrallel_consumer.dto import (
     RetryPolicySnapshot,
     RuntimeSnapshot,
     SystemMetrics,
+    WorkManagerPipelineDiagnostics,
 )
 
 
@@ -55,6 +66,14 @@ class BrokerRuntimeSupport:
         adaptive_concurrency: AdaptiveConcurrencyRuntimeSnapshot | None = None,
         poison_message_config: Any = None,
         poison_message_open_circuit_count: int = 0,
+        dirty_commit_partitions: set[Any] | None = None,
+        unsettled_completions_by_partition: dict[Any, int] | None = None,
+        pending_dlq_events: dict[Any, Any] | None = None,
+        pipeline_poll_records_total: int = 0,
+        pipeline_poll_nonempty_total: int = 0,
+        pipeline_poll_empty_total: int = 0,
+        pipeline_poll_error_total: int = 0,
+        pipeline_completed_offset_skips_total: int = 0,
     ) -> None:
         """Initialize this component.
 
@@ -83,6 +102,14 @@ class BrokerRuntimeSupport:
             adaptive_concurrency: Adaptive concurrency value used to initialize this component.
             poison_message_config: Poison message config value used to initialize this component.
             poison_message_open_circuit_count: Poison message open circuit count value used to initialize this component.
+            dirty_commit_partitions: Partitions waiting for commit settlement.
+            unsettled_completions_by_partition: Completion counts pending commit by partition.
+            pending_dlq_events: Terminal failures waiting for DLQ publication.
+            pipeline_poll_records_total: Total records observed by broker polling.
+            pipeline_poll_nonempty_total: Total non-empty broker polls.
+            pipeline_poll_empty_total: Total empty broker polls.
+            pipeline_poll_error_total: Total broker poll errors.
+            pipeline_completed_offset_skips_total: Completed offsets skipped as stale.
 
         """
         self._work_manager = work_manager
@@ -109,6 +136,18 @@ class BrokerRuntimeSupport:
         self._adaptive_concurrency = adaptive_concurrency
         self._poison_message_config = poison_message_config
         self._poison_message_open_circuit_count = poison_message_open_circuit_count
+        self._dirty_commit_partitions = dirty_commit_partitions or set()
+        self._unsettled_completions_by_partition = (
+            unsettled_completions_by_partition or {}
+        )
+        self._pending_dlq_events = pending_dlq_events or {}
+        self._pipeline_poll_records_total = pipeline_poll_records_total
+        self._pipeline_poll_nonempty_total = pipeline_poll_nonempty_total
+        self._pipeline_poll_empty_total = pipeline_poll_empty_total
+        self._pipeline_poll_error_total = pipeline_poll_error_total
+        self._pipeline_completed_offset_skips_total = (
+            pipeline_completed_offset_skips_total
+        )
 
     @staticmethod
     def _project_process_batch_metrics(
@@ -365,4 +404,83 @@ class BrokerRuntimeSupport:
                 runtime_diagnostics
             ),
             poison_message=poison_message_snapshot,
+        )
+
+    def compose_pipeline_diagnostics(
+        self,
+        diagnostics: WorkManagerPipelineDiagnostics,
+        runtime_metrics: EngineRuntimeDiagnostics | None,
+    ) -> WorkManagerPipelineDiagnostics:
+        """Compose WorkManager sidecar data with broker and engine diagnostics."""
+        completed_unsettled = sum(
+            self._unsettled_completions_by_partition.get(tp, 0)
+            for tp in self._dirty_commit_partitions
+        )
+        pending_dlq_count = len(self._pending_dlq_events)
+        settlement_blocker_reason = None
+        if pending_dlq_count > 0:
+            settlement_blocker_reason = (
+                PipelineSettlementBlockerReason.DLQ_PUBLISH_PENDING
+            )
+        elif completed_unsettled > 0:
+            settlement_blocker_reason = PipelineSettlementBlockerReason.COMMIT_PENDING
+
+        stage_counts = dict(diagnostics.stage_counts)
+        stage_counts[PipelineStage.COMPLETED_UNSETTLED] = PipelineCount(
+            count=completed_unsettled,
+            oldest_age_ms=None,
+        )
+        stage_counts[PipelineStage.DLQ] = PipelineCount(
+            count=pending_dlq_count,
+            oldest_age_ms=None,
+        )
+        stage_support = dict(diagnostics.stage_support)
+        stage_support[PipelineStage.COMPLETED_UNSETTLED] = (
+            PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        stage_support[PipelineStage.DLQ] = PipelineDiagnosticsSupportState.SUPPORTED
+        section_support = dict(diagnostics.section_support)
+        section_support[PipelineDiagnosticsSection.SETTLEMENT] = (
+            PipelineDiagnosticsSupportState.SUPPORTED
+        )
+        section_support[PipelineDiagnosticsSection.POLL] = (
+            PipelineDiagnosticsSupportState.SUPPORTED
+        )
+
+        workers = diagnostics.workers
+        if runtime_metrics is not None and runtime_metrics.workers is not None:
+            section_support[PipelineDiagnosticsSection.WORKERS] = (
+                PipelineDiagnosticsSupportState.SUPPORTED
+            )
+            workers = PipelineWorkerDiagnostics(
+                total=runtime_metrics.workers.total,
+                executing=runtime_metrics.workers.executing,
+                admitted=runtime_metrics.workers.admitted,
+                top_k_loads=list(runtime_metrics.workers.top_k_loads),
+                support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+            )
+
+        settlement = PipelineSettlementDiagnostics(
+            completed_unsettled=completed_unsettled,
+            oldest_age_ms=None,
+            blocker_reason=settlement_blocker_reason,
+            support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+        )
+        return replace(
+            diagnostics,
+            stage_counts=stage_counts,
+            stage_support=stage_support,
+            settlement=settlement,
+            workers=workers,
+            poll=PipelinePollDiagnostics(
+                records_total=self._pipeline_poll_records_total,
+                nonempty_polls_total=self._pipeline_poll_nonempty_total,
+                empty_polls_total=self._pipeline_poll_empty_total,
+                error_polls_total=self._pipeline_poll_error_total,
+                completed_offset_skips_total=self._pipeline_completed_offset_skips_total,
+                broker_kind="kafka",
+                support_state=PipelineDiagnosticsSupportState.SUPPORTED,
+            ),
+            section_support=section_support,
+            scope=PipelineDiagnosticsScope.COMBINED,
         )

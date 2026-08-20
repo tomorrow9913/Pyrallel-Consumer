@@ -108,13 +108,9 @@ surface, control-plane commit 판단, worker function 실행 의미는 기존 �
 ## 실험 범위
 
 `shared_queue` 제거 전에는 명시적 transport option 뒤에 숨겼다. #129 이후에는
-해당 selector가 제거된다.
-
-```text
-process_transport = worker_pipes
-```
-
-process mode는 더 이상 `shared_queue`를 선택할 수 없다.
+해당 selector가 제거되었고, process mode는 worker-pipe-only topology로 동작한다.
+benchmark artifact는 결과 metadata로 `process_transport_mode=worker_pipes`를 남길
+수 있지만, 이는 runtime input이 아니다.
 
 ### 구현된 worker-pipe 범위
 
@@ -125,9 +121,8 @@ process mode는 더 이상 `shared_queue`를 선택할 수 없다.
 - parent-side item-level `CompletionEvent` expansion
 - 기존 single completion queue 재사용
 - parent-side registry / in-flight accounting 재사용
-- benchmark에서 transport 선택 가능
 - benchmark에서 `route_batch_size` 선택 가능
-- shared queue와 worker pipes 비교 matrix
+- historical shared queue artifact와 worker-pipes 결과 비교 가능
 - 지원하지 않는 조합은 startup에서 명시적으로 reject
 
 ### 1차 실험에서 제외
@@ -247,7 +242,7 @@ benchmark CLI
 | `ProcessConfig.route_batch_size=1` | supported | unbatched worker-affine path |
 | `ProcessConfig.route_batch_size>1` | engine이 ordered batch capability를 광고할 때 같은 route lease 지원 | IPC amortization |
 | ordered mode + `supports_ordered_route_batch=False` engine | effective route batch size `1` | fallback `submit_batch()`는 ordered sequential executor가 아님 |
-| removed `shared_queue` value | startup/CLI/release-gate에서 거부 | 제거된 transport를 live evidence로 해석하지 않기 위해 |
+| historical artifact with `shared_queue` | migration note로만 해석 | 제거된 transport를 live evidence로 해석하지 않기 위해 |
 | process micro-batch flags | 기존 의미 유지 또는 명시적 unsupported 처리 | `ProcessConfig.batch_size`와 `ProcessConfig.route_batch_size`를 분리하기 위해 |
 | `worker_pipes` + recycle semantics 미구현 | startup reject | silent disable은 benchmark 해석을 오염시킴 |
 
@@ -337,7 +332,7 @@ balancing 설계는 이 문서 범위가 아니다.
   `route_batch_size_avg`, `route_batch_size_max` 같은 route-batch IPC metric
 - reject/skip된 process-config 조합을 설명할 수 있는 로그나 runtime metadata
 - release-gate summary는 missing 또는 `"worker_pipes"` process artifact만 live
-  evidence로 인정하고, 제거된 transport 값은 invalid로 표시해야 함
+  evidence로 인정함
 
 Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
@@ -383,7 +378,7 @@ Benchmark 보고서는 아래 질문에 바로 답할 수 있어야 한다.
 
 - release gate / metrics / benchmark JSON에서 live `shared_queue` surface 제거
 - old artifact의 missing `process_transport_mode`는 worker-pipes compatible로 해석
-- `"shared_queue"` artifact는 historical note 외 live release evidence에서 reject
+- `"shared_queue"` artifact는 historical/migration note로만 유지
 
 ### Slice 3 — worker-pipes route-batch dispatch
 

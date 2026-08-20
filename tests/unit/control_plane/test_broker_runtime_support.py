@@ -16,6 +16,7 @@ from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
 
 
 def test_build_system_metrics_projects_lag_gaps_and_queue_sizes() -> None:
+    # Given: inputs for `build system metrics projects lag gaps and qu...` are prepared.
     from pyrallel_consumer.control_plane.broker_runtime_support import (
         BrokerRuntimeSupport,
     )
@@ -43,8 +44,10 @@ def test_build_system_metrics_projects_lag_gaps_and_queue_sizes() -> None:
         logger=MagicMock(),
     )
 
+    # When: the broker runtime support code path is exercised.
     metrics = support.build_system_metrics()
 
+    # Then: the expected `build system metrics projects lag gaps and qu...` behavior is asserted.
     assert metrics.total_in_flight == 10
     assert metrics.is_paused is False
     assert len(metrics.partitions) == 1
@@ -57,6 +60,7 @@ def test_build_system_metrics_projects_lag_gaps_and_queue_sizes() -> None:
 
 
 def test_build_system_metrics_preserves_zero_blocking_offset_duration() -> None:
+    # Given: inputs for `build system metrics preserves zero blocking...` are prepared.
     from pyrallel_consumer.control_plane.broker_runtime_support import (
         BrokerRuntimeSupport,
     )
@@ -84,13 +88,16 @@ def test_build_system_metrics_preserves_zero_blocking_offset_duration() -> None:
         logger=MagicMock(),
     )
 
+    # When: the broker runtime support code path is exercised.
     metrics = support.build_system_metrics()
 
+    # Then: the expected `build system metrics preserves zero blocking...` behavior is asserted.
     assert metrics.partitions[0].blocking_offset == 0
     assert metrics.partitions[0].blocking_duration_sec == 2.5
 
 
 def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None:
+    # Given: inputs for `build runtime snapshot projects assignments a...` are prepared.
     from pyrallel_consumer.control_plane.broker_runtime_support import (
         BrokerRuntimeSupport,
     )
@@ -171,8 +178,10 @@ def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None
         poison_message_open_circuit_count=3,
     )
 
+    # When: the broker runtime support code path is exercised.
     snapshot = support.build_runtime_snapshot()
 
+    # Then: the expected `build runtime snapshot projects assignments a...` behavior is asserted.
     assert snapshot.queue.total_in_flight == 10
     assert snapshot.queue.total_queued == 7
     assert snapshot.queue.max_in_flight == 100
@@ -218,6 +227,7 @@ def test_build_runtime_snapshot_projects_assignments_and_runtime_state() -> None
 
 
 def test_check_backpressure_transitions_pause_and_resume_state() -> None:
+    # Given: inputs for `check backpressure transitions pause and resu...` are prepared.
     from pyrallel_consumer.control_plane.broker_runtime_support import (
         BrokerRuntimeSupport,
     )
@@ -241,7 +251,9 @@ def test_check_backpressure_transitions_pause_and_resume_state() -> None:
         logger=MagicMock(),
     )
 
+    # When: the broker runtime support code path is exercised.
     is_paused = support.check_backpressure(total_queued=20)
+    # Then: the expected `check backpressure transitions pause and resu...` behavior is asserted.
     assert is_paused is True
     consumer.pause.assert_called_once_with(["p0"])
 

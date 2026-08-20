@@ -55,20 +55,26 @@ def broker_poller(mock_kafka_config, mock_execution_engine):
 
 @pytest.mark.asyncio
 async def test_get_consume_timeout_returns_zero_with_in_flight_work(broker_poller):
+    # Given: inputs for `get consume timeout returns zero with in flig...` are prepared.
     broker_poller._work_manager.get_total_in_flight_count.return_value = 1
 
+    # When: the broker poller consume timeout code path is exercised.
     timeout = await broker_poller._get_consume_timeout_seconds()
 
+    # Then: the expected `get consume timeout returns zero with in flig...` behavior is asserted.
     assert timeout == 0.0
 
 
 @pytest.mark.asyncio
 async def test_get_consume_timeout_returns_zero_with_queued_work(broker_poller):
+    # Given: inputs for `get consume timeout returns zero with queued...` are prepared.
     broker_poller._work_manager.get_total_in_flight_count.return_value = 0
     broker_poller._work_manager.get_total_queued_messages.return_value = 2
 
+    # When: the broker poller consume timeout code path is exercised.
     timeout = await broker_poller._get_consume_timeout_seconds()
 
+    # Then: the expected `get consume timeout returns zero with queued...` behavior is asserted.
     assert timeout == 0.0
 
 
@@ -76,6 +82,7 @@ async def test_get_consume_timeout_returns_zero_with_queued_work(broker_poller):
 async def test_run_consumer_uses_non_blocking_consume_timeout_when_work_remains(
     broker_poller,
 ):
+    # Given: inputs for `run consumer uses non blocking consume timeou...` are prepared.
     broker_poller._running = True
     broker_poller._offset_trackers = {}
     broker_poller._max_blocking_duration_ms = 0
@@ -93,16 +100,19 @@ async def test_run_consumer_uses_non_blocking_consume_timeout_when_work_remains(
     async def passthrough_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
+    # When: the broker poller consume timeout code path is exercised.
     with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
         "asyncio.sleep", new=AsyncMock()
     ):
         await broker_poller._run_consumer()
 
+    # Then: the expected `run consumer uses non blocking consume timeou...` behavior is asserted.
     assert consume_timeouts == [0.0]
 
 
 @pytest.mark.asyncio
 async def test_run_consumer_uses_idle_timeout_when_no_work_remains(broker_poller):
+    # Given: inputs for `run consumer uses idle timeout when no work r...` are prepared.
     broker_poller._running = True
     broker_poller._offset_trackers = {}
     broker_poller._max_blocking_duration_ms = 0
@@ -120,9 +130,11 @@ async def test_run_consumer_uses_idle_timeout_when_no_work_remains(broker_poller
     async def passthrough_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
+    # When: the broker poller consume timeout code path is exercised.
     with patch("asyncio.to_thread", side_effect=passthrough_to_thread), patch(
         "asyncio.sleep", new=AsyncMock()
     ):
         await broker_poller._run_consumer()
 
+    # Then: the expected `run consumer uses idle timeout when no work r...` behavior is asserted.
     assert consume_timeouts == [0.1]

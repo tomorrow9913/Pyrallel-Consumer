@@ -21,10 +21,24 @@
   "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Operator overview",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Curated operator overview: successful processing throughput only.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -49,71 +63,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 12,
+        "h": 5,
+        "w": 8,
         "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (status) (rate(consumer_processed_total[1m]))",
-          "legendFormat": "{{status}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Throughput by status (1m rate)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 0
+        "y": 1
       },
       "id": 2,
       "options": {
@@ -134,13 +87,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_in_flight_count",
-          "legendFormat": "in_flight",
+          "expr": "sum(rate(consumer_processed_total{status=\"success\"}[1m]))",
+          "legendFormat": "success throughput/s",
+          "instant": false,
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "In-flight messages",
+      "title": "Success throughput (1m rate)",
       "type": "timeseries"
     },
     {
@@ -148,11 +102,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Curated operator overview: separate terminal failure signals so failures are visible even when success throughput is high.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
+          "custom": {},
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -171,10 +127,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 9
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 1
       },
       "id": 3,
       "options": {
@@ -195,13 +151,62 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(consumer_processing_latency_seconds_bucket[1m])))",
-          "legendFormat": "p99",
+          "expr": "sum(rate(consumer_processed_total{status=\"failure\"}[1m])) or vector(0)",
+          "legendFormat": "worker failures/s",
+          "instant": false,
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(consumer_commit_failures_total[1m])) or vector(0)",
+          "legendFormat": "commit failures/s",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(consumer_dlq_publish_failures_total[1m])) or vector(0)",
+          "legendFormat": "dlq publish failures/s",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(consumer_processed_total{status=\"failure\"}[1m])) or vector(0)) + (sum(rate(consumer_commit_failures_total[1m])) or vector(0)) + (sum(rate(consumer_dlq_publish_failures_total[1m])) or vector(0))",
+          "legendFormat": "all terminal failures/s",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(consumer_processed_total{status=\"failure\"}[5m])) or vector(0)",
+          "legendFormat": "worker failure count/5m",
+          "instant": false,
+          "range": true,
+          "refId": "E"
         }
       ],
-      "title": "Processing latency p99",
+      "title": "Terminal failures (1m rate and 5m count)",
       "type": "timeseries"
     },
     {
@@ -209,11 +214,158 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Current backpressure state: 0=running/green, 1=paused/red.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "running",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "paused",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_backpressure_active",
+          "legendFormat": "backpressure",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Backpressure current",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Current resource signal one-hot status: available, stale, unavailable, or first_sample_pending.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_signal_status",
+          "legendFormat": "resource {{status}}",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Resource status current",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Curated operator overview: processing latency p50/p90/p99 from consumer_processing_latency_seconds_bucket; unit is seconds.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
+          "custom": {},
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -227,151 +379,16 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "s"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 9
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "consumer_backpressure_active",
-          "legendFormat": "backpressure",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Backpressure state",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
+        "h": 7,
         "w": 12,
         "x": 0,
-        "y": 18
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "consumer_process_batch_flush_count{reason=\"size\"}",
-          "legendFormat": "size",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "consumer_process_batch_flush_count{reason=\"timer\"}",
-          "legendFormat": "timer",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "consumer_process_batch_flush_count{reason=\"close\"}",
-          "legendFormat": "close",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Process batch flushes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 18
+        "y": 6
       },
       "id": 6,
       "options": {
@@ -392,8 +409,9 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_process_batch_avg_size",
-          "legendFormat": "avg_size",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(consumer_processing_latency_seconds_bucket[1m])))",
+          "legendFormat": "p50",
+          "instant": false,
           "range": true,
           "refId": "A"
         },
@@ -403,8 +421,9 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_process_batch_buffered_age_seconds",
-          "legendFormat": "buffered_age_seconds",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(consumer_processing_latency_seconds_bucket[1m])))",
+          "legendFormat": "p90",
+          "instant": false,
           "range": true,
           "refId": "B"
         },
@@ -414,13 +433,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_process_batch_buffered_items",
-          "legendFormat": "buffered_items",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consumer_processing_latency_seconds_bucket[1m])))",
+          "legendFormat": "p99",
+          "instant": false,
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "Process batch sizing",
+      "title": "Processing latency percentiles (seconds)",
       "type": "timeseries"
     },
     {
@@ -428,11 +448,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Curated operator overview: queue, lag, backlog, blocking duration, metadata size, and host resource ratios.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
+          "custom": {},
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -440,6 +462,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
               }
             ]
           }
@@ -447,10 +473,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 27
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 6
       },
       "id": 7,
       "options": {
@@ -471,8 +497,837 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "consumer_in_flight_count",
+          "legendFormat": "in_flight",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_parallel_lag)",
+          "legendFormat": "parallel_lag",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_gap_count)",
+          "legendFormat": "gap_count",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_internal_queue_depth)",
+          "legendFormat": "internal_queue_depth",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(consumer_oldest_task_duration_seconds)",
+          "legendFormat": "oldest_task_duration_seconds",
+          "instant": false,
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(consumer_metadata_size_bytes)",
+          "legendFormat": "metadata_size_bytes",
+          "instant": false,
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_cpu_utilization_ratio",
+          "legendFormat": "cpu_utilization_ratio",
+          "instant": false,
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_resource_memory_utilization_ratio",
+          "legendFormat": "memory_utilization_ratio",
+          "instant": false,
+          "range": true,
+          "refId": "H"
+        }
+      ],
+      "title": "Queue, lag, and backlog",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 8,
+      "panels": [],
+      "title": "Internal pipeline summary",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Compact pipeline support matrix. This panel avoids Data does not have a time field by using an instant query. Supported sections should show observed metrics; not_implemented/unsupported sections intentionally omit observed series, while scrape lifecycle/staleness can temporarily make live series look empty.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_section_support_state",
+          "legendFormat": "support {{engine_type}} {{section}} {{state}}",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Pipeline support matrix",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Small observed pipeline panel. Supported sections emit zero-valued stage series, so no data means support is not implemented, get_pipeline_diagnostics publish path is not running, or scrape lifecycle/staleness.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 19
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage, engine_type) (pyrallel_pipeline_stage_messages)",
+          "legendFormat": "{{engine_type}} {{stage}}",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pipeline stage messages",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Small observed pipeline panel. Supported sections emit zero-valued blocked reason series; dispatch capacity only emits the active blocked reason, so absence should be interpreted with Pipeline support matrix first.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 19
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason, engine_type) (pyrallel_pipeline_blocked_messages)",
+          "legendFormat": "{{engine_type}} {{reason}}",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_dispatch_capacity_blocked_messages",
+          "legendFormat": "dispatch {{engine_type}} {{reason}}",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_poll_records_total",
+          "legendFormat": "poll records {{engine_type}}",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_poll_events_total",
+          "legendFormat": "poll events {{engine_type}} {{event}}",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_completed_offset_skips_total",
+          "legendFormat": "restored offset skips {{engine_type}}",
+          "instant": false,
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Pipeline blocked reasons",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Small observed pipeline panel. Pipeline worker capacity is emitted when the workers section is supported and worker diagnostics are available; engine_type is async or process.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 19
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_worker_capacity_units",
+          "legendFormat": "worker {{engine_type}} {{state}}",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_subqueue_items",
+          "legendFormat": "subqueue items {{engine_type}} {{state}}",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_subqueues",
+          "legendFormat": "subqueues {{engine_type}} {{state}}",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, engine_type) (rate(pyrallel_pipeline_completion_to_commit_latency_seconds_bucket[1m])))",
+          "legendFormat": "completion_to_commit p99 {{engine_type}}",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Pipeline worker capacity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Small observed pipeline panel. Current settlement blocker state: supported healthy settlement emits all reasons as 0; unsupported settlement relies on pipeline support matrix.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 19
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "pyrallel_pipeline_settlement_blocker_state",
+          "legendFormat": "{{engine_type}} {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Pipeline settlement blockers",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 14,
+      "panels": [],
+      "title": "Process-only diagnostics",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Process-mode worker-pipes diagnostics: worker-pipes bypasses BatchAccumulator flush counts, so route-batch rates are primary; async mode may legitimately show no process-mode data.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(consumer_process_route_batch_count[1m])",
+          "legendFormat": "route batches/s",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(consumer_process_route_batch_items[1m])",
+          "legendFormat": "route batch items/s",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Process-only route batch rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Process-mode worker-pipes diagnostics: raw gauge values for average and max route batch size.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 26
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_route_batch_avg_size",
+          "legendFormat": "route_batch_avg_size",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_route_batch_max_size",
+          "legendFormat": "route_batch_max_size",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Process-only route batch sizing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Process-mode worker-pipes diagnostics: IPC density gauges plus completion payload rates.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 26
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_ipc_items_per_input_payload",
+          "legendFormat": "items_per_input_payload",
+          "instant": false,
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_ipc_items_per_completion_payload",
+          "legendFormat": "items_per_completion_payload",
+          "instant": false,
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(consumer_process_completion_item_payload_count[1m])",
+          "legendFormat": "item completion payloads/s",
+          "instant": false,
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(consumer_process_completion_batch_payload_count[1m])",
+          "legendFormat": "batch completion payloads/s",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Process-only IPC payload efficiency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Process-mode worker-pipes diagnostics: worker-pipe timing gauges.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 18,
+        "x": 0,
+        "y": 33
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "consumer_process_batch_avg_main_to_worker_ipc_seconds",
           "legendFormat": "avg_main_to_worker_ipc_seconds",
+          "instant": false,
           "range": true,
           "refId": "A"
         },
@@ -484,6 +1339,7 @@
           "editorMode": "code",
           "expr": "consumer_process_batch_avg_worker_exec_seconds",
           "legendFormat": "avg_worker_exec_seconds",
+          "instant": false,
           "range": true,
           "refId": "B"
         },
@@ -495,11 +1351,48 @@
           "editorMode": "code",
           "expr": "consumer_process_batch_avg_worker_to_main_ipc_seconds",
           "legendFormat": "avg_worker_to_main_ipc_seconds",
+          "instant": false,
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_main_to_worker_ipc_seconds",
+          "legendFormat": "last_main_to_worker_ipc_seconds",
+          "instant": false,
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_worker_exec_seconds",
+          "legendFormat": "last_worker_exec_seconds",
+          "instant": false,
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_worker_to_main_ipc_seconds",
+          "legendFormat": "last_worker_to_main_ipc_seconds",
+          "instant": false,
+          "range": true,
+          "refId": "F"
         }
       ],
-      "title": "Process batch timing",
+      "title": "Process-only worker-pipe timing",
       "type": "timeseries"
     },
     {
@@ -507,11 +1400,13 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Process-mode diagnostics: support boundary and transport state; async mode may legitimately be unsupported.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
+          "custom": {},
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -519,10 +1414,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           }
@@ -530,22 +1421,25 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 36
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 33
       },
-      "id": 8,
+      "id": 19,
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "textMode": "auto"
       },
       "targets": [
         {
@@ -554,9 +1448,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_adaptive_backpressure_configured_max_in_flight",
-          "legendFormat": "adaptive_backpressure_configured_max",
-          "range": true,
+          "expr": "consumer_process_batch_transport_mode",
+          "legendFormat": "transport: {{mode}}",
+          "instant": true,
+          "range": false,
           "refId": "A"
         },
         {
@@ -565,9 +1460,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_adaptive_backpressure_effective_max_in_flight",
-          "legendFormat": "adaptive_backpressure_effective",
-          "range": true,
+          "expr": "consumer_process_batch_support_state",
+          "legendFormat": "support: {{state}}",
+          "instant": true,
+          "range": false,
           "refId": "B"
         },
         {
@@ -576,24 +1472,63 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_adaptive_concurrency_effective_max_in_flight",
-          "legendFormat": "adaptive_concurrency_effective",
-          "range": true,
+          "expr": "consumer_process_batch_timer_flush_supported",
+          "legendFormat": "timer_flush_supported",
+          "instant": true,
+          "range": false,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_demand_flush_supported",
+          "legendFormat": "demand_flush_supported",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_recycle_supported",
+          "legendFormat": "recycle_supported",
+          "instant": true,
+          "range": false,
+          "refId": "E"
         }
       ],
-      "title": "Adaptive control caps",
-      "type": "timeseries"
+      "title": "Process-only support boundary",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "id": 20,
+      "panels": [],
+      "title": "Adaptive diagnostics",
+      "type": "row"
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Current adaptive last decision one-hot state, not a line graph or state history.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
           "mappings": [],
           "thresholds": {
@@ -605,30 +1540,35 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 1
               }
             ]
-          }
+          },
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 36
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 41
       },
-      "id": 9,
+      "id": 21,
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "textMode": "auto"
       },
       "targets": [
         {
@@ -639,7 +1579,70 @@
           "editorMode": "code",
           "expr": "consumer_adaptive_backpressure_last_decision",
           "legendFormat": "{{decision}}",
-          "range": true,
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Adaptive last decision",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Adaptive primary summary: effective/configured/min caps only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 16,
+        "x": 8,
+        "y": 41
+      },
+      "id": 22,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_configured_max_in_flight",
+          "legendFormat": "adaptive_backpressure_configured_max",
+          "instant": true,
+          "range": false,
           "refId": "A"
         },
         {
@@ -648,10 +1651,134 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_effective_max_in_flight",
+          "legendFormat": "adaptive_backpressure_effective",
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_concurrency_effective_max_in_flight",
+          "legendFormat": "adaptive_concurrency_effective",
+          "instant": true,
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_concurrency_configured_max_in_flight",
+          "legendFormat": "adaptive_concurrency_configured_max",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_min_in_flight",
+          "legendFormat": "adaptive_backpressure_min",
+          "instant": true,
+          "range": false,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_concurrency_min_in_flight",
+          "legendFormat": "adaptive_concurrency_min",
+          "instant": true,
+          "range": false,
+          "refId": "F"
+        }
+      ],
+      "title": "Adaptive control caps",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "id": 23,
+      "panels": [],
+      "title": "Metric catalog / reference",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Reference/detail: adaptive-only scale step controls. All scale metric families are visible simultaneously; no selector is required.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 47
+      },
+      "id": 24,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "consumer_adaptive_backpressure_scale_up_step",
           "legendFormat": "backpressure_scale_up_step",
-          "range": true,
-          "refId": "B"
+          "instant": true,
+          "range": false,
+          "refId": "A"
         },
         {
           "datasource": {
@@ -661,8 +1788,9 @@
           "editorMode": "code",
           "expr": "consumer_adaptive_backpressure_scale_down_step",
           "legendFormat": "backpressure_scale_down_step",
-          "range": true,
-          "refId": "C"
+          "instant": true,
+          "range": false,
+          "refId": "B"
         },
         {
           "datasource": {
@@ -672,8 +1800,9 @@
           "editorMode": "code",
           "expr": "consumer_adaptive_concurrency_scale_up_step",
           "legendFormat": "concurrency_scale_up_step",
-          "range": true,
-          "refId": "D"
+          "instant": true,
+          "range": false,
+          "refId": "C"
         },
         {
           "datasource": {
@@ -683,8 +1812,71 @@
           "editorMode": "code",
           "expr": "consumer_adaptive_concurrency_scale_down_step",
           "legendFormat": "concurrency_scale_down_step",
-          "range": true,
-          "refId": "E"
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        }
+      ],
+      "title": "Adaptive scale steps",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Reference/detail: adaptive-only cooldown controls. Both cooldown metric families are visible simultaneously; no selector is required.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 47
+      },
+      "id": 25,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_cooldown_ms",
+          "legendFormat": "backpressure_cooldown_ms",
+          "instant": true,
+          "range": false,
+          "refId": "A"
         },
         {
           "datasource": {
@@ -694,7 +1886,228 @@
           "editorMode": "code",
           "expr": "consumer_adaptive_concurrency_cooldown_ms",
           "legendFormat": "concurrency_cooldown_ms",
-          "range": true,
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Adaptive cooldowns",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Reference/detail: adaptive-only threshold and latency inputs. All threshold metric families are visible simultaneously; no selector is required.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 47
+      },
+      "id": 26,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_lag_scale_up_threshold",
+          "legendFormat": "backpressure_lag_scale_up_threshold",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_low_latency_threshold_ms",
+          "legendFormat": "backpressure_low_latency_threshold_ms",
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_high_latency_threshold_ms",
+          "legendFormat": "backpressure_high_latency_threshold_ms",
+          "instant": true,
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_adaptive_backpressure_avg_completion_latency_seconds",
+          "legendFormat": "backpressure_avg_completion_latency_seconds",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        }
+      ],
+      "title": "Adaptive thresholds and latency",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Reference/detail: compatibility and async commit coordinator metrics shown as simultaneous bars. They are part of the public metric surface but are not primary worker-pipes diagnostics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 27,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_flush_count",
+          "legendFormat": "legacy flush {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_avg_size",
+          "legendFormat": "legacy avg size",
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_size",
+          "legendFormat": "legacy last size",
+          "instant": true,
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_last_wait_seconds",
+          "legendFormat": "legacy last wait seconds",
+          "instant": true,
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_buffered_items",
+          "legendFormat": "legacy buffered items",
+          "instant": true,
+          "range": false,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "consumer_process_batch_buffered_age_seconds",
+          "legendFormat": "legacy buffered age seconds",
+          "instant": true,
+          "range": false,
           "refId": "F"
         },
         {
@@ -703,14 +2116,87 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "consumer_adaptive_backpressure_cooldown_ms",
-          "legendFormat": "backpressure_cooldown_ms",
-          "range": true,
+          "expr": "pyrallel_commit_coordinator_pending_partitions",
+          "legendFormat": "coordinator pending partitions",
+          "instant": true,
+          "range": false,
           "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_submitted_total[1m])",
+          "legendFormat": "coordinator submitted/s",
+          "instant": true,
+          "range": false,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_success_total[1m])",
+          "legendFormat": "coordinator success/s",
+          "instant": true,
+          "range": false,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_failures_total[1m])",
+          "legendFormat": "coordinator failures/s {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_retries_total[1m])",
+          "legendFormat": "coordinator retries/s {{reason}}",
+          "instant": true,
+          "range": false,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(pyrallel_commit_coordinator_coalesced_total[1m])",
+          "legendFormat": "coordinator coalesced/s",
+          "instant": true,
+          "range": false,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(pyrallel_commit_coordinator_settlement_latency_seconds_bucket[1m])) by (le))",
+          "legendFormat": "coordinator p95 settlement latency",
+          "instant": true,
+          "range": false,
+          "refId": "M"
         }
       ],
-      "title": "Adaptive control parameters",
-      "type": "timeseries"
+      "title": "Process compatibility/reference metrics",
+      "type": "bargauge"
     }
   ],
   "refresh": "10s",
@@ -726,7 +2212,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Pyrallel Overview",
+  "title": "Pyrallel Overview - Reference / sample",
   "uid": "pyrallel-overview",
   "version": 1,
   "weekStart": ""

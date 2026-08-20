@@ -15,6 +15,7 @@ from benchmarks.tui.state import BenchmarkTuiState
 
 
 def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
+    # Given: inputs for `render results summary builds report table` are prepared.
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(
         json.dumps(
@@ -58,8 +59,10 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     summary = render_results_summary(results_path)
 
+    # Then: the expected `render results summary builds report table` behavior is asserted.
     assert "실행" in summary
     assert "워크로드" in summary
     assert "TPS P50 (100)" in summary
@@ -70,6 +73,7 @@ def test_render_results_summary_builds_report_table(tmp_path: Path) -> None:
 def test_render_results_summary_includes_performance_improvement_analysis(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `render results summary includes performance i...` are prepared.
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(
         json.dumps(
@@ -113,8 +117,10 @@ def test_render_results_summary_includes_performance_improvement_analysis(
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     summary = render_results_summary(results_path)
 
+    # Then: the expected `render results summary includes performance i...` behavior is asserted.
     assert "성능 개선" in summary
     assert "adaptive_on_vs_off" in summary
     assert "sleep/key_hash/async" in summary
@@ -123,6 +129,7 @@ def test_render_results_summary_includes_performance_improvement_analysis(
 
 
 def test_results_modal_renders_ordering_grouped_winner_sections(tmp_path: Path) -> None:
+    # Given: inputs for `results modal renders ordering grouped winner...` are prepared.
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(
         json.dumps(
@@ -199,9 +206,11 @@ def test_results_modal_renders_ordering_grouped_winner_sections(tmp_path: Path) 
         summary_text="unused", output_path=str(results_path)
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     key_hash_text = modal._winner_section_text("key_hash")
     partition_text = modal._winner_section_text("partition")
 
+    # Then: the expected `results modal renders ordering grouped winner...` behavior is asserted.
     assert "정렬: key_hash" in key_hash_text
     assert "sleep" in key_hash_text
     assert "async" in key_hash_text
@@ -216,6 +225,7 @@ def test_results_modal_renders_ordering_grouped_winner_sections(tmp_path: Path) 
 def test_results_modal_preserves_registry_workload_display_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Given: inputs for `results modal preserves registry workload dis...` are prepared.
     monkeypatch.setattr(
         "benchmarks.tui.results_modal.available_names",
         lambda: ("sleep", "cpu", "io"),
@@ -268,10 +278,12 @@ def test_results_modal_preserves_registry_workload_display_order(
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     modal = ResultsSummaryModalScreen(
         summary_text="unused", output_path=str(results_path)
     )
 
+    # Then: the expected `results modal preserves registry workload dis...` behavior is asserted.
     text = modal._winner_section_text("key_hash")
     assert text.index("sleep") < text.index("cpu") < text.index("io")
 
@@ -283,6 +295,7 @@ def test_results_modal_preserves_registry_workload_display_order(
 async def test_results_modal_compresses_ordering_summary_with_tabs(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `results modal compresses ordering summary wit...` are prepared.
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(
         json.dumps(
@@ -321,6 +334,7 @@ async def test_results_modal_compresses_ordering_summary_with_tabs(
 
     app = BenchmarkTuiApp()
 
+    # When: the benchmark TUI results report code path is exercised.
     async with app.run_test() as pilot:
         app.push_screen(
             ResultsSummaryModalScreen(
@@ -350,12 +364,14 @@ async def test_results_modal_compresses_ordering_summary_with_tabs(
         ordering_tabs.active = "ordering-tab-partition"
         await pilot.pause()
 
+    # Then: the expected `results modal compresses ordering summary wit...` behavior is asserted.
     assert "정렬: partition" in str(ordering_summary.content)
     assert "io" in str(ordering_summary.content)
     assert "process" in str(ordering_summary.content)
 
 
 def test_results_modal_hides_unselected_workload_winner_cards(tmp_path: Path) -> None:
+    # Given: inputs for `results modal hides unselected workload winne...` are prepared.
     results_path = tmp_path / "benchmark-results.json"
     results_path.write_text(
         json.dumps(
@@ -380,10 +396,12 @@ def test_results_modal_hides_unselected_workload_winner_cards(tmp_path: Path) ->
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     modal = ResultsSummaryModalScreen(
         summary_text="unused", output_path=str(results_path)
     )
 
+    # Then: the expected `results modal hides unselected workload winne...` behavior is asserted.
     assert modal._visible_orderings == ("key_hash",)
     assert "sleep" in modal._winner_section_text("key_hash")
     assert "cpu" not in modal._winner_section_text("key_hash")
@@ -391,6 +409,7 @@ def test_results_modal_hides_unselected_workload_winner_cards(tmp_path: Path) ->
 
 
 def test_results_modal_displays_custom_workload_winners(tmp_path: Path) -> None:
+    # Given: inputs for `results modal displays custom workload winners` are prepared.
     results_path = tmp_path / "custom-results.json"
     results_path.write_text(
         json.dumps(
@@ -415,10 +434,12 @@ def test_results_modal_displays_custom_workload_winners(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     modal = ResultsSummaryModalScreen(
         summary_text="unused", output_path=str(results_path)
     )
 
+    # Then: the expected `results modal displays custom workload winners` behavior is asserted.
     assert "custom" in modal._winner_section_text("key_hash")
     assert "async" in modal._winner_section_text("key_hash")
 
@@ -426,6 +447,7 @@ def test_results_modal_displays_custom_workload_winners(tmp_path: Path) -> None:
 def test_results_modal_infers_default_ordering_from_legacy_results_json(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `results modal infers default ordering from le...` are prepared.
     results_path = tmp_path / "legacy-results.json"
     results_path.write_text(
         json.dumps(
@@ -460,10 +482,12 @@ def test_results_modal_infers_default_ordering_from_legacy_results_json(
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     modal = ResultsSummaryModalScreen(
         summary_text="unused", output_path=str(results_path)
     )
 
+    # Then: the expected `results modal infers default ordering from le...` behavior is asserted.
     assert modal._visible_orderings == ("key_hash",)
     assert "정렬: key_hash" in modal._winner_section_text("key_hash")
     assert "sleep" in modal._winner_section_text("key_hash")
@@ -473,6 +497,7 @@ def test_results_modal_infers_default_ordering_from_legacy_results_json(
 def test_results_modal_infers_process_label_from_legacy_pyrallel_run_name(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `results modal infers process label from legac...` are prepared.
     results_path = tmp_path / "legacy-process-results.json"
     results_path.write_text(
         json.dumps(
@@ -497,22 +522,30 @@ def test_results_modal_infers_process_label_from_legacy_pyrallel_run_name(
         encoding="utf-8",
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     modal = ResultsSummaryModalScreen(
         summary_text="unused", output_path=str(results_path)
     )
 
+    # Then: the expected `results modal infers process label from legac...` behavior is asserted.
     assert "cpu" in modal._winner_section_text("key_hash")
     assert "process" in modal._winner_section_text("key_hash")
     assert "pyrallel" not in modal._winner_section_text("key_hash")
 
 
 def test_results_modal_defaults_to_centered_layout() -> None:
+    # Given: inputs for `results modal defaults to centered layout` are prepared.
+    # When: the benchmark TUI results report code path is exercised.
+    # Then: the expected `results modal defaults to centered layout` behavior is asserted.
     assert "align: center middle" in ResultsSummaryModalScreen.DEFAULT_CSS
 
 
 def test_results_modal_cards_use_centered_content_alignment() -> None:
+    # Given: inputs for `results modal cards use centered content alig...` are prepared.
+    # When: the benchmark TUI results report code path is exercised.
     from benchmarks.tui.app import BenchmarkTuiApp
 
+    # Then: the expected `results modal cards use centered content alig...` behavior is asserted.
     assert ".results-order-section" in BenchmarkTuiApp.CSS
 
 
@@ -520,6 +553,7 @@ def test_results_modal_cards_use_centered_content_alignment() -> None:
 async def test_run_screen_opens_results_modal_after_completion(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `run screen opens results modal after completion` are prepared.
     results_path = tmp_path / "results.json"
     results_path.write_text(
         json.dumps(
@@ -579,8 +613,10 @@ async def test_run_screen_opens_results_modal_after_completion(
         "benchmarks.tui.app.BenchmarkProcessController", _CompletedController
     )
 
+    # When: the benchmark TUI results report code path is exercised.
     app = BenchmarkTuiApp()
 
+    # Then: the expected `run screen opens results modal after completion` behavior is asserted.
     async with app.run_test() as pilot:
         app.push_screen(RunScreen(BenchmarkTuiState(json_output=str(results_path))))
         await pilot.pause()
@@ -629,6 +665,7 @@ async def test_run_screen_opens_results_modal_after_completion(
 
 @pytest.mark.asyncio
 async def test_run_screen_keeps_run_screen_visible_on_failure(monkeypatch) -> None:
+    # Given: inputs for `run screen keeps run screen visible on failure` are prepared.
     class _FailedController:
         def __init__(self, *, state, on_output, on_progress, on_complete) -> None:
             del state
@@ -648,6 +685,7 @@ async def test_run_screen_keeps_run_screen_visible_on_failure(monkeypatch) -> No
 
     app = BenchmarkTuiApp()
 
+    # When: the benchmark TUI results report code path is exercised.
     async with app.run_test() as pilot:
         app.push_screen(RunScreen(BenchmarkTuiState()))
         await pilot.pause()
@@ -656,6 +694,7 @@ async def test_run_screen_keeps_run_screen_visible_on_failure(monkeypatch) -> No
         assert isinstance(app.screen, RunScreen)
         status = app.screen.query_one("#run-status", Static)
 
+    # Then: the expected `run screen keeps run screen visible on failure` behavior is asserted.
     assert "실패" in str(status.content)
 
 
@@ -663,6 +702,7 @@ async def test_run_screen_keeps_run_screen_visible_on_failure(monkeypatch) -> No
 async def test_run_screen_completes_progress_before_showing_success_modal(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Given: inputs for `run screen completes progress before showing...` are prepared.
     results_path = tmp_path / "results.json"
     results_path.write_text(
         json.dumps(
@@ -713,6 +753,7 @@ async def test_run_screen_completes_progress_before_showing_success_modal(
 
     app = BenchmarkTuiApp()
 
+    # When: the benchmark TUI results report code path is exercised.
     async with app.run_test() as pilot:
         app.push_screen(RunScreen(BenchmarkTuiState(json_output=str(results_path))))
         await pilot.pause()
@@ -724,13 +765,16 @@ async def test_run_screen_completes_progress_before_showing_success_modal(
         run_screen = app.screen_stack[-2]
         progress_bar = run_screen.query_one("#run-progress", ProgressBar)
 
+    # Then: the expected `run screen completes progress before showing...` behavior is asserted.
     assert progress_bar.progress == 3
 
 
 @pytest.mark.asyncio
 async def test_results_modal_wraps_content_in_vertical_scroll() -> None:
+    # Given: inputs for `results modal wraps content in vertical scroll` are prepared.
     app = BenchmarkTuiApp()
 
+    # When: the benchmark TUI results report code path is exercised.
     async with app.run_test() as pilot:
         app.push_screen(
             ResultsSummaryModalScreen(summary_text="summary", output_path=None)
@@ -738,4 +782,5 @@ async def test_results_modal_wraps_content_in_vertical_scroll() -> None:
         await pilot.pause()
         scroll = app.screen.query_one("#results-modal-scroll", VerticalScroll)
 
+    # Then: the expected `results modal wraps content in vertical scroll` behavior is asserted.
     assert scroll.id == "results-modal-scroll"

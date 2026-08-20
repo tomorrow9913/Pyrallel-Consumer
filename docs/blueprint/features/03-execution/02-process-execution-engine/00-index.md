@@ -26,10 +26,10 @@ diverge.
 
 ## Why this matters
 
-The compatibility `shared_queue` process path places every submitted item into one
-shared `multiprocessing.Queue`, so all workers compete on the same input queue.
-That compatibility path remains important, but benchmark and py-spy evidence
-suggest it is a bottleneck for ordered partition workloads.
+The former `shared_queue` process path placed every submitted item into one
+shared `multiprocessing.Queue`, so all workers competed on the same input queue.
+That compatibility path is historical context only; process execution now uses
+worker-specific input pipes as the live topology.
 
 The evidence direction captured in these docs is:
 
@@ -43,8 +43,8 @@ The evidence direction captured in these docs is:
 
 | Document | Role |
 | --- | --- |
-| [01-requirements.md](./01-requirements.md) | Responsibilities, transport modes, and acceptance criteria |
-| [02-architecture.md](./02-architecture.md) | Current shared-queue topology vs target worker-affine topology |
+| [01-requirements.md](./01-requirements.md) | Responsibilities, process topology, and acceptance criteria |
+| [02-architecture.md](./02-architecture.md) | Historical shared-queue topology vs current worker-affine topology |
 | [03-design.md](./03-design.md) | Config, routing identity, lifecycle, route batching, and runtime contract |
 | [04-worker-pipe-transport-experiment.md](./04-worker-pipe-transport-experiment.md) | Worker-pipe transport and route-batch experiment contract |
 

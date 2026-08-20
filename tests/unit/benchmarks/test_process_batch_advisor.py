@@ -35,10 +35,13 @@ def _summary_with_process_metrics() -> dict:
 
 
 def test_process_batch_advisor_recommends_next_run_flags_only() -> None:
+    # Given: inputs for `process batch advisor recommends next run fla...` are prepared.
+    # When: the process batch advisor code path is exercised.
     advice = process_batch_advisor.build_process_batch_advice(
         _summary_with_process_metrics()
     )
 
+    # Then: the expected `process batch advisor recommends next run fla...` behavior is asserted.
     assert len(advice) == 1
     item = advice[0]
     assert item.run_name == "sleep-partition-pyrallel-process"
@@ -60,6 +63,8 @@ def test_process_batch_advisor_recommends_next_run_flags_only() -> None:
 
 
 def test_process_batch_advisor_skips_non_process_or_missing_metrics() -> None:
+    # Given: inputs for `process batch advisor skips non process or mi...` are prepared.
+    # When: the process batch advisor code path is exercised.
     summary = {
         "results": [
             {
@@ -80,20 +85,24 @@ def test_process_batch_advisor_skips_non_process_or_missing_metrics() -> None:
         ]
     }
 
+    # Then: the expected `process batch advisor skips non process or mi...` behavior is asserted.
     assert process_batch_advisor.build_process_batch_advice(summary) == []
 
 
 def test_process_batch_advisor_loads_summary_and_formats_markdown(tmp_path) -> None:
+    # Given: inputs for `process batch advisor loads summary and forma...` are prepared.
     summary_path = tmp_path / "benchmark.json"
     summary_path.write_text(
         json.dumps(_summary_with_process_metrics()),
         encoding="utf-8",
     )
 
+    # When: the process batch advisor code path is exercised.
     summary = process_batch_advisor.load_benchmark_summary(summary_path)
     advice = process_batch_advisor.build_process_batch_advice(summary)
     markdown = process_batch_advisor.format_advice_markdown(advice)
 
+    # Then: the expected `process batch advisor loads summary and forma...` behavior is asserted.
     assert "sleep-partition-pyrallel-process" in markdown
     assert "--process-batch-size 1" in markdown
     assert "process_count" in markdown
@@ -101,8 +110,11 @@ def test_process_batch_advisor_loads_summary_and_formats_markdown(tmp_path) -> N
 
 
 def test_process_batch_advisor_rejects_malformed_summary(tmp_path) -> None:
+    # Given: inputs for `process batch advisor rejects malformed summary` are prepared.
     summary_path = tmp_path / "bad.json"
     summary_path.write_text(json.dumps(["not", "a", "mapping"]), encoding="utf-8")
 
+    # When: the process batch advisor code path is exercised.
+    # Then: the expected `process batch advisor rejects malformed summary` behavior is asserted.
     with pytest.raises(ValueError, match="benchmark summary JSON object"):
         process_batch_advisor.load_benchmark_summary(summary_path)

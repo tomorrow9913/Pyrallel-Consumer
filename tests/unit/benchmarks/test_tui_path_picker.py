@@ -30,12 +30,15 @@ class _DirectoryPickerHarness(App[None]):
 
 @pytest.mark.asyncio
 async def test_directory_picker_renders_directory_tree(tmp_path: Path) -> None:
+    # Given: inputs for `directory picker renders directory tree` are prepared.
     app = _DirectoryPickerHarness(tmp_path)
 
+    # When: the benchmark TUI path picker code path is exercised.
     async with app.run_test() as pilot:
         del pilot
         tree = app.screen.query_one(DirectoryTree)
 
+    # Then: the expected `directory picker renders directory tree` behavior is asserted.
     assert Path(str(tree.path)) == tmp_path
 
 
@@ -43,21 +46,27 @@ async def test_directory_picker_renders_directory_tree(tmp_path: Path) -> None:
 async def test_directory_picker_confirm_returns_selected_directory(
     tmp_path: Path,
 ) -> None:
+    # Given: inputs for `directory picker confirm returns selected dir...` are prepared.
     app = _DirectoryPickerHarness(tmp_path)
 
+    # When: the benchmark TUI path picker code path is exercised.
     async with app.run_test() as pilot:
         await pilot.click("#directory-picker-confirm")
         await pilot.pause()
 
+    # Then: the expected `directory picker confirm returns selected dir...` behavior is asserted.
     assert app.selected_path == str(tmp_path)
 
 
 @pytest.mark.asyncio
 async def test_directory_picker_cancel_returns_none(tmp_path: Path) -> None:
+    # Given: inputs for `directory picker cancel returns none` are prepared.
     app = _DirectoryPickerHarness(tmp_path)
 
+    # When: the benchmark TUI path picker code path is exercised.
     async with app.run_test() as pilot:
         await pilot.click("#directory-picker-cancel")
         await pilot.pause()
 
+    # Then: the expected `directory picker cancel returns none` behavior is asserted.
     assert app.selected_path is None

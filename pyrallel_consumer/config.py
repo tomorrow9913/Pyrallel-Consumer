@@ -1,27 +1,10 @@
-import os
 import socket
-import warnings
-from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import AliasChoices, Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pyrallel_consumer.dto import DLQPayloadMode, ExecutionMode, OrderingMode
-
-REMOVED_PROCESS_TRANSPORT_MODE_WARNING = (
-    "PROCESS_TRANSPORT_MODE was removed and is ignored; "
-    "process mode always uses worker_pipes."
-)
-
-
-def _warn_removed_process_transport_mode(stacklevel: int) -> None:
-    """Warn when removed process transport selection is still configured."""
-    warnings.warn(
-        REMOVED_PROCESS_TRANSPORT_MODE_WARNING,
-        DeprecationWarning,
-        stacklevel=stacklevel,
-    )
 
 
 class AsyncConfig(BaseSettings):
@@ -59,42 +42,6 @@ class ProcessConfig(BaseSettings):
     msgpack_max_bytes: int = Field(default=1_000_000, gt=0)
     max_tasks_per_child: int = 0
     recycle_jitter_ms: int = 0
-
-    def __init__(self, **data: object) -> None:
-        """Initialize process config and warn about removed transport selection."""
-        if "transport_mode" in data:
-            warnings.warn(
-                "ProcessConfig.transport_mode was removed and is ignored; "
-                "process mode always uses worker_pipes.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if "PROCESS_TRANSPORT_MODE" in os.environ:
-            _warn_removed_process_transport_mode(stacklevel=2)
-        env_file = data.get("_env_file", self.model_config.get("env_file"))
-        if self._env_file_contains_key(env_file, "PROCESS_TRANSPORT_MODE"):
-            _warn_removed_process_transport_mode(stacklevel=2)
-        super().__init__(**cast(dict[str, Any], data))
-
-    @staticmethod
-    def _env_file_contains_key(env_file: object, key: str) -> bool:
-        """Return whether an env file contains a top-level key assignment."""
-        if env_file is None:
-            return False
-        if env_file is False:
-            return False
-        env_paths = env_file if isinstance(env_file, (list, tuple)) else (env_file,)
-        for env_path in env_paths:
-            path = Path(str(env_path))
-            if not path.exists():
-                continue
-            for raw_line in path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                if line.split("=", 1)[0].strip() == key:
-                    return True
-        return False
 
 
 class MetricsConfig(BaseSettings):
@@ -160,6 +107,22 @@ class PoisonMessageConfig(BaseSettings):
     cooldown_ms: int = Field(default=30000, ge=0)
 
 
+class CommitCoordinatorConfig(BaseSettings):
+    """Hold settings for asynchronous commit coordination."""
+
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = False
+    queue_max_partitions: int = Field(default=1024, gt=0)
+    retry_backoff_ms: int = Field(default=100, ge=0)
+    max_retry_backoff_ms: int = Field(default=5000, ge=0)
+    stop_drain_timeout_ms: int = Field(default=5000, ge=0)
+
+
 class ExecutionConfig(BaseSettings):
     """Hold settings for runtime configuration and librdkafka client setup."""
 
@@ -191,12 +154,15 @@ class ExecutionConfig(BaseSettings):
         if "_env_file" in data:
             process_config = data.get("process_config")
             if isinstance(process_config, dict):
-                data["process_config"] = ProcessConfig(
+                data["process_config"] = cast(Any, ProcessConfig)(
                     _env_file=env_file,
                     **cast(dict[str, Any], process_config),
                 )
             else:
-                data.setdefault("process_config", ProcessConfig(_env_file=env_file))
+                data.setdefault(
+                    "process_config",
+                    cast(Any, ProcessConfig)(_env_file=env_file),
+                )
         super().__init__(**cast(dict[str, Any], data))
 
     @field_validator("mode", mode="before")
@@ -256,6 +222,9 @@ class ParallelConsumerConfig(BaseSettings):
         default_factory=AdaptiveConcurrencyConfig
     )
     poison_message: PoisonMessageConfig = Field(default_factory=PoisonMessageConfig)
+    commit_coordinator: CommitCoordinatorConfig = Field(
+        default_factory=CommitCoordinatorConfig
+    )
     rebalance_state_strategy: Literal[
         "contiguous_only", "metadata_snapshot"
     ] = "contiguous_only"
@@ -266,6 +235,7 @@ class ParallelConsumerConfig(BaseSettings):
         if "_env_file" in data:
             env_file = data["_env_file"]
             execution = data.get("execution")
+            commit_coordinator = data.get("commit_coordinator")
             if isinstance(execution, dict):
                 data["execution"] = ExecutionConfig(
                     _env_file=env_file,
@@ -273,6 +243,16 @@ class ParallelConsumerConfig(BaseSettings):
                 )
             else:
                 data.setdefault("execution", ExecutionConfig(_env_file=env_file))
+            if isinstance(commit_coordinator, dict):
+                data["commit_coordinator"] = cast(Any, CommitCoordinatorConfig)(
+                    _env_file=env_file,
+                    **cast(dict[str, Any], commit_coordinator),
+                )
+            else:
+                data.setdefault(
+                    "commit_coordinator",
+                    cast(Any, CommitCoordinatorConfig)(_env_file=env_file),
+                )
         super().__init__(**cast(dict[str, Any], data))
 
     @field_validator("ordering_mode", mode="before")
@@ -466,15 +446,8 @@ class KafkaConfig(BaseSettings):
     )
 
     def __init__(self, **data: object) -> None:
-        """Initialize Kafka config and warn about stale process env-file keys."""
+        """Initialize Kafka config and propagate explicit env files downward."""
         env_file = data.get("_env_file", self.model_config.get("env_file"))
-        should_warn_for_explicit_parallel_config = (
-            "parallel_consumer" in data
-            and not isinstance(data.get("parallel_consumer"), dict)
-            and ProcessConfig._env_file_contains_key(env_file, "PROCESS_TRANSPORT_MODE")
-        )
-        if should_warn_for_explicit_parallel_config:
-            _warn_removed_process_transport_mode(stacklevel=2)
         if "_env_file" in data:
             metrics = data.get("metrics")
             if isinstance(metrics, dict):
@@ -647,7 +620,7 @@ class KafkaConfig(BaseSettings):
             if k in _exclude:
                 continue
             if isinstance(v, SecretStr):
-                conf[k.replace("_", ".")] = v.get_secret_value()
+                conf[k.replace("_", ".")] = cast(SecretStr, v).get_secret_value()
                 continue
             conf[k.replace("_", ".")] = v
 

@@ -363,6 +363,20 @@ class WorkerPipesProcessTransport(AsyncToThreadSubmitMixin, ProcessTransport):
         with self._pending_dispatch_lock:
             self._pending_dispatch.clear()
 
+    def snapshot_pending_worker_loads(self) -> list[int]:
+        """Return pending worker-pipe item loads by worker index."""
+        loads = [0 for _ in range(self._process_count)]
+        with self._pending_dispatch_lock:
+            for key, payload in self._pending_dispatch.items():
+                worker_idx = key[0]
+                if not isinstance(worker_idx, int) or worker_idx >= len(loads):
+                    continue
+                if self._is_pending_route_batch(payload):
+                    loads[worker_idx] += len(payload.get("items", []))
+                else:
+                    loads[worker_idx] += 1
+        return loads
+
     def close(self) -> None:
         """Release resources held by this component."""
         self._shutdown_event.set()

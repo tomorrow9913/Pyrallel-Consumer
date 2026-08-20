@@ -1,13 +1,26 @@
 """Tests for WorkManager ordering mode behavior."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pyrallel_consumer.control_plane.offset_tracker import OffsetTracker
+from pyrallel_consumer.control_plane.poison_message import PoisonMessageCircuitBreaker
 from pyrallel_consumer.control_plane.work_manager import WorkManager
-from pyrallel_consumer.dto import CompletionEvent, CompletionStatus, OrderingMode
+from pyrallel_consumer.dto import (
+    CompletionEvent,
+    CompletionStatus,
+    OrderingMode,
+    PipelineBlockedReason,
+    PipelineDiagnosticsScope,
+    PipelineDiagnosticsSection,
+    PipelineDiagnosticsSupportState,
+    PipelineDispatchCapacityReason,
+    PipelineStage,
+)
 from pyrallel_consumer.dto import TopicPartition as DtoTopicPartition
+from pyrallel_consumer.dto import WorkItem
 from pyrallel_consumer.execution_plane.base import BaseExecutionEngine
 
 
@@ -33,11 +46,12 @@ def _make_tracker_mock(tp):
     return mock
 
 
-def _setup_wm(engine, tp, ordering_mode, max_in_flight=100):
+def _setup_wm(engine, tp, ordering_mode, max_in_flight=100, route_batch_size=1):
     wm = WorkManager(
         execution_engine=engine,
         max_in_flight_messages=max_in_flight,
         ordering_mode=ordering_mode,
+        route_batch_size=route_batch_size,
     )
     with patch("pyrallel_consumer.control_plane.work_manager.OffsetTracker") as MockOT:
         tracker = _make_tracker_mock(tp)
@@ -98,6 +112,30 @@ class _OrderedRouteBatchEngine(BaseExecutionEngine):
         return None
 
 
+class _BlockingSubmitEngine(_OrderedRouteBatchEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submit_started = asyncio.Event()
+        self.submit_release = asyncio.Event()
+
+    async def submit(self, work_item) -> None:
+        self.submit_started.set()
+        await self.submit_release.wait()
+        await super().submit(work_item)
+
+
+class _BlockingBatchSubmitEngine(_OrderedRouteBatchEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submit_batch_started = asyncio.Event()
+        self.submit_batch_release = asyncio.Event()
+
+    async def submit_batch(self, work_items) -> None:
+        self.submit_batch_started.set()
+        await self.submit_batch_release.wait()
+        await super().submit_batch(work_items)
+
+
 class _ScriptedOrderedRouteBatchEngine(_OrderedRouteBatchEngine):
     def __init__(self) -> None:
         super().__init__()
@@ -114,20 +152,23 @@ class _ScriptedOrderedRouteBatchEngine(_OrderedRouteBatchEngine):
 async def test_key_hash_route_batching_is_deferred_until_engine_batches_are_ordering_safe(
     mock_engine, tp
 ):
+    # Given: inputs for `key hash route batching is deferred until eng...` are prepared.
     wm, tracker = _setup_wm(
         mock_engine,
         tp,
         OrderingMode.KEY_HASH,
         max_in_flight=10,
+        route_batch_size=3,
     )
-    wm._route_batch_size = 3
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `key hash route batching is deferred until eng...` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     mock_engine.submit_batch.assert_not_awaited()
     submitted_item = mock_engine.submit.await_args.args[0]
@@ -137,23 +178,450 @@ async def test_key_hash_route_batching_is_deferred_until_engine_batches_are_orde
 
 
 @pytest.mark.asyncio
-async def test_partition_route_batching_is_deferred_without_engine_capability(
-    mock_engine, tp
+async def test_pipeline_diagnostics_reports_eligible_frontier_and_frontier_deferred(
+    tp,
 ):
+    # Given: inputs for `pipeline diagnostics reports eligible frontie...` are prepared.
+    engine = _OrderedRouteBatchEngine()
     wm, tracker = _setup_wm(
-        mock_engine,
+        engine,
         tp,
-        OrderingMode.PARTITION,
+        OrderingMode.KEY_HASH,
         max_in_flight=10,
+        route_batch_size=2,
     )
-    wm._route_batch_size = 3
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
 
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics reports eligible frontie...` behavior is asserted.
+    assert diagnostics.stage_counts[PipelineStage.QUEUED].count == 3
+    assert diagnostics.stage_counts[PipelineStage.DISPATCHED].count == 0
+    assert diagnostics.subqueues.total == 1
+    assert diagnostics.subqueues.queued == 1
+    assert diagnostics.subqueues.queued_items == 3
+    assert diagnostics.subqueues.eligible_subqueues == 1
+    assert diagnostics.subqueues.eligible_items == 2
+    assert diagnostics.subqueues.blocked_subqueues == 1
+    assert diagnostics.subqueues.blocked_items == 1
+    assert diagnostics.subqueues.top_k_depths == [3]
+    assert (
+        diagnostics.blocked_counts[PipelineBlockedReason.FRONTIER_DEFERRED].count == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_truncates_eligible_prefix_before_mid_prefix_poison(
+    tp,
+):
+    # Given: inputs for `pipeline diagnostics truncates eligible prefi...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=30000,
+        forced_failure_attempt=1,
+        clock=lambda: 100.0,
+    )
+    circuit.record_completion(
+        CompletionEvent(
+            id="failed-id",
+            tp=tp,
+            offset=999,
+            epoch=1,
+            status=CompletionStatus.FAILURE,
+            error="boom",
+            attempt=1,
+        ),
+        WorkItem(
+            id="failed-id",
+            tp=tp,
+            offset=999,
+            epoch=1,
+            key=b"key-A",
+            payload=b"failed-payload",
+            poison_key=b"poison-key",
+        ),
+    )
+    wm = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        poison_message_circuit=circuit,
+        route_batch_size=3,
+    )
+    with patch("pyrallel_consumer.control_plane.work_manager.OffsetTracker") as MockOT:
+        tracker = _make_tracker_mock(tp)
+        MockOT.return_value = tracker
+        wm.on_assign([tp])
+        wm._offset_trackers[tp] = tracker
+
+    await wm.submit_message_batch(
+        {
+            (tp, b"key-A"): [
+                (0, 1, b"payload-0", b"good-key"),
+                (1, 1, b"payload-1", b"poison-key"),
+                (2, 1, b"payload-2", b"good-key-2"),
+            ]
+        }
+    )
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics truncates eligible prefi...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 1
+    assert diagnostics.subqueues.blocked_items == 2
+    assert diagnostics.blocked_counts[PipelineBlockedReason.POISON_GUARD].count == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_does_not_prune_expired_poison_circuit(tp):
+    # Given: inputs for `pipeline diagnostics does not prune expired p...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    now = 100.0
+
+    def clock():
+        return now
+
+    circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=30000,
+        forced_failure_attempt=1,
+        clock=clock,
+    )
+    failed_item = WorkItem(
+        id="failed-id",
+        tp=tp,
+        offset=999,
+        epoch=1,
+        key=b"key-A",
+        payload=b"failed-payload",
+    )
+    circuit.record_completion(
+        CompletionEvent(
+            id="failed-id",
+            tp=tp,
+            offset=999,
+            epoch=1,
+            status=CompletionStatus.FAILURE,
+            error="boom",
+            attempt=1,
+        ),
+        failed_item,
+    )
+    wm = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        poison_message_circuit=circuit,
+    )
+    with patch("pyrallel_consumer.control_plane.work_manager.OffsetTracker") as MockOT:
+        tracker = _make_tracker_mock(tp)
+        MockOT.return_value = tracker
+        wm.on_assign([tp])
+        wm._offset_trackers[tp] = tracker
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+
+    now = 131.0
+    diagnostics = wm.get_pipeline_diagnostics()
+    # When: the work manager ordering code path is exercised.
+    now = 101.0
+
+    # Then: the expected `pipeline diagnostics does not prune expired p...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 1
+    assert circuit.should_force_fail(failed_item) is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_ordering_lock_separately_from_capacity(
+    tp,
+):
+    # Given: inputs for `pipeline diagnostics reports ordering lock se...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=10)
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.schedule()
 
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics reports ordering lock se...` behavior is asserted.
+    assert diagnostics.stage_counts[PipelineStage.QUEUED].count == 1
+    assert diagnostics.stage_counts[PipelineStage.DISPATCHED].count == 1
+    assert diagnostics.subqueues.eligible_items == 0
+    assert diagnostics.subqueues.blocked_items == 1
+    assert diagnostics.blocked_counts[PipelineBlockedReason.ORDERING_LOCK].count == 1
+    assert diagnostics.dispatch_capacity.blocked_items == 0
+    assert diagnostics.dispatch_capacity.reason is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_max_in_flight_capacity_after_eligibility(
+    tp,
+):
+    # Given: inputs for `pipeline diagnostics reports max in flight ca...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=1)
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    await wm.schedule()
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics reports max in flight ca...` behavior is asserted.
+    assert diagnostics.stage_counts[PipelineStage.QUEUED].count == 1
+    assert diagnostics.stage_counts[PipelineStage.DISPATCHED].count == 1
+    assert diagnostics.subqueues.eligible_items == 1
+    assert diagnostics.subqueues.blocked_items == 0
+    assert diagnostics.dispatch_capacity.blocked_items == 1
+    assert (
+        diagnostics.dispatch_capacity.reason
+        == PipelineDispatchCapacityReason.MAX_IN_FLIGHT
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_poison_guard_as_logical_blocker(tp):
+    # Given: inputs for `pipeline diagnostics reports poison guard as...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    circuit = PoisonMessageCircuitBreaker(
+        enabled=True,
+        failure_threshold=1,
+        cooldown_ms=30000,
+        forced_failure_attempt=1,
+        clock=lambda: 100.0,
+    )
+    circuit.record_completion(
+        CompletionEvent(
+            id="failed-id",
+            tp=tp,
+            offset=999,
+            epoch=1,
+            status=CompletionStatus.FAILURE,
+            error="boom",
+            attempt=1,
+        ),
+        WorkItem(
+            id="failed-id",
+            tp=tp,
+            offset=999,
+            epoch=1,
+            key=b"key-A",
+            payload=b"failed-payload",
+        ),
+    )
+    wm = WorkManager(
+        execution_engine=engine,
+        ordering_mode=OrderingMode.KEY_HASH,
+        poison_message_circuit=circuit,
+    )
+    with patch("pyrallel_consumer.control_plane.work_manager.OffsetTracker") as MockOT:
+        tracker = _make_tracker_mock(tp)
+        MockOT.return_value = tracker
+        wm.on_assign([tp])
+        wm._offset_trackers[tp] = tracker
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics reports poison guard as...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 0
+    assert diagnostics.subqueues.blocked_items == 1
+    assert diagnostics.blocked_counts[PipelineBlockedReason.POISON_GUARD].count == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_route_lock_during_submit_lease(tp):
+    # Given: inputs for `pipeline diagnostics reports route lock durin...` are prepared.
+    engine = _BlockingSubmitEngine()
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=10,
+        route_batch_size=1,
+    )
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    schedule_task = asyncio.create_task(wm.schedule())
+    await engine.submit_started.wait()
+
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    engine.submit_release.set()
+    # When: the work manager ordering code path is exercised.
+    await schedule_task
+
+    # Then: the expected `pipeline diagnostics reports route lock durin...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 0
+    assert diagnostics.subqueues.blocked_items == 1
+    assert diagnostics.blocked_counts[PipelineBlockedReason.ROUTE_LOCK].count == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_route_lock_during_batch_submit_lease(tp):
+    # Given: inputs for `pipeline diagnostics reports route lock durin...` are prepared.
+    engine = _BlockingBatchSubmitEngine()
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=10,
+        route_batch_size=2,
+    )
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    schedule_task = asyncio.create_task(wm.schedule())
+    await engine.submit_batch_started.wait()
+
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    engine.submit_batch_release.set()
+    # When: the work manager ordering code path is exercised.
+    await schedule_task
+
+    # Then: the expected `pipeline diagnostics reports route lock durin...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 0
+    assert diagnostics.subqueues.blocked_items == 2
+    assert diagnostics.blocked_counts[PipelineBlockedReason.ROUTE_LOCK].count == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_exposes_support_metadata_for_partial_sidecar(tp):
+    # Given: inputs for `pipeline diagnostics exposes support metadata...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=10)
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics exposes support metadata...` behavior is asserted.
+    assert diagnostics.scope == PipelineDiagnosticsScope.WORK_MANAGER_ONLY
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.STAGES]
+        == PipelineDiagnosticsSupportState.SUPPORTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.BLOCKED]
+        == PipelineDiagnosticsSupportState.SUPPORTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.SUBQUEUES]
+        == PipelineDiagnosticsSupportState.SUPPORTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.DISPATCH_CAPACITY]
+        == PipelineDiagnosticsSupportState.SUPPORTED
+    )
+    assert (
+        diagnostics.section_support[PipelineDiagnosticsSection.ADMISSION]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.stage_support[PipelineStage.QUEUED]
+        == PipelineDiagnosticsSupportState.SUPPORTED
+    )
+    assert (
+        diagnostics.stage_support[PipelineStage.EXECUTING]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.stage_support[PipelineStage.COMPLETED_UNSETTLED]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.stage_support[PipelineStage.FAILED]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.stage_support[PipelineStage.DLQ]
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+    assert (
+        diagnostics.admission.support_state
+        == PipelineDiagnosticsSupportState.NOT_IMPLEMENTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_falls_back_to_item_prefix_without_ordered_batch_capability(
+    mock_engine,
+    tp,
+):
+    # Given: inputs for `pipeline diagnostics falls back to item prefi...` are prepared.
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=10,
+        route_batch_size=3,
+    )
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics falls back to item prefi...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 1
+    assert diagnostics.subqueues.blocked_items == 1
+    assert (
+        diagnostics.blocked_counts[PipelineBlockedReason.FRONTIER_DEFERRED].count == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_diagnostics_reports_rebalancing_as_logical_blocker(tp):
+    # Given: inputs for `pipeline diagnostics reports rebalancing as l...` are prepared.
+    engine = _OrderedRouteBatchEngine()
+    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=10)
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    wm._rebalancing = True
+
+    # When: the work manager ordering code path is exercised.
+    diagnostics = wm.get_pipeline_diagnostics()
+
+    # Then: the expected `pipeline diagnostics reports rebalancing as l...` behavior is asserted.
+    assert diagnostics.subqueues.eligible_items == 0
+    assert diagnostics.subqueues.blocked_items == 1
+    assert diagnostics.blocked_counts[PipelineBlockedReason.REBALANCING].count == 1
+
+
+@pytest.mark.asyncio
+async def test_partition_route_batching_is_deferred_without_engine_capability(
+    mock_engine, tp
+):
+    # Given: inputs for `partition route batching is deferred without...` are prepared.
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.PARTITION,
+        max_in_flight=10,
+        route_batch_size=3,
+    )
+
+    await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
+
+    # When: the work manager ordering code path is exercised.
+    await wm.schedule()
+
+    # Then: the expected `partition route batching is deferred without...` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     mock_engine.submit_batch.assert_not_awaited()
     submitted_item = mock_engine.submit.await_args.args[0]
@@ -164,16 +632,24 @@ async def test_partition_route_batching_is_deferred_without_engine_capability(
 
 @pytest.mark.asyncio
 async def test_key_hash_supported_engine_batches_to_route_size_and_capacity(tp):
+    # Given: inputs for `key hash supported engine batches to route si...` are prepared.
     engine = _OrderedRouteBatchEngine()
-    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=2)
-    wm._route_batch_size = 3
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=2,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `key hash supported engine batches to route si...` behavior is asserted.
     assert engine.submitted_offsets == []
     assert engine.submitted_batches == [[0, 1]]
     assert wm.get_total_in_flight_count() == 2
@@ -182,16 +658,24 @@ async def test_key_hash_supported_engine_batches_to_route_size_and_capacity(tp):
 
 @pytest.mark.asyncio
 async def test_partition_supported_engine_keeps_item_level_leasing(tp):
+    # Given: inputs for `partition supported engine keeps item level l...` are prepared.
     engine = _OrderedRouteBatchEngine()
-    wm, tracker = _setup_wm(engine, tp, OrderingMode.PARTITION, max_in_flight=2)
-    wm._route_batch_size = 3
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.PARTITION,
+        max_in_flight=2,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition supported engine keeps item level l...` behavior is asserted.
     assert engine.submitted_offsets == [0]
     assert engine.submitted_batches == []
     assert wm.get_total_in_flight_count() == 1
@@ -200,16 +684,24 @@ async def test_partition_supported_engine_keeps_item_level_leasing(tp):
 
 @pytest.mark.asyncio
 async def test_partition_route_batch_does_not_skip_lower_offset_on_another_key(tp):
+    # Given: inputs for `partition route batch does not skip lower off...` are prepared.
     engine = _OrderedRouteBatchEngine()
-    wm, tracker = _setup_wm(engine, tp, OrderingMode.PARTITION, max_in_flight=10)
-    wm._route_batch_size = 3
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.PARTITION,
+        max_in_flight=10,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
     await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition route batch does not skip lower off...` behavior is asserted.
     assert engine.submitted_offsets == [0]
     assert engine.submitted_batches == []
     assert wm.get_total_in_flight_count() == 1
@@ -218,9 +710,15 @@ async def test_partition_route_batch_does_not_skip_lower_offset_on_another_key(t
 
 @pytest.mark.asyncio
 async def test_key_hash_route_batch_tail_completion_releases_ordering_lock(tp):
+    # Given: inputs for `key hash route batch tail completion releases...` are prepared.
     engine = _ScriptedOrderedRouteBatchEngine()
-    wm, tracker = _setup_wm(engine, tp, OrderingMode.KEY_HASH, max_in_flight=3)
-    wm._route_batch_size = 3
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=3,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
@@ -254,8 +752,10 @@ async def test_key_hash_route_batch_tail_completion_releases_ordering_lock(tp):
         ]
     )
 
+    # When: the work manager ordering code path is exercised.
     await wm.poll_completed_events()
 
+    # Then: the expected `key hash route batch tail completion releases...` behavior is asserted.
     assert engine.submitted_batches == [[0, 1, 2]]
     assert wm.get_total_in_flight_count() == 1
     assert wm.get_total_queued_messages() == 1
@@ -286,8 +786,14 @@ async def test_key_hash_route_batch_tail_completion_releases_ordering_lock(tp):
 async def test_unordered_route_batch_respects_remaining_in_flight_capacity(
     mock_engine, tp
 ):
-    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED, max_in_flight=2)
-    wm._route_batch_size = 5
+    # Given: inputs for `unordered route batch respects remaining in f...` are prepared.
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.UNORDERED,
+        max_in_flight=2,
+        route_batch_size=5,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
@@ -295,7 +801,9 @@ async def test_unordered_route_batch_respects_remaining_in_flight_capacity(
 
     await wm.schedule()
 
+    # When: the work manager ordering code path is exercised.
     batch = mock_engine.submit_batch.await_args.args[0]
+    # Then: the expected `unordered route batch respects remaining in f...` behavior is asserted.
     assert [item.offset for item in batch] == [0, 1]
     assert wm.get_total_in_flight_count() == 2
     assert wm.get_total_queued_messages() == 1
@@ -305,16 +813,24 @@ async def test_unordered_route_batch_respects_remaining_in_flight_capacity(
 async def test_unordered_route_batch_tracks_items_accepted_before_later_submit_failure(
     tp,
 ):
+    # Given: inputs for `unordered route batch tracks items accepted b...` are prepared.
     engine = _PartiallyFailingBatchEngine(fail_offset=1)
-    wm, tracker = _setup_wm(engine, tp, OrderingMode.UNORDERED, max_in_flight=10)
-    wm._route_batch_size = 3
+    wm, tracker = _setup_wm(
+        engine,
+        tp,
+        OrderingMode.UNORDERED,
+        max_in_flight=10,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
     await wm.submit_message(tp, 2, 1, b"key-A", b"payload-2")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `unordered route batch tracks items accepted b...` behavior is asserted.
     assert engine.submitted_offsets == [0, 1]
     assert wm.get_total_in_flight_count() == 1
     assert wm.get_total_queued_messages() == 2
@@ -322,28 +838,44 @@ async def test_unordered_route_batch_tracks_items_accepted_before_later_submit_f
 
 @pytest.mark.asyncio
 async def test_route_batch_size_one_preserves_item_submit_path(mock_engine, tp):
-    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH, max_in_flight=10)
-    wm._route_batch_size = 1
+    # Given: inputs for `route batch size one preserves item submit path` are prepared.
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.KEY_HASH,
+        max_in_flight=10,
+        route_batch_size=1,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `route batch size one preserves item submit path` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     mock_engine.submit_batch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_partition_mode_defers_cross_key_route_batching_for_now(mock_engine, tp):
-    wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION, max_in_flight=10)
-    wm._route_batch_size = 3
+    # Given: inputs for `partition mode defers cross key route batchin...` are prepared.
+    wm, tracker = _setup_wm(
+        mock_engine,
+        tp,
+        OrderingMode.PARTITION,
+        max_in_flight=10,
+        route_batch_size=3,
+    )
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
 
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition mode defers cross key route batchin...` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     mock_engine.submit_batch.assert_not_awaited()
 
@@ -351,36 +883,45 @@ async def test_partition_mode_defers_cross_key_route_batching_for_now(mock_engin
 @pytest.mark.asyncio
 async def test_key_hash_blocks_same_key_concurrent(mock_engine, tp):
     """KEY_HASH: second item with same key must NOT be submitted while first is in-flight."""
+    # Given: inputs for `key hash blocks same key concurrent` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `key hash blocks same key concurrent` behavior is asserted.
     assert mock_engine.submit.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_key_hash_allows_different_keys_concurrent(mock_engine, tp):
     """KEY_HASH: items with different keys CAN run concurrently."""
+    # Given: inputs for `key hash allows different keys concurrent` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `key hash allows different keys concurrent` behavior is asserted.
     assert mock_engine.submit.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_key_hash_unblocks_after_completion(mock_engine, tp):
     """KEY_HASH: after completion, the next item for that key is eligible."""
+    # Given: inputs for `key hash unblocks after completion` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `key hash unblocks after completion` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     first_item = mock_engine.submit.call_args_list[0].args[0]
 
@@ -402,12 +943,15 @@ async def test_key_hash_unblocks_after_completion(mock_engine, tp):
 @pytest.mark.asyncio
 async def test_unordered_allows_same_key_concurrent(mock_engine, tp):
     """UNORDERED: same-key items CAN run concurrently."""
+    # Given: inputs for `unordered allows same key concurrent` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-A", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `unordered allows same key concurrent` behavior is asserted.
     assert mock_engine.submit.await_count == 2
 
 
@@ -416,6 +960,7 @@ async def test_unordered_prefers_lowest_head_offset_after_blocking_pick(
     mock_engine, tp
 ):
     """UNORDERED: stale runnable entries must not outrank lower current head offsets."""
+    # Given: inputs for `unordered prefers lowest head offset after bl...` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.UNORDERED)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
@@ -424,26 +969,34 @@ async def test_unordered_prefers_lowest_head_offset_after_blocking_pick(
     tracker.get_gaps.return_value = [type("Gap", (), {"start": 0})()]
     await wm.schedule()
 
+    # When: the work manager ordering code path is exercised.
     submitted_offsets = [
         call.args[0].offset for call in mock_engine.submit.await_args_list
     ]
+    # Then: the expected `unordered prefers lowest head offset after bl...` behavior is asserted.
     assert submitted_offsets == [0, 1, 2]
 
 
 @pytest.mark.asyncio
 async def test_default_ordering_mode_is_unordered(mock_engine):
     """WorkManager default ordering_mode should be UNORDERED for backward compat."""
+    # Given: inputs for `default ordering mode is unordered` are prepared.
+    # When: the work manager ordering code path is exercised.
     wm = WorkManager(execution_engine=mock_engine)
+    # Then: the expected `default ordering mode is unordered` behavior is asserted.
     assert wm._ordering_mode == OrderingMode.UNORDERED
 
 
 @pytest.mark.asyncio
 async def test_key_hash_on_revoke_clears_keys_in_flight(mock_engine, tp):
     """on_revoke must clear keys_in_flight for revoked partitions."""
+    # Given: inputs for `key hash on revoke clears keys in flight` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.KEY_HASH)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
+    # Then: the expected `key hash on revoke clears keys in flight` behavior is asserted.
     assert mock_engine.submit.await_count == 1
 
     wm.on_revoke([tp])
@@ -463,18 +1016,22 @@ async def test_key_hash_on_revoke_clears_keys_in_flight(mock_engine, tp):
 @pytest.mark.asyncio
 async def test_partition_blocks_same_partition_concurrent(mock_engine, tp):
     """PARTITION: second item on same partition must NOT be submitted while first is in-flight."""
+    # Given: inputs for `partition blocks same partition concurrent` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition blocks same partition concurrent` behavior is asserted.
     assert mock_engine.submit.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_partition_allows_different_partitions_concurrent(mock_engine, tp):
     """PARTITION: items on different partitions CAN run concurrently."""
+    # Given: inputs for `partition allows different partitions concurrent` are prepared.
     tp2 = DtoTopicPartition(topic="test-topic", partition=1)
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION)
     with patch("pyrallel_consumer.control_plane.work_manager.OffsetTracker") as MockOT:
@@ -485,20 +1042,25 @@ async def test_partition_allows_different_partitions_concurrent(mock_engine, tp)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp2, 0, 1, b"key-B", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition allows different partitions concurrent` behavior is asserted.
     assert mock_engine.submit.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_partition_unblocks_after_completion(mock_engine, tp):
     """PARTITION: after completion, the next item on that partition is eligible."""
+    # Given: inputs for `partition unblocks after completion` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
     await wm.submit_message(tp, 1, 1, b"key-B", b"payload-1")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
 
+    # Then: the expected `partition unblocks after completion` behavior is asserted.
     assert mock_engine.submit.await_count == 1
     first_item = mock_engine.submit.call_args_list[0].args[0]
 
@@ -520,10 +1082,13 @@ async def test_partition_unblocks_after_completion(mock_engine, tp):
 @pytest.mark.asyncio
 async def test_partition_on_revoke_clears_partitions_in_flight(mock_engine, tp):
     """on_revoke must clear partitions_in_flight for revoked partitions."""
+    # Given: inputs for `partition on revoke clears partitions in flight` are prepared.
     wm, tracker = _setup_wm(mock_engine, tp, OrderingMode.PARTITION)
 
     await wm.submit_message(tp, 0, 1, b"key-A", b"payload-0")
+    # When: the work manager ordering code path is exercised.
     await wm.schedule()
+    # Then: the expected `partition on revoke clears partitions in flight` behavior is asserted.
     assert mock_engine.submit.await_count == 1
 
     wm.on_revoke([tp])
